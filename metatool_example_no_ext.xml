@@ -1,0 +1,232 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1" fbc:required="false" xmlns:fbc="http://www.sbml.org/sbml/level3/version1/fbc/version2">
+   <model id="CNA_stoichiometric_model" name="CNA_stoichiometric_model" fbc:strict="true">
+      <listOfCompartments>
+         <compartment id="External_Species" constant="true"/>
+         <compartment id="Internal_Species" constant="true"/>
+      </listOfCompartments>
+      <listOfSpecies>
+         <species id="Ala" name="Ala" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="Asp" name="Asp" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="Glu" name="Glu" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="Gly" name="Gly" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="Mal" name="Mal" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="Fum" name="Fum" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="Succ" name="Succ" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="SucCoA" name="SucCoA" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="OG" name="OG" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="IsoCit" name="IsoCit" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="Cit" name="Cit" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="OAA" name="OAA" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="AcCoA" name="AcCoA" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="CoA" name="CoA" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="Pyr" name="Pyr" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="PEP" name="PEP" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+      </listOfSpecies>
+      <listOfReactions>
+         <reaction id="Pyk" name="Pyk" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par2" reversible="false">
+            <listOfReactants>
+               <speciesReference species="PEP" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="Pyr" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="AceEF" name="AceEF" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par2" reversible="false">
+            <listOfReactants>
+               <speciesReference species="CoA" stoichiometry="1" constant="true"/>
+               <speciesReference species="Pyr" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="AcCoA" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="GltA" name="GltA" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par2" reversible="false">
+            <listOfReactants>
+               <speciesReference species="OAA" stoichiometry="1" constant="true"/>
+               <speciesReference species="AcCoA" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="Cit" stoichiometry="1" constant="true"/>
+               <speciesReference species="CoA" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="Icd" name="Icd" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par2" reversible="false">
+            <listOfReactants>
+               <speciesReference species="IsoCit" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="OG" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="SucAB" name="SucAB" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par2" reversible="false">
+            <listOfReactants>
+               <speciesReference species="OG" stoichiometry="1" constant="true"/>
+               <speciesReference species="CoA" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="SucCoA" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="Icl" name="Icl" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par2" reversible="false">
+            <listOfReactants>
+               <speciesReference species="IsoCit" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="Gly" stoichiometry="1" constant="true"/>
+               <speciesReference species="Succ" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="Mas" name="Mas" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par2" reversible="false">
+            <listOfReactants>
+               <speciesReference species="Gly" stoichiometry="1" constant="true"/>
+               <speciesReference species="AcCoA" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="Mal" stoichiometry="1" constant="true"/>
+               <speciesReference species="CoA" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="AspCon" name="AspCon" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par2" reversible="false">
+            <listOfReactants>
+               <speciesReference species="Asp" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+         </reaction>
+         <reaction id="AspA" name="AspA" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par2" reversible="false">
+            <listOfReactants>
+               <speciesReference species="Asp" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="Fum" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="Pck" name="Pck" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par2" reversible="false">
+            <listOfReactants>
+               <speciesReference species="OAA" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="PEP" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="Ppc" name="Ppc" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par2" reversible="false">
+            <listOfReactants>
+               <speciesReference species="PEP" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="OAA" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="Pps" name="Pps" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par2" reversible="false">
+            <listOfReactants>
+               <speciesReference species="Pyr" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="PEP" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="GluCon" name="GluCon" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par2" reversible="false">
+            <listOfReactants>
+               <speciesReference species="Glu" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+         </reaction>
+         <reaction id="AlaCon" name="AlaCon" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par2" reversible="false">
+            <listOfReactants>
+               <speciesReference species="Ala" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+         </reaction>
+         <reaction id="SucCoACon" name="SucCoACon" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par2" reversible="false">
+            <listOfReactants>
+               <speciesReference species="SucCoA" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="CoA" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="Eno" name="Eno" fast="false" fbc:lowerFluxBound="par3" fbc:upperFluxBound="par2" reversible="true">
+            <listOfProducts>
+               <speciesReference species="PEP" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="Acn" name="Acn" fast="false" fbc:lowerFluxBound="par3" fbc:upperFluxBound="par2" reversible="true">
+            <listOfReactants>
+               <speciesReference species="Cit" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="IsoCit" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="SucCD" name="SucCD" fast="false" fbc:lowerFluxBound="par3" fbc:upperFluxBound="par2" reversible="true">
+            <listOfReactants>
+               <speciesReference species="SucCoA" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="Succ" stoichiometry="1" constant="true"/>
+               <speciesReference species="CoA" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="Sdh" name="Sdh" fast="false" fbc:lowerFluxBound="par3" fbc:upperFluxBound="par2" reversible="true">
+            <listOfReactants>
+               <speciesReference species="Succ" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="Fum" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="Fum" name="Fum" fast="false" fbc:lowerFluxBound="par3" fbc:upperFluxBound="par2" reversible="true">
+            <listOfReactants>
+               <speciesReference species="Fum" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="Mal" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="Mdh" name="Mdh" fast="false" fbc:lowerFluxBound="par3" fbc:upperFluxBound="par2" reversible="true">
+            <listOfReactants>
+               <speciesReference species="Mal" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="OAA" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="AspC" name="AspC" fast="false" fbc:lowerFluxBound="par3" fbc:upperFluxBound="par2" reversible="true">
+            <listOfReactants>
+               <speciesReference species="Glu" stoichiometry="1" constant="true"/>
+               <speciesReference species="OAA" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="Asp" stoichiometry="1" constant="true"/>
+               <speciesReference species="OG" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="Gdh" name="Gdh" fast="false" fbc:lowerFluxBound="par3" fbc:upperFluxBound="par2" reversible="true">
+            <listOfReactants>
+               <speciesReference species="OG" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="Glu" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="IlvEAvtA" name="IlvEAvtA" fast="false" fbc:lowerFluxBound="par3" fbc:upperFluxBound="par2" reversible="true">
+            <listOfReactants>
+               <speciesReference species="Glu" stoichiometry="1" constant="true"/>
+               <speciesReference species="Pyr" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="Ala" stoichiometry="1" constant="true"/>
+               <speciesReference species="OG" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+      </listOfReactions>
+      <listOfParameters>
+         <parameter id="par3" constant="true" value="-Inf" />
+         <parameter id="par1" constant="true" value="0" />
+         <parameter id="par2" constant="true" value="Inf" />
+      </listOfParameters>
+      <fbc:listOfObjectives fbc:activeObjective="objective1">
+         <fbc:objective fbc:id="objective1" fbc:type="maximize">
+            <fbc:listOfFluxObjectives>
+            </fbc:listOfFluxObjectives>
+         </fbc:objective>
+      </fbc:listOfObjectives>
+   </model>
+</sbml>
