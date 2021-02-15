@@ -1,4 +1,5 @@
 import numpy
+import scipy
 import cobra
 import optlang.cplex_interface
 import optlang.glpk_interface
@@ -101,10 +102,10 @@ class ConstrainedMinimalCutSetsEnumerator:
                 dual_vars[k] = [self.optlang_variable_class("DR"+str(k)+"_"+str(i), lb=dual_lb[i], ub=dual_ub[i]) for i in range(self.num_reac)]
             first_w= len(dual_vars[k]) # + 1;
             if use_kn_in_dual is False:
-                dual = numpy.eye(self.num_reac)
+                dual = scipy.sparse.eye(self.num_reac, format='csr')
                 if split_reversible_v:
-                    dual = numpy.hstack((dual, dual[:, split_v_idx]))
-                dual = numpy.hstack((dual, st.transpose(), targets[k][0].transpose()))
+                    dual = scipy.sparse.hstack((dual, dual[:, split_v_idx]), format='csr')
+                dual = scipy.sparse.hstack((dual, st.transpose(), targets[k][0].transpose()), format='csr')
                 dual_vars[k] += [self.optlang_variable_class("DS"+str(k)+"_"+str(i)) for i in range(st.shape[0])]
                 first_w += st.shape[0]
             else:
@@ -122,13 +123,16 @@ class ConstrainedMinimalCutSetsEnumerator:
             # num_dual_cols[k]= dual.shape[1]
             constr= [None] * (dual.shape[0]+1)
             # print(dual_vars[k][first_w:])
+            expr = matrix_row_expressions(dual, dual_vars[k])
+            # print(expr)
             for i in range(dual.shape[0]):
                 if irrev_geq and irr[i]:
                     ub = None
                 else:
                     ub = 0
-                expr = add([cf * var for cf, var in zip(dual[i, :], dual_vars[k]) if cf != 0])
-                constr[i] = self.Constraint(expr, lb=0, ub=ub, name="D"+str(k)+"_"+str(i), sloppy=True)
+                #expr = add([cf * var for cf, var in zip(dual[i, :], dual_vars[k]) if cf != 0])
+                #expr = add([dual[i, k] *  dual_vars[k] for k in dual[i, :].nonzero()[1]])
+                constr[i] = self.Constraint(expr[i], lb=0, ub=ub, name="D"+str(k)+"_"+str(i), sloppy=True)
             expr = add([cf * var for cf, var in zip(targets[k][1], dual_vars[k][first_w:]) if cf != 0])
             constr[-1] = self.Constraint(expr, ub=-threshold, name="DW"+str(k), sloppy=True)
             self.model.add(constr)
@@ -206,16 +210,17 @@ class ConstrainedMinimalCutSetsEnumerator:
                                 lb=flux_lb[i], ub=flux_ub[i],
                                 problem=self.model.problem) for i in range(self.num_reac)]
             self.model.add(self.flux_vars[l])
+            expr = matrix_row_expressions(st, self.flux_vars[l])
             constr= [None]*st.shape[0]
             for i in range(st.shape[0]):
-                expr = add([cf * var for cf, var in zip(st[i, :], self.flux_vars[l]) if cf != 0])
-                print(expr)
-                constr[i] = self.Constraint(expr, lb=0, ub=0, name="M"+str(l)+"_"+str(i), sloppy=True)
+                # expr = add([cf * var for cf, var in zip(st[i, :], self.flux_vars[l]) if cf != 0])
+                # print(expr)
+                constr[i] = self.Constraint(expr[i], lb=0, ub=0, name="M"+str(l)+"_"+str(i), sloppy=True)
             self.model.add(constr)
             constr= [None]*desired[l][0].shape[0]
             for i in range(desired[l][0].shape[0]):
                 expr = add([cf * var for cf, var in zip(desired[l][0][i, :], self.flux_vars[l]) if cf != 0])
-                print(expr)
+                # print(expr)
                 constr[i] = self.Constraint(expr, ub=desired[l][1][i], name="DES"+str(l)+"_"+str(i), sloppy=True)
             self.model.add(constr)
 
@@ -377,11 +382,12 @@ def expand_mcs(mcs: List[Tuple], subT):
     mcs = list(itertools.chain(*mcs))
     return set(map(tuple, map(numpy.sort, mcs)))
 
-def matrix_row_expressions(mat : numpy.array, vars):
+def matrix_row_expressions(mat, vars):
+    # mat can be a numpy matrix or scipy sparse matrix (csc, csr, lil formats work; COO format does not work)
     # expr = [None] * mat.shape[0]
     # for i in range(mat.shape[0]):
     #     idx = numpy.nonzero(mat)
-    ridx, cidx = numpy.nonzero(mat) # !! assumes that the indices in ridx are grouped together !!
+    ridx, cidx = mat.nonzero() # !! assumes that the indices in ridx are grouped together !!
     if len(ridx) == 0:
         return []
     # expr = []
