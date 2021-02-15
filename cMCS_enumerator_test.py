@@ -19,6 +19,7 @@ rev = [r.reversibility for r in ex.reactions]
 target = [(equations_to_matrix(ex, ["-1 Pyk", "-1 Pck"]), [-1, -1])] # -Pyk does not work
 #target.append(target[0]) # duplicate target
 flux_expr= [r.flux_expression for r in ex.reactions] # !! lose validity when the solver is changed !!
+kn = efmtool_link.null_rat_efmtool(stdf.values)
 
 # %%
 sol = ex.slim_optimize()
@@ -38,7 +39,7 @@ mcs = e.enumerate_mcs(max_mcs_size=5)
 print(time.time() - t)
 
 e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, stdf.values, rev, target,
-                                        threshold=0.1, split_reversible_v=False, irrev_geq=False) #, ref_set=mcs)
+                                        threshold=0.1, split_reversible_v=False, irrev_geq=False, kn=kn) #, ref_set=mcs)
 e.model.objective = e.minimize_sum_over_z
 # e.write_lp_file('testI')
 #e.model.configuration.verbosity = 3
@@ -288,7 +289,7 @@ print(set(iJO1366_mcs) == set(iJO1366_mcsB), len(iJO1366_mcsB))
 # %%
 import scipy
 input_keys = ['rd_rat', 'irrev_rd_rat', 'flux_lb', 'flux_ub', 'cuts', 'kn', 'idx', 'inh', 'ub', 'des', 'db']
-conf = scipy.io.loadmat('..\FLB_NB_benchmarks\iJM658_mcs_input', variable_names=input_keys, simplify_cells=True)
+conf = scipy.io.loadmat(os.path.join('..', 'FLB_NB_benchmarks', 'iJM658_mcs_input'), variable_names=input_keys, simplify_cells=True)
 for k in input_keys: # put as variables into the workspace for simple access
     exec(k+" = conf['"+k+"']")
 
@@ -300,15 +301,23 @@ target = [[inh[i], ub[i]]]
 desired= [[des[i], db[i], flux_lb[i], flux_ub[i]]]
 #%%
 e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, rd, numpy.logical_not(irrev_rd), target,
-     cuts=cuts[i], desired=desired, split_reversible_v=True, irrev_geq=True)
+     cuts=cuts[i], desired=desired, split_reversible_v=True, irrev_geq=False, kn=kn[i]) #, threshold=0.1, bigM=1000)
+#     cuts=cuts[i], desired=desired, split_reversible_v=True, irrev_geq=True) #, threshold=0.1, bigM=1000)
 e.model.configuration.tolerances.optimality = 1e-6
 e.model.configuration.tolerances.feasibility = 1e-6
 e.model.configuration.tolerances.integrality = 1e-7
 e.model.configuration.verbosity = 3
-e.model.problem.parameters.parallel = 1 # set to deterministic for time comparison
-e.model.problem.parameters.randomseed = 5
+e.model.problem.parameters.emphasis.numerical.set(1) # is not listed as changed parameter by CPLEX
+e.model.problem.parameters.parallel.set(1) # set to deterministic for time comparison
+e.model.problem.parameters.randomseed.set(5)
 e.evs_sz_lb = 1 
+#e.write_lp_file('testOL')
+#e.model.problem.parameters.get_changed()
 #%%
-mcs = e.enumerate_mcs(max_mcs_size=8, enum_method=2)
+mcs = e.enumerate_mcs(max_mcs_size=6, enum_method=2)
+
+# %%
+res = scipy.io.loadmat(os.path.join('..', 'FLB_NB_benchmarks', 'iJM658_mcs_input_s5_255_255'), simplify_cells=True)
+set(mcs) == set([tuple(numpy.nonzero(res['mcs'][i][:, j])[0]) for j in range(res['mcs'][i].shape[1])])
 
 # %%

@@ -37,6 +37,12 @@ class ConstrainedMinimalCutSetsEnumerator:
             #iv_cost(irrepressible)= 0;
         num_targets = len(targets)
         use_kn_in_dual = kn is not None
+        if use_kn_in_dual:
+            if irrev_geq:
+                raise
+            if type(kn) is numpy.ndarray:
+                kn = scipy.sparse.csc_matrix(kn) # otherwise stacking for dual does not work
+
         if split_reversible_v:
             split_v_idx = [i for i, x in enumerate(reversible) if x]
             dual_rev_neg_idx = [i for i in range(self.num_reac, self.num_reac + len(split_v_idx))]
@@ -47,7 +53,7 @@ class ConstrainedMinimalCutSetsEnumerator:
             split_v_idx = []
 
         self.zero_objective= optlang_interface.Objective(0, direction='min', name='zero_objective')
-        self.model.objective= self.zero_objective;
+        self.model.objective= self.zero_objective
         self.z_vars = [self.optlang_variable_class("Z"+str(i), type="binary", problem=self.model.problem) for i in range(self.num_reac)]
         self.model.add(self.z_vars)
         self.model.update() # cannot change bound below without this
@@ -109,8 +115,10 @@ class ConstrainedMinimalCutSetsEnumerator:
                 dual_vars[k] += [self.optlang_variable_class("DS"+str(k)+"_"+str(i)) for i in range(st.shape[0])]
                 first_w += st.shape[0]
             else:
-                # implement dual using the kernel here
-                pass
+                if split_reversible_v:
+                    dual = scipy.sparse.hstack((kn.transpose(), kn[reversible, :].transpose(), kn.transpose() @ targets[k][0].transpose()), format='csr')
+                else:
+                    dual = scipy.sparse.hstack((kn.transpose(), kn.transpose() @ targets[k][0].transpose()), format='csr')
                 #       switch split_level
                 #         case 1 % split dual vars associated with reversible reactions
                 #           dual= [kn', kn(~irr, :)', kn'*T{k}'];
@@ -302,6 +310,7 @@ class ConstrainedMinimalCutSetsEnumerator:
                 self.model.problem.parameters.mip.pool.intensity.set(4)
                 self.model.problem.parameters.mip.pool.absgap.set(0)
                 self.model.problem.parameters.mip.strategy.search.set(1) # traditional branch-and-cut search
+                self.model.problem.parameters.emphasis.mip.set(1) # integer feasibility
                 # also set model.problem.parameters.parallel to deterministic?
                 # for now unlimited pool size
                 self.model.problem.parameters.mip.limits.populate.set(self.model.problem.parameters.mip.pool.capacity.get())
