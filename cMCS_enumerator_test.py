@@ -30,13 +30,13 @@ ex.solver.status == optlang.interface.OPTIMAL
 # %%
 # bei multiplem target falsche Ergebnisse mit enthalten?!?
 
+info = dict()
 e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, stdf.values, rev, target, 
                                         bigM= 100, threshold=0.1, split_reversible_v=True, irrev_geq=True)
 e.model.objective = e.minimize_sum_over_z
 # e.write_lp_file('testM')
-t = time.time()
-mcs = e.enumerate_mcs(max_mcs_size=5)
-print(time.time() - t)
+mcs = e.enumerate_mcs(max_mcs_size=5, info=info)
+print(info)
 
 e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, stdf.values, rev, target,
                                         threshold=0.1, split_reversible_v=False, irrev_geq=False, kn=kn) #, ref_set=mcs)
@@ -48,9 +48,8 @@ e.model.objective = e.minimize_sum_over_z
 #e.model.configuration.lp_method = 'auto' # sets lpmethod back to automatic on the CPLEX side
 #e.model.problem.parameters.reset() # works (CPLEX specific)
 # without reset() optlang switches presolve off and fixes lpmethod
-t = time.time()
-mcs2 = e.enumerate_mcs(max_mcs_size=5)
-print(time.time() - t)
+mcs2 = e.enumerate_mcs(max_mcs_size=5, info=info)
+print(info)
 
 print(len(set(mcs).intersection(set(mcs2))))
 print(set(mcs) == set(mcs2))
@@ -120,7 +119,7 @@ expand_mcs(rd_mcs, subT) == set(mcs2)
 #%%
 e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, stdf.values, rev, target,
                                         threshold=0.1, split_reversible_v=False, irrev_geq=False) #, ref_set=mcs)
-e.model.configuration.verbosity = 3
+# e.model.configuration.verbosity = 3
 e.evs_sz_lb = 1
 mcs2p = e.enumerate_mcs(max_mcs_size=5, enum_method=2)
 print(set(mcs) == set(mcs2p))
@@ -152,8 +151,8 @@ print(set(mcs4) == set(mcs3))
 ecc2 = cobra.io.read_sbml_model(r"..\CNApy\projects\ECC2comp\ECC2comp.xml")
 ecc2_stdf = cobra.util.array.create_stoichiometric_matrix(ecc2, array_type='DataFrame')
 cuts= numpy.full(ecc2_stdf.shape[1], True, dtype=bool) # results do not agree when exchange reactions can be cut, problem with tiny fluxes (and M too small)
-# for r in ecc2.boundary:
-#     cuts[ecc2_stdf.columns.get_loc(r.id)] = False
+for r in ecc2.boundary:
+    cuts[ecc2_stdf.columns.get_loc(r.id)] = False
 ecc2_mue_target = [(equations_to_matrix(ecc2, 
                     ["-1 Growth", "1 GlcUp", "1 AcUp", "1 GlycUp", "1 SuccUp"]), [-0.01, 10, 10, 10, 10])]
 e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, ecc2_stdf.values, [r.reversibility for r in ecc2.reactions], ecc2_mue_target,
@@ -233,8 +232,8 @@ target_rd = [(T@subT, t) for T, t in ecc2_mue_target]
 #                                         threshold=0.1, split_reversible_v=True, irrev_geq=True,
 #                                         cuts=numpy.any(subT[cuts, :], axis=0))
 e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, rd, rev_rd, target_rd, 
-                                        threshold=0.1, bigM=1000, split_reversible_v=True, irrev_geq=True,
-                                        cuts=numpy.any(subT[cuts, :], axis=0))
+                                        threshold=0.1, bigM=1000, split_reversible_v=True, #irrev_geq=True,
+                                        cuts=numpy.any(subT[cuts, :], axis=0), kn=efmtool_link.null_rat_efmtool(rd))
 # here a subset is repressible when one ot its reactions is repressible
 e.model.objective = e.minimize_sum_over_z
 rd_mcs = e.enumerate_mcs(max_mcs_size=3)
@@ -300,21 +299,25 @@ irrev_rd = irrev_rd_rat[i]
 target = [[inh[i], ub[i]]]
 desired= [[des[i], db[i], flux_lb[i], flux_ub[i]]]
 #%%
+# e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, rd, numpy.logical_not(irrev_rd), target,
+#      cuts=cuts[i], desired=desired, split_reversible_v=True, irrev_geq=False, kn=kn[i], threshold=0.1, bigM=1000)
 e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, rd, numpy.logical_not(irrev_rd), target,
      cuts=cuts[i], desired=desired, split_reversible_v=True, irrev_geq=False, kn=kn[i]) #, threshold=0.1, bigM=1000)
 #     cuts=cuts[i], desired=desired, split_reversible_v=True, irrev_geq=True) #, threshold=0.1, bigM=1000)
+e.model.problem.parameters.emphasis.numerical.set(1) # is not listed as changed parameter by CPLEX
+e.model.problem.parameters.parallel.set(1) # set to deterministic for time comparison
+e.model.problem.parameters.randomseed.set(5)
 e.model.configuration.tolerances.optimality = 1e-6
 e.model.configuration.tolerances.feasibility = 1e-6
 e.model.configuration.tolerances.integrality = 1e-7
 e.model.configuration.verbosity = 3
-e.model.problem.parameters.emphasis.numerical.set(1) # is not listed as changed parameter by CPLEX
-e.model.problem.parameters.parallel.set(1) # set to deterministic for time comparison
-e.model.problem.parameters.randomseed.set(5)
 e.evs_sz_lb = 1 
 #e.write_lp_file('testOL')
 #e.model.problem.parameters.get_changed()
 #%%
-mcs = e.enumerate_mcs(max_mcs_size=6, enum_method=2)
+info = dict()
+mcs = e.enumerate_mcs(max_mcs_size=8, enum_method=2, info=info) #, timeout=30)
+print(info)
 
 # %%
 res = scipy.io.loadmat(os.path.join('..', 'FLB_NB_benchmarks', 'iJM658_mcs_input_s5_255_255'), simplify_cells=True)

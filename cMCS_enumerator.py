@@ -11,13 +11,15 @@ from cplex.exceptions import CplexSolverError
 from cplex._internal._subinterfaces import SolutionStatus # can be also accessed by a CPLEX object under .solution.status
 import itertools
 from typing import List, Tuple
+import time
+import sys
 
 class ConstrainedMinimalCutSetsEnumerator:
     def __init__(self, optlang_interface, st, reversible, targets, kn=None, cuts=None,
         desired=[], knock_in=[], bigM=0, threshold=1, split_reversible_v=True,
         irrev_geq=False, ref_set= None): # reduce_constraints=True, combined_z=True
         # targets is a list of (T,t) pairs that represent T <= t
-        # combined_z will probably be fixed to True which implies reduce_constraints=True
+        # imlements only combined_z which implies reduce_constraints=True
         self.ref_set = ref_set # optional set of reference MCS for debugging
         self.model = optlang_interface.Model()
         self.model.configuration.presolve = True # presolve on
@@ -283,72 +285,100 @@ class ConstrainedMinimalCutSetsEnumerator:
         ub = len(mcs) - 1
         self.model.add(self.Constraint(expression, ub=ub, sloppy=True))
 
-    def enumerate_mcs(self, max_mcs_size=numpy.inf, enum_method=1):
+    def enumerate_mcs(self, max_mcs_size=None, enum_method=1, timeout=None, info=None):
+        # if a dictionary is passed as info some status/runtime information is stored in there
         all_mcs= [];
-        continue_loop = True;
+        if max_mcs_size is None:
+            max_mcs_size = len(self.z_vars)
+        if enum_method == 2:
+            # r<ise error if this is not a CPLEX model
+            # if numpy.isinf(max_mcs_size):
+            #     max_mcs_size = len(self.z_vars)
+            print("Populate up tp MCS size ", max_mcs_size)
+            self.model.problem.parameters.mip.pool.intensity.set(4)
+            # self.model.problem.parameters.mip.pool.absgap.set(0)
+            self.model.problem.parameters.mip.pool.relgap.set(self.model.configuration.tolerances.optimality)
+            self.model.problem.parameters.mip.strategy.search.set(1) # traditional branch-and-cut search
+            self.model.problem.parameters.emphasis.mip.set(1) # integer feasibility
+            # also set model.problem.parameters.parallel to deterministic?
+            # for now unlimited pool size
+            self.model.problem.parameters.mip.limits.populate.set(self.model.problem.parameters.mip.pool.capacity.get())
+            z_idx = self.model.problem.variables.get_indices([z.name for z in self.z_vars]) # for querying the solution pool
+        elif enum_method == 1 or enum_method == 3:
+            if self.model.objective is self.zero_objective:
+                self.model.objective = self.minimize_sum_over_z
+                print('Objective function is empty; set objective to self.minimize_sum_over_z')
+        else:
+            raise ValueError('Unknown enumeration method.')
+        continue_loop = True
+        start_time = time.monotonic()
         while continue_loop and self.evs_sz_lb <= max_mcs_size:
-            if enum_method == 1:
+            if timeout is not None:
+                remaining_time = round(timeout - (time.monotonic() - start_time)) # integer
+                if remaining_time <= 0:
+                    print('Time limit exceeded, stopping enumeration.')
+                    break
+                else:
+                    self.model.configuration.timeout = remaining_time
+            if enum_method == 1 or enum_method == 3:
                 mcs = self.single_solve()
                 if self.model.status == 'optimal':
-                    #ov = round(self.model.objective.value)
+                    ov = round(self.model.objective.value)
+                    if ov >  self.evs_sz_lb:
+                        self.evs_sz_lb = ov
                     #if ov > e.evs_sz.lb: # increase lower bound of evs_sz constraint, but is this really always helpful?
                     #    e.evs_sz.lb = ov
                     #    print(ov)
                     if round(self.model.objective.value) > max_mcs_size:
                         print('MCS size limit exceeded, stopping enumeration.')
                         break
-                    self.add_exclusion_constraint(mcs)
+                    if enum_method == 1:
+                        self.add_exclusion_constraint(mcs)
                     self.model.update() # needs to be done explicitly when using _optimize
                     all_mcs.append(mcs)
                 else:
-                    break
+                    print('Stopping enumeration with status', self.model.status)
+                    continue_loop = False
             elif enum_method == 2: # populate with CPLEX
-                # throw error if this is not a CPLEX model
-                if numpy.isinf(max_mcs_size):
-                    max_mcs_size = len(self.z_vars)
-                print("Populate up tp MCS size ", max_mcs_size)
-                self.model.problem.parameters.mip.pool.intensity.set(4)
-                self.model.problem.parameters.mip.pool.absgap.set(0)
-                self.model.problem.parameters.mip.strategy.search.set(1) # traditional branch-and-cut search
-                self.model.problem.parameters.emphasis.mip.set(1) # integer feasibility
-                # also set model.problem.parameters.parallel to deterministic?
-                # for now unlimited pool size
-                self.model.problem.parameters.mip.limits.populate.set(self.model.problem.parameters.mip.pool.capacity.get())
-                while self.evs_sz_lb <= max_mcs_size:
+                if self.evs_sz_lb != self.evs_sz.lb: # only touch the bounds if necessary to preserve the search tree
                     self.evs_sz.ub = self.evs_sz_lb
                     self.evs_sz.lb = self.evs_sz_lb
-                    try:
-                        self.model.problem.populate_solution_pool()
-                    except CplexSolverError:
-                        print("Exception raised during populate")
-                        continue_loop = False
-                        break
-                    print(self.model.problem.solution.pool.get_num())
-                    print(self.model.problem.solution.get_status_string())
-                    cplex_status = self.model.problem.solution.get_status()
-                    if cplex_status is SolutionStatus.MIP_optimal:
+                try:
+                    self.model.problem.populate_solution_pool()
+                except CplexSolverError:
+                    print("Exception raised during populate")
+                    continue_loop = False
+                    break
+                print(self.model.problem.solution.pool.get_num())
+                print(self.model.problem.solution.get_status_string())
+                cplex_status = self.model.problem.solution.get_status()
+                if type(info) is dict:
+                    info['cplex_status'] = cplex_status
+                    info['cplex_status_string'] = self.model.problem.solution.get_status_string()
+                if cplex_status is SolutionStatus.MIP_optimal or cplex_status is SolutionStatus.MIP_time_limit_feasible \
+                        or cplex_status is SolutionStatus.optimal_populated_tolerance: # may occur when a non-zero onjective function is set
+                    if cplex_status is SolutionStatus.MIP_optimal or cplex_status is SolutionStatus.optimal_populated_tolerance:
                         self.evs_sz_lb += 1
                         print(self.evs_sz_lb)
-                        z_idx = self.model.problem.variables.get_indices([z.name for z in self.z_vars])
-                        for i in range(self.model.problem.solution.pool.get_num()):
-                            mcs = tuple(numpy.where(numpy.round(
-                                        self.model.problem.solution.pool.get_values(i, z_idx)))[0])
-                            self.add_exclusion_constraint(mcs)
-                            all_mcs.append(mcs)
-                        self.model.update() # needs to be done explicitly when not using optlang optimize
-                    elif cplex_status is SolutionStatus.MIP_infeasible:
-                        print('No MCS of size ', self.evs_sz_lb)
-                        self.evs_sz_lb += 1
-                    else:
-                        print('Unexpected CPLEX status ', self.model.problem.solution.get_status_string())
-                        continue_loop = False
-                        break # provisional break
+                    for i in range(self.model.problem.solution.pool.get_num()):
+                        mcs = tuple(numpy.where(numpy.round(
+                                    self.model.problem.solution.pool.get_values(i, z_idx)))[0])
+                        self.add_exclusion_constraint(mcs)
+                        all_mcs.append(mcs)
+                    self.model.update() # needs to be done explicitly when not using optlang optimize
+                elif cplex_status is SolutionStatus.MIP_infeasible:
+                    print('No MCS of size ', self.evs_sz_lb)
+                    self.evs_sz_lb += 1
+                elif cplex_status is SolutionStatus.MIP_time_limit_infeasible:
+                    print('No further MCS of size', self.evs_sz_lb, 'found, time limit reached.')
+                else:
+                    print('Unexpected CPLEX status ', self.model.problem.solution.get_status_string())
+                    continue_loop = False
+                    break # provisional break
                 # reset parameters here?
-            else:
-                print("Unknown enumeration method.")
-                break
-
-        print(self.model.status)
+        if type(info) is dict:
+            info['optlang_status'] = self.model.status
+            info['time'] = time.monotonic() - start_time
         return all_mcs
 
     def write_lp_file(self, fname):
