@@ -9,27 +9,34 @@ import os
 import sys
 sys.path.append(os.path.join('..', 'efmtool_link'))
 import efmtool_link
+import efmtool4cobra
 
 #%%
 ex = cobra.io.read_sbml_model(r"metatool_example_no_ext.xml")
 ex.solver = 'glpk_exact'
 stdf = cobra.util.array.create_stoichiometric_matrix(ex, array_type='DataFrame')
 rev = [r.reversibility for r in ex.reactions]
-#target = [(-equations_to_matrix(ex, ["Pyk", "Pck"]), [-1, -1])]
-target = [(equations_to_matrix(ex, ["-1 Pyk", "-1 Pck"]), [-1, -1])] # -Pyk does not work
+reac_id = stdf.columns.tolist()
+reac_id_symbols = get_reac_id_symbols(reac_id)
+# target = [(equations_to_matrix(ex, ["-1 Pyk", "-1 Pck"]), [-1, -1])] # -Pyk does not work
+target = [[("Pyk", ">=", 1), ("Pck", ">=", 1)]]
+# for t in range(len(target)):
+#     for r in range(len(target[t])):
+#         lhs, rhs = parse_relation(target[t][r][0], target[t][r][2], reac_id_symbols=reac_id_symbols)
+#         target[t][r] = (lhs, target[t][r][1], rhs)
+# target = [relations2leq_matrix(t, stdf.columns.tolist()) for t in target]
+target = [relations2leq_matrix(parse_relations(t, reac_id_symbols=reac_id_symbols), reac_id) for t in target]
 #target.append(target[0]) # duplicate target
 flux_expr= [r.flux_expression for r in ex.reactions] # !! lose validity when the solver is changed !!
 kn = efmtool_link.null_rat_efmtool(stdf.values)
 
-# %%
-sol = ex.slim_optimize()
-ex.solver.status == optlang.interface.OPTIMAL
+# # %%
+# sol = ex.slim_optimize()
+# ex.solver.status == optlang.interface.OPTIMAL
 # sol = ex.optimize()
 #res = cobra.flux_analysis.single_reaction_deletion(ex, processes=1) # no interactive multiprocessing on Windows
 
 # %%
-# bei multiplem target falsche Ergebnisse mit enthalten?!?
-
 info = dict()
 e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, stdf.values, rev, target, 
                                         bigM= 100, threshold=0.1, split_reversible_v=True, irrev_geq=True)
@@ -101,12 +108,18 @@ print(all(check_mcs(ex, target[0], mcs3, optlang.interface.INFEASIBLE)))
 print(all(check_mcs(ex, desired[0], mcs3, optlang.interface.OPTIMAL)))
 
 #%%
-subset_compression = efmtool_link.CompressionMethod[:]([efmtool_link.CompressionMethod.CoupledZero, efmtool_link.CompressionMethod.CoupledCombine, efmtool_link.CompressionMethod.CoupledContradicting])
-rd, subT = efmtool_link.compress_rat_efmtool(stdf.values, rev, remove_cr=True,
-            compression_method=subset_compression)[0:2]
+# subset_compression = efmtool_link.CompressionMethod[:]([efmtool_link.CompressionMethod.CoupledZero, efmtool_link.CompressionMethod.CoupledCombine, efmtool_link.CompressionMethod.CoupledContradicting])
+rd, subT, comprec = efmtool_link.compress_rat_efmtool(stdf.values, rev, remove_cr=True,
+            compression_method= efmtool_link.subset_compression) #[0:2]
 # rd = stdf.values
 # subT = numpy.eye(rd.shape[1])
 rev_rd = numpy.logical_not(numpy.any(subT[numpy.logical_not(rev), :], axis=0))
+#%%
+exc, subT = efmtool4cobra.compress_model(ex)
+rd = cobra.util.array.create_stoichiometric_matrix(exc, array_type='dok')
+rev_rd = [r.reversibility for r in exc.reactions]
+
+#%%
 target_rd = [(T@subT, t) for T, t in target]
 e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, rd, rev_rd, target_rd, 
                                         bigM= 100, threshold=0.1, split_reversible_v=True, irrev_geq=True)
@@ -153,8 +166,12 @@ ecc2_stdf = cobra.util.array.create_stoichiometric_matrix(ecc2, array_type='Data
 cuts= numpy.full(ecc2_stdf.shape[1], True, dtype=bool) # results do not agree when exchange reactions can be cut, problem with tiny fluxes (and M too small)
 for r in ecc2.boundary:
     cuts[ecc2_stdf.columns.get_loc(r.id)] = False
-ecc2_mue_target = [(equations_to_matrix(ecc2, 
-                    ["-1 Growth", "1 GlcUp", "1 AcUp", "1 GlycUp", "1 SuccUp"]), [-0.01, 10, 10, 10, 10])]
+reac_id = ecc2_stdf.columns.tolist()
+reac_id_symbols = get_reac_id_symbols(reac_id)
+ecc2_mue_target = [[("Growth", ">=", 0.01), ("GlcUp", "<=", 10), ("AcUp", "<=", 10), ("GlycUp", "<=", 10), ("SuccUp", "<=", 10)]]
+ecc2_mue_target = [relations2leq_matrix(parse_relations(t, reac_id_symbols=reac_id_symbols), reac_id) for t in ecc2_mue_target]
+# ecc2_mue_target = [(equations_to_matrix(ecc2, 
+#                     ["-1 Growth", "1 GlcUp", "1 AcUp", "1 GlycUp", "1 SuccUp"]), [-0.01, 10, 10, 10, 10])]
 e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, ecc2_stdf.values, [r.reversibility for r in ecc2.reactions], ecc2_mue_target,
                                         cuts=cuts, threshold=1, split_reversible_v=True, irrev_geq=True)
 # e.model.objective = e.minimize_sum_over_z
@@ -216,24 +233,30 @@ ecc2_mcsB = e.enumerate_mcs(max_mcs_size=3)
 print(set(ecc2_mcs) == set(ecc2_mcsB), len(ecc2_mcsB))
 
 #%%
-subset_compression = efmtool_link.CompressionMethod[:]([efmtool_link.CompressionMethod.CoupledZero, efmtool_link.CompressionMethod.CoupledCombine, efmtool_link.CompressionMethod.CoupledContradicting])
 rev = [r.reversibility for r in ecc2.reactions]
 rd, subT = efmtool_link.compress_rat_efmtool(ecc2_stdf.values, rev, remove_cr=True,
-            compression_method=subset_compression)[0:2]
-#%%
-print(ecc2_stdf.values.shape) # has 40 extra exchange reactions for the 40 external metabolites in ECC2comp
-print(ecc2_stdf.columns[0])
-ecc2_stdf.columns[numpy.where(subT[:, 0])]
+            compression_method=efmtool_link.subset_compression)[0:2]
+rev_rd = numpy.logical_not(numpy.any(subT[numpy.logical_not(rev), :], axis=0))
 
 #%%
-rev_rd = numpy.logical_not(numpy.any(subT[numpy.logical_not(rev), :], axis=0))
+ecc2c, subT = efmtool4cobra.compress_model(ecc2)
+rd = cobra.util.array.create_stoichiometric_matrix(ecc2c, array_type='dok')
+rev_rd = [r.reversibility for r in ecc2c.reactions]
+
+#%%
+# #%%
+# print(ecc2_stdf.values.shape) # has 40 extra exchange reactions for the 40 external metabolites in ECC2comp
+# print(ecc2_stdf.columns[0])
+# ecc2_stdf.columns[numpy.where(subT[:, 0])]
+
+#%%
 target_rd = [(T@subT, t) for T, t in ecc2_mue_target]
-# e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, rd, rev_rd, target_rd, 
-#                                         threshold=0.1, split_reversible_v=True, irrev_geq=True,
-#                                         cuts=numpy.any(subT[cuts, :], axis=0))
-e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, rd, rev_rd, target_rd, 
-                                        threshold=0.1, bigM=1000, split_reversible_v=True, #irrev_geq=True,
-                                        cuts=numpy.any(subT[cuts, :], axis=0), kn=efmtool_link.null_rat_efmtool(rd))
+e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, rd, rev_rd, target_rd, 
+                                        threshold=0.1, split_reversible_v=True, irrev_geq=True,
+                                        cuts=numpy.any(subT[cuts, :], axis=0))
+# e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, rd, rev_rd, target_rd, 
+#                                         threshold=0.1, bigM=1000, split_reversible_v=True, #irrev_geq=True,
+#                                         cuts=numpy.any(subT[cuts, :], axis=0), kn=efmtool_link.null_rat_efmtool(rd))
 # here a subset is repressible when one ot its reactions is repressible
 e.model.objective = e.minimize_sum_over_z
 rd_mcs = e.enumerate_mcs(max_mcs_size=3)
@@ -242,6 +265,9 @@ xsubT= subT.copy()
 xsubT[numpy.logical_not(cuts), :] = 0 # only expand to reactions that are repressible 
 xmcs = expand_mcs(rd_mcs, xsubT)
 set(xmcs) == set(ecc2_mcs)
+
+#%% FVA in reduced system
+
 
 #%%
 iJO1366 = cobra.io.read_sbml_model(r"..\CNApy\projects\iJO1366\iJO1366.xml")
