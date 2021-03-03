@@ -1,14 +1,16 @@
 import numpy
 import scipy
 import cobra
-import optlang.cplex_interface
 import optlang.glpk_interface
 from optlang.symbolics import add, mul
 from optlang.exceptions import IndicatorConstraintsNotSupported
-from swiglpk import glp_write_lp
-#import cplex
-from cplex.exceptions import CplexSolverError
-from cplex._internal._subinterfaces import SolutionStatus # can be also accessed by a CPLEX object under .solution.status
+from swiglpk import glp_write_lp, glp_ios_mip_gap
+try:
+    import optlang.cplex_interface
+    from cplex.exceptions import CplexSolverError
+    from cplex._internal._subinterfaces import SolutionStatus # can be also accessed by a CPLEX object under .solution.status
+except:
+    optlang.cplex_interface = None # make sure this symbol is defined for type() comparisons
 import itertools
 from typing import List, Tuple
 import time
@@ -24,6 +26,7 @@ class ConstrainedMinimalCutSetsEnumerator:
         # targets is a list of (T,t) pairs that represent T <= t
         # imlements only combined_z which implies reduce_constraints=True
         self.ref_set = ref_set # optional set of reference MCS for debugging
+        self._optlang_interface = optlang_interface
         self.model = optlang_interface.Model()
         self.model.configuration.presolve = True # presolve on
         # without presolve CPLEX sometimes gives false results when using indicators ?!?
@@ -288,15 +291,15 @@ class ConstrainedMinimalCutSetsEnumerator:
         ub = len(mcs) - 1
         self.model.add(self.Constraint(expression, ub=ub, sloppy=True))
 
-    def enumerate_mcs(self, max_mcs_size=None, enum_method=1, timeout=None, info=None):
+    def enumerate_mcs(self, max_mcs_size=None, max_mcs_num=float('inf'), enum_method=1, timeout=None,
+                        model=None, targets=None, info=None): #, larger_mcs=None):
         # if a dictionary is passed as info some status/runtime information is stored in there
         all_mcs= [];
-        if max_mcs_size is None:
-            max_mcs_size = len(self.z_vars)
         if enum_method == 2:
-            # r<ise error if this is not a CPLEX model
-            # if numpy.isinf(max_mcs_size):
-            #     max_mcs_size = len(self.z_vars)
+            if self._optlang_interface is not optlang.cplex_interface:
+                raise TypeError('enum_method 2 is not available for this solver.')
+            if max_mcs_size is None:
+                max_mcs_size = len(self.z_vars)
             print("Populate up tp MCS size ", max_mcs_size)
             self.model.problem.parameters.mip.pool.intensity.set(4)
             # self.model.problem.parameters.mip.pool.absgap.set(0)
@@ -311,13 +314,17 @@ class ConstrainedMinimalCutSetsEnumerator:
             if self.model.objective is self.zero_objective:
                 self.model.objective = self.minimize_sum_over_z
                 print('Objective function is empty; set objective to self.minimize_sum_over_z')
+            if enum_method == 3:
+                target_constraints= get_leq_constraints(model, targets)
+            if max_mcs_size is not None:
+                self.evs_sz.ub = max_mcs_size
         else:
             raise ValueError('Unknown enumeration method.')
         continue_loop = True
         start_time = time.monotonic()
-        while continue_loop and self.evs_sz_lb <= max_mcs_size:
+        while continue_loop and (max_mcs_size is None or self.evs_sz_lb <= max_mcs_size) and len(all_mcs) < max_mcs_num:
             if timeout is not None:
-                remaining_time = round(timeout - (time.monotonic() - start_time)) # integer
+                remaining_time = round(timeout - (time.monotonic() - start_time)) # integer in optlang
                 if remaining_time <= 0:
                     print('Time limit exceeded, stopping enumeration.')
                     break
@@ -325,18 +332,30 @@ class ConstrainedMinimalCutSetsEnumerator:
                     self.model.configuration.timeout = remaining_time
             if enum_method == 1 or enum_method == 3:
                 mcs = self.single_solve()
-                if self.model.status == 'optimal':
-                    ov = round(self.model.objective.value)
-                    if ov >  self.evs_sz_lb:
-                        self.evs_sz_lb = ov
-                    #if ov > e.evs_sz.lb: # increase lower bound of evs_sz constraint, but is this really always helpful?
-                    #    e.evs_sz.lb = ov
-                    #    print(ov)
-                    if round(self.model.objective.value) > max_mcs_size:
-                        print('MCS size limit exceeded, stopping enumeration.')
-                        break
-                    if enum_method == 1:
-                        self.add_exclusion_constraint(mcs)
+                if self.model.status == 'optimal' or (enum_method == 3 and self.model.status == 'feasible'):
+                    # if self.model.status == 'optimal': # cannot use this because e.g. CPLEX 'integer optimal, tolerance' is also optlang 'optimal'
+                    # GLPK appears to not have functions for accesing the MIP gap or best bound
+                    global_optimum = enum_method == 1 or \
+                                     (self._optlang_interface is optlang.cplex_interface and 
+                                      self.model.problem.solution.MIP.get_mip_relative_gap() < self.model.configuration.tolerances.optimality) or \
+                                     (self._optlang_interface is optlang.glpk_interface and self.model.status == 'optimal') # geht das sicher?
+                    if global_optimum: #enum_method == 1: # only for this method optlang 'optimal' is a guaranteed global optimum
+                        ov = round(self.model.objective.value)
+                        if ov >  self.evs_sz_lb:
+                            self.evs_sz_lb = ov
+                        #if ov > e.evs_sz.lb: # increase lower bound of evs_sz constraint, but is this really always helpful?
+                        #    e.evs_sz.lb = ov
+                        #    print(ov)
+                        
+                        # not necessary when self.evs_sz.ub = max_mcs_size
+                        # if round(self.model.objective.value) > max_mcs_size:
+                        #     print('MCS size limit exceeded, stopping enumeration.')
+                        #     break
+                    else: # enum_method == 3: # and self.model.status == 'feasible':
+                        print("CS", mcs)
+                        mcs = make_minimal_cut_set(model, mcs, target_constraints)    
+                        print("MCS", mcs)
+                    self.add_exclusion_constraint(mcs)
                     self.model.update() # needs to be done explicitly when using _optimize
                     all_mcs.append(mcs)
                 else:
@@ -352,8 +371,8 @@ class ConstrainedMinimalCutSetsEnumerator:
                     print("Exception raised during populate")
                     continue_loop = False
                     break
-                print(self.model.problem.solution.pool.get_num())
-                print(self.model.problem.solution.get_status_string())
+                print("Found", self.model.problem.solution.pool.get_num(), "MCS.")
+                print("Solver status is:", self.model.problem.solution.get_status_string())
                 cplex_status = self.model.problem.solution.get_status()
                 if type(info) is dict:
                     info['cplex_status'] = cplex_status
@@ -362,7 +381,7 @@ class ConstrainedMinimalCutSetsEnumerator:
                         or cplex_status is SolutionStatus.optimal_populated_tolerance: # may occur when a non-zero onjective function is set
                     if cplex_status is SolutionStatus.MIP_optimal or cplex_status is SolutionStatus.optimal_populated_tolerance:
                         self.evs_sz_lb += 1
-                        print(self.evs_sz_lb)
+                        print("Increased MCS size to:", self.evs_sz_lb)
                     for i in range(self.model.problem.solution.pool.get_num()):
                         mcs = tuple(numpy.where(numpy.round(
                                     self.model.problem.solution.pool.get_values(i, z_idx)))[0])
@@ -472,6 +491,53 @@ def check_mcs(model, constr, mcs, expected_status, flux_expr=None):
                 check_ok[m] = KO_model.solver.status == expected_status
     return check_ok
 
+from swiglpk import * # for direkt use of glü_exact, tentative solution only
+def make_minimal_cut_set(model, cut_set, target_constraints):
+    original_bounds = [model.reactions[r].bounds for r in cut_set]
+    keep_ko = [True] * len(cut_set)
+    # with model as KO_model:
+    #     for r in cut_set:
+    #         KO_model.reactions[r].knock_out()
+    try:
+        for r in cut_set:
+            model.reactions[r].knock_out()
+        for i in range(len(cut_set)):
+            r = cut_set[i]
+            model.reactions[r].bounds = original_bounds[i]
+            still_infeasible = True
+            for target in target_constraints:
+                with model as target_model:
+                    target_model.add_cons_vars(target)
+                    if type(target_model.solver) is optlang.glpk_exact_interface.Model:
+                        target_model.solver.update() # need manual update because GLPK is called through private function
+                        status = target_model.solver._run_glp_exact() # optimize would run GLPK first
+                        if status == 'undefined':
+                            # print('Making fresh model')
+                            # target_model_copy = target_model.copy() # kludge to lose the old basis
+                            # status = target_model_copy.solver._run_glp_exact()
+                            print("Make new basis")
+                            glp_adv_basis(target_model.solver.problem, 0) # probably not with rational arithmetric?
+                            status = target_model.solver._run_glp_exact() # optimize would run GLPK first
+                        print(status)
+                    else:
+                        target_model.slim_optimize()
+                        status = target_model.solver.status
+                    still_infeasible = still_infeasible and status == optlang.interface.INFEASIBLE
+                    if still_infeasible is False:
+                        break
+            if still_infeasible:
+                keep_ko[i] = False # this KO is redundant
+            else:
+                model.reactions[r].knock_out() # reactivate
+        mcs = tuple(ko for(ko, keep) in zip(cut_set, keep_ko) if keep)
+    # don't handle the exception, just make sure the model is restored
+    finally:
+        for i in range(len(cut_set)):
+            r = cut_set[i]
+            model.reactions[r].bounds = original_bounds[i]
+        model.solver.update() # just in case...
+    return mcs
+
 def parse_relation(lhs : str, rhs : float, reac_id_symbols=None):
     transformations = (standard_transformations + (implicit_multiplication_application,))
     slash = lhs.find('/')
@@ -489,13 +555,13 @@ def parse_relation(lhs : str, rhs : float, reac_id_symbols=None):
     lhs = sympy.collect(lhs, lhs.free_symbols, evaluate=False)
     
     return lhs, rhs
-#%%
+
 def parse_relations(relations : List, reac_id_symbols=None):
     for r in range(len(relations)):
         lhs, rhs = parse_relation(relations[r][0], relations[r][2], reac_id_symbols=reac_id_symbols)
         relations[r] = (lhs, relations[r][1], rhs)
     return relations
-#%%
+
 # def get_reac_id_symbols(model) -> dict:
 #     return {id: sympy.symbols(id) for id in model.reactions.list_attr("id")}
 
@@ -514,3 +580,10 @@ def relations2leq_matrix(relations : List, variables):
             matrix[i][variables.index(str(r))] = f*relations[i][0][r]
         rhs[i] = f*relations[i][2]
     return matrix, rhs # matrix <= rhs
+
+def get_leq_constraints(model, leq_mat : List[Tuple], flux_expr=None):
+    # leq_mat can be either targets or desired (as matrices)
+    # returns contstraints that can be added to model 
+    if flux_expr is None:
+        flux_expr = [r.flux_expression for r in model.reactions]
+    return [leq_constraints(model.problem.Constraint, matrix_row_expressions(lqm[0], flux_expr), lqm[1]) for lqm in leq_mat]
