@@ -18,6 +18,7 @@ import sys
 import sympy
 from sympy.parsing.sympy_parser import parse_expr
 from sympy.parsing.sympy_parser import standard_transformations, implicit_multiplication_application
+from cobra.core.configuration import Configuration
 
 class ConstrainedMinimalCutSetsEnumerator:
     def __init__(self, optlang_interface, st, reversible, targets, kn=None, cuts=None,
@@ -294,7 +295,7 @@ class ConstrainedMinimalCutSetsEnumerator:
     def enumerate_mcs(self, max_mcs_size=None, max_mcs_num=float('inf'), enum_method=1, timeout=None,
                         model=None, targets=None, info=None): #, larger_mcs=None):
         # if a dictionary is passed as info some status/runtime information is stored in there
-        all_mcs= [];
+        all_mcs = []
         if enum_method == 2:
             if self._optlang_interface is not optlang.cplex_interface:
                 raise TypeError('enum_method 2 is not available for this solver.')
@@ -307,9 +308,10 @@ class ConstrainedMinimalCutSetsEnumerator:
             self.model.problem.parameters.mip.strategy.search.set(1) # traditional branch-and-cut search
             self.model.problem.parameters.emphasis.mip.set(1) # integer feasibility
             # also set model.problem.parameters.parallel to deterministic?
-            # for now unlimited pool size
-            self.model.problem.parameters.mip.limits.populate.set(self.model.problem.parameters.mip.pool.capacity.get())
+            if max_mcs_num == float('inf'):
+                self.model.problem.parameters.mip.limits.populate.set(self.model.problem.parameters.mip.pool.capacity.get())
             z_idx = self.model.problem.variables.get_indices([z.name for z in self.z_vars]) # for querying the solution pool
+            self.evs_sz.ub = self.evs_sz_lb # make sure self.evs_sz.ub is not None
         elif enum_method == 1 or enum_method == 3:
             if self.model.objective is self.zero_objective:
                 self.model.objective = self.minimize_sum_over_z
@@ -362,6 +364,8 @@ class ConstrainedMinimalCutSetsEnumerator:
                     print('Stopping enumeration with status', self.model.status)
                     continue_loop = False
             elif enum_method == 2: # populate with CPLEX
+                if max_mcs_num != float('inf'):
+                    self.model.problem.parameters.mip.limits.populate.set(max_mcs_num - len(all_mcs))
                 if self.evs_sz_lb != self.evs_sz.lb: # only touch the bounds if necessary to preserve the search tree
                     self.evs_sz.ub = self.evs_sz_lb
                     self.evs_sz.lb = self.evs_sz_lb
@@ -587,3 +591,108 @@ def get_leq_constraints(model, leq_mat : List[Tuple], flux_expr=None):
     if flux_expr is None:
         flux_expr = [r.flux_expression for r in model.reactions]
     return [leq_constraints(model.problem.Constraint, matrix_row_expressions(lqm[0], flux_expr), lqm[1]) for lqm in leq_mat]
+
+# !! in cobrapy a reaction that runs backward only also counts as irreversible
+def reaction_bounds_to_leq_matrix(model):
+    config = Configuration()
+    lb_idx = []
+    ub_idx = []
+    for i in range(len(model.reactions)):
+        if model.reactions[i].lower_bound not in (0, config.lower_bound, -float('inf')):
+            lb_idx.append(i)
+            # print(model.reactions[i].id, model.reactions[i].lower_bound)
+        if model.reactions[i].upper_bound not in (0, config.upper_bound, float('inf')):
+            ub_idx.append(i)
+            # print(model.reactions[i].id, model.reactions[i].upper_bound)
+    num_bounds = len(lb_idx) + len(ub_idx)
+    leq_mat = scipy.sparse.csr_matrix((num_bounds, len(model.reactions)))
+    rhs = numpy.zeros(num_bounds)
+    count = 0
+    for r in lb_idx:
+        leq_mat[count, r] = -1.0
+        rhs[count] = -model.reactions[r].lower_bound
+        count += 1
+    for r in ub_idx:
+        leq_mat[count, r] = 1.0
+        rhs[count] = model.reactions[r].upper_bound
+        count += 1
+    return leq_mat, rhs
+
+#%%
+# convenience function
+def compute_mcs(model, targets, desired=[], cuts=None, enum_method=1, max_mcs_size=2, max_mcs_num=1000, timeout=600,
+                exclude_boundary_reactions_as_cuts=False):
+    
+    target_constraints= get_leq_constraints(model, targets)
+    desired_constraints= get_leq_constraints(model, desired)
+
+    # check whether all target/desired regions are feasible
+    for i in range(len(targets)):
+        with model as feas:
+            feas.objective = model.problem.Objective(0.0)
+            feas.add_cons_vars(target_constraints[i])
+            feas.slim_optimize()
+            if feas.solver.status != 'optimal':
+                raise Exception('Target region', i, 'is not feasible; solver status is', feas.solver.status)
+    for i in range(len(desired)):
+        with model as feas:
+            feas.objective = model.problem.Objective(0.0)
+            feas.add_cons_vars(desired_constraints[i])
+            feas.slim_optimize()
+            if feas.solver.status != 'optimal':
+                raise Exception('Desired region', i, 'is not feasible; solver status is', feas.solver.status)
+
+    # add reaction bounds defined in the model to the target/desired regions
+    bounds_mat, bounds_rhs = reaction_bounds_to_leq_matrix(model)
+    targets = [(scipy.sparse.vstack((t[0], bounds_mat), format='csr'), numpy.hstack((t[1], bounds_rhs))) for t in targets]
+    desired = [(scipy.sparse.vstack((d[0], bounds_mat), format='csr'), numpy.hstack((d[1], bounds_rhs))) for d in desired]
+
+    if cuts is None:
+        cuts= numpy.full(len(model.reactions), True, dtype=bool)
+    if exclude_boundary_reactions_as_cuts:
+        for r in range(len(model.reactions)):
+            if model.reactions[r].boundary:
+                cuts[r] = False
+
+    # get blocked reactions with glpk_exact FVA (includes those that are blocked through (0,0) bounds)
+    print("FVA to find blocked reactions")
+    start_time = time.monotonic()
+    with model as fva:
+        fva.solver = 'glpk_exact'
+        fva.objective = model.problem.Objective(0.0)
+        # currently unsing just 1 process is much faster than 2 or 4 ?!? not only with glpk_exact, also with CPLEX
+        # is this a Windows problem?
+        res = cobra.flux_analysis.flux_variability_analysis(fva, fraction_of_optimum=0.0, processes=1) # no interactive multiprocessing on Windows
+    print(time.monotonic() - start_time)
+    blocked = []
+    for i in range(res.values.shape[0]):
+        if res.values[i, 0] == 0 and res.values[i, 1] == 0:
+            blocked.append(i)
+            cuts[i] = False
+            print(res.index[i])
+
+    stdf = cobra.util.array.create_stoichiometric_matrix(model, array_type='DataFrame')
+    rev = [r.reversibility for r in model.reactions]
+    # !! need to flip all reactions that are irrversible backward !!
+    optlang_interface = model.problem
+    if optlang_interface.Constraint._INDICATOR_CONSTRAINT_SUPPORT:
+        bigM = 0.0
+        print("Using indicators.")
+    else:
+        bigM = 1000.0
+        print("Using big M.")
+
+    e = ConstrainedMinimalCutSetsEnumerator(optlang_interface, stdf.values, rev, targets, desired=desired,
+                                    bigM=bigM, threshold=0.1, cuts=cuts, split_reversible_v=True, irrev_geq=True)
+    if enum_method == 3:
+        if optlang_interface is optlang.cplex_interface:
+            e.model.problem.parameters.mip.tolerances.mipgap.set(0.98)
+        elif optlang_interface is optlang.glpk_interface:
+            e.model.configuration._iocp.mip_gap = 0.99
+        else:
+            print('No method implemented for this solver to stop with a suboptimal incumbent, will behave like enum_method 1.')
+    e.evs_sz_lb = 1 # feasibility of all targets has been checked
+    mcs = e.enumerate_mcs(max_mcs_size=max_mcs_size, max_mcs_num=max_mcs_num, enum_method=enum_method,
+                            model=model, targets=targets)
+    # print(mcs)
+    return mcs

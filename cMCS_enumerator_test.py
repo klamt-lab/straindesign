@@ -7,7 +7,7 @@ import time
 import numpy
 import os
 import sys
-sys.path.append(os.path.join('..', 'efmtool_link'))
+sys.path.append(os.path.join('..', '..', '..', 'efmtool_link'))
 import efmtool_link
 import efmtool4cobra
 
@@ -127,9 +127,10 @@ expand_mcs(rd_mcs, subT) == set(mcs2)
 e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, stdf.values, rev, target,
                                         threshold=0.1, split_reversible_v=False, irrev_geq=False) #, ref_set=mcs)
 # e.model.configuration.verbosity = 3
-e.evs_sz_lb = 1
-mcs2p = e.enumerate_mcs(max_mcs_size=5, enum_method=2)
+# e.model.objective = e.minimize_sum_over_z
+mcs2p = e.enumerate_mcs(max_mcs_size=5, enum_method=2) #, max_mcs_num=1)
 print(set(mcs) == set(mcs2p))
+# e.model.problem.solution.get_objective_value() == 0
 
 #%%
 cuts = numpy.full(24, True, dtype=bool)
@@ -155,33 +156,41 @@ print(set(mcs3) == set([m for m in mcs if 0 not in m and 23 not in m]))
 print(set(mcs4) == set(mcs3))
 
 #%%
-ecc2 = cobra.io.read_sbml_model(r"..\CNApy\projects\ECC2comp\ECC2comp.xml")
+ecc2 = cobra.io.read_sbml_model(r"..\..\projects\ECC2comp\ECC2comp.xml")
 ecc2_stdf = cobra.util.array.create_stoichiometric_matrix(ecc2, array_type='DataFrame')
 cuts= numpy.full(ecc2_stdf.shape[1], True, dtype=bool) # results do not agree when exchange reactions can be cut, problem with tiny fluxes (and M too small)
-for r in ecc2.boundary:
-    cuts[ecc2_stdf.columns.get_loc(r.id)] = False
+# for r in ecc2.boundary:
+#     cuts[ecc2_stdf.columns.get_loc(r.id)] = False
+# for r in range(len(ecc2.reactions)):
+#     if ecc2.reactions[r].boundary:
+#         cuts[r] = False
+cuts = numpy.array([not r.boundary for r in ecc2.reactions])
 reac_id = ecc2_stdf.columns.tolist()
 reac_id_symbols = get_reac_id_symbols(reac_id)
-ecc2_mue_target = [[("Growth", ">=", 0.01), ("GlcUp", "<=", 10), ("AcUp", "<=", 10), ("GlycUp", "<=", 10), ("SuccUp", "<=", 10)]]
+# ecc2_mue_target = [[("Growth", ">=", 0.01), ("GlcUp", "<=", 10), ("AcUp", "<=", 10), ("GlycUp", "<=", 10), ("SuccUp", "<=", 10)]]
+ecc2_mue_target = [[("Growth", ">=", 0.01)]]
 ecc2_mue_target = [relations2leq_matrix(parse_relations(t, reac_id_symbols=reac_id_symbols), reac_id) for t in ecc2_mue_target]
-# ecc2_mue_target = [(equations_to_matrix(ecc2, 
-#                     ["-1 Growth", "1 GlcUp", "1 AcUp", "1 GlycUp", "1 SuccUp"]), [-0.01, 10, 10, 10, 10])]
-e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, ecc2_stdf.values, [r.reversibility for r in ecc2.reactions], ecc2_mue_target,
-                                        cuts=cuts, threshold=1, split_reversible_v=True, irrev_geq=True)
-# e.model.objective = e.minimize_sum_over_z
-e.model.configuration.tolerances.feasibility = 1e-9
-e.model.configuration.tolerances.optimality = 1e-9
-e.model.configuration.tolerances.integrality = 1e-10
-#e.write_lp_file('testI')
-#e.model.configuration.verbosity = 3
-e.evs_sz_lb = 1 
-ecc2_mcs = e.enumerate_mcs(max_mcs_size=3, enum_method=2)
+bounds_mat, bounds_rhs = reaction_bounds_to_leq_matrix(ecc2)
+ecc2_mue_target = [(scipy.sparse.vstack((t[0], bounds_mat), format='csr'), numpy.hstack((t[1], bounds_rhs))) for t in ecc2_mue_target]
+ecc2_mue_target_constraints= get_leq_constraints(ecc2, ecc2_mue_target)
+# e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, ecc2_stdf.values, [r.reversibility for r in ecc2.reactions], ecc2_mue_target,
+#                                         cuts=cuts, threshold=1, split_reversible_v=True, irrev_geq=True)
+# # e.model.objective = e.minimize_sum_over_z
+# e.model.configuration.tolerances.feasibility = 1e-9
+# e.model.configuration.tolerances.optimality = 1e-9
+# e.model.configuration.tolerances.integrality = 1e-10
+# #e.write_lp_file('testI')
+# #e.model.configuration.verbosity = 3
+# e.evs_sz_lb = 1 
+# ecc2_mcs = e.enumerate_mcs(max_mcs_size=3, enum_method=2)
+# ecc2_mcs = compute_mcs(ecc2, ecc2_mue_target, [], cuts, 2, 3, 1000, 100)
+ecc2_mcs = compute_mcs(ecc2, ecc2_mue_target, cuts=cuts, enum_method=2, max_mcs_size=3)
 print(len(ecc2_mcs))
 ecc2_mcs_rxns= [tuple(ecc2_stdf.columns[r] for r in mcs) for mcs in ecc2_mcs]
 print(ecc2_mcs_rxns)
 all(check_mcs(ecc2, ecc2_mue_target[0], ecc2_mcs, optlang.interface.INFEASIBLE))
 
-# %% single cuts via LP
+# %%
 ecc2.solver = 'glpk_exact'
 # ecc2.solver = 'glpk'
 # ecc2.solver = 'cplex'
@@ -197,7 +206,45 @@ print(set(single_cuts) == set(mcs for mcs in ecc2_mcs_rxns if len(mcs) == 1))
 print(set(single_cuts) - set(mcs for mcs in ecc2_mcs_rxns if len(mcs) == 1))
 check_mcs(ecc2, ecc2_mue_target[0], single_cuts, optlang.interface.INFEASIBLE)
 
-#%% FVA mit verschiedenen solvern machen um zu sehen ob {'EX_adp_c'} ein cut set ist
+# %% full FVA
+# with ecc2 as model:
+model = ecc2.copy() # copy model because switching solver in context gives an error (?!?)
+model.objective = model.problem.Objective(0)
+model.tolerance = 1e-8 # prevent essential EX_meoh_ex from being blocked
+# model.solver.configuration.tolerances.feasibility = 1e-9
+model.solver = 'glpk_exact' # appears to make problems for context management
+# model_mue_target_constraints= get_leq_constraints(model, ecc2_mue_target)
+# model.add_cons_vars(model_mue_target_constraints[0])
+res = cobra.flux_analysis.flux_variability_analysis(model, fraction_of_optimum=0, processes=1) # no interactive multiprocessing on Windows
+del model
+print(res.loc['EX_adp_c',:])
+# %%
+blocked = []
+for i in range(res.values.shape[0]):
+    if res.values[i, 0] == 0 and res.values[i, 1] == 0:
+    # if res.values[i, 0] >= -1e-7 and res.values[i, 1] <= 1e-7:
+        blocked.append(i)
+        print(res.index[i])
+#%% only glpk_exact recognizes EX_adp_c as essential
+print(ecc2.slim_optimize())
+for i in blocked:
+    with ecc2 as model:
+        model_mue_target_constraints= get_leq_constraints(model, ecc2_mue_target)
+        model.add_cons_vars(model_mue_target_constraints[0])
+        model.reactions[i].knock_out()
+        print(model.reactions[i].id, model.slim_optimize())
+
+# %% try FASTCC
+model = ecc2.copy() # copy model because switching solver in context gives an error (?!?)
+model.tolerance= 1e-9
+model.objective = model.problem.Objective(0)
+model.solver = 'glpk_exact' # appears to use CPLEX anyway?
+# modelcc = cobra.flux_analysis.fastcc(ecc2, zero_cutoff=1e-9) # gives some falsely blocked reactions
+modelcc = cobra.flux_analysis.fastcc(model, flux_threshold=10, zero_cutoff=1e-9) # still identifies EX_adp_c as blocked
+del model
+set(ecc2.reactions.list_attr("id")) - set(modelcc.reactions.list_attr("id"))
+
+#%% FVA mit verschiedenen solvern machen um zu sehen ob {'EX_adp_c'} ein cut set ist (boundary müssen cuts sein)
 ecc2.solver = 'glpk_exact'
 with ecc2 as model:
     model.objective = model.problem.Objective(0)
@@ -467,5 +514,36 @@ print(info)
 # %%
 res = scipy.io.loadmat(os.path.join('..', 'FLB_NB_benchmarks', 'iJM658_mcs_input_s5_255_255'), simplify_cells=True)
 set(mcs) == set([tuple(numpy.nonzero(res['mcs'][i][:, j])[0]) for j in range(res['mcs'][i].shape[1])])
+
+# %%
+iJO1366 = cobra.io.read_sbml_model(r"..\..\projects\iJO1366\iJO1366.xml")
+
+# %% see how much memory resources GLPK needs...
+from swiglpk import *
+test_model = iJO1366.copy()
+# test_model = ecc2.copy()
+test_model.solver = 'glpk_exact'
+test_model.objective = test_model.problem.Objective(0.0)
+print(test_model.objective)
+start_time = time.monotonic()
+#print(test_model.solver._run_glp_exact()) # to make the basis
+print(test_model.slim_optimize()) # to make the basis
+print("Initial simplex", time.monotonic() - start_time) # iJO1366 glp_exact: 56 s, slim_optimize with glp_simplex: 0.1 s
+num_models = 1000 # about a 1.1 GB python process (10000 for ECC2); 2.3 GB for 1000 iJO1366
+model_collection = [None] * num_models
+return_value = [None] * num_models
+glpk_status = [None] * num_models
+start_time = time.monotonic()
+for i in range(num_models):
+    model_collection[i] = glp_create_prob()
+    glp_copy_prob(model_collection[i], test_model.solver.problem, GLP_OFF)
+print("Copied models in", time.monotonic() - start_time)
+start_time = time.monotonic()
+for i in range(num_models):
+    return_value[i] = glp_simplex(model_collection[i], test_model.solver.configuration._smcp)
+    return_value[i] = glp_exact(model_collection[i], test_model.solver.configuration._smcp)
+    glpk_status[i] = glp_get_status(model_collection[i])
+print(time.monotonic() - start_time) # 9 seconds with ECC2, 20 with iJO1366
+
 
 # %%
