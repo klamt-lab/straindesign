@@ -474,14 +474,18 @@ def matrix_row_expressions(mat, vars):
 
 def leq_constraints(optlang_constraint_class, row_expressions, rhs):
     return [optlang_constraint_class(expr, ub=ub) for expr, ub in zip(row_expressions, rhs)]
-#%%
+
 def check_mcs(model, constr, mcs, expected_status, flux_expr=None):
-    if flux_expr is None:
-        flux_expr = [r.flux_expression for r in model.reactions]
+    # if flux_expr is None:
+    #     flux_expr = [r.flux_expression for r in model.reactions]
     check_ok= numpy.zeros(len(mcs), dtype=numpy.bool)
     with model as constr_model:
+        constr_model.problem.Objective(0)
+        if flux_expr is None:
+            flux_expr = [r.flux_expression for r in constr_model.reactions]
         rexpr = matrix_row_expressions(constr[0], flux_expr)
         constr_model.add_cons_vars(leq_constraints(constr_model.problem.Constraint, rexpr, constr[1]))
+        # constr_model.add_cons_vars(get_leq_constraints(model, [constr], flux_expr=flux_expr))
         for m in range(len(mcs)):
             with constr_model as KO_model:
                 for r in mcs[m]:
@@ -511,6 +515,7 @@ def make_minimal_cut_set(model, cut_set, target_constraints):
             still_infeasible = True
             for target in target_constraints:
                 with model as target_model:
+                    target_model.problem.Objective(0)
                     target_model.add_cons_vars(target)
                     if type(target_model.solver) is optlang.glpk_exact_interface.Model:
                         target_model.solver.update() # need manual update because GLPK is called through private function
@@ -619,10 +624,13 @@ def reaction_bounds_to_leq_matrix(model):
     return leq_mat, rhs
 
 #%%
+from os.path import join
+sys.path.append(join('..', 'efmtool_link'))
+import efmtool4cobra
 # convenience function
 def compute_mcs(model, targets, desired=[], cuts=None, enum_method=1, max_mcs_size=2, max_mcs_num=1000, timeout=600,
-                exclude_boundary_reactions_as_cuts=False):
-    
+                exclude_boundary_reactions_as_cuts=False, network_compression=True):
+    # make fva_res and compressed model optional parameters
     target_constraints= get_leq_constraints(model, targets)
     desired_constraints= get_leq_constraints(model, desired)
 
@@ -643,6 +651,7 @@ def compute_mcs(model, targets, desired=[], cuts=None, enum_method=1, max_mcs_si
                 raise Exception('Desired region', i, 'is not feasible; solver status is', feas.solver.status)
 
     # add reaction bounds defined in the model to the target/desired regions
+    # also necessary for verification checks so that test KO do not accidentally remove some constraints
     bounds_mat, bounds_rhs = reaction_bounds_to_leq_matrix(model)
     targets = [(scipy.sparse.vstack((t[0], bounds_mat), format='csr'), numpy.hstack((t[1], bounds_rhs))) for t in targets]
     desired = [(scipy.sparse.vstack((d[0], bounds_mat), format='csr'), numpy.hstack((d[1], bounds_rhs))) for d in desired]
@@ -655,22 +664,29 @@ def compute_mcs(model, targets, desired=[], cuts=None, enum_method=1, max_mcs_si
                 cuts[r] = False
 
     # get blocked reactions with glpk_exact FVA (includes those that are blocked through (0,0) bounds)
-    print("FVA to find blocked reactions")
+    print("Running FVA to find blocked reactions...")
     start_time = time.monotonic()
     with model as fva:
-        fva.solver = 'glpk_exact'
+        # fva.solver = 'glpk_exact' # too slow for large models
+        fva.tolerance = 1e-9
         fva.objective = model.problem.Objective(0.0)
         # currently unsing just 1 process is much faster than 2 or 4 ?!? not only with glpk_exact, also with CPLEX
-        # is this a Windows problem?
-        res = cobra.flux_analysis.flux_variability_analysis(fva, fraction_of_optimum=0.0, processes=1) # no interactive multiprocessing on Windows
+        # is this a Windows problem? yes, multiprocessing performance under Windows is fundamemtally poor
+        fva_res = cobra.flux_analysis.flux_variability_analysis(fva, fraction_of_optimum=0.0, processes=1) # no interactive multiprocessing on Windows
     print(time.monotonic() - start_time)
-    blocked = []
-    for i in range(res.values.shape[0]):
-        if res.values[i, 0] == 0 and res.values[i, 1] == 0:
-            blocked.append(i)
+    blocked_rxns = []
+    for i in range(fva_res.values.shape[0]):
+        # if res.values[i, 0] == 0 and res.values[i, 1] == 0:
+        if fva_res.values[i, 0] >= -1e-9 and fva_res.values[i, 1] <= 1e-9:
+            blocked_rxns.append(fva_res.index[i])
             cuts[i] = False
-            print(res.index[i])
+            print(fva_res.index[i])
+    print("FVA identified", len(blocked_rxns), "blocked reactions.")
 
+    if network_compression:
+        pass
+        # full_model = model
+        # model, subT = efmtool4cobra.compress_model_sympy(model, blocked_rxns)
     stdf = cobra.util.array.create_stoichiometric_matrix(model, array_type='DataFrame')
     rev = [r.reversibility for r in model.reactions]
     # !! need to flip all reactions that are irrversible backward !!

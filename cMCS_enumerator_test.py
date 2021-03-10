@@ -7,9 +7,10 @@ import time
 import numpy
 import os
 import sys
-sys.path.append(os.path.join('..', '..', '..', 'efmtool_link'))
+sys.path.append(os.path.join('..', 'efmtool_link'))
 import efmtool_link
 import efmtool4cobra
+import pickle
 
 #%%
 ex = cobra.io.read_sbml_model(r"metatool_example_no_ext.xml")
@@ -156,7 +157,7 @@ print(set(mcs3) == set([m for m in mcs if 0 not in m and 23 not in m]))
 print(set(mcs4) == set(mcs3))
 
 #%%
-ecc2 = cobra.io.read_sbml_model(r"..\..\projects\ECC2comp\ECC2comp.xml")
+ecc2 = cobra.io.read_sbml_model(r"..\..\..\cnapy-projects\ECC2comp\model.sbml")
 ecc2_stdf = cobra.util.array.create_stoichiometric_matrix(ecc2, array_type='DataFrame')
 cuts= numpy.full(ecc2_stdf.shape[1], True, dtype=bool) # results do not agree when exchange reactions can be cut, problem with tiny fluxes (and M too small)
 # for r in ecc2.boundary:
@@ -191,16 +192,16 @@ print(ecc2_mcs_rxns)
 all(check_mcs(ecc2, ecc2_mue_target[0], ecc2_mcs, optlang.interface.INFEASIBLE))
 
 # %%
-ecc2.solver = 'glpk_exact'
+# ecc2.solver = 'glpk_exact'
 # ecc2.solver = 'glpk'
 # ecc2.solver = 'cplex'
 with ecc2 as model:
     model.objective = model.problem.Objective(0)
-    #print(model.objective.expression)
-    flux_expr= [r.flux_expression for r in model.reactions] # !! lose validity when the solver is changed !!
-    rexpr = matrix_row_expressions(ecc2_mue_target[0][0], flux_expr)
-    model.add_cons_vars(leq_constraints(model.problem.Constraint, rexpr, ecc2_mue_target[0][1]))
+    model.solver = 'glpk_exact'
+    model_target_constraints= get_leq_constraints(model, ecc2_mue_target)
+    model.add_cons_vars(model_target_constraints[0])
     res = cobra.flux_analysis.single_reaction_deletion(model, reaction_list=ecc2_stdf.columns[cuts], processes=1) # no interactive multiprocessing on Windows
+del model
 single_cuts= list(map(tuple, res.index[res.values[:, 1] == optlang.interface.INFEASIBLE]))
 print(set(single_cuts) == set(mcs for mcs in ecc2_mcs_rxns if len(mcs) == 1))
 print(set(single_cuts) - set(mcs for mcs in ecc2_mcs_rxns if len(mcs) == 1))
@@ -208,24 +209,28 @@ check_mcs(ecc2, ecc2_mue_target[0], single_cuts, optlang.interface.INFEASIBLE)
 
 # %% full FVA
 # with ecc2 as model:
-model = ecc2.copy() # copy model because switching solver in context gives an error (?!?)
+model = ecc2.copy() # copy model because switching solver in context sometimes gives an error (?!?)
 model.objective = model.problem.Objective(0)
-model.tolerance = 1e-8 # prevent essential EX_meoh_ex from being blocked
+fva_tol = 1e-8 # with CPLEX 1e-8 leads to removal of EX_adp_c, 1e-9 keeps EX_adp_c
+model.tolerance = fva_tol # prevent essential EX_meoh_ex from being blocked, sets solver feasibility/optimality tolerances
 # model.solver.configuration.tolerances.feasibility = 1e-9
 model.solver = 'glpk_exact' # appears to make problems for context management
 # model_mue_target_constraints= get_leq_constraints(model, ecc2_mue_target)
 # model.add_cons_vars(model_mue_target_constraints[0])
-res = cobra.flux_analysis.flux_variability_analysis(model, fraction_of_optimum=0, processes=1) # no interactive multiprocessing on Windows
-del model
-print(res.loc['EX_adp_c',:])
-# %%
+fva_res = cobra.flux_analysis.flux_variability_analysis(model, fraction_of_optimum=0, processes=1) # no interactive multiprocessing on Windows
+print(fva_res.loc['EX_adp_c',:])
 blocked = []
-for i in range(res.values.shape[0]):
-    if res.values[i, 0] == 0 and res.values[i, 1] == 0:
-    # if res.values[i, 0] >= -1e-7 and res.values[i, 1] <= 1e-7:
+blocked_rxns = []
+for i in range(fva_res.values.shape[0]):
+    # if fva_res.values[i, 0] == 0 and fva_res.values[i, 1] == 0:
+    if fva_res.values[i, 0] >= -fva_tol and fva_res.values[i, 1] <= fva_tol:
         blocked.append(i)
-        print(res.index[i])
-#%% only glpk_exact recognizes EX_adp_c as essential
+        blocked_rxns.append(fva_res.index[i])
+print(blocked_rxns)
+#%% only glpk_exact recognizes EX_adp_c as essential, but knocking it out is
+# not a problem with CPLEX as its flux is below the minimal tolerance
+# however compression with rationals will not work properly when EX_adp_c is removed
+# because then growth will appear to be blocked
 print(ecc2.slim_optimize())
 for i in blocked:
     with ecc2 as model:
@@ -274,11 +279,22 @@ e.model.configuration._iocp.mip_gap = 0.99
 ecc2_mcsB = e.enumerate_mcs(max_mcs_size=3, enum_method=3, model=ecc2, targets=ecc2_mue_target)
 print(set(ecc2_mcs) == set(ecc2_mcsB), len(ecc2_mcsB))
 
+# %% sympy and efmtool conversions to rational are not necessarily the same, nsimplify appears to match
+# v = 1/3
+# v = 0.1
+v = 0.2
+r1 = sympy.Rational(v)
+r2 = sympy.nsimplify(v, rational=True) # same as sympy.Rational with rational_conversion='exact'
+print(r1, r2, abs(float(r1-r2)))
+efmtool4cobra.jRatMat2sympyRatMat(efmtool_link.numpy_mat2jBigIntegerRationalMatrix(numpy.array([[v]]))).values()
+
 #%%
 # not for enum_method 3 because this requires as compressed model for the minimality checks
 rev = [r.reversibility for r in ecc2.reactions]
+# rd, subT = efmtool_link.compress_rat_efmtool(ecc2_stdf.values, rev, remove_cr=True, # if CR are not removed problem with enumeration
+#             compression_method=efmtool_link.subset_compression)[0:2]
 rd, subT = efmtool_link.compress_rat_efmtool(ecc2_stdf.values, rev, remove_cr=True, # if CR are not removed problem with enumeration
-            compression_method=efmtool_link.subset_compression)[0:2]
+            compression_method=efmtool_link.subset_compression, remove_rxns=blocked)[0:2] # OK when EX_adp_c is removed
 rev_rd = numpy.logical_not(numpy.any(subT[numpy.logical_not(rev), :], axis=0))
 kn = efmtool_link.null_rat_efmtool(rd)
 print(rd.shape)
@@ -287,10 +303,18 @@ print(kn.shape)
 print(numpy.max(abs(rd@kn)))
 
 #%%
-ecc2c, subT = efmtool4cobra.compress_model(ecc2)
+# compression_tolerance = numpy.finfo(float).eps # does not work
+compression_tolerance = 1e-10 # OK
+# compression_tolerance = 1e-9 # misses one CR
+# ecc2c, subT = efmtool4cobra.compress_model(ecc2)
+ecc2c, subT = efmtool4cobra.compress_model(ecc2, remove_rxns=blocked_rxns, tolerance=compression_tolerance) # tolerance=0 here also OK
+rev_rd = [r.reversibility for r in ecc2c.reactions]
+# rd = cobra.util.array.create_stoichiometric_matrix(ecc2c, array_type='dok')
+# bc = efmtool_link.basic_columns_rat(rd.transpose().toarray(), tolerance=1e-12) # needs non-zero tolerance or...
+# rd = rd[numpy.sort(bc), :] # ...it misses one CR
+efmtool4cobra.remove_conservation_relations(ecc2c, tolerance=compression_tolerance)
 rd = cobra.util.array.create_stoichiometric_matrix(ecc2c, array_type='dok')
-bc = efmtool_link.basic_columns_rat(rd.transpose().toarray(), tolerance=1e-10) # needs non-zero tolerance
-rd = rd[numpy.sort(bc), :] # misses one CR
+print(numpy.sort(list(map(abs, rd.values())))[[0, -1]])
 kn = efmtool_link.null_rat_efmtool(rd)
 print(rd.shape)
 print(numpy.linalg.matrix_rank(rd.toarray()))
@@ -298,16 +322,20 @@ print(kn.shape)
 print(numpy.max(abs(rd@kn)))
 
 #%%
-import scipy.sparse
-ecc2c, subT = efmtool4cobra.compress_model_sympy(ecc2)
+# ecc2c, subT = efmtool4cobra.compress_model_sympy(ecc2)
+ecc2c, subT = efmtool4cobra.compress_model_sympy(ecc2, remove_rxns=blocked_rxns)
+print(len(ecc2c.metabolites), len(ecc2c.reactions))
 rev_rd = [r.reversibility for r in ecc2c.reactions]
-reduced, bc = efmtool4cobra.remove_conservation_relations_sympy(ecc2c)[0:2]
-rdb = scipy.sparse.dok_matrix((reduced.shape[0], reduced.shape[1]))
-for (r, c), v in reduced.items():
-    rdb[r, c] = float(v)
-rd = rdb
-for m in [ecc2c.metabolites[i].id for i in set(range(len(ecc2c.metabolites))) - set(bc)]:
-    ecc2c.metabolites.get_by_id(m).remove_from_model()
+efmtool4cobra.remove_conservation_relations_sympy(ecc2c)
+reduced = cobra.util.array.create_stoichiometric_matrix(ecc2c, array_type='dok', dtype=numpy.object)
+# reduced, bc = efmtool4cobra.remove_conservation_relations_sympy(ecc2c, return_reduced_only=True)[0:2]
+# rdb = scipy.sparse.dok_matrix((reduced.shape[0], reduced.shape[1]))
+# for (r, c), v in reduced.items():
+#     rdb[r, c] = float(v)
+# rd = rdb
+rd = efmtool4cobra.dokRatMat2dokFloatMat(reduced)
+# for m in [ecc2c.metabolites[i].id for i in set(range(len(ecc2c.metabolites))) - set(bc)]:
+#     ecc2c.metabolites.get_by_id(m).remove_from_model()
 #%%
 # kn = efmtool_link.null_rat_efmtool(rd)
 import ch.javasoft.smx.ops.Gauss as Gauss
@@ -325,8 +353,22 @@ srd = sympy.matrices.sparse.MutableSparseMatrix(reduced.shape[0], reduced.shape[
 skn = efmtool4cobra.jRatMat2sympyRatMat(jkn)
 sympy.matrices.sparse.MutableSparseMatrix(skn.shape[0], skn.shape[1], skn.items())
 max(abs(srd@skn))
-
 #%%
+ecc2.solver = 'glpk_exact'
+ecc2c.solver = 'glpk_exact'
+sol = ecc2.optimize()
+growth_idx = ecc2.reactions.index('Growth')
+growth_idx_c = numpy.where(subT[growth_idx, :])[0][0]
+ecc2c.objective = ecc2c.reactions[growth_idx_c]
+sol_c = ecc2c.optimize()
+print(sol, sol_c, abs(sol.objective_value - sol_c.objective_value))
+# # %%
+# for carbon_uptake in ['AcUp', 'GlycUp', 'SuccUp', 'GlcUp']:
+#     idx = ecc2.reactions.index(carbon_uptake)
+#     idx_c = numpy.where(subT[idx, :])[0][0]
+#     print(sol.fluxes[carbon_uptake], sol_c.fluxes[ecc2c.reactions[idx_c].id], subT[idx, idx_c])
+# # at least the bound on GlcUp is lost
+
 # #%%
 # print(ecc2_stdf.values.shape) # has 40 extra exchange reactions for the 40 external metabolites in ECC2comp
 # print(ecc2_stdf.columns[0])
@@ -436,27 +478,153 @@ for i in range(num_reac):
                 print(i, j)
 
 #%%
-iJO1366 = cobra.io.read_sbml_model(r"..\CNApy\projects\iJO1366\iJO1366.xml")
+iJO1366 = cobra.io.read_sbml_model(r"..\..\..\cnapy-projects\iJO1366\model.sbml")
+# iJO1366.solver = 'glpk_exact'
+# hash(str(cobra.io.model_to_dict(iJO1366))) # could this be used as a kind of model ID so that a compressed model can know if its parent model changed?
+# %% full FVA
+# with ecc2 as model:
+model = iJO1366.copy()
+model.solver = 'cplex' # would be extremely slow with glpk_exact
+model.objective = model.problem.Objective(0)
+model.tolerance = 1e-9
+fva_res = cobra.flux_analysis.flux_variability_analysis(model, fraction_of_optimum=0, processes=1) # no interactive multiprocessing on Windows
+del model
+blocked_rxns = []
+for i in range(fva_res.values.shape[0]):
+    # if fva_res.values[i, 0] == 0 and fva_res.values[i, 1] == 0:
+    if fva_res.values[i, 0] >= -1e-9 and fva_res.values[i, 1] <= 1e-9:
+        blocked_rxns.append(fva_res.index[i])
+print(len(blocked_rxns))
+#%%
+iJO1366c, subT = efmtool4cobra.compress_model_sympy(iJO1366, blocked_rxns)
+# iJO1366c = efmtool4cobra.compress_model_sympy(iJO1366)[0]
+# %% save with rational stoichiometric coefficients
+f = open("iJO1366c_subT.pkl","wb")
+pickle.dump((cobra.io.model_to_dict(iJO1366c), subT),f)
+f.close()
+#%% loading back appears to work correctly
+with open("iJO1366c_subT.pkl", "rb") as f:
+    m, subT = pickle.load(f)
+    iJO1366c = cobra.io.model_from_dict(m)
+iJO1366c.solver = "glpk_exact" # solver type appears not to be restored
+
+#%%
+sol = iJO1366.optimize()
+sol_c = iJO1366c.optimize()
+print(sol, sol_c, abs(sol.objective_value - sol_c.objective_value))
+
+#%%
+rev_rd = [r.reversibility for r in iJO1366c.reactions]
+efmtool4cobra.remove_conservation_relations_sympy(iJO1366c)
+reduced = cobra.util.array.create_stoichiometric_matrix(iJO1366c, array_type='dok', dtype=numpy.object)
+rd = efmtool4cobra.dokRatMat2dokFloatMat(reduced)
+# reduced, bc = efmtool4cobra.remove_conservation_relations_sympy(iJO1366c)[0:2]
+# rdb = scipy.sparse.dok_matrix((reduced.shape[0], reduced.shape[1]))
+# for (r, c), v in reduced.items():
+#     rdb[r, c] = float(v)
+# rd = rdb
+# for m in [iJO1366c.metabolites[i].id for i in set(range(len(iJO1366c.metabolites))) - set(bc)]:
+#     iJO1366c.metabolites.get_by_id(m).remove_from_model()
+sol_c = iJO1366c.optimize()
+print(sol, sol_c, abs(sol.objective_value - sol_c.objective_value))
+
+#%%
+# kn = efmtool_link.null_rat_efmtool(rd)
+import ch.javasoft.smx.ops.Gauss as Gauss
+jkn = Gauss.getRationalInstance().nullspace(efmtool4cobra.sympyRatMat2jRatMat(reduced))
+kn = efmtool_link.jpypeArrayOfArrays2numpy_mat(jkn.getDoubleRows())
+print(rd.shape)
+print(numpy.linalg.matrix_rank(rd.toarray())) # toarray() makes it a full matrix, otherwise weird result with scipy sparse
+print(kn.shape) # !! is incomplete when tolerance=0
+print(numpy.max(abs(rd@kn)))
+
+#%%
 iJO1366_stdf = cobra.util.array.create_stoichiometric_matrix(iJO1366, array_type='DataFrame')
 cuts= numpy.full(iJO1366_stdf.shape[1], True, dtype=bool)
 for r in iJO1366.boundary:
     cuts[iJO1366_stdf.columns.get_loc(r.id)] = False
 #cuts = None
-iJO1366_mue_target = [(equations_to_matrix(iJO1366, 
-                    ["-1 BIOMASS_Ec_iJO1366_core_53p95M", "-1 EX_glc__D_e"]), [-0.01, 10])]
-e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, iJO1366_stdf.values, [r.reversibility for r in iJO1366.reactions], iJO1366_mue_target,
-                                        cuts=cuts, threshold=1, split_reversible_v=False, irrev_geq=False)
-e.model.objective = e.minimize_sum_over_z
+# iJO1366_mue_target = [(equations_to_matrix(iJO1366, 
+#                     ["-1 BIOMASS_Ec_iJO1366_core_53p95M", "-1 EX_glc__D_e"]), [-0.01, 10])]
+# iJO1366_mue_target_constraints= get_leq_constraints(iJO1366, iJO1366_mue_target)
+reac_id = iJO1366.reactions.list_attr("id")
+reac_id_symbols = get_reac_id_symbols(reac_id)
+iJO1366_mue_target = [[("BIOMASS_Ec_iJO1366_core_53p95M", ">=", 0.01)]]
+iJO1366_mue_target = [relations2leq_matrix(parse_relations(t, reac_id_symbols=reac_id_symbols), reac_id) for t in iJO1366_mue_target]
+bounds_mat, bounds_rhs = reaction_bounds_to_leq_matrix(iJO1366)
+iJO1366_mue_targetB = [(scipy.sparse.vstack((t[0], bounds_mat), format='csr'), numpy.hstack((t[1], bounds_rhs))) for t in iJO1366_mue_target]
+iJO1366_mue_target_constraintsB= get_leq_constraints(iJO1366, iJO1366_mue_targetB)
+# %%
+e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, iJO1366_stdf.values, [r.reversibility for r in iJO1366.reactions], iJO1366_mue_targetB,
+                                        cuts=cuts, threshold=0.1, split_reversible_v=False, irrev_geq=False)
+# e.model.objective = e.minimize_sum_over_z
 #e.write_lp_file('testI')
 # e.model.configuration.verbosity = 3
-iJO1366_mcs = e.enumerate_mcs(max_mcs_size=1)
-print(len(iJO1366_mcs))
-print([[r for r, c in zip(iJO1366_stdf.columns, mcs) if c == 1] for mcs in iJO1366_mcs])
+iJO1366_mcs = e.enumerate_mcs(max_mcs_size=1, enum_method=2)
+iJO1366_mcs_rxns = [tuple(reac_id[r] for r in mcs) for mcs in iJO1366_mcs]
+print(len(iJO1366_mcs)) # 271
+print(all(check_mcs(iJO1366, iJO1366_mue_targetB[0], iJO1366_mcs, optlang.interface.INFEASIBLE)))
+# !!!!!!                                      ^^^ really need the implicit bounds in the target
+# otherwise ATPM as KO would be missed in this example because its >= 3.15 requirement would vanisch through the KO in the check
+#%% misses some cuts with CPLEX, OK with glpk_exact
+candidates = [r for r, c in zip(iJO1366.reactions.list_attr("id"), cuts) if c]
+with iJO1366 as model:
+    model.objective = model.problem.Objective(0)
+    # model.solver = 'glpk_exact' # again problems with context
+    model_target_constraints= get_leq_constraints(model, iJO1366_mue_targetB)
+    model.add_cons_vars(model_target_constraints[0])
+    resD = cobra.flux_analysis.single_reaction_deletion(model, reaction_list=candidates,
+                                                         processes=1) # no interactive multiprocessing on Windows
+    single_cuts= list(map(tuple, resD.index[resD.values[:, 1] == optlang.interface.INFEASIBLE]))
+    print(len(single_cuts)) # 255 ??
+    print(set(iJO1366_mcs_rxns) - set(single_cuts))
+# print(set(single_cuts) == set(mcs for mcs in iJO1366_mcs_rxns if len(mcs) == 1))
+#%% wird auch infeasible wenn die nächste cell vorher ausgeführt wird?!?!??!
+# muss was mit dem internen solver status zu tun haben da das Modell sich nicht ändert (str(cobra.io.model_to_dict(iJO1366) bleibt identisch)
+# auch infeasible wenn der solver nach dem Laden auf 'glpk_exact' umgestellt wird
+with iJO1366 as model:
+    model.objective = model.problem.Objective(0)
+    model_target_constraints= get_leq_constraints(model, iJO1366_mue_targetB)
+    model.add_cons_vars(model_target_constraints[0])
+    model.reactions.DBTS.knock_out()
+    res = model.optimize()
+    print(res, res.status)
+#%% 
+check_mcs(iJO1366, iJO1366_mue_targetB[0], [(iJO1366.reactions.index('DBTS'),)], optlang.interface.INFEASIBLE)
 
+#%% 
+model = iJO1366
+model.objective = model.problem.Objective(0)
+model_target_constraints= get_leq_constraints(model, iJO1366_mue_targetB)
+model.add_cons_vars(model_target_constraints[0])
+model.reactions.DBTS.knock_out()
+res = model.optimize()
+print(res, res.status)
+#%% misses some cuts
+candidates = [r for r, c in zip(iJO1366.reactions.list_attr("id"), cuts) if c]
+model = iJO1366
+model.objective = model.problem.Objective(0)
+# model.solver = 'glpk_exact' # again problems with context
+model_target_constraints= get_leq_constraints(model, iJO1366_mue_targetB)
+model.add_cons_vars(model_target_constraints[0])
+resD = cobra.flux_analysis.single_reaction_deletion(model, reaction_list=candidates,
+                                                        processes=1) # no interactive multiprocessing on Windows
+single_cuts= list(map(tuple, resD.index[resD.values[:, 1] == optlang.interface.INFEASIBLE]))
+print(len(single_cuts)) # 255 ??
+print(set(iJO1366_mcs_rxns) - set(single_cuts))
+# print(set(single_cuts) == set(mcs for mcs in iJO1366_mcs_rxns if len(mcs) == 1))
 
+#%% OK
+candidates = [(c,) for c in numpy.where(cuts)[0]]
+res = check_mcs(iJO1366, iJO1366_mue_targetB[0], candidates, optlang.interface.INFEASIBLE)
+print(sum(res == True))
+m = set(iJO1366_mcs) - set([c for c, b in zip(candidates, res) if b])
+print(len(m))
+
+# %%
 e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, iJO1366_stdf.values, [r.reversibility for r in iJO1366.reactions], iJO1366_mue_target,
                                         cuts=cuts, bigM=10000, threshold=0.0001, split_reversible_v=False, irrev_geq=False)
-e.model.objective = e.minimize_sum_over_z
+# e.model.objective = e.minimize_sum_over_z
 #e.write_lp_file('testM')
 # e.model.configuration.verbosity = 3
 e.model.configuration.tolerances.feasibility = 1e-9
@@ -464,6 +632,37 @@ e.model.configuration.tolerances.optimality = 1e-9
 e.model.configuration.tolerances.integrality = 1e-10
 iJO1366_mcsB = e.enumerate_mcs(max_mcs_size=1)
 print(set(iJO1366_mcs) == set(iJO1366_mcsB), len(iJO1366_mcsB))
+
+# %%
+target_rd = [(T@subT, t) for T, t in iJO1366_mue_targetB]
+e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, rd, rev_rd, target_rd, 
+                                        threshold=0.1, split_reversible_v=True, irrev_geq=True,
+                                        cuts=numpy.any(subT[cuts, :], axis=0))
+info = dict()
+rd_mcs = e.enumerate_mcs(max_mcs_size=1, enum_method=2, info=info)
+print(info)
+print(len(rd_mcs))
+xsubT= subT.copy()
+xsubT[numpy.logical_not(cuts), :] = 0 # only expand to reactions that are repressible 
+xmcs = expand_mcs(rd_mcs, xsubT)
+set(xmcs) == set(iJO1366_mcs)
+
+#%% OK, a bit slower than CPLEX populate
+start_time = time.monotonic()
+candidates = [(c,) for c in numpy.where(numpy.any(subT[cuts, :], axis=0))[0]]
+res = check_mcs(iJO1366c, target_rd[0], candidates, optlang.interface.INFEASIBLE)
+print(time.monotonic() - start_time)
+print(sum(res == True))
+m = set(rd_mcs) - set([c for c, b in zip(candidates, res) if b])
+print(len(m))
+
+#
+# %% does not work with bigM out of the box
+# e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, rd, rev_rd, target_rd, 
+e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, rd, rev_rd, target_rd, 
+                                        threshold=0.1, bigM=10000, split_reversible_v=True, irrev_geq=True,
+                                        cuts=numpy.any(subT[cuts, :], axis=0))
+rd_mcs = e.enumerate_mcs(max_mcs_size=1, enum_method=1)
 
 #%% GLPK struggles with numerical instability 
 e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, iJO1366_stdf.values, [r.reversibility for r in iJO1366.reactions], iJO1366_mue_target,
