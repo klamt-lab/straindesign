@@ -16,16 +16,19 @@ from typing import List, Tuple
 import time
 import sys
 import sympy
-from sympy.parsing.sympy_parser import parse_expr
-from sympy.parsing.sympy_parser import standard_transformations, implicit_multiplication_application
+from sympy.parsing.sympy_parser import parse_expr, standard_transformations, implicit_multiplication_application
 from cobra.core.configuration import Configuration
+from os.path import join, dirname
+sys.path.append(join(dirname(__file__), '..', 'efmtool_link'))
+import efmtool4cobra
 
 class ConstrainedMinimalCutSetsEnumerator:
     def __init__(self, optlang_interface, st, reversible, targets, kn=None, cuts=None,
         desired=[], knock_in=[], bigM=0, threshold=1, split_reversible_v=True,
         irrev_geq=False, ref_set= None): # reduce_constraints=True, combined_z=True
+        # the matrices in st, targets and desired should be numpy.array or scipy.sparse (csr, csc, lil) format
         # targets is a list of (T,t) pairs that represent T <= t
-        # imlements only combined_z which implies reduce_constraints=True
+        # implements only combined_z which implies reduce_constraints=True
         self.ref_set = ref_set # optional set of reference MCS for debugging
         self._optlang_interface = optlang_interface
         self.model = optlang_interface.Model()
@@ -230,15 +233,12 @@ class ConstrainedMinimalCutSetsEnumerator:
             expr = matrix_row_expressions(st, self.flux_vars[l])
             constr= [None]*st.shape[0]
             for i in range(st.shape[0]):
-                # expr = add([cf * var for cf, var in zip(st[i, :], self.flux_vars[l]) if cf != 0])
-                # print(expr)
                 constr[i] = self.Constraint(expr[i], lb=0, ub=0, name="M"+str(l)+"_"+str(i), sloppy=True)
             self.model.add(constr)
+            expr = matrix_row_expressions(desired[l][0], self.flux_vars[l])
             constr= [None]*desired[l][0].shape[0]
             for i in range(desired[l][0].shape[0]):
-                expr = add([cf * var for cf, var in zip(desired[l][0][i, :], self.flux_vars[l]) if cf != 0])
-                # print(expr)
-                constr[i] = self.Constraint(expr, ub=desired[l][1][i], name="DES"+str(l)+"_"+str(i), sloppy=True)
+                constr[i] = self.Constraint(expr[i], ub=desired[l][1][i], name="DES"+str(l)+"_"+str(i), sloppy=True)
             self.model.add(constr)
 
             for i in numpy.where(cuts)[0]:
@@ -445,14 +445,14 @@ def expand_mcs(mcs: List[Tuple], subT):
                     mcs[i].append(mcs[i][j].copy())
                     mcs[i][-1][s_idx] = rxns[k]
     mcs = list(itertools.chain(*mcs))
-    return set(map(tuple, map(numpy.sort, mcs)))
+    return list(map(tuple, map(numpy.sort, mcs)))
 
 def matrix_row_expressions(mat, vars):
-    # mat can be a numpy matrix or scipy sparse matrix (csc, csr, lil formats work; COO format does not work)
+    # mat can be a numpy matrix or scipy sparse matrix (csc, csr, lil formats work; COO/DOK formats do not work)
     # expr = [None] * mat.shape[0]
     # for i in range(mat.shape[0]):
     #     idx = numpy.nonzero(mat)
-    ridx, cidx = mat.nonzero() # !! assumes that the indices in ridx are grouped together !!
+    ridx, cidx = mat.nonzero() # !! assumes that the indices in ridx are grouped together, not fulfilled for DOK !! 
     if len(ridx) == 0:
         return []
     # expr = []
@@ -624,13 +624,15 @@ def reaction_bounds_to_leq_matrix(model):
     return leq_mat, rhs
 
 #%%
-from os.path import join
-sys.path.append(join('..', 'efmtool_link'))
-import efmtool4cobra
 # convenience function
-def compute_mcs(model, targets, desired=[], cuts=None, enum_method=1, max_mcs_size=2, max_mcs_num=1000, timeout=600,
-                exclude_boundary_reactions_as_cuts=False, network_compression=True):
+def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_size=2, max_mcs_num=1000, timeout=600,
+                exclude_boundary_reactions_as_cuts=False, network_compression=True, fva_tolerance=1e-9):
     # make fva_res and compressed model optional parameters
+    if desired is None:
+        desired = []
+    else:
+        config = Configuration()
+
     target_constraints= get_leq_constraints(model, targets)
     desired_constraints= get_leq_constraints(model, desired)
 
@@ -668,28 +670,64 @@ def compute_mcs(model, targets, desired=[], cuts=None, enum_method=1, max_mcs_si
     start_time = time.monotonic()
     with model as fva:
         # fva.solver = 'glpk_exact' # too slow for large models
-        fva.tolerance = 1e-9
+        fva.tolerance = fva_tolerance
         fva.objective = model.problem.Objective(0.0)
         # currently unsing just 1 process is much faster than 2 or 4 ?!? not only with glpk_exact, also with CPLEX
         # is this a Windows problem? yes, multiprocessing performance under Windows is fundamemtally poor
-        fva_res = cobra.flux_analysis.flux_variability_analysis(fva, fraction_of_optimum=0.0, processes=1) # no interactive multiprocessing on Windows
+        fva_res = cobra.flux_analysis.flux_variability_analysis(fva, fraction_of_optimum=0.0, processes=1)
     print(time.monotonic() - start_time)
-    blocked_rxns = []
-    for i in range(fva_res.values.shape[0]):
-        # if res.values[i, 0] == 0 and res.values[i, 1] == 0:
-        if fva_res.values[i, 0] >= -1e-9 and fva_res.values[i, 1] <= 1e-9:
-            blocked_rxns.append(fva_res.index[i])
-            cuts[i] = False
-            print(fva_res.index[i])
-    print("FVA identified", len(blocked_rxns), "blocked reactions.")
-
+    # integrate FVA bounds into model? might be helpful for compression because some reversible reactions may have become irreversible
     if network_compression:
-        pass
-        # full_model = model
-        # model, subT = efmtool4cobra.compress_model_sympy(model, blocked_rxns)
-    stdf = cobra.util.array.create_stoichiometric_matrix(model, array_type='DataFrame')
-    rev = [r.reversibility for r in model.reactions]
-    # !! need to flip all reactions that are irrversible backward !!
+        compr_model = model.copy() # preserve the original model
+        # integrate FVA bounds and flip reactions where necessary
+        flipped = []
+        for i in range(fva_res.values.shape[0]): # assumes the FVA results are ordered same as the model reactions
+            if abs(fva_res.values[i, 0]) > fva_tolerance: # resolve with glpk_exact?
+                compr_model.reactions[i].lower_bound = fva_res.values[i, 0]
+            else:
+                compr_model.reactions[i].lower_bound = 0
+            if abs(fva_res.values[i, 1]) > fva_tolerance: # resolve with glpk_exact?
+                compr_model.reactions[i].upper_bound = fva_res.values[i, 1]
+            else:
+                compr_model.reactions[i].upper_bound = 0
+ 
+        subT = efmtool4cobra.compress_model_sympy(compr_model)
+        model = compr_model
+        reduced = cobra.util.array.create_stoichiometric_matrix(model, array_type='dok', dtype=numpy.object)
+        stoich_mat = efmtool4cobra.dokRatMat2lilFloatMat(reduced) # DOK does not (always?) work
+        targets = [(T@subT, t) for T, t in targets]
+        desired = [(D@subT, d) for D, d in desired]
+        full_cuts = cuts # needed for MCS expansion
+        cuts = numpy.any(subT[cuts, :], axis=0)
+    else:
+        stoich_mat = cobra.util.array.create_stoichiometric_matrix(model, array_type='lil')
+        blocked_rxns = []
+        for i in range(fva_res.values.shape[0]):
+            # if res.values[i, 0] == 0 and res.values[i, 1] == 0:
+            if fva_res.values[i, 0] >= -fva_tolerance and fva_res.values[i, 1] <= fva_tolerance:
+                blocked_rxns.append(fva_res.index[i])
+                cuts[i] = False
+        print("Found", len(blocked_rxns), "blocked reactions:\n", blocked_rxns) # FVA may not be worth it without compression
+
+    rev = [r.lower_bound < 0 for r in model.reactions] # use this as long as there might be irreversible backwards only reactions
+    # add FVA bounds for desired
+    desired_constraints= get_leq_constraints(model, desired)
+    print("Running FVA for desired regions...")
+    for i in range(len(desired)):
+        with model as fva_desired:
+            fva_desired.tolerance = fva_tolerance
+            fva_desired.objective = model.problem.Objective(0.0)
+            fva_desired.add_cons_vars(desired_constraints[i])
+            fva_res = cobra.flux_analysis.flux_variability_analysis(fva_desired, fraction_of_optimum=0.0, processes=1)
+            # make tiny FVA values zero
+            fva_res.values[numpy.abs(fva_res.values) < fva_tolerance] = 0
+            essential = numpy.where(numpy.logical_or(fva_res.values[:, 0] > fva_tolerance, fva_res.values[:, 1] < -fva_tolerance))[0]
+            print(len(essential), "essential reactions in desired region", i)
+            cuts[essential] = False
+            # fva_res.values[fva_res.values[:, 0] == -numpy.inf, 0] = config.lower_bound # cannot happen because cobrapy FVA does not do unbounded
+            # fva_res.values[fva_res.values[:, 1] == numpy.inf, 1] = config.upper_bound
+            desired[i] = (desired[i][0], desired[i][1], fva_res.values[:, 0], fva_res.values[:, 1])
+            
     optlang_interface = model.problem
     if optlang_interface.Constraint._INDICATOR_CONSTRAINT_SUPPORT:
         bigM = 0.0
@@ -698,7 +736,7 @@ def compute_mcs(model, targets, desired=[], cuts=None, enum_method=1, max_mcs_si
         bigM = 1000.0
         print("Using big M.")
 
-    e = ConstrainedMinimalCutSetsEnumerator(optlang_interface, stdf.values, rev, targets, desired=desired,
+    e = ConstrainedMinimalCutSetsEnumerator(optlang_interface, stoich_mat, rev, targets, desired=desired,
                                     bigM=bigM, threshold=0.1, cuts=cuts, split_reversible_v=True, irrev_geq=True)
     if enum_method == 3:
         if optlang_interface is optlang.cplex_interface:
@@ -710,5 +748,11 @@ def compute_mcs(model, targets, desired=[], cuts=None, enum_method=1, max_mcs_si
     e.evs_sz_lb = 1 # feasibility of all targets has been checked
     mcs = e.enumerate_mcs(max_mcs_size=max_mcs_size, max_mcs_num=max_mcs_num, enum_method=enum_method,
                             model=model, targets=targets)
+    if network_compression:
+        xsubT= subT.copy()
+        xsubT[numpy.logical_not(full_cuts), :] = 0 # only expand to reactions that are repressible within a given subset
+        mcs = expand_mcs(mcs, xsubT)
     # print(mcs)
     return mcs
+
+# %%
