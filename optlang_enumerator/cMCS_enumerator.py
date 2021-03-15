@@ -19,8 +19,7 @@ import sympy
 from sympy.parsing.sympy_parser import parse_expr, standard_transformations, implicit_multiplication_application
 from cobra.core.configuration import Configuration
 from os.path import join, dirname
-sys.path.append(join(dirname(__file__), '..', 'efmtool_link'))
-import efmtool4cobra
+import efmtool_link.efmtool4cobra as efmtool4cobra
 
 class ConstrainedMinimalCutSetsEnumerator:
     def __init__(self, optlang_interface, st, reversible, targets, kn=None, cuts=None,

@@ -2,14 +2,13 @@
 #%%
 import cobra
 import cobra.util.array
-from cMCS_enumerator import *
+from optlang_enumerator.cMCS_enumerator import *
 import time
 import numpy
 import os
 import sys
-sys.path.append(os.path.join('..', 'efmtool_link'))
-import efmtool_link
-import efmtool4cobra
+import efmtool_link.efmtool_intern as efmtool_intern
+import efmtool_link.efmtool4cobra as efmtool4cobra
 import pickle
 
 #%%
@@ -25,7 +24,7 @@ target = [relations2leq_matrix(parse_relations(t, reac_id_symbols=reac_id_symbol
 #target.append(target[0]) # duplicate target
 flux_expr= [r.flux_expression for r in ex.reactions] # !! lose validity when the solver is changed !!
 target_constraints= get_leq_constraints(ex, target)
-kn = efmtool_link.null_rat_efmtool(stdf.values)
+kn = efmtool_intern.null_rat_efmtool(stdf.values)
 #res = cobra.flux_analysis.single_reaction_deletion(ex, processes=1) # no interactive multiprocessing on Windows
     
 # %%
@@ -116,9 +115,9 @@ with ex as exb: # cobrapy FVA raises error with unbounded reactions
 print(len(mcs4))
 set(mcs3) == set(mcs4)
 #%%
-# subset_compression = efmtool_link.CompressionMethod[:]([efmtool_link.CompressionMethod.CoupledZero, efmtool_link.CompressionMethod.CoupledCombine, efmtool_link.CompressionMethod.CoupledContradicting])
-rd, subT, comprec = efmtool_link.compress_rat_efmtool(stdf.values, rev, remove_cr=True,
-            compression_method= efmtool_link.subset_compression) #[0:2]
+# subset_compression = efmtool_intern.CompressionMethod[:]([efmtool_intern.CompressionMethod.CoupledZero, efmtool_intern.CompressionMethod.CoupledCombine, efmtool_intern.CompressionMethod.CoupledContradicting])
+rd, subT, comprec = efmtool_intern.compress_rat_efmtool(stdf.values, rev, remove_cr=True,
+            compression_method= efmtool_intern.subset_compression) #[0:2]
 # rd = stdf.values
 # subT = numpy.eye(rd.shape[1])
 rev_rd = numpy.logical_not(numpy.any(subT[numpy.logical_not(rev), :], axis=0))
@@ -134,7 +133,7 @@ target_rd = [(T@subT, t) for T, t in target]
 # e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, rd, rev_rd, target_rd, 
 #                                         bigM= 100, threshold=0.1, split_reversible_v=True, irrev_geq=True)
 e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, rd, rev_rd, target_rd, 
-                                        bigM= 100, threshold=0.1, split_reversible_v=True, kn=efmtool_link.null_rat_efmtool(rd))
+                                        bigM= 100, threshold=0.1, split_reversible_v=True, kn=efmtool_intern.null_rat_efmtool(rd))
 # e.model.objective = e.minimize_sum_over_z
 e.model.configuration._iocp.mip_gap = 0.99
 rd_mcs = e.enumerate_mcs(max_mcs_size=5, enum_method=3, model=exc, targets=target_rd)
@@ -176,7 +175,7 @@ print(set(mcs3) == set([m for m in mcs if 0 not in m and 23 not in m]))
 print(set(mcs4) == set(mcs3))
 
 #%%
-ecc2 = cobra.io.read_sbml_model(r"..\..\..\cnapy-projects\ECC2comp\model.sbml")
+ecc2 = cobra.io.read_sbml_model(r"..\cnapy-projects\ECC2comp\model.sbml")
 ecc2_stdf = cobra.util.array.create_stoichiometric_matrix(ecc2, array_type='DataFrame')
 cuts= numpy.full(ecc2_stdf.shape[1], True, dtype=bool) # results do not agree when exchange reactions can be cut, problem with tiny fluxes (and M too small)
 # for r in ecc2.boundary:
@@ -307,17 +306,17 @@ v = 0.2
 r1 = sympy.Rational(v)
 r2 = sympy.nsimplify(v, rational=True) # same as sympy.Rational with rational_conversion='exact'
 print(r1, r2, abs(float(r1-r2)))
-efmtool4cobra.jRatMat2sympyRatMat(efmtool_link.numpy_mat2jBigIntegerRationalMatrix(numpy.array([[v]]))).values()
+efmtool4cobra.jRatMat2sympyRatMat(efmtool_intern.numpy_mat2jBigIntegerRationalMatrix(numpy.array([[v]]))).values()
 
 #%%
 # not for enum_method 3 because this requires as compressed model for the minimality checks
 rev = [r.reversibility for r in ecc2.reactions]
-# rd, subT = efmtool_link.compress_rat_efmtool(ecc2_stdf.values, rev, remove_cr=True, # if CR are not removed problem with enumeration
-#             compression_method=efmtool_link.subset_compression)[0:2]
-rd, subT = efmtool_link.compress_rat_efmtool(ecc2_stdf.values, rev, remove_cr=True, # if CR are not removed problem with enumeration
-            compression_method=efmtool_link.subset_compression, remove_rxns=blocked)[0:2] # OK when EX_adp_c is removed
+# rd, subT = efmtool_intern.compress_rat_efmtool(ecc2_stdf.values, rev, remove_cr=True, # if CR are not removed problem with enumeration
+#             compression_method=efmtool_intern.subset_compression)[0:2]
+rd, subT = efmtool_intern.compress_rat_efmtool(ecc2_stdf.values, rev, remove_cr=True, # if CR are not removed problem with enumeration
+            compression_method=efmtool_intern.subset_compression, remove_rxns=blocked)[0:2] # OK when EX_adp_c is removed
 rev_rd = numpy.logical_not(numpy.any(subT[numpy.logical_not(rev), :], axis=0))
-kn = efmtool_link.null_rat_efmtool(rd)
+kn = efmtool_intern.null_rat_efmtool(rd)
 print(rd.shape)
 print(numpy.linalg.matrix_rank(rd))
 print(kn.shape)
@@ -331,12 +330,12 @@ compression_tolerance = 1e-10 # OK
 ecc2c, subT = efmtool4cobra.compress_model(ecc2, remove_rxns=blocked_rxns, tolerance=compression_tolerance) # tolerance=0 here also OK
 rev_rd = [r.reversibility for r in ecc2c.reactions]
 # rd = cobra.util.array.create_stoichiometric_matrix(ecc2c, array_type='dok')
-# bc = efmtool_link.basic_columns_rat(rd.transpose().toarray(), tolerance=1e-12) # needs non-zero tolerance or...
+# bc = efmtool_intern.basic_columns_rat(rd.transpose().toarray(), tolerance=1e-12) # needs non-zero tolerance or...
 # rd = rd[numpy.sort(bc), :] # ...it misses one CR
 efmtool4cobra.remove_conservation_relations(ecc2c, tolerance=compression_tolerance)
 rd = cobra.util.array.create_stoichiometric_matrix(ecc2c, array_type='dok')
 print(numpy.sort(list(map(abs, rd.values())))[[0, -1]])
-kn = efmtool_link.null_rat_efmtool(rd)
+kn = efmtool_intern.null_rat_efmtool(rd)
 print(rd.shape)
 print(numpy.linalg.matrix_rank(rd.toarray()))
 print(kn.shape)
@@ -359,10 +358,10 @@ rd = efmtool4cobra.dokRatMat2lilFloatMat(reduced)
 # for m in [ecc2c.metabolites[i].id for i in set(range(len(ecc2c.metabolites))) - set(bc)]:
 #     ecc2c.metabolites.get_by_id(m).remove_from_model()
 #%%
-# kn = efmtool_link.null_rat_efmtool(rd)
+# kn = efmtool_intern.null_rat_efmtool(rd)
 import ch.javasoft.smx.ops.Gauss as Gauss
 jkn = Gauss.getRationalInstance().nullspace(efmtool4cobra.sympyRatMat2jRatMat(reduced))
-kn = efmtool_link.jpypeArrayOfArrays2numpy_mat(jkn.getDoubleRows())
+kn = efmtool_intern.jpypeArrayOfArrays2numpy_mat(jkn.getDoubleRows())
 print(rd.shape)
 print(numpy.linalg.matrix_rank(rd.toarray())) # toarray() makes it a full matrix, otherwise weird result with scipy sparse
 print(kn.shape) # !! is incomplete when tolerance=0
@@ -406,7 +405,7 @@ target_rd = [(T@subT, t) for T, t in ecc2_mue_target]
 
 e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, rd, rev_rd, target_rd, 
                                         threshold=0.1, bigM=1000, split_reversible_v=True, #irrev_geq=True,
-                                        cuts=numpy.any(subT[cuts, :], axis=0), kn=kn) #efmtool_link.null_rat_efmtool(rd))
+                                        cuts=numpy.any(subT[cuts, :], axis=0), kn=kn) #efmtool_intern.null_rat_efmtool(rd))
 e.model.configuration._iocp.mip_gap = 0.99 # kann nicht benutzt werden solange efmtool4cobra.compress_model nicht läuft
 
 # here a subset is repressible when one ot its reactions is repressible
@@ -569,10 +568,10 @@ sol_c = iJO1366c.optimize()
 print(sol, sol_c, abs(sol.objective_value - sol_c.objective_value))
 
 #%%
-# kn = efmtool_link.null_rat_efmtool(rd)
+# kn = efmtool_intern.null_rat_efmtool(rd)
 import ch.javasoft.smx.ops.Gauss as Gauss
 jkn = Gauss.getRationalInstance().nullspace(efmtool4cobra.sympyRatMat2jRatMat(reduced))
-kn = efmtool_link.jpypeArrayOfArrays2numpy_mat(jkn.getDoubleRows())
+kn = efmtool_intern.jpypeArrayOfArrays2numpy_mat(jkn.getDoubleRows())
 print(rd.shape)
 print(numpy.linalg.matrix_rank(rd.toarray())) # toarray() makes it a full matrix, otherwise weird result with scipy sparse
 print(kn.shape) # !! is incomplete when tolerance=0
