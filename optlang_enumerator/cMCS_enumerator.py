@@ -4,7 +4,7 @@ import cobra
 import optlang.glpk_interface
 from optlang.symbolics import add, mul
 from optlang.exceptions import IndicatorConstraintsNotSupported
-from swiglpk import glp_write_lp, glp_ios_mip_gap
+from swiglpk import glp_write_lp, glp_ios_mip_gap, GLP_DUAL
 try:
     import optlang.cplex_interface
     from cplex.exceptions import CplexSolverError
@@ -609,7 +609,7 @@ def reaction_bounds_to_leq_matrix(model):
             ub_idx.append(i)
             # print(model.reactions[i].id, model.reactions[i].upper_bound)
     num_bounds = len(lb_idx) + len(ub_idx)
-    leq_mat = scipy.sparse.csr_matrix((num_bounds, len(model.reactions)))
+    leq_mat = scipy.sparse.lil_matrix((num_bounds, len(model.reactions)))
     rhs = numpy.zeros(num_bounds)
     count = 0
     for r in lb_idx:
@@ -622,10 +622,22 @@ def reaction_bounds_to_leq_matrix(model):
         count += 1
     return leq_mat, rhs
 
-#%%
+def integrate_model_bounds(model, targets, desired=None):
+    bounds_mat, bounds_rhs = reaction_bounds_to_leq_matrix(model)
+    for i in range(len(targets)):
+        targets[i] = (scipy.sparse.vstack((targets[i][0], bounds_mat), format='lil'), numpy.hstack((targets[i][1], bounds_rhs)))
+    if desired is not None:
+        for i in range(len(desired)):
+            desired[i] = (scipy.sparse.vstack((desired[i][0], bounds_mat), format='lil'), numpy.hstack((desired[i][1], bounds_rhs)))
+
+
 # convenience function
 def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_size=2, max_mcs_num=1000, timeout=600,
-                exclude_boundary_reactions_as_cuts=False, network_compression=True, fva_tolerance=1e-9):
+                exclude_boundary_reactions_as_cuts=False, network_compression=True, fva_tolerance=1e-9,
+                include_model_bounds=True):
+    # if include_model_bounds=True this function integrates non-default reaction bounds of the model into the
+    # target and desired regions and directly modifies(!) these parameters
+
     # make fva_res and compressed model optional parameters
     if desired is None:
         desired = []
@@ -651,11 +663,8 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
             if feas.solver.status != 'optimal':
                 raise Exception('Desired region', i, 'is not feasible; solver status is', feas.solver.status)
 
-    # add reaction bounds defined in the model to the target/desired regions
-    # also necessary for verification checks so that test KO do not accidentally remove some constraints
-    bounds_mat, bounds_rhs = reaction_bounds_to_leq_matrix(model)
-    targets = [(scipy.sparse.vstack((t[0], bounds_mat), format='csr'), numpy.hstack((t[1], bounds_rhs))) for t in targets]
-    desired = [(scipy.sparse.vstack((d[0], bounds_mat), format='csr'), numpy.hstack((d[1], bounds_rhs))) for d in desired]
+    if include_model_bounds:
+        integrate_model_bounds(model, targets, desired)
 
     if cuts is None:
         cuts= numpy.full(len(model.reactions), True, dtype=bool)
@@ -671,6 +680,12 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
         # fva.solver = 'glpk_exact' # too slow for large models
         fva.tolerance = fva_tolerance
         fva.objective = model.problem.Objective(0.0)
+        if fva.problem.__name__ == 'optlang.glpk_interface':
+            # should emulate setting an optimality tolerance (which GLPK simplex does not have)
+            fva.solver.configuration._smcp.meth = GLP_DUAL
+            fva.solver.configuration._smcp.tol_dj = fva_tolerance
+        elif fva.problem.__name__ == 'optlang.coinor_cbc_interface':
+            fva.solver.problem.opt_tol = fva_tolerance
         # currently unsing just 1 process is much faster than 2 or 4 ?!? not only with glpk_exact, also with CPLEX
         # is this a Windows problem? yes, multiprocessing performance under Windows is fundamemtally poor
         fva_res = cobra.flux_analysis.flux_variability_analysis(fva, fraction_of_optimum=0.0, processes=1)
@@ -684,10 +699,12 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
             if abs(fva_res.values[i, 0]) > fva_tolerance: # resolve with glpk_exact?
                 compr_model.reactions[i].lower_bound = fva_res.values[i, 0]
             else:
+                # print('LB', fva_res.index[i], fva_res.values[i, :])
                 compr_model.reactions[i].lower_bound = 0
             if abs(fva_res.values[i, 1]) > fva_tolerance: # resolve with glpk_exact?
                 compr_model.reactions[i].upper_bound = fva_res.values[i, 1]
             else:
+                # print('UB', fva_res.index[i], fva_res.values[i, :])
                 compr_model.reactions[i].upper_bound = 0
  
         subT = efmtool4cobra.compress_model_sympy(compr_model)
@@ -716,6 +733,12 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
         with model as fva_desired:
             fva_desired.tolerance = fva_tolerance
             fva_desired.objective = model.problem.Objective(0.0)
+            if fva_desired.problem.__name__ == 'optlang.glpk_interface':
+                # should emulate setting an optimality tolerance (which GLPK simplex does not have)
+                fva_desired.solver.configuration._smcp.meth = GLP_DUAL
+                fva_desired.solver.configuration._smcp.tol_dj = fva_tolerance
+            elif fva_desired.problem.__name__ == 'optlang.coinor_cbc_interface':
+                fva_desired.solver.problem.opt_tol = fva_tolerance
             fva_desired.add_cons_vars(desired_constraints[i])
             fva_res = cobra.flux_analysis.flux_variability_analysis(fva_desired, fraction_of_optimum=0.0, processes=1)
             # make tiny FVA values zero
@@ -738,12 +761,17 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
     e = ConstrainedMinimalCutSetsEnumerator(optlang_interface, stoich_mat, rev, targets, desired=desired,
                                     bigM=bigM, threshold=0.1, cuts=cuts, split_reversible_v=True, irrev_geq=True)
     if enum_method == 3:
-        if optlang_interface is optlang.cplex_interface:
+        if optlang_interface.__name__ == 'optlang.cplex_interface':
             e.model.problem.parameters.mip.tolerances.mipgap.set(0.98)
-        elif optlang_interface is optlang.glpk_interface:
-            e.model.configuration._iocp.mip_gap = 0.99
+        elif optlang_interface.__name__ == 'optlang.glpk_interface':
+            e.model.configuration._iocp.mip_gap = 0.98
+        elif optlang_interface.__name__ == 'optlang.coinor_cbc_interface':
+            e.model.problem.max_solutions = 1 # stop with first feasible solutions
         else:
             print('No method implemented for this solver to stop with a suboptimal incumbent, will behave like enum_method 1.')
+   if optlang_interface.__name__ == 'optlang.coinor_cbc_interface':
+       e.model.problem.threads = -1 # activate multithreading
+    
     e.evs_sz_lb = 1 # feasibility of all targets has been checked
     mcs = e.enumerate_mcs(max_mcs_size=max_mcs_size, max_mcs_num=max_mcs_num, enum_method=enum_method,
                             model=model, targets=targets)
@@ -753,5 +781,3 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
         mcs = expand_mcs(mcs, xsubT)
     # print(mcs)
     return mcs
-
-# %%

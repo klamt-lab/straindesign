@@ -1,32 +1,59 @@
 #%%
 import cobra
-import cobra.util.array
-from optlang_enumerator.cMCS_enumerator import *
-import time
+import optlang
+import optlang_enumerator.cMCS_enumerator as cMCS_enumerator
 import numpy
-import os
-import sys
-import efmtool_link.efmtool_intern as efmtool_intern
-import efmtool_link.efmtool4cobra as efmtool4cobra
-import pickle
+import scipy
+
+#%% 
+from importlib import reload
+import optlang_enumerator
+reload(optlang_enumerator)
+import optlang_enumerator.cMCS_enumerator as cMCS_enumerator
 
 #%%
-ecc2 = cobra.io.read_sbml_model(r"..\..\cnapy-projects\ECC2comp\model.sbml")
-# ecc2_stdf = cobra.util.array.create_stoichiometric_matrix(ecc2, array_type='DataFrame')
+ecc2 = cobra.io.read_sbml_model("ECC2comp.sbml")
+ecc2.solver = 'coinor_cbc' # incorrect result with compression and enum_method 3, gets stuck with enum_method 1 ?!?
+# allow all reactions that are not boundary reactions as cuts (same as exclude_boundary_reactions_as_cuts option of compute_mcs)
 cuts = numpy.array([not r.boundary for r in ecc2.reactions])
-reac_id = ecc2.reactions.list_attr('id')
-ecc2_mue_target = [[("Growth", ">=", 0.01)]]
-ecc2_mue_target = [relations2leq_matrix(parse_relations(t, reac_id_symbols=get_reac_id_symbols(reac_id)), reac_id) for t in ecc2_mue_target]
-bounds_mat, bounds_rhs = reaction_bounds_to_leq_matrix(ecc2)
-ecc2_mue_target = [(scipy.sparse.vstack((t[0], bounds_mat), format='csr'), numpy.hstack((t[1], bounds_rhs))) for t in ecc2_mue_target]
-ecc2_mue_target_constraints= get_leq_constraints(ecc2, ecc2_mue_target)
-ecc2_mcs = compute_mcs(ecc2, ecc2_mue_target, cuts=cuts, enum_method=2, max_mcs_size=3, network_compression=True)
+reac_id = ecc2.reactions.list_attr('id') # list of reaction IDs in the model
+# define target (multiple targets are possible; each target can have multiple linear inequality constraints)
+ecc2_mue_target = [[("Growth", ">=", 0.01)]] # one target with one constraint, a.k.a. syntehtic lethals
+# this constraint alone would not be sufficient, but there are uptake limits defined in the reaction bounds
+# of the model that are integerated automatically by the compute_mcs function into all target and desired regions
+# convert into matrix/vector relation format
+ecc2_mue_target = [cMCS_enumerator.relations2leq_matrix(
+                   cMCS_enumerator.parse_relations(t, reac_id_symbols=cMCS_enumerator.get_reac_id_symbols(reac_id)), reac_id)
+                   for t in ecc2_mue_target]
+# convert non-default bounds of the newtork model into matrix/vector relation format
+# in this network these are substrate uptake bounds
+# bounds_mat, bounds_rhs = cMCS_enumerator.reaction_bounds_to_leq_matrix(ecc2)
+# integrate the relations defined through the network bounds into every target (still matrix/vector relation format)
+# ecc2_mue_target = [(scipy.sparse.vstack((t[0], bounds_mat), format='csr'), numpy.hstack((t[1], bounds_rhs))) for t in ecc2_mue_target]
+cMCS_enumerator.integrate_model_bounds(ecc2, ecc2_mue_target)
+# convert into constraints that can be added to the COBRApy model (e.g. in context)
+ecc2_mue_target_constraints= cMCS_enumerator.get_leq_constraints(ecc2, ecc2_mue_target)
+for c in ecc2_mue_target_constraints[0]: # print constraints that make up the first target
+    print(c)
+#%%
+ecc2_mcs = cMCS_enumerator.compute_mcs(ecc2, ecc2_mue_target, cuts=cuts, enum_method=3, max_mcs_size=3, network_compression=True, include_model_bounds=False)
 print(len(ecc2_mcs))
-ecc2_mcs_rxns= [tuple(ecc2_stdf.columns[r] for r in mcs) for mcs in ecc2_mcs]
+# show MCS as n-tuples of reaction IDs
+ecc2_mcs_rxns= [tuple(reac_id[r] for r in mcs) for mcs in ecc2_mcs]
 print(ecc2_mcs_rxns)
-ecc2_mcsF = compute_mcs(ecc2, ecc2_mue_target, cuts=cuts, enum_method=2, max_mcs_size=3, network_compression=False)
-print(all(check_mcs(ecc2, ecc2_mue_target[0], ecc2_mcs, optlang.interface.INFEASIBLE)))
+# check that all MCS disable the target
+print(all(cMCS_enumerator.check_mcs(ecc2, ecc2_mue_target[0], ecc2_mcs, optlang.interface.INFEASIBLE)))
+
+# %% same calculation without network compression
+# works OK with COINOR
+ecc2_mcsF = cMCS_enumerator.compute_mcs(ecc2, ecc2_mue_target, cuts=cuts, enum_method=3, max_mcs_size=3, network_compression=False, include_model_bounds=False)
 print(set(ecc2_mcs) == set(ecc2_mcsF))
+
+# %%
+import pickle
+with open("ecc2_mcs.pkl","rb") as f:
+    ref = pickle.load(f)
+set(ecc2_mcs) - ref
 
 # %% full FVA
 # with ecc2 as model:
@@ -49,6 +76,7 @@ for i in range(fva_res.values.shape[0]):
 print(blocked_rxns)
 
 #%%
+import efmtool_link.efmtool4cobra as efmtool4cobra
 ecc2c = ecc2.copy()
 subT = efmtool4cobra.compress_model_sympy(ecc2c, remove_rxns=blocked_rxns)
 print(len(ecc2c.metabolites), len(ecc2c.reactions))

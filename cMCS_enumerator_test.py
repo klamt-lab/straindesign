@@ -13,7 +13,7 @@ import pickle
 
 #%%
 ex = cobra.io.read_sbml_model(r"metatool_example_no_ext.xml")
-ex.solver = 'glpk_exact'
+# ex.solver = 'coinor_cbc'
 stdf = cobra.util.array.create_stoichiometric_matrix(ex, array_type='DataFrame')
 rev = [r.reversibility for r in ex.reactions]
 reac_id = stdf.columns.tolist()
@@ -132,11 +132,13 @@ rev_rd = [r.reversibility for r in exc.reactions]
 target_rd = [(T@subT, t) for T, t in target]
 # e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, rd, rev_rd, target_rd, 
 #                                         bigM= 100, threshold=0.1, split_reversible_v=True, irrev_geq=True)
-e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, rd, rev_rd, target_rd, 
+# e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, rd, rev_rd, target_rd, 
+#                                         bigM= 100, threshold=0.1, split_reversible_v=True, kn=efmtool_intern.null_rat_efmtool(rd))
+e = ConstrainedMinimalCutSetsEnumerator(optlang.coinor_cbc_interface, rd, rev_rd, target_rd, 
                                         bigM= 100, threshold=0.1, split_reversible_v=True, kn=efmtool_intern.null_rat_efmtool(rd))
 # e.model.objective = e.minimize_sum_over_z
-e.model.configuration._iocp.mip_gap = 0.99
-rd_mcs = e.enumerate_mcs(max_mcs_size=5, enum_method=3, model=exc, targets=target_rd)
+# e.model.configuration._iocp.mip_gap = 0.99
+rd_mcs = e.enumerate_mcs(max_mcs_size=5, enum_method=1, model=exc, targets=target_rd)
 # rd_mcs = e.enumerate_mcs(max_mcs_size=5)
 print(len(rd_mcs))
 #set(expand_mcs(rd_mcs, subT)) == set(map(lambda x: tuple(numpy.where(x)[0]), mcs2))
@@ -175,7 +177,8 @@ print(set(mcs3) == set([m for m in mcs if 0 not in m and 23 not in m]))
 print(set(mcs4) == set(mcs3))
 
 #%%
-ecc2 = cobra.io.read_sbml_model(r"..\cnapy-projects\ECC2comp\model.sbml")
+ecc2 = cobra.io.read_sbml_model(r"../cnapy-projects/ECC2comp/model.sbml")
+# ecc2.solver = 'glpk'
 ecc2_stdf = cobra.util.array.create_stoichiometric_matrix(ecc2, array_type='DataFrame')
 cuts= numpy.full(ecc2_stdf.shape[1], True, dtype=bool) # results do not agree when exchange reactions can be cut, problem with tiny fluxes (and M too small)
 # for r in ecc2.boundary:
@@ -203,13 +206,17 @@ ecc2_mue_target_constraints= get_leq_constraints(ecc2, ecc2_mue_target)
 # e.evs_sz_lb = 1 
 # ecc2_mcs = e.enumerate_mcs(max_mcs_size=3, enum_method=2)
 # ecc2_mcs = compute_mcs(ecc2, ecc2_mue_target, [], cuts, 2, 3, 1000, 100)
-ecc2_mcs = compute_mcs(ecc2, ecc2_mue_target, cuts=cuts, enum_method=2, max_mcs_size=3, network_compression=True)
+ecc2_mcs = compute_mcs(ecc2, ecc2_mue_target, cuts=cuts, enum_method=3, max_mcs_size=3, network_compression=True)
 print(len(ecc2_mcs))
 ecc2_mcs_rxns= [tuple(ecc2_stdf.columns[r] for r in mcs) for mcs in ecc2_mcs]
 print(ecc2_mcs_rxns)
 ecc2_mcsF = compute_mcs(ecc2, ecc2_mue_target, cuts=cuts, enum_method=2, max_mcs_size=3, network_compression=False)
 print(all(check_mcs(ecc2, ecc2_mue_target[0], ecc2_mcs, optlang.interface.INFEASIBLE)))
 print(set(ecc2_mcs) == set(ecc2_mcsF))
+
+# %%
+with open("ecc2_mcs.pkl","wb") as f:
+    pickle.dump(set(ecc2_mcs), f)
 
 # %%
 # ecc2.solver = 'glpk_exact'
@@ -227,18 +234,18 @@ print(set(single_cuts) == set(mcs for mcs in ecc2_mcs_rxns if len(mcs) == 1))
 print(set(single_cuts) - set(mcs for mcs in ecc2_mcs_rxns if len(mcs) == 1))
 check_mcs(ecc2, ecc2_mue_target[0], single_cuts, optlang.interface.INFEASIBLE)
 
-# %% full FVA
-# with ecc2 as model:
-model = ecc2.copy() # copy model because switching solver in context sometimes gives an error (?!?)
+# %% FVA with copied model
+model = ecc2.copy() 
 model.objective = model.problem.Objective(0)
-fva_tol = 1e-8 # with CPLEX 1e-8 leads to removal of EX_adp_c, 1e-9 keeps EX_adp_c
+fva_tol = 1e-9 # with CPLEX 1e-8 leads to removal of EX_adp_c, 1e-9 keeps EX_adp_c
 model.tolerance = fva_tol # prevent essential EX_meoh_ex from being blocked, sets solver feasibility/optimality tolerances
 # model.solver.configuration.tolerances.feasibility = 1e-9
-model.solver = 'glpk_exact' # appears to make problems for context management
+# model.solver = 'glpk' #'glpk_exact' # appears to make problems for context management
 # model_mue_target_constraints= get_leq_constraints(model, ecc2_mue_target)
 # model.add_cons_vars(model_mue_target_constraints[0])
 fva_res = cobra.flux_analysis.flux_variability_analysis(model, fraction_of_optimum=0, processes=1) # no interactive multiprocessing on Windows
 print(fva_res.loc['EX_adp_c',:])
+print(fva_res.loc['EX_AMOB_ex'])
 blocked = []
 blocked_rxns = []
 for i in range(fva_res.values.shape[0]):
@@ -247,6 +254,55 @@ for i in range(fva_res.values.shape[0]):
         blocked.append(i)
         blocked_rxns.append(fva_res.index[i])
 print(blocked_rxns)
+
+# %% FVA in context
+#model = ecc2.copy() # copy model because switching solver in context sometimes gives an error (?!?)
+ecc2.solver = 'coinor_cbc'
+ecc2.solver.problem.opt_tol = 1e-9
+with ecc2 as model:
+    model.objective = model.problem.Objective(0)
+    fva_tol = 1e-9 # with CPLEX 1e-8 leads to removal of EX_adp_c, 1e-9 keeps EX_adp_c
+    model.tolerance = fva_tol # prevent essential EX_meoh_ex from being blocked, sets solver feasibility/optimality tolerances
+    # model.solver.configuration.tolerances.feasibility = 1e-9
+    # model.solver = 'glpk' #'glpk_exact' # appears to make problems for context management
+    # model_mue_target_constraints= get_leq_constraints(model, ecc2_mue_target)
+    # model.add_cons_vars(model_mue_target_constraints[0])
+    fva_res = cobra.flux_analysis.flux_variability_analysis(model, fraction_of_optimum=0, processes=1) # no interactive multiprocessing on Windows
+print(fva_res.loc['EX_adp_c',:])
+print(fva_res.loc['EX_AMOB_ex']) # !!! with GLPK significantly different compared to the copied model, OK with CPLEX
+print(fva_res.loc['EX_meoh_ex',:])
+blocked = []
+blocked_rxns = []
+for i in range(fva_res.values.shape[0]):
+    # if fva_res.values[i, 0] == 0 and fva_res.values[i, 1] == 0:
+    if fva_res.values[i, 0] >= -fva_tol and fva_res.values[i, 1] <= fva_tol:
+        blocked.append(i)
+        blocked_rxns.append(fva_res.index[i])
+print(blocked_rxns)
+
+# %% FVA with try/finally model restoration
+model = ecc2
+previous_tolerance = model.tolerance
+previous_objective = model.objective
+try:
+    model.objective = model.problem.Objective(0)
+    fva_tol = 1e-9 # with CPLEX 1e-8 leads to removal of EX_adp_c, 1e-9 keeps EX_adp_c
+    model.tolerance = fva_tol # prevent essential EX_meoh_ex from being blocked, sets solver feasibility/optimality tolerances
+    fva_res = cobra.flux_analysis.flux_variability_analysis(model, fraction_of_optimum=0, processes=1) # no interactive multiprocessing on Windows
+finally:
+    model.tolerance = previous_tolerance
+    model.objective = previous_objective
+print(fva_res.loc['EX_adp_c',:])
+print(fva_res.loc['EX_AMOB_ex']) # !!! also incorrect ?!?
+blocked = []
+blocked_rxns = []
+for i in range(fva_res.values.shape[0]):
+    # if fva_res.values[i, 0] == 0 and fva_res.values[i, 1] == 0:
+    if fva_res.values[i, 0] >= -fva_tol and fva_res.values[i, 1] <= fva_tol:
+        blocked.append(i)
+        blocked_rxns.append(fva_res.index[i])
+print(blocked_rxns)
+
 #%% only glpk_exact recognizes EX_adp_c as essential, but knocking it out is
 # not a problem with CPLEX as its flux is below the minimal tolerance
 # however compression with rationals will not work properly when EX_adp_c is removed
@@ -375,8 +431,8 @@ skn = efmtool4cobra.jRatMat2sympyRatMat(jkn)
 sympy.matrices.sparse.MutableSparseMatrix(skn.shape[0], skn.shape[1], skn.items())
 max(abs(srd@skn))
 #%%
-ecc2.solver = 'glpk_exact'
-ecc2c.solver = 'glpk_exact'
+#ecc2.solver = 'glpk_exact'
+#ecc2c.solver = 'glpk_exact'
 sol = ecc2.optimize()
 growth_idx = ecc2.reactions.index('Growth')
 growth_idx_c = numpy.where(subT[growth_idx, :])[0][0]
@@ -403,20 +459,26 @@ target_rd = [(T@subT, t) for T, t in ecc2_mue_target]
 #                                         cuts=numpy.any(subT[cuts, :], axis=0))
 # e.model.problem.parameters.mip.tolerances.mipgap.set(0.99)
 
-e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, rd, rev_rd, target_rd, 
-                                        threshold=0.1, bigM=1000, split_reversible_v=True, #irrev_geq=True,
-                                        cuts=numpy.any(subT[cuts, :], axis=0), kn=kn) #efmtool_intern.null_rat_efmtool(rd))
-e.model.configuration._iocp.mip_gap = 0.99 # kann nicht benutzt werden solange efmtool4cobra.compress_model nicht läuft
+e = ConstrainedMinimalCutSetsEnumerator(optlang.coinor_cbc_interface, rd, rev_rd, target_rd, 
+                                        threshold=0.1, bigM=1000, split_reversible_v=True, irrev_geq=True,
+                                        cuts=numpy.any(subT[cuts, :], axis=0))#, kn=kn) #efmtool_intern.null_rat_efmtool(rd))
+#e.model.problem.max_mip_gap = 0.99 # does not appear to make the solver stop early
+e.model.problem.max_solutions = 1 # stops with feasible solutions
+e.model.problem.threads = -1 # default does not appear to use multi-threading
+#e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, rd, rev_rd, target_rd, 
+#                                        threshold=0.1, bigM=1000, split_reversible_v=True, #irrev_geq=True,
+#                                        cuts=numpy.any(subT[cuts, :], axis=0), kn=kn) #efmtool_intern.null_rat_efmtool(rd))
+#e.model.configuration._iocp.mip_gap = 0.99
 
 # here a subset is repressible when one ot its reactions is repressible
 # e.model.objective = e.minimize_sum_over_z
 info = dict()
 # rd_mcs = e.enumerate_mcs(max_mcs_size=3, info=info)
 # rd_mcs = e.enumerate_mcs(max_mcs_size=3, enum_method=3, model=ecc2c, targets=target_rd, info=info)
-with ecc2c as tm:
-    tm.solver = 'glpk' #'glpk_exact' # actually optlang runs regular GLPK first and only if the results is optimal glpk_exact
+# with ecc2c as tm:
+    # tm.solver = 'glpk' #'glpk_exact' # actually optlang runs regular GLPK first and only if the results is optimal glpk_exact
     # tm.solver.configuration.verbosity = 3
-    rd_mcs = e.enumerate_mcs(max_mcs_size=3, enum_method=3, model=ecc2c, targets=target_rd, info=info)
+rd_mcs = e.enumerate_mcs(max_mcs_size=3, enum_method=3, model=ecc2c, targets=target_rd, info=info)
 print(info)
 print(len(rd_mcs))
 xsubT= subT.copy()
@@ -499,7 +561,7 @@ for i in range(num_reac):
                 print(i, j)
 
 #%%
-iJO1366 = cobra.io.read_sbml_model(r"..\..\..\cnapy-projects\iJO1366\model.sbml")
+iJO1366 = cobra.io.read_sbml_model(r"..\cnapy-projects\iJO1366\model.sbml")
 # iJO1366.solver = 'glpk_exact'
 # hash(str(cobra.io.model_to_dict(iJO1366))) # could this be used as a kind of model ID so that a compressed model can know if its parent model changed?
 # %% full FVA
