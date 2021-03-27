@@ -8,4 +8,5 @@ setup(name='optlang_enumerator',
     author_email='axelk1@gmx.de',
     license='Apache License 2.0',
     packages=['optlang_enumerator'],
+    install_requires=['numpy', 'scipy', 'cobra', 'optlang', 'efmtool_link', 'sympy', 'swiglpk'],
     zip_safe=False)
