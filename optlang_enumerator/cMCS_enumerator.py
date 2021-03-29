@@ -769,7 +769,7 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
             e.model.problem.max_solutions = 1 # stop with first feasible solutions
         else:
             print('No method implemented for this solver to stop with a suboptimal incumbent, will behave like enum_method 1.')
-   if optlang_interface.__name__ == 'optlang.coinor_cbc_interface':
+    if optlang_interface.__name__ == 'optlang.coinor_cbc_interface':
        e.model.problem.threads = -1 # activate multithreading
     
     e.evs_sz_lb = 1 # feasibility of all targets has been checked
