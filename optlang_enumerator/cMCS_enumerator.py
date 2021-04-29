@@ -2,7 +2,7 @@ import numpy
 import scipy
 import cobra
 import optlang.glpk_interface
-from optlang.symbolics import add, mul
+from optlang.symbolics import add
 from optlang.exceptions import IndicatorConstraintsNotSupported
 from swiglpk import glp_write_lp, glp_ios_mip_gap, GLP_DUAL
 try:
@@ -11,6 +11,10 @@ try:
     from cplex._internal._subinterfaces import SolutionStatus # can be also accessed by a CPLEX object under .solution.status
 except:
     optlang.cplex_interface = None # make sure this symbol is defined for type() comparisons
+try:
+    import optlang.coinor_cbc_interface
+except:
+    optlang.coinor_cbc_interface = None # make sure this symbol is defined for type() comparisons
 import itertools
 from typing import List, Tuple
 import time
@@ -50,7 +54,7 @@ class ConstrainedMinimalCutSetsEnumerator:
         use_kn_in_dual = kn is not None
         if use_kn_in_dual:
             if irrev_geq:
-                raise
+                raise ValueError('Use of irrev_geq together with kn parameter is not possible.')
             if type(kn) is numpy.ndarray:
                 kn = scipy.sparse.csc_matrix(kn) # otherwise stacking for dual does not work
 
@@ -69,7 +73,7 @@ class ConstrainedMinimalCutSetsEnumerator:
         self.model.add(self.z_vars)
         self.model.update() # cannot change bound below without this
         for i in irrepressible:
-            self.z_vars[i].ub = 0 # nur wenn es keine KI sind
+            self.z_vars[i].ub = 0 # only if it is not a knock-in (not yet supported)
         self.minimize_sum_over_z= optlang_interface.Objective(add(self.z_vars), direction='min', name='minimize_sum_over_z')
         z_local = [None] * num_targets
         if num_targets == 1:
@@ -462,8 +466,9 @@ def matrix_row_expressions(mat, vars):
     while True:
         at_end = i == len(ridx)
         if at_end or ridx[i] != current_row:
-            # expr.append(add([mat[current_row, c] * vars[c] for c in cidx[first:i]]))
-            expr[current_row] = add([mat[current_row, c] * vars[c] for c in cidx[first:i]])
+            # expr[current_row] = sympy.simplify(add([mat[current_row, c] * vars[c] for c in cidx[first:i]])) # simplify to flatten the sum, slow/hangs
+            expr[current_row] = sympy.Add(*[mat[current_row, c] * vars[c] for c in cidx[first:i]]) # gives flat sum
+            # expr[current_row] = sum([mat[current_row, c] * vars[c] for c in cidx[first:i]]) # gives flat sum, slow/hangs
             if at_end:
                 break
             first = i
@@ -596,7 +601,6 @@ def get_leq_constraints(model, leq_mat : List[Tuple], flux_expr=None):
         flux_expr = [r.flux_expression for r in model.reactions]
     return [leq_constraints(model.problem.Constraint, matrix_row_expressions(lqm[0], flux_expr), lqm[1]) for lqm in leq_mat]
 
-# !! in cobrapy a reaction that runs backward only also counts as irreversible
 def reaction_bounds_to_leq_matrix(model):
     config = Configuration()
     lb_idx = []
