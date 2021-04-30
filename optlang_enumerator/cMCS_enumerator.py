@@ -81,13 +81,15 @@ class ConstrainedMinimalCutSetsEnumerator:
         else:
             # with reduce constraints is should not be necessary to have local Z, they can be the same as the global Z
             for k in range(num_targets):
-                z_local[k] = [self.optlang_variable_class("Z"+str(k)+"_"+str(i), type="binary", problem=self.model.problem) for i in range(self.num_reac)]
-                self.model.add(z_local[k])
-            for i in range(self.num_reac):
-                if cuts[i]: # && ~knock_in(i) % knock-ins only use global Z, do not need local ones
-                    self.model.add(self.Constraint(
-                        (1/num_targets - 1e-9)*add([z_local[k][i] for k in range(num_targets)]) - self.z_vars[i], ub=0,
-                        name= "ZL"+str(i)))
+                z_local[k] = self.z_vars
+            # for k in range(num_targets):
+            #     z_local[k] = [self.optlang_variable_class("Z"+str(k)+"_"+str(i), type="binary", problem=self.model.problem) for i in range(self.num_reac)]
+            #     self.model.add(z_local[k])
+            # for i in range(self.num_reac):
+            #     if cuts[i]: # && ~knock_in(i) % knock-ins only use global Z, do not need local ones
+            #         self.model.add(self.Constraint(
+            #             (1/num_targets - 1e-9)*add([z_local[k][i] for k in range(num_targets)]) - self.z_vars[i], ub=0,
+            #             name= "ZL"+str(i)))
 
         dual_vars = [None] * num_targets
         # num_dual_cols = [0] * num_targets
@@ -503,7 +505,7 @@ def check_mcs(model, constr, mcs, expected_status, flux_expr=None):
                 check_ok[m] = KO_model.solver.status == expected_status
     return check_ok
 
-from swiglpk import * # for direkt use of glü_exact, tentative solution only
+from swiglpk import glp_adv_basis # for direkt use of glp_exact, experimental only
 def make_minimal_cut_set(model, cut_set, target_constraints):
     original_bounds = [model.reactions[r].bounds for r in cut_set]
     keep_ko = [True] * len(cut_set)
@@ -773,8 +775,8 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
             e.model.problem.max_solutions = 1 # stop with first feasible solutions
         else:
             print('No method implemented for this solver to stop with a suboptimal incumbent, will behave like enum_method 1.')
-    if optlang_interface.__name__ == 'optlang.coinor_cbc_interface':
-       e.model.problem.threads = -1 # activate multithreading
+    # if optlang_interface.__name__ == 'optlang.coinor_cbc_interface':
+    #    e.model.problem.threads = -1 # activate multithreading
     
     e.evs_sz_lb = 1 # feasibility of all targets has been checked
     mcs = e.enumerate_mcs(max_mcs_size=max_mcs_size, max_mcs_num=max_mcs_num, enum_method=enum_method,
