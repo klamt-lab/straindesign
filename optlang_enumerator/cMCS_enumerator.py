@@ -636,6 +636,8 @@ def integrate_model_bounds(model, targets, desired=None):
         for i in range(len(desired)):
             desired[i] = (scipy.sparse.vstack((desired[i][0], bounds_mat), format='lil'), numpy.hstack((desired[i][1], bounds_rhs)))
 
+class InfeasibleRegion(Exception):
+    pass
 
 # convenience function
 def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_size=2, max_mcs_num=1000, timeout=600,
@@ -660,14 +662,14 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
             feas.add_cons_vars(target_constraints[i])
             feas.slim_optimize()
             if feas.solver.status != 'optimal':
-                raise Exception('Target region', i, 'is not feasible; solver status is', feas.solver.status)
+                raise InfeasibleRegion('Target region '+str(i)+' is not feasible; solver status is: '+feas.solver.status)
     for i in range(len(desired)):
         with model as feas:
             feas.objective = model.problem.Objective(0.0)
             feas.add_cons_vars(desired_constraints[i])
             feas.slim_optimize()
             if feas.solver.status != 'optimal':
-                raise Exception('Desired region', i, 'is not feasible; solver status is', feas.solver.status)
+                raise InfeasibleRegion('Desired region'+str(i)+' is not feasible; solver status is: '+feas.solver.status)
 
     if include_model_bounds:
         integrate_model_bounds(model, targets, desired)
@@ -717,8 +719,17 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
         model = compr_model
         reduced = cobra.util.array.create_stoichiometric_matrix(model, array_type='dok', dtype=numpy.object)
         stoich_mat = efmtool4cobra.dokRatMat2lilFloatMat(reduced) # DOK does not (always?) work
-        targets = [(T@subT, t) for T, t in targets]
-        desired = [(D@subT, d) for D, d in desired]
+        targets = [[T@subT, t] for T, t in targets]
+        # as a result of compression empty constraints can occur (e.g. limits on reactions that turn out to be blocked)
+        for i in range(len(targets)): # remove empty target constraints
+            keep = numpy.any(targets[i][0], axis=1)
+            targets[i][0] = targets[i][0][keep, :]
+            targets[i][1] = targets[i][1][keep]
+        desired = [[D@subT, d] for D, d in desired]
+        for i in range(len(desired)): # remove empty desired constraints
+            keep = numpy.any(desired[i][0], axis=1)
+            desired[i][0] = desired[i][0][keep, :]
+            desired[i][1] = desired[i][1][keep]
         full_cuts = cuts # needed for MCS expansion
         cuts = numpy.any(subT[cuts, :], axis=0)
     else:
@@ -785,5 +796,4 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
         xsubT= subT.copy()
         xsubT[numpy.logical_not(full_cuts), :] = 0 # only expand to reactions that are repressible within a given subset
         mcs = expand_mcs(mcs, xsubT)
-    # print(mcs)
     return mcs
