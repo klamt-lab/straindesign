@@ -7,6 +7,7 @@ from optlang.exceptions import IndicatorConstraintsNotSupported
 from swiglpk import glp_write_lp, glp_ios_mip_gap, GLP_DUAL
 try:
     import optlang.cplex_interface
+    import cplex
     from cplex.exceptions import CplexSolverError
     from cplex._internal._subinterfaces import SolutionStatus # can be also accessed by a CPLEX object under .solution.status
 except:
@@ -421,6 +422,42 @@ class ConstrainedMinimalCutSetsEnumerator:
         else:
             raise # add a proper exception here
 
+class CPLEXmakeMCSCallback():
+    def __init__(self, z_vars_idx, model, targets, redundant_constraints=True):
+        self.z_vars_idx = z_vars_idx
+        self.candidate_count = 0
+        self.minimal_cut_sets = []
+        self.model = model
+        self.target_constraints= get_leq_constraints(model, targets)
+        self.redundant_constraints = redundant_constraints
+    
+    def invoke(self, context):
+        if context.in_candidate() and context.is_candidate_point(): # there are also candidate rays but these should not occur here
+            self.candidate_count += 1
+            cut_set = numpy.nonzero(numpy.round(context.get_candidate_point(self.z_vars_idx)))[0]
+            print("CS", cut_set)
+            print(len(cut_set), ", best bound:", context.get_double_info(cplex.callbacks.Context.info.best_bound)) # lags behind
+            not_superset = True # not a superset of an already found MCS
+            cut_set_s = set(cut_set) # cut_set is an array, need set for >= comparison
+            for mcs in self.minimal_cut_sets:
+                if cut_set_s >= mcs:
+                    print("Candidate already contained as", mcs)
+                    not_superset = False
+                    cut_set = mcs # for the lazy constraint
+                    break
+            if not_superset:
+                cut_set = make_minimal_cut_set(self.model, cut_set, self.target_constraints)
+                print("MCS", cut_set)
+                self.minimal_cut_sets.append(frozenset(cut_set))
+                print(len(self.minimal_cut_sets), "MCS found so far.")
+            if not_superset or self.redundant_constraints:
+                # !! from the reference manual:
+                # !! There is however no guarantee that CPLEX will actually use those additional constraints.
+                context.reject_candidate(constraints=[cplex.SparsePair([self.z_vars_idx[c] for c in cut_set], [1.0]*len(cut_set))],
+                                         senses="L", rhs=[len(cut_set)-1.0])
+            else:
+                context.reject_candidate()
+ 
 def equations_to_matrix(model, equations):
     # add option to use names instead of ids
     # allow equations to be a list of lists
