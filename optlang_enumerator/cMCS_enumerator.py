@@ -311,7 +311,6 @@ class ConstrainedMinimalCutSetsEnumerator:
             self.model.problem.parameters.mip.pool.intensity.set(4)
             # self.model.problem.parameters.mip.pool.absgap.set(0)
             self.model.problem.parameters.mip.pool.relgap.set(self.model.configuration.tolerances.optimality)
-            self.model.problem.parameters.mip.strategy.search.set(1) # traditional branch-and-cut search
             self.model.problem.parameters.emphasis.mip.set(1) # integer feasibility
             # also set model.problem.parameters.parallel to deterministic?
             if max_mcs_num == float('inf'):
