@@ -422,12 +422,17 @@ class ConstrainedMinimalCutSetsEnumerator:
             raise # add a proper exception here
 
 class CPLEXmakeMCSCallback():
-    def __init__(self, z_vars_idx, model, targets, redundant_constraints=True):
+    def __init__(self, z_vars_idx, model, targets, desired=None, redundant_constraints=True):
+        # needs max_mcs_num parameter
         self.z_vars_idx = z_vars_idx
         self.candidate_count = 0
         self.minimal_cut_sets = []
         self.model = model
         self.target_constraints= get_leq_constraints(model, targets)
+        if desired is None:
+            self.desired_constraints = None
+        else:
+            self.desired_constraints = get_leq_constraints(model, desired)
         self.redundant_constraints = redundant_constraints
     
     def invoke(self, context):
@@ -435,6 +440,18 @@ class CPLEXmakeMCSCallback():
             self.candidate_count += 1
             cut_set = numpy.nonzero(numpy.round(context.get_candidate_point(self.z_vars_idx)))[0]
             print("CS", cut_set)
+            for targ in self.target_constraints:
+                if not check_mcs(self.model, targ, [cut_set], optlang.interface.INFEASIBLE)[0]:
+                    print("This candidate does not inhibit a target.")
+                    context.reject_candidate()
+                    return
+            if self.desired_constraints is not None:
+                for des in self.desired_constraints:
+                    if not check_mcs(self.model, des, [cut_set], optlang.interface.OPTIMAL)[0]:
+                        print("This candidate does not fulfill a desired behaviour.")
+                        context.reject_candidate(constraints=[cplex.SparsePair([self.z_vars_idx[c] for c in cut_set], [1.0]*len(cut_set))],
+                                                 senses="L", rhs=[len(cut_set)-1.0])
+                        return
             print(len(cut_set), ", best bound:", context.get_double_info(cplex.callbacks.Context.info.best_bound)) # lags behind
             not_superset = True # not a superset of an already found MCS
             cut_set_s = set(cut_set) # cut_set is an array, need set for >= comparison
@@ -523,11 +540,13 @@ def check_mcs(model, constr, mcs, expected_status, flux_expr=None):
     check_ok= numpy.zeros(len(mcs), dtype=numpy.bool)
     with model as constr_model:
         constr_model.problem.Objective(0)
-        if flux_expr is None:
-            flux_expr = [r.flux_expression for r in constr_model.reactions]
-        rexpr = matrix_row_expressions(constr[0], flux_expr)
-        constr_model.add_cons_vars(leq_constraints(constr_model.problem.Constraint, rexpr, constr[1]))
-        # constr_model.add_cons_vars(get_leq_constraints(model, [constr], flux_expr=flux_expr))
+        if isinstance(constr[0], optlang.interface.Constraint):
+            constr_model.add_cons_vars(constr)
+        else:
+            if flux_expr is None:
+                flux_expr = [r.flux_expression for r in constr_model.reactions]
+            rexpr = matrix_row_expressions(constr[0], flux_expr)
+            constr_model.add_cons_vars(leq_constraints(constr_model.problem.Constraint, rexpr, constr[1]))
         for m in range(len(mcs)):
             with constr_model as KO_model:
                 for r in mcs[m]:
