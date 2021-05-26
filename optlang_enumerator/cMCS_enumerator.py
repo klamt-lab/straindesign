@@ -434,25 +434,33 @@ class CPLEXmakeMCSCallback():
         else:
             self.desired_constraints = get_leq_constraints(model, desired)
         self.redundant_constraints = redundant_constraints
+        self.non_cut_set_candidates = 0
     
     def invoke(self, context):
         if context.in_candidate() and context.is_candidate_point(): # there are also candidate rays but these should not occur here
             self.candidate_count += 1
             cut_set = numpy.nonzero(numpy.round(context.get_candidate_point(self.z_vars_idx)))[0]
             print("CS", cut_set)
-            for targ in self.target_constraints:
-                if not check_mcs(self.model, targ, [cut_set], optlang.interface.INFEASIBLE)[0]:
-                    print("This candidate does not inhibit a target.")
-                    context.reject_candidate()
-                    return
             if self.desired_constraints is not None:
                 for des in self.desired_constraints:
                     if not check_mcs(self.model, des, [cut_set], optlang.interface.OPTIMAL)[0]:
-                        print("This candidate does not fulfill a desired behaviour.")
+                        print("Rejecting candidate that does not fulfill a desired behaviour.")
                         context.reject_candidate(constraints=[cplex.SparsePair([self.z_vars_idx[c] for c in cut_set], [1.0]*len(cut_set))],
                                                  senses="L", rhs=[len(cut_set)-1.0])
                         return
-            print(len(cut_set), ", best bound:", context.get_double_info(cplex.callbacks.Context.info.best_bound)) # lags behind
+            for targ in self.target_constraints:
+                if not check_mcs(self.model, targ, [cut_set], optlang.interface.INFEASIBLE)[0]:
+                    # cut_set cannot be a superset of an already identified MCS here
+                    print("Rejecting candidate that does not inhibit a target.")
+                    self.non_cut_set_candidates += 1
+                    if self.non_cut_set_candidates < max(100, len(self.minimal_cut_sets)):
+                        context.reject_candidate()
+                    else:
+                        # there are no exclusion constraints for this case, therefore abort if it occurs repeatedly
+                        print("Aborting due to excessive generation of candidates that are not cut sets.")
+                        context.abort()
+                    return
+            # print(len(cut_set), ", best bound:", context.get_double_info(cplex.callbacks.Context.info.best_bound)) # lags behind
             not_superset = True # not a superset of an already found MCS
             cut_set_s = set(cut_set) # cut_set is an array, need set for >= comparison
             for mcs in self.minimal_cut_sets:
@@ -462,8 +470,12 @@ class CPLEXmakeMCSCallback():
                     cut_set = mcs # for the lazy constraint
                     break
             if not_superset:
-                cut_set = make_minimal_cut_set(self.model, cut_set, self.target_constraints)
-                print("MCS", cut_set)
+                if len(cut_set) > context.get_double_info(cplex.callbacks.Context.info.best_bound):
+                    # could use ceiling of best bound unless there are non-integer intervention costs
+                    cut_set = make_minimal_cut_set(self.model, cut_set, self.target_constraints)
+                    print("MCS", cut_set)
+                else:
+                    print("CS is MCS.")
                 self.minimal_cut_sets.append(frozenset(cut_set))
                 print(len(self.minimal_cut_sets), "MCS found so far.")
             if not_superset or self.redundant_constraints:
