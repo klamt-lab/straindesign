@@ -28,7 +28,7 @@ import efmtool_link.efmtool4cobra as efmtool4cobra
 
 class ConstrainedMinimalCutSetsEnumerator:
     def __init__(self, optlang_interface, st, reversible, targets, kn=None, cuts=None,
-        desired=[], knock_in=[], bigM=0, threshold=1, split_reversible_v=True,
+        desired=None, knock_in=[], bigM=0, threshold=1, split_reversible_v=True,
         irrev_geq=False, ref_set= None): # reduce_constraints=True, combined_z=True
         # the matrices in st, targets and desired should be numpy.array or scipy.sparse (csr, csc, lil) format
         # targets is a list of (T,t) pairs that represent T <= t
@@ -51,6 +51,8 @@ class ConstrainedMinimalCutSetsEnumerator:
         else:
             irrepressible = numpy.where(cuts == False)[0]
             #iv_cost(irrepressible)= 0;
+        if desired is None:
+            desired = []
         num_targets = len(targets)
         use_kn_in_dual = kn is not None
         if use_kn_in_dual:
