@@ -301,7 +301,7 @@ class ConstrainedMinimalCutSetsEnumerator:
         self.model.add(self.Constraint(expression, ub=ub, sloppy=True))
 
     def enumerate_mcs(self, max_mcs_size=None, max_mcs_num=float('inf'), enum_method=1, timeout=None,
-                        model=None, targets=None, info=None): #, larger_mcs=None):
+                        model=None, targets=None, info=None):
         # if a dictionary is passed as info some status/runtime information is stored in there
         all_mcs = []
         if enum_method == 2:
@@ -424,7 +424,7 @@ class ConstrainedMinimalCutSetsEnumerator:
             raise # add a proper exception here
 
 class CPLEXmakeMCSCallback():
-    def __init__(self, z_vars_idx, model, targets, desired=None, redundant_constraints=True):
+    def __init__(self, z_vars_idx, model, targets, desired=None, max_mcs_num=float('inf'), redundant_constraints=True):
         # needs max_mcs_num parameter
         self.z_vars_idx = z_vars_idx
         self.candidate_count = 0
@@ -437,6 +437,8 @@ class CPLEXmakeMCSCallback():
             self.desired_constraints = get_leq_constraints(model, desired)
         self.redundant_constraints = redundant_constraints
         self.non_cut_set_candidates = 0
+        self.abort_status = 0 # 1: stop because max_mcs_num is reached; -1: aborted due to excessive generation of candidates that are not cut sets
+        self.max_mcs_num = max_mcs_num
     
     def invoke(self, context):
         if context.in_candidate() and context.is_candidate_point(): # there are also candidate rays but these should not occur here
@@ -460,6 +462,7 @@ class CPLEXmakeMCSCallback():
                     else:
                         # there are no exclusion constraints for this case, therefore abort if it occurs repeatedly
                         print("Aborting due to excessive generation of candidates that are not cut sets.")
+                        self.abort_status = -1
                         context.abort()
                     return
             # print(len(cut_set), ", best bound:", context.get_double_info(cplex.callbacks.Context.info.best_bound)) # lags behind
@@ -480,6 +483,10 @@ class CPLEXmakeMCSCallback():
                     print("CS is MCS.")
                 self.minimal_cut_sets.append(frozenset(cut_set))
                 print(len(self.minimal_cut_sets), "MCS found so far.")
+                if len(self.minimal_cut_sets) >= self.max_mcs_num:
+                    print("Reached maximum number of MCS.")
+                    self.abort_status = 1
+                    context.abort()
             if not_superset or self.redundant_constraints:
                 # !! from the reference manual:
                 # !! There is however no guarantee that CPLEX will actually use those additional constraints.
