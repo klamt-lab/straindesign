@@ -301,24 +301,34 @@ class ConstrainedMinimalCutSetsEnumerator:
         self.model.add(self.Constraint(expression, ub=ub, sloppy=True))
 
     def enumerate_mcs(self, max_mcs_size=None, max_mcs_num=float('inf'), enum_method=1, timeout=None,
-                        model=None, targets=None, info=None):
+                        model=None, targets=None, desired=None, info=None):
+        # model is the metabolic network, not the MILP
         # if a dictionary is passed as info some status/runtime information is stored in there
         all_mcs = []
-        if enum_method == 2:
+        if enum_method == 2 or enum_method == 4:
             if self._optlang_interface is not optlang.cplex_interface:
-                raise TypeError('enum_method 2 is not available for this solver.')
+                raise TypeError('enum_methods 2/4 is not available for this solver.')
             if max_mcs_size is None:
                 max_mcs_size = len(self.z_vars)
-            print("Populate up tp MCS size ", max_mcs_size)
             self.model.problem.parameters.mip.pool.intensity.set(4)
             # self.model.problem.parameters.mip.pool.absgap.set(0)
             self.model.problem.parameters.mip.pool.relgap.set(self.model.configuration.tolerances.optimality)
-            self.model.problem.parameters.emphasis.mip.set(1) # integer feasibility
-            # also set model.problem.parameters.parallel to deterministic?
             if max_mcs_num == float('inf'):
                 self.model.problem.parameters.mip.limits.populate.set(self.model.problem.parameters.mip.pool.capacity.get())
-            z_idx = self.model.problem.variables.get_indices([z.name for z in self.z_vars]) # for querying the solution pool
-            self.evs_sz.ub = self.evs_sz_lb # make sure self.evs_sz.ub is not None
+            z_idx = self.model.problem.variables.get_indices([z.name for z in self.z_vars]) # for solution pool/callback
+            if enum_method == 2:
+                print("Populate by cardinality up tp MCS size ", max_mcs_size)
+                self.model.problem.parameters.emphasis.mip.set(1) # integer feasibility
+                self.evs_sz.ub = self.evs_sz_lb # make sure self.evs_sz.ub is not None
+            else:
+                print("Continuous search up tp MCS size ", max_mcs_size)
+                self.evs_sz.ub = max_mcs_size
+                self.evs_sz.lb = self.evs_sz_lb
+                if self.model.objective is self.zero_objective:
+                    self.model.objective = self.minimize_sum_over_z
+                    print('Objective function is empty; set objective to self.minimize_sum_over_z')
+                cut_set_cb = CPLEXmakeMCSCallback(z_idx, model, targets, desired=desired, max_mcs_num=max_mcs_num)
+                self.model.problem.set_callback(cut_set_cb, cplex.callbacks.Context.id.candidate)
         elif enum_method == 1 or enum_method == 3:
             if self.model.objective is self.zero_objective:
                 self.model.objective = self.minimize_sum_over_z
@@ -405,10 +415,37 @@ class ConstrainedMinimalCutSetsEnumerator:
                 elif cplex_status is SolutionStatus.MIP_time_limit_infeasible:
                     print('No further MCS of size', self.evs_sz_lb, 'found, time limit reached.')
                 else:
-                    print('Unexpected CPLEX status ', self.model.problem.solution.get_status_string())
+                    print('Unexpected CPLEX status', self.model.problem.solution.get_status_string())
                     continue_loop = False
-                    break # provisional break
                 # reset parameters here?
+            elif enum_method == 4: # continuous solve with CPLEX
+                try:
+                    self.model.problem.populate_solution_pool()
+                except CplexSolverError:
+                    print("Exception raised during populate")
+                    continue_loop = False
+                    break
+                print("Found", len(cut_set_cb.minimal_cut_sets), "MCS.")
+                print("Solver status is:", self.model.problem.solution.get_status_string())
+                all_mcs = cut_set_cb.minimal_cut_sets
+                cplex_status = self.model.problem.solution.get_status()
+                if type(info) is dict:
+                    info['cplex_status'] = cplex_status
+                    info['cplex_status_string'] = self.model.problem.solution.get_status_string()
+                if cplex_status is SolutionStatus.MIP_infeasible:
+                    print("Enumerated all MCS up to size", max_mcs_size)
+                    self.evs_sz_lb = max_mcs_size + 1
+                elif cplex_status is SolutionStatus.MIP_time_limit_feasible \
+                        or cplex_status is SolutionStatus.MIP_time_limit_infeasible:
+                    print("Stopped enumeration due to time limit.")
+                elif cplex_status is SolutionStatus.MIP_abort_feasible or cplex_status is SolutionStatus.MIP_abort_infeasible:
+                    if cut_set_cb.abort_status == 1:
+                        print("Stopped enumeration because number of MCS has reached limit limit.")
+                    elif cut_set_cb.abort_status == -1:
+                        print("Aborted enumeration due to excessive generation of candidates that are not cut sets.")
+                else:
+                    print('Unexpected CPLEX status', self.model.problem.solution.get_status_string())
+                continue_loop = False
         if type(info) is dict:
             info['optlang_status'] = self.model.status
             info['time'] = time.monotonic() - start_time
