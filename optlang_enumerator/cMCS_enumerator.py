@@ -17,7 +17,7 @@ try:
 except:
     optlang.coinor_cbc_interface = None # make sure this symbol is defined for type() comparisons
 import itertools
-from typing import List, Tuple
+from typing import List, Tuple, Union, Set, FrozenSet
 import time
 import sys
 import sympy
@@ -301,8 +301,9 @@ class ConstrainedMinimalCutSetsEnumerator:
         self.model.add(self.Constraint(expression, ub=ub, sloppy=True))
 
     def enumerate_mcs(self, max_mcs_size=None, max_mcs_num=float('inf'), enum_method=1, timeout=None,
-                        model=None, targets=None, desired=None, info=None):
+                        model=None, targets=None, desired=None, info=None) -> List[Union[Tuple[int], FrozenSet[int]]]:
         # model is the metabolic network, not the MILP
+        # returns a list of sorted tuples (enum_method 1-3) or a list of frozensets (enum_method 4)
         # if a dictionary is passed as info some status/runtime information is stored in there
         all_mcs = []
         if enum_method == 2 or enum_method == 4:
@@ -548,7 +549,7 @@ def equations_to_matrix(model, equations):
     else:
         raise RuntimeError("Index order was not preserved.")
 
-def expand_mcs(mcs: List[Tuple], subT):
+def expand_mcs(mcs: List[Union[Tuple[int], Set[int], FrozenSet[int]]], subT) -> List[Tuple[int]]:
     mcs = [[list(m)] for m in mcs] # list of lists; mcs[i] will contain a list of MCS expanded from it
     rxn_in_sub = [numpy.where(subT[:, i])[0] for i in range(subT.shape[1])]
     for i in range(len(mcs)):
@@ -755,7 +756,7 @@ class InfeasibleRegion(Exception):
 # convenience function
 def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_size=2, max_mcs_num=1000, timeout=600,
                 exclude_boundary_reactions_as_cuts=False, network_compression=True, fva_tolerance=1e-9,
-                include_model_bounds=True):
+                include_model_bounds=True) -> List[Tuple[int]]:
     # if include_model_bounds=True this function integrates non-default reaction bounds of the model into the
     # target and desired regions and directly modifies(!) these parameters
 
@@ -909,4 +910,6 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
         xsubT= subT.copy()
         xsubT[numpy.logical_not(full_cuts), :] = 0 # only expand to reactions that are repressible within a given subset
         mcs = expand_mcs(mcs, xsubT)
+    elif enum_method == 4:
+        mcs = [tuple(sorted(m)) for m in mcs]
     return mcs
