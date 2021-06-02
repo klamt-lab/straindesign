@@ -3,6 +3,7 @@
 import cobra
 import cobra.util.array
 from optlang_enumerator.cMCS_enumerator import *
+from optlang_enumerator.mcs_computation import *
 import time
 import numpy
 import os
@@ -10,10 +11,18 @@ import sys
 import efmtool_link.efmtool_intern as efmtool_intern
 import efmtool_link.efmtool4cobra as efmtool4cobra
 import pickle
+import optlang_enumerator
+import mcs_computation
+from importlib import reload
+#%%
+reload(optlang_enumerator.cMCS_enumerator)
+from optlang_enumerator.cMCS_enumerator import *
+reload(optlang_enumerator.mcs_computation)
+from optlang_enumerator.mcs_computation import *
 
 #%%
 ex = cobra.io.read_sbml_model(r"metatool_example_no_ext.xml")
-# ex.solver = 'coinor_cbc'
+ex.solver = 'coinor_cbc'
 stdf = cobra.util.array.create_stoichiometric_matrix(ex, array_type='DataFrame')
 rev = [r.reversibility for r in ex.reactions]
 reac_id = stdf.columns.tolist()
@@ -33,7 +42,7 @@ e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, stdf.values, rev
                                         bigM= 100, threshold=0.1, split_reversible_v=True, irrev_geq=True)
 # e.model.objective = e.minimize_sum_over_z
 # e.write_lp_file('testM')
-mcs = e.enumerate_mcs(max_mcs_size=5, info=info)
+mcs,_ = e.enumerate_mcs(max_mcs_size=5, info=info)
 print(info)
 
 e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, stdf.values, rev, target,
@@ -46,7 +55,7 @@ e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, stdf.values, re
 #e.model.configuration.lp_method = 'auto' # sets lpmethod back to automatic on the CPLEX side
 #e.model.problem.parameters.reset() # works (CPLEX specific)
 # without reset() optlang switches presolve off and fixes lpmethod
-mcs2 = e.enumerate_mcs(max_mcs_size=5, info=info)
+mcs2,_ = e.enumerate_mcs(max_mcs_size=5, info=info)
 print(info)
 
 print(len(set(mcs).intersection(set(mcs2))))
@@ -60,7 +69,7 @@ e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, stdf.values, re
                                         bigM= 100, threshold=0.1, split_reversible_v=True, irrev_geq=True)
 e.model.problem.parameters.mip.tolerances.mipgap.set(0.99)
 info = dict()
-mcs3 = e.enumerate_mcs(max_mcs_size=5, enum_method=3, model=ex, targets=target, info=info)
+mcs3,_ = e.enumerate_mcs(max_mcs_size=5, enum_method=3, model=ex, targets=target, info=info)
 print(info)
 print(e.evs_sz_lb)
 print(set(mcs) == set(mcs3))
@@ -70,7 +79,7 @@ e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, stdf.values, rev
                                         bigM= 100, threshold=0.1, split_reversible_v=True, irrev_geq=True)
 info = dict()
 e.model.configuration._iocp.mip_gap = 0.99
-mcs3 = e.enumerate_mcs(max_mcs_size=5, enum_method=3, model=ex, targets=target, info=info)
+mcs3,_ = e.enumerate_mcs(max_mcs_size=5, enum_method=3, model=ex, targets=target, info=info)
 print(info)
 print(e.evs_sz_lb)
 print(set(mcs) == set(mcs3))
@@ -93,12 +102,15 @@ desired = [(equations_to_matrix(ex, ["-1 AspCon"]), [-1], flux_lb, flux_ub)]
 #  1000.,1000.,1000., 999. ])
 # cuts = numpy.array([ True,True,True,True,True,True,True, False,True,True,True,True
 # ,True,True,True, False,True,True,True,True,True, False, False,True])
+# e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, stdf.values, rev, target,
+#                                         threshold=0.1, split_reversible_v=False, irrev_geq=False,
+#                                         desired=desired)
 e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, stdf.values, rev, target,
-                                        threshold=0.1, split_reversible_v=False, irrev_geq=False,
-                                        desired=desired)
+                                        threshold=0.1, split_reversible_v=True, irrev_geq=True,
+                                        desired=desired, SOS_constraints=True)
 # e.model.objective = e.minimize_sum_over_z
-e.write_lp_file('testA')
-mcs3 = e.enumerate_mcs() #max_mcs_size=5)
+# e.write_lp_file('testA')
+mcs3,_ = e.enumerate_mcs() #max_mcs_size=5)
 print(len(mcs3))
 print(all(check_mcs(ex, target[0], mcs3, optlang.interface.INFEASIBLE)))
 print(all(check_mcs(ex, desired[0], mcs3, optlang.interface.OPTIMAL)))
@@ -110,8 +122,8 @@ with ex as exb: # cobrapy FVA raises error with unbounded reactions
             r.lower_bound = -1000
         if r.upper_bound == numpy.inf:
             r.upper_bound = 1000
-    # mcs4 = compute_mcs(exb, target, desired=desired, enum_method=1, max_mcs_size=20)
-    mcs4 = compute_mcs(exb, target, enum_method=2, max_mcs_size=20, desired=desired, network_compression=True)
+    # mcs4,_ = compute_mcs(exb, target, desired=desired, enum_method=1, max_mcs_size=20)
+    mcs4,_ = compute_mcs(exb, target, enum_method=2, max_mcs_size=20, desired=desired, network_compression=True)
 print(len(mcs4))
 set(mcs3) == set(mcs4)
 #%%
@@ -138,8 +150,8 @@ e = ConstrainedMinimalCutSetsEnumerator(optlang.coinor_cbc_interface, rd, rev_rd
                                         bigM= 100, threshold=0.1, split_reversible_v=True, kn=efmtool_intern.null_rat_efmtool(rd))
 # e.model.objective = e.minimize_sum_over_z
 # e.model.configuration._iocp.mip_gap = 0.99
-rd_mcs = e.enumerate_mcs(max_mcs_size=5, enum_method=1, model=exc, targets=target_rd)
-# rd_mcs = e.enumerate_mcs(max_mcs_size=5)
+rd_mcs,_ = e.enumerate_mcs(max_mcs_size=5, enum_method=1, model=exc, targets=target_rd)
+# rd_mcs,_ = e.enumerate_mcs(max_mcs_size=5)
 print(len(rd_mcs))
 #set(expand_mcs(rd_mcs, subT)) == set(map(lambda x: tuple(numpy.where(x)[0]), mcs2))
 set(expand_mcs(rd_mcs, subT)) == set(mcs2)
@@ -149,7 +161,7 @@ e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, stdf.values, re
                                         threshold=0.1, split_reversible_v=False, irrev_geq=False) #, ref_set=mcs)
 # e.model.configuration.verbosity = 3
 # e.model.objective = e.minimize_sum_over_z
-mcs2p = e.enumerate_mcs(max_mcs_size=5, enum_method=2) #, max_mcs_num=1)
+mcs2p,_ = e.enumerate_mcs(max_mcs_size=5, enum_method=2) #, max_mcs_num=1)
 print(set(mcs) == set(mcs2p))
 # e.model.problem.solution.get_objective_value() == 0
 
@@ -162,7 +174,7 @@ e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, stdf.values, re
 e.model.objective = e.minimize_sum_over_z
 # e.write_lp_file('testI2')
 t = time.time()
-mcs3 = e.enumerate_mcs(max_mcs_size=5)
+mcs3,_ = e.enumerate_mcs(max_mcs_size=5)
 print(time.time() - t)
 
 e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, stdf.values, rev, target, 
@@ -170,7 +182,7 @@ e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, stdf.values, rev
 e.model.objective = e.minimize_sum_over_z
 # e.write_lp_file('testI2')
 t = time.time()
-mcs4 = e.enumerate_mcs(max_mcs_size=5)
+mcs4,_ = e.enumerate_mcs(max_mcs_size=5)
 print(time.time() - t)
 
 print(set(mcs3) == set([m for m in mcs if 0 not in m and 23 not in m]))
@@ -195,22 +207,46 @@ ecc2_mue_target = [relations2leq_matrix(parse_relations(t, reac_id_symbols=reac_
 bounds_mat, bounds_rhs = reaction_bounds_to_leq_matrix(ecc2)
 ecc2_mue_target = [(scipy.sparse.vstack((t[0], bounds_mat), format='csr'), numpy.hstack((t[1], bounds_rhs))) for t in ecc2_mue_target]
 ecc2_mue_target_constraints= get_leq_constraints(ecc2, ecc2_mue_target)
-# e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, ecc2_stdf.values, [r.reversibility for r in ecc2.reactions], ecc2_mue_target,
-#                                         cuts=cuts, threshold=1, split_reversible_v=True, irrev_geq=True)
-# # e.model.objective = e.minimize_sum_over_z
+# %%
+e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, ecc2_stdf.values, [r.reversibility for r in ecc2.reactions], ecc2_mue_target,
+                                        cuts=cuts, threshold=0.1, split_reversible_v=True, irrev_geq=True)#, SOS_constraints=True)
+# e.model.objective = e.minimize_sum_over_z
 # e.model.configuration.tolerances.feasibility = 1e-9
 # e.model.configuration.tolerances.optimality = 1e-9
 # e.model.configuration.tolerances.integrality = 1e-10
-# #e.write_lp_file('testI')
-# #e.model.configuration.verbosity = 3
-# e.evs_sz_lb = 1 
-# ecc2_mcs = e.enumerate_mcs(max_mcs_size=3, enum_method=2)
-# ecc2_mcs = compute_mcs(ecc2, ecc2_mue_target, [], cuts, 2, 3, 1000, 100)
-ecc2_mcs = compute_mcs(ecc2, ecc2_mue_target, cuts=cuts, enum_method=3, max_mcs_size=3, network_compression=True)
+#e.write_lp_file('testI')
+#e.model.configuration.verbosity = 3
+e.evs_sz_lb = 1 
+info = dict()
+ecc2_mcs,_ = e.enumerate_mcs(max_mcs_size=3, enum_method=3, model=ecc2, targets=ecc2_mue_target, info=info)
+# ecc2_mcs,_ = e.enumerate_mcs(max_mcs_size=3, enum_method=1, info=info)
+print(info) # in this example SOS are somewhat slower than indicators
+# %%
+e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, ecc2_stdf.values, [r.reversibility for r in ecc2.reactions], ecc2_mue_target,
+                                        cuts=cuts, threshold=0.1, split_reversible_v=True, irrev_geq=True)#, SOS_constraints=True)
+e.model.problem.parameters.mip.pool.intensity.set(4)
+e.model.problem.parameters.mip.strategy.search.set(1) # traditional branch-and-cut search
+z_idx = e.model.problem.variables.get_indices([z.name for z in e.z_vars])
+
+cut_set_cb = MakeMinimalCutSetCallback(z_idx, ecc2, ecc2_mue_target) #, redundant_constraints=False)
+e.model.problem.set_callback(cut_set_cb, cplex.callbacks.Context.id.candidate)
+e.model.problem.parameters.mip.limits.populate.set(e.model.problem.parameters.mip.pool.capacity.get())
+e.model.configuration.verbosity = 3
+e.model.problem.parameters.emphasis.mip.set(1) # integer feasibility
+e.model.objective = e.minimize_sum_over_z
+e.evs_sz.lb = 1
+e.evs_sz.ub = 3
+e.model.problem.populate_solution_pool()
+print(e.model.problem.solution.get_status_string(), cut_set_cb.candidate_count,
+      len(set(cut_set_cb.minimal_cut_sets)))
+
+# %%
+# ecc2_mcs,_ = compute_mcs(ecc2, ecc2_mue_target, [], cuts, 2, 3, 1000, 100)
+ecc2_mcs,_ = compute_mcs(ecc2, ecc2_mue_target, cuts=cuts, enum_method=3, max_mcs_size=3, network_compression=True)
 print(len(ecc2_mcs))
 ecc2_mcs_rxns= [tuple(ecc2_stdf.columns[r] for r in mcs) for mcs in ecc2_mcs]
 print(ecc2_mcs_rxns)
-ecc2_mcsF = compute_mcs(ecc2, ecc2_mue_target, cuts=cuts, enum_method=2, max_mcs_size=3, network_compression=False)
+ecc2_mcsF,_ = compute_mcs(ecc2, ecc2_mue_target, cuts=cuts, enum_method=2, max_mcs_size=3, network_compression=False)
 print(all(check_mcs(ecc2, ecc2_mue_target[0], ecc2_mcs, optlang.interface.INFEASIBLE)))
 print(set(ecc2_mcs) == set(ecc2_mcsF))
 
@@ -352,7 +388,7 @@ e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, ecc2_stdf.values
 #e.write_lp_file('testM')
 #e.model.configuration.verbosity = 3
 e.model.configuration._iocp.mip_gap = 0.99
-ecc2_mcsB = e.enumerate_mcs(max_mcs_size=3, enum_method=3, model=ecc2, targets=ecc2_mue_target)
+ecc2_mcsB,_ = e.enumerate_mcs(max_mcs_size=3, enum_method=3, model=ecc2, targets=ecc2_mue_target)
 print(set(ecc2_mcs) == set(ecc2_mcsB), len(ecc2_mcsB))
 
 # %% sympy and efmtool conversions to rational are not necessarily the same, nsimplify appears to match
@@ -473,12 +509,12 @@ e.model.problem.threads = -1 # default does not appear to use multi-threading
 # here a subset is repressible when one ot its reactions is repressible
 # e.model.objective = e.minimize_sum_over_z
 info = dict()
-# rd_mcs = e.enumerate_mcs(max_mcs_size=3, info=info)
-# rd_mcs = e.enumerate_mcs(max_mcs_size=3, enum_method=3, model=ecc2c, targets=target_rd, info=info)
+# rd_mcs,_ = e.enumerate_mcs(max_mcs_size=3, info=info)
+# rd_mcs,_ = e.enumerate_mcs(max_mcs_size=3, enum_method=3, model=ecc2c, targets=target_rd, info=info)
 # with ecc2c as tm:
     # tm.solver = 'glpk' #'glpk_exact' # actually optlang runs regular GLPK first and only if the results is optimal glpk_exact
     # tm.solver.configuration.verbosity = 3
-rd_mcs = e.enumerate_mcs(max_mcs_size=3, enum_method=3, model=ecc2c, targets=target_rd, info=info)
+rd_mcs,_ = e.enumerate_mcs(max_mcs_size=3, enum_method=3, model=ecc2c, targets=target_rd, info=info)
 print(info)
 print(len(rd_mcs))
 xsubT= subT.copy()
@@ -565,14 +601,17 @@ iJO1366 = cobra.io.read_sbml_model(r"..\cnapy-projects\iJO1366\model.sbml")
 # iJO1366.solver = 'glpk_exact'
 # hash(str(cobra.io.model_to_dict(iJO1366))) # could this be used as a kind of model ID so that a compressed model can know if its parent model changed?
 # %% full FVA
-# with ecc2 as model:
 fva_tol = 1e-9
 model = iJO1366.copy()
-model.solver = 'cplex' # would be extremely slow with glpk_exact
+# model.solver = 'cplex' # 14.1 s, 878 blocked
+# model.solver = 'coinor_cbc' # 128.3 s, 880 blocked -> probably does not warm start
+model.solver = 'glpk' # 26.6 seconds, 879 blocked,  would be extremely slow with glpk_exact 
 # model.objective = model.problem.Objective(0)
 model.tolerance = fva_tol
-# fva_res = cobra.flux_analysis.flux_variability_analysis(model, fraction_of_optimum=0, processes=1) # no interactive multiprocessing on Windows
-fva_res = cobra.flux_analysis.flux_variability_analysis(model, fraction_of_optimum=0.99, processes=1) # fraction 1.0 may lead to too tight optimum constraint
+start_time = time.monotonic()
+fva_res = cobra.flux_analysis.flux_variability_analysis(model, fraction_of_optimum=0, processes=1) # no interactive multiprocessing on Windows
+# fva_res = cobra.flux_analysis.flux_variability_analysis(model, fraction_of_optimum=0.99, processes=1) # fraction 1.0 may lead to too tight optimum constraint
+print(time.monotonic() - start_time) # 20 seconds in iJO1366 without remove_rxns
 del model
 blocked_rxns = []
 for i in range(fva_res.values.shape[0]):
@@ -656,10 +695,10 @@ bounds_mat, bounds_rhs = reaction_bounds_to_leq_matrix(iJO1366)
 iJO1366_mue_targetB = [(scipy.sparse.vstack((t[0], bounds_mat), format='csr'), numpy.hstack((t[1], bounds_rhs))) for t in iJO1366_mue_target]
 iJO1366_mue_target_constraintsB= get_leq_constraints(iJO1366, iJO1366_mue_targetB)
 # %% 
-iJO1366_mcs = compute_mcs(iJO1366, iJO1366_mue_target, cuts=cuts, enum_method=2, max_mcs_size=1, network_compression=True)
+iJO1366_mcs,_ = compute_mcs(iJO1366, iJO1366_mue_target, cuts=cuts, enum_method=2, max_mcs_size=1, network_compression=True)
 print(len(iJO1366_mcs))
 # %% 
-iJO1366_mcs = compute_mcs(iJO1366, iJO1366_mue_target, cuts=cuts, enum_method=3, max_mcs_size=1, network_compression=True)
+iJO1366_mcs,_ = compute_mcs(iJO1366, iJO1366_mue_target, cuts=cuts, enum_method=3, max_mcs_size=1, network_compression=True)
 print(len(iJO1366_mcs))
 # %%
 e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, iJO1366_stdf.values, [r.reversibility for r in iJO1366.reactions], iJO1366_mue_targetB,
@@ -667,7 +706,7 @@ e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, iJO1366_stdf.va
 # e.model.objective = e.minimize_sum_over_z
 #e.write_lp_file('testI')
 # e.model.configuration.verbosity = 3
-iJO1366_mcs = e.enumerate_mcs(max_mcs_size=1, enum_method=2)
+iJO1366_mcs,_ = e.enumerate_mcs(max_mcs_size=1, enum_method=2)
 iJO1366_mcs_rxns = [tuple(reac_id[r] for r in mcs) for mcs in iJO1366_mcs]
 print(len(iJO1366_mcs)) # 271
 print(all(check_mcs(iJO1366, iJO1366_mue_targetB[0], iJO1366_mcs, optlang.interface.INFEASIBLE)))
@@ -737,7 +776,7 @@ e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, iJO1366_stdf.va
 e.model.configuration.tolerances.feasibility = 1e-9
 e.model.configuration.tolerances.optimality = 1e-9
 e.model.configuration.tolerances.integrality = 1e-10
-iJO1366_mcsB = e.enumerate_mcs(max_mcs_size=1)
+iJO1366_mcsB,_ = e.enumerate_mcs(max_mcs_size=1)
 print(set(iJO1366_mcs) == set(iJO1366_mcsB), len(iJO1366_mcsB))
 
 # %%
@@ -746,7 +785,7 @@ e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, rd, rev_rd, tar
                                         threshold=0.1, split_reversible_v=True, irrev_geq=True,
                                         cuts=numpy.any(subT[cuts, :], axis=0))
 info = dict()
-rd_mcs = e.enumerate_mcs(max_mcs_size=1, enum_method=2, info=info)
+rd_mcs,_ = e.enumerate_mcs(max_mcs_size=1, enum_method=2, info=info)
 print(info)
 print(len(rd_mcs))
 xsubT= subT.copy()
@@ -769,7 +808,7 @@ print(len(m))
 e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, rd, rev_rd, target_rd, 
                                         threshold=0.1, bigM=10000, split_reversible_v=True, irrev_geq=True,
                                         cuts=numpy.any(subT[cuts, :], axis=0))
-rd_mcs = e.enumerate_mcs(max_mcs_size=1, enum_method=1)
+rd_mcs,_ = e.enumerate_mcs(max_mcs_size=1, enum_method=1)
 
 #%% GLPK struggles with numerical instability 
 e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, iJO1366_stdf.values, [r.reversibility for r in iJO1366.reactions], iJO1366_mue_target,
@@ -780,49 +819,22 @@ e.model.configuration.verbosity = 3
 e.model.configuration.tolerances.feasibility = 1e-8
 e.model.configuration._iocp.tol_obj= 1e-8
 e.model.configuration._iocp.tol_int= 1e-10
-iJO1366_mcsB = e.enumerate_mcs(max_mcs_size=1)
+iJO1366_mcsB,_ = e.enumerate_mcs(max_mcs_size=1)
 print(set(iJO1366_mcs) == set(iJO1366_mcsB), len(iJO1366_mcsB))
 
-# %%
-import scipy
-input_keys = ['rd_rat', 'irrev_rd_rat', 'flux_lb', 'flux_ub', 'cuts', 'kn', 'idx', 'inh', 'ub', 'des', 'db']
-conf = scipy.io.loadmat(os.path.join('..', 'FLB_NB_benchmarks', 'iJM658_mcs_input'), variable_names=input_keys, simplify_cells=True)
-for k in input_keys: # put as variables into the workspace for simple access
-    exec(k+" = conf['"+k+"']")
 
 # %%
-i = idx[37]-1
-rd = rd_rat[i]
-irrev_rd = irrev_rd_rat[i]
-target = [[inh[i], ub[i]]]
-desired= [[des[i], db[i], flux_lb[i], flux_ub[i]]]
-#%%
-# e = ConstrainedMinimalCutSetsEnumerator(optlang.glpk_interface, rd, numpy.logical_not(irrev_rd), target,
-#      cuts=cuts[i], desired=desired, split_reversible_v=True, irrev_geq=False, kn=kn[i], threshold=0.1, bigM=1000)
-e = ConstrainedMinimalCutSetsEnumerator(optlang.cplex_interface, rd, numpy.logical_not(irrev_rd), target,
-     cuts=cuts[i], desired=desired, split_reversible_v=True, irrev_geq=False, kn=kn[i]) #, threshold=0.1, bigM=1000)
-#     cuts=cuts[i], desired=desired, split_reversible_v=True, irrev_geq=True) #, threshold=0.1, bigM=1000)
-e.model.problem.parameters.emphasis.numerical.set(1) # is not listed as changed parameter by CPLEX
-e.model.problem.parameters.parallel.set(1) # set to deterministic for time comparison
-e.model.problem.parameters.randomseed.set(5)
-e.model.configuration.tolerances.optimality = 1e-6
-e.model.configuration.tolerances.feasibility = 1e-6
-e.model.configuration.tolerances.integrality = 1e-7
-e.model.configuration.verbosity = 3
-e.evs_sz_lb = 1 
-#e.write_lp_file('testOL')
-#e.model.problem.parameters.get_changed()
-#%%
-info = dict()
-mcs = e.enumerate_mcs(max_mcs_size=8, enum_method=2, info=info) #, timeout=30)
-print(info)
+print(len(iJO1366.genes), sum(iJO1366.genes.list_attr('functional')))
+# %%
+ast = cobra.core.gene.parse_gpr(iJO1366.reactions[436].gene_reaction_rule)
+cobra.core.gene.eval_gpr(ast[0], {'b0351'})
+cobra.core.gene.eval_gpr(ast[0], ast[1])
+#sympy.sympify('b0351 | b1241')
+#sympy.logic.boolalg.to_dnf(sympy.sympify('(b4213) & (b0351 | b1241)'))
+# %%
 
 # %%
-res = scipy.io.loadmat(os.path.join('..', 'FLB_NB_benchmarks', 'iJM658_mcs_input_s5_255_255'), simplify_cells=True)
-set(mcs) == set([tuple(numpy.nonzero(res['mcs'][i][:, j])[0]) for j in range(res['mcs'][i].shape[1])])
-
-# %%
-iJO1366 = cobra.io.read_sbml_model(r"..\..\projects\iJO1366\iJO1366.xml")
+iJO1366 = cobra.io.read_sbml_model(r"..\cnapy-projects\iJO1366\model.sbml")
 
 # %% see how much memory resources GLPK needs...
 from swiglpk import *
