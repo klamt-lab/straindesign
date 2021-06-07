@@ -8,6 +8,10 @@ try:
 except:
     optlang.cplex_interface = None # make sure this symbol is defined for type() comparisons
 try:
+    import optlang.gurobi_interface
+except:
+    optlang.gurobi_interface = None # make sure this symbol is defined for type() comparisons
+try:
     import optlang.coinor_cbc_interface
 except:
     optlang.coinor_cbc_interface = None # make sure this symbol is defined for type() comparisons
@@ -365,6 +369,8 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
     if enum_method == 3:
         if optlang_interface.__name__ == 'optlang.cplex_interface':
             e.model.problem.parameters.mip.tolerances.mipgap.set(0.98)
+        elif optlang_interface.__name__ == 'optlang.gurobi_interface':
+            e.model.problem.Params.MipGap = 0.98
         elif optlang_interface.__name__ == 'optlang.glpk_interface':
             e.model.configuration._iocp.mip_gap = 0.98
         elif optlang_interface.__name__ == 'optlang.coinor_cbc_interface':

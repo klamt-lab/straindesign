@@ -12,6 +12,11 @@ try:
 except:
     optlang.cplex_interface = None # make sure this symbol is defined for type() comparisons
 try:
+    import optlang.gurobi_interface
+    from gurobipy import GRB
+except:
+    optlang.gurobi_interface = None # make sure this symbol is defined for type() comparisons
+try:
     import optlang.coinor_cbc_interface
 except:
     optlang.coinor_cbc_interface = None # make sure this symbol is defined for type() comparisons
@@ -302,19 +307,28 @@ class ConstrainedMinimalCutSetsEnumerator:
         all_mcs = []
         err_val = 0
         if enum_method == 2 or enum_method == 4:
-            if self._optlang_interface is not optlang.cplex_interface:
+            if self._optlang_interface is not optlang.cplex_interface \
+                and self._optlang_interface is not optlang.gurobi_interface:
                 raise TypeError('enum_methods 2/4 is not available for this solver.')
             if max_mcs_size is None:
                 max_mcs_size = len(self.z_vars)
-            self.model.problem.parameters.mip.pool.intensity.set(4)
-            # self.model.problem.parameters.mip.pool.absgap.set(0)
-            self.model.problem.parameters.mip.pool.relgap.set(self.model.configuration.tolerances.optimality)
-            if max_mcs_num == float('inf'):
-                self.model.problem.parameters.mip.limits.populate.set(self.model.problem.parameters.mip.pool.capacity.get())
-            z_idx = self.model.problem.variables.get_indices([z.name for z in self.z_vars]) # for solution pool/callback
+            if self._optlang_interface is optlang.cplex_interface:
+                self.model.problem.parameters.mip.pool.intensity.set(4)
+                self.model.problem.parameters.mip.pool.relgap.set(self.model.configuration.tolerances.optimality)
+                if max_mcs_num == float('inf'):
+                    self.model.problem.parameters.mip.limits.populate.set(self.model.problem.parameters.mip.pool.capacity.get())
+                z_idx = self.model.problem.variables.get_indices([z.name for z in self.z_vars]) # for solution pool/callback
+            else: # GUROBI
+                self.model.problem.Params.PoolSearchMode = 2
+                self.model.problem.Params.MIPGap = self.model.configuration.tolerances.optimality
+                self.model.problem.Params.PoolSolutions = 2000000000 # maximum value according to documentation
+                z_vars = [self.model.problem.getVarByName(z.name) for z in self.z_vars]
             if enum_method == 2:
                 print("Populate by cardinality up tp MCS size ", max_mcs_size)
-                self.model.problem.parameters.emphasis.mip.set(1) # integer feasibility
+                if self._optlang_interface is optlang.cplex_interface:
+                    self.model.problem.parameters.emphasis.mip.set(1) # integer feasibility
+                else:
+                    self.model.problem.Params.MIPFocus = 1 # integer feasibility
                 self.evs_sz.ub = self.evs_sz_lb # make sure self.evs_sz.ub is not None
             else:
                 print("Continuous search up to MCS size", max_mcs_size)
@@ -378,46 +392,75 @@ class ConstrainedMinimalCutSetsEnumerator:
                     if self.model.status != 'infeasible':
                         err_val = 1
                     continue_loop = False
-            elif enum_method == 2: # populate with CPLEX
-                if max_mcs_num != float('inf'):
-                    self.model.problem.parameters.mip.limits.populate.set(max_mcs_num - len(all_mcs))
+            elif enum_method == 2: # populate by cardinality
                 if self.evs_sz_lb != self.evs_sz.lb: # only touch the bounds if necessary to preserve the search tree
                     self.evs_sz.ub = self.evs_sz_lb
                     self.evs_sz.lb = self.evs_sz_lb
                 print("Enumerating MCS of size", self.evs_sz_lb)
-                try:
-                    self.model.problem.populate_solution_pool()
-                except CplexSolverError:
-                    print("Exception raised during populate")
-                    continue_loop = False
-                    err_val = 1
-                    break
-                print("Found", self.model.problem.solution.pool.get_num(), "MCS.")
-                print("Solver status is:", self.model.problem.solution.get_status_string())
-                cplex_status = self.model.problem.solution.get_status()
-                if type(info) is dict:
-                    info['cplex_status'] = cplex_status
-                    info['cplex_status_string'] = self.model.problem.solution.get_status_string()
-                if cplex_status is SolutionStatus.MIP_optimal or cplex_status is SolutionStatus.MIP_time_limit_feasible \
-                        or cplex_status is SolutionStatus.optimal_populated_tolerance: # may occur when a non-zero onjective function is set
-                    if cplex_status is SolutionStatus.MIP_optimal or cplex_status is SolutionStatus.optimal_populated_tolerance:
+                if self._optlang_interface is optlang.cplex_interface:
+                    if max_mcs_num != float('inf'):
+                        self.model.problem.parameters.mip.limits.populate.set(max_mcs_num - len(all_mcs))
+                    try:
+                        self.model.problem.populate_solution_pool()
+                    except CplexSolverError:
+                        print("Exception raised during populate")
+                        continue_loop = False
+                        err_val = 1
+                        break
+                    print("Found", self.model.problem.solution.pool.get_num(), "MCS.")
+                    print("Solver status is:", self.model.problem.solution.get_status_string())
+                    cplex_status = self.model.problem.solution.get_status()
+                    if type(info) is dict:
+                        info['cplex_status'] = cplex_status
+                        info['cplex_status_string'] = self.model.problem.solution.get_status_string()
+                    if cplex_status is SolutionStatus.MIP_optimal or cplex_status is SolutionStatus.MIP_time_limit_feasible \
+                            or cplex_status is SolutionStatus.optimal_populated_tolerance: # may occur when a non-zero onjective function is set
+                        if cplex_status is SolutionStatus.MIP_optimal or cplex_status is SolutionStatus.optimal_populated_tolerance:
+                            self.evs_sz_lb += 1
+                            print("Increased MCS size to:", self.evs_sz_lb)
+                        for i in range(self.model.problem.solution.pool.get_num()):
+                            mcs = tuple(numpy.where(numpy.round(
+                                        self.model.problem.solution.pool.get_values(i, z_idx)))[0])
+                            self.add_exclusion_constraint(mcs)
+                            all_mcs.append(mcs)
+                        self.model.update() # needs to be done explicitly when not using optlang optimize
+                    elif cplex_status is SolutionStatus.MIP_infeasible:
+                        print('No MCS of size ', self.evs_sz_lb)
                         self.evs_sz_lb += 1
-                        print("Increased MCS size to:", self.evs_sz_lb)
-                    for i in range(self.model.problem.solution.pool.get_num()):
-                        mcs = tuple(numpy.where(numpy.round(
-                                    self.model.problem.solution.pool.get_values(i, z_idx)))[0])
-                        self.add_exclusion_constraint(mcs)
-                        all_mcs.append(mcs)
-                    self.model.update() # needs to be done explicitly when not using optlang optimize
-                elif cplex_status is SolutionStatus.MIP_infeasible:
-                    print('No MCS of size ', self.evs_sz_lb)
-                    self.evs_sz_lb += 1
-                elif cplex_status is SolutionStatus.MIP_time_limit_infeasible:
-                    print('No further MCS of size', self.evs_sz_lb, 'found, time limit reached.')
-                else:
-                    print('Unexpected CPLEX status', self.model.problem.solution.get_status_string())
-                    err_val = 1
-                    continue_loop = False
+                    elif cplex_status is SolutionStatus.MIP_time_limit_infeasible:
+                        print('No further MCS of size', self.evs_sz_lb, 'found, time limit reached.')
+                    else:
+                        print('Unexpected CPLEX status', self.model.problem.solution.get_status_string())
+                        err_val = 1
+                        continue_loop = False
+                else: # Gurobi
+                    if max_mcs_num != float('inf'):
+                        self.model.problem.Params.SolutionLimit = max_mcs_num - len(all_mcs)
+                    self.model.problem.optimize()
+                    print("Found", self.model.problem.SolCount, "MCS.")
+                    gurobi_status = self.model.problem.status
+                    print("Solver status is:", gurobi_status)
+                    if type(info) is dict:
+                        info['gurobi_status'] = gurobi_status
+                    if gurobi_status is GRB.OPTIMAL or gurobi_status is GRB.TIME_LIMIT \
+                            or gurobi_status is GRB.SOLUTION_LIMIT:
+                        if gurobi_status is GRB.OPTIMAL:
+                            self.evs_sz_lb += 1
+                            print("Increased MCS size to:", self.evs_sz_lb)
+                        for i in range(self.model.problem.SolCount):
+                            self.model.problem.Params.SolutionNumber = i
+                            mcs = tuple(numpy.nonzero(numpy.round(
+                                        self.model.problem.getAttr(GRB.attr.Xn, z_vars)))[0])
+                            self.add_exclusion_constraint(mcs)
+                            all_mcs.append(mcs)
+                        self.model.update() # needs to be done explicitly when not using optlang optimize
+                    elif gurobi_status is GRB.INFEASIBLE:
+                        print('No MCS of size ', self.evs_sz_lb)
+                        self.evs_sz_lb += 1
+                    else:
+                        print('Unexpected GUROBI status', gurobi_status)
+                        err_val = 1
+                        continue_loop = False
                 # reset parameters here?
             elif enum_method == 4: # continuous solve with CPLEX
                 try:
