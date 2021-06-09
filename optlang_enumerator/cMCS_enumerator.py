@@ -13,7 +13,7 @@ except:
     optlang.cplex_interface = None # make sure this symbol is defined for type() comparisons
 try:
     import optlang.gurobi_interface
-    from gurobipy import GRB
+    from gurobipy import GRB, LinExpr
 except:
     optlang.gurobi_interface = None # make sure this symbol is defined for type() comparisons
 try:
@@ -337,8 +337,14 @@ class ConstrainedMinimalCutSetsEnumerator:
                 if self.model.objective is self.zero_objective:
                     self.model.objective = self.minimize_sum_over_z
                     print('Objective function is empty; set objective to self.minimize_sum_over_z')
-                cut_set_cb = CPLEXmakeMCSCallback(z_idx, model, targets, desired=desired, max_mcs_num=max_mcs_num)
-                self.model.problem.set_callback(cut_set_cb, cplex.callbacks.Context.id.candidate)
+                if self._optlang_interface is optlang.cplex_interface:
+                    cut_set_cb = CPLEXmakeMCSCallback(z_idx, model, targets, desired=desired, max_mcs_num=max_mcs_num)
+                    self.model.problem.set_callback(cut_set_cb, cplex.callbacks.Context.id.candidate)
+                else: # Gurobi
+                    self.model.problem.Params.LazyConstraints = 1 # must be activated explicitly
+                    cut_set_cb = GUROBImakeMCSCallback(z_vars, model, targets, desired=desired, max_mcs_num=max_mcs_num)
+                    def call_back_func(model, where): # encapsulating with functools.partial not accepted by Gurobi
+                        cut_set_cb.invoke(model, where) # passing this directly to optimize not accepted by Gurobi
         elif enum_method == 1 or enum_method == 3:
             if self.model.objective is self.zero_objective:
                 self.model.objective = self.minimize_sum_over_z
@@ -436,7 +442,13 @@ class ConstrainedMinimalCutSetsEnumerator:
                 else: # Gurobi
                     if max_mcs_num != float('inf'):
                         self.model.problem.Params.SolutionLimit = max_mcs_num - len(all_mcs)
-                    self.model.problem.optimize()
+                    try:
+                        self.model.problem.optimize()
+                    except:
+                        print("Exception raised during populate")
+                        continue_loop = False
+                        err_val = 1
+                        break
                     print("Found", self.model.problem.SolCount, "MCS.")
                     gurobi_status = self.model.problem.status
                     print("Solver status is:", gurobi_status)
@@ -463,36 +475,66 @@ class ConstrainedMinimalCutSetsEnumerator:
                         continue_loop = False
                 # reset parameters here?
             elif enum_method == 4: # continuous solve with CPLEX
-                try:
-                    self.model.problem.populate_solution_pool()
-                except CplexSolverError:
-                    print("Exception raised during populate")
-                    err_val = 1
-                    continue_loop = False
-                    break
-                print("Found", len(cut_set_cb.minimal_cut_sets), "MCS.")
-                print("Solver status is: ", self.model.problem.solution.get_status_string(),
-                      ", best bound is ", self.model.problem.solution.MIP.get_best_objective(), sep="")
-                all_mcs = cut_set_cb.minimal_cut_sets
-                cplex_status = self.model.problem.solution.get_status()
-                if type(info) is dict:
-                    info['cplex_status'] = cplex_status
-                    info['cplex_status_string'] = self.model.problem.solution.get_status_string()
-                if cplex_status is SolutionStatus.MIP_infeasible:
-                    print("Enumerated all MCS up to size", max_mcs_size)
-                    self.evs_sz_lb = max_mcs_size + 1
-                elif cplex_status is SolutionStatus.MIP_time_limit_feasible \
-                        or cplex_status is SolutionStatus.MIP_time_limit_infeasible:
-                    print("Stopped enumeration due to time limit.")
-                elif cplex_status is SolutionStatus.MIP_abort_feasible or cplex_status is SolutionStatus.MIP_abort_infeasible:
-                    if cut_set_cb.abort_status == 1:
-                        print("Stopped enumeration because number of MCS has reached limit.")
-                    elif cut_set_cb.abort_status == -1:
-                        print("Aborted enumeration due to excessive generation of candidates that are not cut sets.")
-                        err_val = -1
-                else:
-                    print('Unexpected CPLEX status', self.model.problem.solution.get_status_string())
-                    err_val = 1
+                if self._optlang_interface is optlang.cplex_interface:
+                    try:
+                        self.model.problem.populate_solution_pool()
+                    except CplexSolverError:
+                        print("Exception raised during populate")
+                        err_val = 1
+                        continue_loop = False
+                        break
+                    print("Found", len(cut_set_cb.minimal_cut_sets), "MCS.")
+                    print("Solver status is: ", self.model.problem.solution.get_status_string(),
+                        ", best bound is ", self.model.problem.solution.MIP.get_best_objective(), sep="")
+                    all_mcs = cut_set_cb.minimal_cut_sets
+                    cplex_status = self.model.problem.solution.get_status()
+                    if type(info) is dict:
+                        info['cplex_status'] = cplex_status
+                        info['cplex_status_string'] = self.model.problem.solution.get_status_string()
+                    if cplex_status is SolutionStatus.MIP_infeasible:
+                        print("Enumerated all MCS up to size", max_mcs_size)
+                        self.evs_sz_lb = max_mcs_size + 1
+                    elif cplex_status is SolutionStatus.MIP_time_limit_feasible \
+                            or cplex_status is SolutionStatus.MIP_time_limit_infeasible:
+                        print("Stopped enumeration due to time limit.")
+                    elif cplex_status is SolutionStatus.MIP_abort_feasible or cplex_status is SolutionStatus.MIP_abort_infeasible:
+                        if cut_set_cb.abort_status == 1:
+                            print("Stopped enumeration because number of MCS has reached limit.")
+                        elif cut_set_cb.abort_status == -1:
+                            print("Aborted enumeration due to excessive generation of candidates that are not cut sets.")
+                            err_val = -1
+                    else:
+                        print('Unexpected CPLEX status', self.model.problem.solution.get_status_string())
+                        err_val = 1
+                else: # Gurobi
+                    try:
+                        self.model.problem.optimize(call_back_func)
+                    except:
+                        print("Exception raised during populate")
+                        continue_loop = False
+                        err_val = 1
+                        break
+                    print("Found", len(cut_set_cb.minimal_cut_sets), "MCS.")
+                    gurobi_status = self.model.problem.status
+                    print("Solver status is: ", gurobi_status,
+                        ", best bound is ", self.model.problem.ObjBound, sep="")
+                    all_mcs = cut_set_cb.minimal_cut_sets
+                    if type(info) is dict:
+                        info['gurobi_status'] = gurobi_status
+                    if gurobi_status is GRB.INFEASIBLE:
+                        print("Enumerated all MCS up to size", max_mcs_size)
+                        self.evs_sz_lb = max_mcs_size + 1
+                    elif gurobi_status is GRB.TIME_LIMIT:
+                        print("Stopped enumeration due to time limit.")
+                    elif gurobi_status is GRB.INTERRUPTED:
+                        if cut_set_cb.abort_status == 1:
+                            print("Stopped enumeration because number of MCS has reached limit.")
+                        elif cut_set_cb.abort_status == -1:
+                            print("Aborted enumeration due to excessive generation of candidates that are not cut sets.")
+                            err_val = -1
+                    else:
+                        print('Unexpected GUROBI status', gurobi_status)
+                        err_val = 1
                 continue_loop = False
         if type(info) is dict:
             info['optlang_status'] = self.model.status
@@ -579,4 +621,68 @@ class CPLEXmakeMCSCallback():
                                          senses="L", rhs=[len(cut_set)-1.0])
             else:
                 context.reject_candidate()
- 
+
+class GUROBImakeMCSCallback():
+    def __init__(self, z_vars, model, targets, desired=None, max_mcs_num=float('inf'), redundant_constraints=True):
+        # needs max_mcs_num parameter
+        self.z_vars = z_vars # Gurobi variables
+        self.candidate_count = 0
+        self.minimal_cut_sets = []
+        self.model = model
+        self.target_constraints= mcs_computation.get_leq_constraints(model, targets)
+        if desired is None:
+            self.desired_constraints = None
+        else:
+            self.desired_constraints = mcs_computation.get_leq_constraints(model, desired)
+        self.redundant_constraints = redundant_constraints
+        self.non_cut_set_candidates = 0
+        self.abort_status = 0 # 1: stop because max_mcs_num is reached; -1: aborted due to excessive generation of candidates that are not cut sets
+        self.max_mcs_num = max_mcs_num
+    
+    def invoke(self, grb_model, where):
+        if where == GRB.Callback.MIPSOL:
+            self.candidate_count += 1
+            cut_set = numpy.nonzero(numpy.round(grb_model.cbGetSolution(self.z_vars)))[0]
+            print("CS", cut_set, end="")
+            if self.desired_constraints is not None:
+                for des in self.desired_constraints:
+                    if not mcs_computation.check_mcs(self.model, des, [cut_set], optlang.interface.OPTIMAL)[0]:
+                        print(": Rejecting candidate that does not fulfill a desired behaviour.")
+                        grb_model.cbLazy(LinExpr([1.0]*len(cut_set), [self.z_vars[c] for c in cut_set]),
+                                                 GRB.LESS_EQUAL, len(cut_set)-1.0)
+                        return
+            for targ in self.target_constraints:
+                if not mcs_computation.check_mcs(self.model, targ, [cut_set], optlang.interface.INFEASIBLE)[0]:
+                    # cut_set cannot be a superset of an already identified MCS here
+                    print(": Rejecting candidate that does not inhibit a target.")
+                    self.non_cut_set_candidates += 1
+                    if self.non_cut_set_candidates >= max(100, len(self.minimal_cut_sets)):
+                        # there are no exclusion constraints for this case, therefore abort if it occurs repeatedly
+                        print("\nAborting due to excessive generation of candidates that are not cut sets.")
+                        self.abort_status = -1
+                        grb_model.terminate()
+                    return
+            not_superset = True # not a superset of an already found MCS
+            cut_set_s = set(cut_set) # cut_set is an array, need set for >= comparison
+            for mcs in self.minimal_cut_sets: # is this necessary with Gurobi?
+                if cut_set_s >= mcs:
+                    print(" already contained as", mcs)
+                    not_superset = False
+                    cut_set = mcs # for the lazy constraint
+                    break
+            if not_superset:
+                if len(cut_set) > grb_model.cbGet(GRB.Callback.MIPSOL_OBJBND):
+                    # could use ceiling of best bound unless there are non-integer intervention costs
+                    cut_set = mcs_computation.make_minimal_cut_set(self.model, cut_set, self.target_constraints)
+                    print(" -> MCS", cut_set, end="")
+                else:
+                    print(" is MCS", end="")
+                self.minimal_cut_sets.append(frozenset(cut_set))
+                print(";", len(self.minimal_cut_sets), "MCS found so far.")
+                if len(self.minimal_cut_sets) >= self.max_mcs_num:
+                    print("Reached maximum number of MCS.")
+                    self.abort_status = 1
+                    grb_model.terminate()
+            if not_superset or self.redundant_constraints:
+                grb_model.cbLazy(LinExpr([1.0]*len(cut_set), [self.z_vars[c] for c in cut_set]),
+                                 GRB.LESS_EQUAL, len(cut_set)-1.0)
