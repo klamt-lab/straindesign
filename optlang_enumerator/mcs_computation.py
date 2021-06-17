@@ -384,7 +384,7 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
     
     e.evs_sz_lb = 1 # feasibility of all targets has been checked
     mcs, err_val = e.enumerate_mcs(max_mcs_size=max_mcs_size, max_mcs_num=max_mcs_num, enum_method=enum_method,
-                            model=model, targets=targets)
+                            model=model, targets=targets, desired=desired, timeout=timeout)
     if network_compression:
         xsubT= subT.copy()
         xsubT[numpy.logical_not(full_cuts), :] = 0 # only expand to reactions that are repressible within a given subset
