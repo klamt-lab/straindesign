@@ -231,15 +231,13 @@ class InfeasibleRegion(Exception):
 # convenience function
 def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_size=2, max_mcs_num=1000, timeout=600,
                 exclude_boundary_reactions_as_cuts=False, network_compression=True, fva_tolerance=1e-9,
-                include_model_bounds=True) -> List[Tuple[int]]:
+                include_model_bounds=True, bigM=0, mip_opt_tol=1e-6, mip_feas_tol=1e-6, mip_int_tol=1e-6) -> List[Tuple[int]]:
     # if include_model_bounds=True this function integrates non-default reaction bounds of the model into the
     # target and desired regions and directly modifies(!) these parameters
 
     # make fva_res and compressed model optional parameters
     if desired is None:
         desired = []
-    else:
-        config = Configuration()
 
     target_constraints= get_leq_constraints(model, targets)
     desired_constraints= get_leq_constraints(model, desired)
@@ -274,6 +272,7 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
     print("Running FVA to find blocked reactions...")
     start_time = time.monotonic()
     with model as fva:
+        # when include_model_bounds=False modify bounds so that only reversibilites are used?
         # fva.solver = 'glpk_exact' # too slow for large models
         fva.tolerance = fva_tolerance
         fva.objective = model.problem.Objective(0.0)
@@ -357,7 +356,7 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
             desired[i] = (desired[i][0], desired[i][1], fva_res.values[:, 0], fva_res.values[:, 1])
             
     optlang_interface = model.problem
-    if optlang_interface.Constraint._INDICATOR_CONSTRAINT_SUPPORT:
+    if optlang_interface.Constraint._INDICATOR_CONSTRAINT_SUPPORT and bigM == 0:
         bigM = 0.0
         print("Using indicators.")
     else:
@@ -383,6 +382,9 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
     #    e.model.problem.threads = -1 # activate multithreading
     
     e.evs_sz_lb = 1 # feasibility of all targets has been checked
+    e.model.configuration.tolerances.optimality = mip_opt_tol
+    e.model.configuration.tolerances.feasibility = mip_feas_tol
+    e.model.configuration.tolerances.integrality = mip_int_tol
     mcs, err_val = e.enumerate_mcs(max_mcs_size=max_mcs_size, max_mcs_num=max_mcs_num, enum_method=enum_method,
                             model=model, targets=targets, desired=desired, timeout=timeout)
     if network_compression:
