@@ -231,7 +231,8 @@ class InfeasibleRegion(Exception):
 # convenience function
 def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_size=2, max_mcs_num=1000, timeout=600,
                 exclude_boundary_reactions_as_cuts=False, network_compression=True, fva_tolerance=1e-9,
-                include_model_bounds=True, bigM=0, mip_opt_tol=1e-6, mip_feas_tol=1e-6, mip_int_tol=1e-6) -> List[Tuple[int]]:
+                include_model_bounds=True, bigM=0, mip_opt_tol=1e-6, mip_feas_tol=1e-6, mip_int_tol=1e-6,
+                set_mip_parameters_callback=None) -> List[Tuple[int]]:
     # if include_model_bounds=True this function integrates non-default reaction bounds of the model into the
     # target and desired regions and directly modifies(!) these parameters
 
@@ -385,6 +386,8 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
     e.model.configuration.tolerances.optimality = mip_opt_tol
     e.model.configuration.tolerances.feasibility = mip_feas_tol
     e.model.configuration.tolerances.integrality = mip_int_tol
+    if set_mip_parameters_callback != None:
+        set_mip_parameters_callback(e.model.problem)
     mcs, err_val = e.enumerate_mcs(max_mcs_size=max_mcs_size, max_mcs_num=max_mcs_num, enum_method=enum_method,
                             model=model, targets=targets, desired=desired, timeout=timeout)
     if network_compression:
