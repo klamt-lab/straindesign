@@ -387,7 +387,7 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
     e.model.configuration.tolerances.feasibility = mip_feas_tol
     e.model.configuration.tolerances.integrality = mip_int_tol
     if set_mip_parameters_callback != None:
-        set_mip_parameters_callback(e.model.problem)
+        set_mip_parameters_callback(e.model)
     mcs, err_val = e.enumerate_mcs(max_mcs_size=max_mcs_size, max_mcs_num=max_mcs_num, enum_method=enum_method,
                             model=model, targets=targets, desired=desired, timeout=timeout)
     if network_compression:
