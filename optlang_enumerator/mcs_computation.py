@@ -383,7 +383,10 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
     #    e.model.problem.threads = -1 # activate multithreading
     
     e.evs_sz_lb = 1 # feasibility of all targets has been checked
-    e.model.configuration.tolerances.optimality = mip_opt_tol
+    if optlang_interface.__name__ == 'optlang.glpk_interface':
+        e.model.configuration._smcp.tol_dj = mip_opt_tol
+    else:
+        e.model.configuration.tolerances.optimality = mip_opt_tol # nicht bei GLPK
     e.model.configuration.tolerances.feasibility = mip_feas_tol
     e.model.configuration.tolerances.integrality = mip_int_tol
     if set_mip_parameters_callback != None:

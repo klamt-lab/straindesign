@@ -1,7 +1,7 @@
 from setuptools import setup
 
 setup(name='optlang_enumerator',
-    version='0.0.1',
+    version='0.0.6',
     description='Enumeration of multiple solutions to a MILP with optlang.',
     url='https://github.com/cnapy-org/optlang_enumerator.git',
     author='Axel von Kamp',
