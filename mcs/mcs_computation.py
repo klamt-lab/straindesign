@@ -22,7 +22,7 @@ import sympy
 from sympy.parsing.sympy_parser import parse_expr, standard_transformations, implicit_multiplication_application
 from cobra.core.configuration import Configuration
 import efmtool_link.efmtool4cobra as efmtool4cobra
-import optlang_enumerator.cMCS_enumerator as cMCS_enumerator
+import mcs.cMCS_enumerator as cMCS_enumerator
 
 def expand_mcs(mcs: List[Union[Tuple[int], Set[int], FrozenSet[int]]], subT) -> List[Tuple[int]]:
     mcs = [[list(m)] for m in mcs] # list of lists; mcs[i] will contain a list of MCS expanded from it
@@ -383,12 +383,9 @@ def compute_mcs(model, targets, desired=None, cuts=None, enum_method=1, max_mcs_
     #    e.model.problem.threads = -1 # activate multithreading
     
     e.evs_sz_lb = 1 # feasibility of all targets has been checked
-    if optlang_interface.__name__ == 'optlang.glpk_interface':
-        e.model.configuration._smcp.tol_dj = mip_opt_tol
-    else:
-        e.model.configuration.tolerances.optimality = mip_opt_tol # nicht bei GLPK
-    e.model.configuration.tolerances.feasibility = mip_feas_tol
-    e.model.configuration.tolerances.integrality = mip_int_tol
+    # e.model.configuration.tolerances.optimality = mip_opt_tol
+    # e.model.configuration.tolerances.feasibility = mip_feas_tol
+    # e.model.configuration.tolerances.integrality = mip_int_tol
     if set_mip_parameters_callback != None:
         set_mip_parameters_callback(e.model)
     mcs, err_val = e.enumerate_mcs(max_mcs_size=max_mcs_size, max_mcs_num=max_mcs_num, enum_method=enum_method,

@@ -1,11 +1,11 @@
-# optlang_enumerator
+# mcs
 Module for enumerating multiple solutions to a MILP problem using the optlang framework.
 Currently only the enumeration of constrained minimal cut sets is implemented.
 
 Installation:
 
 First you need to install the efmtool_link package (also available at https://github.com/cnapy-org).
-Clone the repository, go into the top optlang_enumerator directory and install into your current Python environment with:
+Clone the repository, go into the top mcs directory and install into your current Python environment with:
 
 pip install .
 

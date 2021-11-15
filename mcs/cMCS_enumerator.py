@@ -22,7 +22,7 @@ except:
     optlang.coinor_cbc_interface = None # make sure this symbol is defined for type() comparisons
 from typing import List, Tuple, Union, FrozenSet
 import time
-import optlang_enumerator.mcs_computation as mcs_computation
+import mcs.mcs_computation as mcs_computation
 
 class ConstrainedMinimalCutSetsEnumerator:
     def __init__(self, optlang_interface, st, reversible, targets, kn=None, cuts=None,
@@ -373,18 +373,20 @@ class ConstrainedMinimalCutSetsEnumerator:
                     global_optimum = enum_method == 1 or \
                                      (self._optlang_interface is optlang.cplex_interface and 
                                       self.model.problem.solution.MIP.get_mip_relative_gap() < self.model.configuration.tolerances.optimality) or \
-                                     (self._optlang_interface is optlang.gurobi_interface and
-                                      self.model.problem.getAttr(GRB.attr.MIPGap) < self.model.configuration.tolerances.optimality) or \
-                                     (self._optlang_interface is optlang.glpk_interface and self.model.status == 'optimal')
+                                     (self._optlang_interface is optlang.glpk_interface and self.model.status == 'optimal') # geht das sicher?
                     if global_optimum: #enum_method == 1: # only for this method optlang 'optimal' is a guaranteed global optimum
                         ov = round(self.model.objective.value)
                         if ov >  self.evs_sz_lb:
                             self.evs_sz_lb = ov
-                        #if ov > self.evs_sz.lb: # increase lower bound of evs_sz constraint, but is this really always helpful?
-                        #    self.evs_sz.lb = ov
+                        #if ov > e.evs_sz.lb: # increase lower bound of evs_sz constraint, but is this really always helpful?
+                        #    e.evs_sz.lb = ov
                         #    print(ov)
+                        
+                        # not necessary when self.evs_sz.ub = max_mcs_size
+                        # if round(self.model.objective.value) > max_mcs_size:
+                        #     print('MCS size limit exceeded, stopping enumeration.')
+                        #     break
                     else: # enum_method == 3: # and self.model.status == 'feasible':
-                        # query best bound and use it to update self.evs_sz_lb
                         print("CS", mcs, end="")
                         mcs = mcs_computation.make_minimal_cut_set(model, mcs, target_constraints)
                         print(" -> MCS", mcs)
@@ -393,7 +395,7 @@ class ConstrainedMinimalCutSetsEnumerator:
                     all_mcs.append(mcs)
                 else:
                     print('Stopping enumeration with status', self.model.status)
-                    if self.model.status != 'infeasible' and self.model.status != 'time_limit':
+                    if self.model.status != 'infeasible':
                         err_val = 1
                     continue_loop = False
             elif enum_method == 2: # populate by cardinality

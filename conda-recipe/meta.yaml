@@ -1,11 +1,11 @@
-{% set version = '0.0.6' %}
+{% set version = '0.1' %}
 
 package:
-  name: optlang_enumerator
+  name: mcs
   version: {{ version }}
 
 source:
-  git_url: https://github.com/cnapy-org/optlang_enumerator.git
+  git_url: https://github.com/VonAlphaBisZulu/mcs
   git_rev: v{{ version }}
 
 requirements:
@@ -29,13 +29,13 @@ build:
 
 test:
   imports:
-    - optlang_enumerator
+    - mcs
 
 about:
-  home:  https://github.com/cnapy-org/optlang_enumerator
+  home:  https://github.com/VonAlphaBisZulu/mcs
   license: Apache 2
   license_family: MIT
   license_file: LICENSE
   summary: Enumeration of multiple solutions to a MILP with the optlang framework.
-  doc_url: https://github.com/cnapy-org/optlang_enumerator
-  dev_url: https://github.com/cnapy-org/optlang_enumerator
+  doc_url: https://github.com/VonAlphaBisZulu/mcs
+  dev_url: https://github.com/VonAlphaBisZulu/mcs

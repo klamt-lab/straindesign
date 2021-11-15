@@ -1,15 +1,15 @@
 #%%
 import cobra
 import optlang
-import optlang_enumerator.mcs_computation as mcs_computation
+import mcs.mcs_computation as mcs_computation
 import numpy
 import scipy
 
 #%% 
 from importlib import reload
-import optlang_enumerator
-reload(optlang_enumerator)
-import optlang_enumerator.mcs_computation as mcs_computation
+import mcs
+reload(mcs)
+import mcs.mcs_computation as mcs_computation
 
 #%%
 ecc2 = cobra.io.read_sbml_model("ECC2comp.sbml")

@@ -2,8 +2,8 @@
 #%%
 import cobra
 import cobra.util.array
-from optlang_enumerator.cMCS_enumerator import *
-from optlang_enumerator.mcs_computation import *
+from mcs.cMCS_enumerator import *
+from mcs.mcs_computation import *
 import time
 import numpy
 import os
@@ -11,14 +11,14 @@ import sys
 import efmtool_link.efmtool_intern as efmtool_intern
 import efmtool_link.efmtool4cobra as efmtool4cobra
 import pickle
-import optlang_enumerator
+import mcs
 import mcs_computation
 from importlib import reload
 #%%
-reload(optlang_enumerator.cMCS_enumerator)
-from optlang_enumerator.cMCS_enumerator import *
-reload(optlang_enumerator.mcs_computation)
-from optlang_enumerator.mcs_computation import *
+reload(mcs.cMCS_enumerator)
+from mcs.cMCS_enumerator import *
+reload(mcs.mcs_computation)
+from mcs.mcs_computation import *
 
 #%%
 ex = cobra.io.read_sbml_model(r"metatool_example_no_ext.xml")
