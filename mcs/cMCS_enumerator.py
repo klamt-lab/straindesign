@@ -1,41 +1,34 @@
 import numpy
 import scipy
-import optlang.glpk_interface
-from optlang.symbolics import add
-from optlang.exceptions import IndicatorConstraintsNotSupported
-from swiglpk import glp_write_lp
-try:
-    import optlang.cplex_interface
-    import cplex
-    from cplex.exceptions import CplexSolverError
-    from cplex._internal._subinterfaces import SolutionStatus # can be also accessed by a CPLEX object under .solution.status
-except:
-    optlang.cplex_interface = None # make sure this symbol is defined for type() comparisons
-try:
-    import optlang.gurobi_interface
-    from gurobipy import GRB, LinExpr
-except:
-    optlang.gurobi_interface = None # make sure this symbol is defined for type() comparisons
-try:
-    import optlang.coinor_cbc_interface
-except:
-    optlang.coinor_cbc_interface = None # make sure this symbol is defined for type() comparisons
+# import optlang.glpk_interface
+# from optlang.symbolics import add
+# from optlang.exceptions import IndicatorConstraintsNotSupported
+# from swiglpk import glp_write_lp
+# try:
+#     import optlang.cplex_interface
+#     import cplex
+#     from cplex.exceptions import CplexSolverError
+#     from cplex._internal._subinterfaces import SolutionStatus # can be also accessed by a CPLEX object under .solution.status
+# except:
+#     optlang.cplex_interface = None # make sure this symbol is defined for type() comparisons
+# try:
+#     import optlang.gurobi_interface
+#     from gurobipy import GRB, LinExpr
+# except:
+#     optlang.gurobi_interface = None # make sure this symbol is defined for type() comparisons
+# try:
+#     import optlang.coinor_cbc_interface
+# except:
+#     optlang.coinor_cbc_interface = None # make sure this symbol is defined for type() comparisons
 from typing import List, Tuple, Union, FrozenSet
 import time
 import mcs.mcs_computation as mcs_computation
 
-class ConstrainedMinimalCutSetsEnumerator:
-    def __init__(self, optlang_interface, st, reversible, targets, kn=None, cuts=None,
-        desired=None, knock_in=None, bigM=0, threshold=1, split_reversible_v=True,
-        irrev_geq=False, ref_set= None): # reduce_constraints=True, combined_z=True
-        # the matrices in st, targets and desired should be numpy.array or scipy.sparse (csr, csc, lil) format
-        # targets is a list of (T,t) pairs that represent T <= t
-        # implements only combined_z which implies reduce_constraints=True
-        # knock_in not yet implemented
-        self.ref_set = ref_set # optional set of reference MCS for debugging
-        self._optlang_interface = optlang_interface
-        self.model = optlang_interface.Model()
-        self.model.configuration.presolve = True # presolve on
+class MinimalCutSetsEnumerator:
+    def __init__(self, mcs_modules, koCost, kiCost, maxSolutions, maxCost, options, verbose):
+        # the matrices in mcs_modules, koCost and kiCost should be numpy.array or scipy.sparse (csr, csc, lil) format
+        # self.ref_set = ref_set # optional set of reference MCS for debugging
+        # self.model.configuration.presolve = True # presolve on
         # without presolve CPLEX sometimes gives false results when using indicators ?!?
         self.model.configuration.lp_method = 'auto'
         self.Constraint = optlang_interface.Constraint
