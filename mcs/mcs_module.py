@@ -70,7 +70,7 @@ class MCS_Module:
                 eq_sign = re.search('<=|>=|=',eq)
                 eq_sign = eq_sign[0]
                 split_eq = re.split('<=|>=|=',eq)
-                self.check_lhs(split_eq[0])
+                self.check_lhs(split_eq[0],reac_id)
         except:
             raise NameError('Equations must contain a sign (<=,=,>=)')
 
@@ -87,7 +87,7 @@ class MCS_Module:
             raise ValueError('When module type is "bilev_w_constr", a numerator and denominator must be provided.')
 
 
-    def check_lhs(self, equation: str) -> str:
+    def check_lhs(self, equation: str, model_reac_ids: List) -> str:
         errors = ""
 
         semantics = []
@@ -187,13 +187,10 @@ class MCS_Module:
             errors += (f"ERROR in {equation}:\nA reaction must not end "
                        f"with a separated number term only")
 
-        with self.appdata.project.cobra_py_model as model:
-            model_reaction_ids = [x.id for x in model.reactions]
-            for reaction_id in reaction_ids:
-                if reaction_id not in model_reaction_ids:
-                    errors += (f"ERROR in {equation}:\nA reaction with "
-                               f"the ID {reaction_id} does not exist in the model\n")
-
+        for reaction_id in reaction_ids:
+            if reaction_id not in model_reac_ids:
+                errors += (f"ERROR in {equation}:\nA reaction with "
+                            f"the ID {reaction_id} does not exist in the model\n")
         return errors
 
     def check_rhs(self, equation: str) -> str:
