@@ -50,7 +50,9 @@ class MCS_Module:
                         denominator: denominator of yield function
     Examples
     --------
-    >>> ADD EXAMPLE HERE
+        modules = [         mcs_module.MCS_Module(network,"target","lin_constraints","R4 >= 1")]
+        modules = [modules, mcs_module.MCS_Module(network,"desired","lin_constraints","R3 >= 1")]
+        ...
     """
     def __init__(self, model, module_sense, module_type, equations, inner_objective=None, numerator=None, denomin=None, *args, **kwargs):
         self.module_sense = str(module_sense)
@@ -61,10 +63,13 @@ class MCS_Module:
 
         reac_id = model.reactions.list_attr('id')
 
-        self.equations = equations
+        if "\n" in equations:
+            eqs = re.split(r"\n",equations)
+        if type(equations) is not list:
+            eqs = [equations]
+        self.equations = eqs
         # verify equations
         try:
-            eqs = re.split(r"\n",equations)
             for eq in eqs:
                 re.search('<=|>=|=',eq)
                 eq_sign = re.search('<=|>=|=',eq)
