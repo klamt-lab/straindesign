@@ -54,7 +54,8 @@ class MCS_Module:
         modules = [modules, mcs_module.MCS_Module(network,"desired","lin_constraints","R3 >= 1")]
         ...
     """
-    def __init__(self, model, module_sense, module_type, equations, inner_objective=None, numerator=None, denomin=None, *args, **kwargs):
+    def __init__(self, model, module_sense, module_type, equations, inner_objective=None, numerator=None, \
+                 denomin=None, lb =[], ub = [], *args, **kwargs):
         self.module_sense = str(module_sense)
         self.module_type  = str(module_type)
         
@@ -64,16 +65,15 @@ class MCS_Module:
         reac_id = model.reactions.list_attr('id')
 
         if "\n" in equations:
-            eqs = re.split(r"\n",equations)
+            equations = re.split(r"\n",equations)
         if type(equations) is not list:
-            eqs = [equations]
-        self.equations = eqs
+            equations = [equations]
+        self.equations = equations
         # verify equations
         try:
-            for eq in eqs:
+            for eq in equations:
                 re.search('<=|>=|=',eq)
-                eq_sign = re.search('<=|>=|=',eq)
-                eq_sign = eq_sign[0]
+                eq_sign = re.search('<=|>=|=',eq)[0]
                 split_eq = re.split('<=|>=|=',eq)
                 self.check_lhs(split_eq[0],reac_id)
         except:
@@ -85,6 +85,8 @@ class MCS_Module:
         self.inner_objective = inner_objective
         self.numerator = numerator
         self.denomin = denomin
+        self.lb = lb
+        self.ub = ub
 
         if (self.module_type == "bilev_w_constr") & (self.inner_objective == None):
             raise ValueError('When module type is "bilev_w_constr", an objective function must be provided.')
@@ -92,111 +94,13 @@ class MCS_Module:
             raise ValueError('When module type is "bilev_w_constr", a numerator and denominator must be provided.')
 
 
-    def check_lhs(self, equation: str, model_reac_ids: List) -> str:
-        errors = ""
-
-        semantics = []
-        reaction_ids = []
-        last_part = ""
-        counter = 1
-        for char in equation+" ":
-            if (char == " ") or (char in ("*", "/", "+", "-")) or (counter == len(equation+" ")):
-                if last_part != "":
-                    try:
-                        float(last_part)
-                    except ValueError:
-                        reaction_ids.append(last_part)
-                        semantics.append("reaction")
-                    else:
-                        semantics.append("number")
-                    last_part = ""
-
-                if counter == len(equation+" "):
-                    break
-
-            if char in "*":
-                semantics.append("multiplication")
-            elif char in "/":
-                semantics.append("division")
-            elif char in ("+", "-"):
-                semantics.append("dash")
-            elif char not in " ":
-                last_part += char
-            counter += 1
-
-        if len(reaction_ids) == 0:
-            errors += f"EQUATION ERROR in {equation}:\nNo reaction ID is given in the equation\n"
-
-        if semantics.count("division") > 1:
-            errors += f"ERROR in {equation}:\nAn equation must not have more than one /"
-
-        last_is_multiplication = False
-        last_is_division = False
-        last_is_dash = False
-        last_is_reaction = False
-        prelast_is_reaction = False
-        prelast_is_dash = False
-        last_is_number = False
-        is_start = True
-        for semantic in semantics:
-            if is_start:
-                if semantic in ("multiplication", "division"):
-                    errors += f"ERROR in {equation}:\nAn equation must not start with * or /"
-                is_start = False
-
-            if (last_is_multiplication or last_is_division) and (semantic in ("multiplication", "division")):
-                errors += f"ERROR in {equation}:\n* or / must not follow on * or /\n"
-            if last_is_dash and (semantic in ("multiplication", "division")):
-                errors += f"ERROR in {equation}:\n* or / must not follow on + or -\n"
-            if last_is_number and (semantic == "reaction"):
-                errors += f"ERROR in {equation}:\nA reaction must not directly follow on a number without a mathematical operation\n"
-            if last_is_reaction and (semantic == "reaction"):
-                errors += f"ERROR in {equation}:\nA reaction must not follow on a reaction ID\n"
-            if last_is_number and (semantic == "number"):
-                errors += f"ERROR in {equation}:\nA number must not follow on a number ID\n"
-
-            if prelast_is_reaction and last_is_multiplication and (semantic == "reaction"):
-                errors += f"ERROR in {equation}:\nTwo reactions must not be multiplied together\n"
-
-            if last_is_reaction:
-                prelast_is_reaction = True
-            else:
-                prelast_is_reaction = False
-
-            if last_is_dash:
-                prelast_is_dash = True
-            else:
-                prelast_is_dash = False
-
-            last_is_multiplication = False
-            last_is_division = False
-            last_is_dash = False
-            last_is_reaction = False
-            last_is_number = False
-            if semantic == "multiplication":
-                last_is_multiplication = True
-            elif semantic == "division":
-                last_is_division = True
-            elif semantic == "reaction":
-                last_is_reaction = True
-            elif semantic == "dash":
-                last_is_dash = True
-            elif semantic == "number":
-                last_is_number = True
-
-        if last_is_dash or last_is_multiplication or last_is_division:
-            errors += (f"ERROR in {equation}:\nA reaction must not end "
-                       f"with a +, -, * or /")
-
-        if prelast_is_dash and last_is_number:
-            errors += (f"ERROR in {equation}:\nA reaction must not end "
-                       f"with a separated number term only")
-
-        for reaction_id in reaction_ids:
-            if reaction_id not in model_reac_ids:
-                errors += (f"ERROR in {equation}:\nA reaction with "
-                            f"the ID {reaction_id} does not exist in the model\n")
-        return errors
+    def check_lhs(self, lhs: str, model_reac_ids: List) -> str:
+        ridx = [re.sub(r'^(\s|-|\+|\.|\()*|(\s|-|\+|\.|\))*$','',part) for part in lhs.split()]
+        # identify reaction identifiers by comparing with models reaction list
+        ridx = [r for r in ridx if r in model_reac_ids]
+        if not len(ridx) == len(set(ridx)): # check for duplicates
+            raise Exception("Reaction identifiers may only occur once in each linear expression.")
+        # TODO: Add more checks (e.g.: For ratios etc.)
 
     def check_rhs(self, equation: str) -> str:
         try:
@@ -206,6 +110,10 @@ class MCS_Module:
             return error
         else:
             return ""
+
+    def set_model_lb_ub(self, lb, ub):
+        self.lb = lb
+        self.ub = ub
 
     def check_for_mcs_equation_errors(self) -> str:
         errors = ""
