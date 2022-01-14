@@ -1,3 +1,4 @@
+from xml.etree.ElementTree import QName
 import numpy as np
 from scipy import sparse
 import cobra
@@ -119,9 +120,10 @@ class MinimalCutSetsEnumerator:
         if mcs_module.module_sense == 'desired':
             A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.reassign_lb_ub_from_ineq(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
             z_map_vars_i        = z_map_vars_p
-        # elif mcs_module.module_sense == 'target':
-        #     c_p = zeros(1,size(A_eq_p,2));
-        #     [A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, c_d, lb_i, ub_i, z_map_constr_ineq_d, z_map_constr_eq_d, z_map_vars_i] = dualize(obj,A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p);
+        elif mcs_module.module_sense == 'target':
+            c_p = [0]*len(c_p)
+            A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, c_d, lb_i, ub_i, z_map_constr_ineq_d, z_map_constr_eq_d, z_map_vars_i = self.dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
+        print(ub_i)
         #     [A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, z_map_constr_ineq_i, z_map_constr_eq_i] = dual_2_farkas(obj,A_ineq_d, b_ineq_d,A_eq_d, b_eq_d, c_d, z_map_constr_ineq_d,z_map_constr_eq_d);
         
         # 3. Add module to global MILP
@@ -161,7 +163,7 @@ class MinimalCutSetsEnumerator:
         S = sparse.csr_matrix(cobra.util.create_stoichiometric_matrix(self.model))
         # fill matrices
         A_eq = sparse.vstack((S,V_eq))
-        b_eq = [0]*numr+v_eq
+        b_eq = [0]*S.shape[0]+v_eq
         A_ineq = V_ineq
         b_ineq = v_ineq
         z_map_vars        = sparse.identity(numr,'d',format="csr")
@@ -169,6 +171,84 @@ class MinimalCutSetsEnumerator:
         z_map_constr_ineq = sparse.csr_matrix((self.num_z,A_ineq.shape[0]))
         A_ineq, b_ineq, lb, ub, z_map_constr_ineq = self.prevent_boundary_knockouts(A_ineq, b_ineq, lb, ub, z_map_constr_ineq, z_map_vars)
         return A_ineq, b_ineq, A_eq, b_eq, c, lb, ub, z_map_constr_ineq, z_map_constr_eq, z_map_vars
+
+    def dualize(self,A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p) -> \
+            Tuple[sparse.csr_matrix, Tuple, sparse.csr_matrix, Tuple, Tuple, Tuple, sparse.csr_matrix, sparse.csr_matrix, sparse.csr_matrix]:
+            # Translates a primal system to a dual system. The primal system must
+            # be given in the standard form: A_ineq x <= b_ineq, A_eq x = b_eq, lb <= x < ub, min{c'x}.
+            #
+            # Variables translate to constraints:
+            # x={R} ->   =
+            # x>=0  ->  >= (new constraint is multiplied with -1 to translate to <=
+            #               e.g. -A_i' y <= -c_i)
+            # x<=0  ->  <=
+            # Constraints translate to variables:
+            # =     ->   y={R}
+            # <=    ->   y>=0
+            #
+            #
+            
+            #
+            # Consider that the following is not implemented:
+            # In the case of (1) A x = b, (2) x={R}, (3) b~=0, Farkas' lemma is special,
+            # because b'y ~= 0 is required to make the primal infeasible instead of b'y < 0.
+            # 1. This does not occur very often.
+            # 2. Splitting the equality into two inequalities that translate to y>=0
+            #    would be posible, and yield b'y < 0 in the farkas' lemma.
+            # Maybe splitting is required, but I actually don't think so. Using the
+            # special case of b'y < 0 for b'y ~= 0 should be enough.
+
+            if z_map_vars_p == []:
+                z_map_vars_p = sparse.csr_matrix((self.num_z,A_ineq_p.shape[1]))
+            if z_map_constr_eq_p == []:
+                z_map_constr_eq_p = sparse.csr_matrix((self.num_z,A_eq_p.shape[0]))
+            if z_map_constr_ineq_p == []:
+                z_map_constr_ineq_p = sparse.csr_matrix((self.num_z,A_ineq_p.shape[0]))
+            
+            # knockouts of variables and constraints must not overlap in the problem matrix
+            if not len(A_eq_p[[True if i in z_map_constr_eq_p.nonzero()[1] else False for i in range(0,A_eq_p.shape[0])],:]\
+                            [:,[True if i in z_map_vars_p.nonzero()[1] else False for i in range(0,A_eq_p.shape[1])]].nonzero()[0]) == 0 \
+                or not len(A_ineq_p[[True if i in z_map_constr_ineq_p.nonzero()[1] else False for i in range(0,A_ineq_p.shape[0])],:]\
+                            [:,[True if i in z_map_vars_p.nonzero()[1] else False for i in range(0,A_ineq_p.shape[1])]].nonzero()[0]) == 0:
+                raise Exception("knockouts of variables and constraints must not overlap in the problem matrix. Something went wrong during the construction of the primal problem.")
+            
+            numr = len(self.model.reactions)
+            if c_p == []:
+                c_p = [0]*numr
+
+            print('debug')
+            
+            # # Translate inhomogenous bounds into inequality constraints
+            # lb_inh_bounds = lb_p~=0 & ~isinf(lb_p);
+            # ub_inh_bounds = ub_p~=0 & ~isinf(ub_p);
+            # x_geq0 = lb_p>=0 & ub_p >0;
+            # x_eR =   lb_p< 0 & ub_p >0;
+            # x_leq0 = lb_p< 0 & ub_p<=0;
+            
+            # LB = full(sparse(1:sum(lb_inh_bounds),find(lb_inh_bounds),-1,sum(lb_inh_bounds),size(A_ineq_p,2)));
+            # UB = full(sparse(1:sum(ub_inh_bounds),find(ub_inh_bounds), 1,sum(ub_inh_bounds),size(A_ineq_p,2)));
+            # A_ineq_p = [ A_ineq_p; ...
+            #     LB; ...
+            #     UB ];
+            # b_ineq_p = [ b_ineq_p; ...
+            #     -lb_p(lb_inh_bounds); ...
+            #     ub_p(ub_inh_bounds)];
+            
+            # # Translate into dual system
+            # A_ineq = [-A_eq_p(:,x_geq0)', -A_ineq_p(:,x_geq0)'; A_eq_p(:,x_leq0)', A_ineq_p(:,x_leq0)'];
+            # b_ineq = [c_p(x_geq0)' ; -c_p(x_leq0)'];
+            # A_eq = [A_eq_p(:,x_eR)', A_ineq_p(:,x_eR)'];
+            # b_eq = c_p(x_eR)';
+            # lb = [-inf(size(A_eq_p,1),1); zeros(size(A_ineq_p,1),1)];
+            # ub =   inf(size(A_eq_p,1)+size(A_ineq_p,1),1);
+            # c  = [b_eq_p; b_ineq_p]';
+            
+            # # translate mapping of z-variables to rows instead of columns
+            # z_map_constr_ineq = [z_map_vars_p(:, x_geq0), z_map_vars_p(:, x_leq0)];
+            # z_map_constr_eq   = z_map_vars_p(:,x_eR);
+            # z_map_vars        = [z_map_constr_eq_p, z_map_constr_ineq_p, zeros(obj.num_z, size([LB;UB],1))];
+            
+            A_ineq, b_ineq, A_eq, b_eq, lb, ub, z_map_constr_ineq, z_map_constr_eq = self.reassign_lb_ub_from_ineq(A_ineq, b_ineq, A_eq, b_eq, lb, ub, z_map_constr_ineq, z_map_constr_eq, z_map_vars);
 
     def prevent_boundary_knockouts(self, A_ineq, b_ineq, lb, ub, z_map_constr_ineq, z_map_vars) -> \
             Tuple[sparse.csr_matrix, Tuple, Tuple, Tuple, sparse.csr_matrix]:
@@ -196,89 +276,77 @@ class MinimalCutSetsEnumerator:
             # bounds when true upper and lower bounds exist instead.
             # To avoid interference with the knock-out logic, negative ub 
             # and positive ub are not translated.
-            
-            # example setup
-            A_ineq = sparse.csr_matrix(([-1,1,2,2,2,1,5,4],([0,1,2,2,5,3,4,4],[0,1,1,2,1,3,3,4])),shape=(6,5))
-            z_map_constr_ineq = sparse.csr_matrix(([1],([3],[5])),shape=(5,6))
-            b_ineq = [1,3,0,1,2,4]
+            lb = [[l] for l in lb]
+            ub = [[u] for u in ub]
 
             # translate entries to lb or ub
             # find all entries in A_ineq
-            numr = A_ineq.shape[0]
+            numr = A_ineq.shape[1]
             row_ineq = A_ineq.nonzero()[0]
             # filter for rows with only one entry 
             var_bound_constraint_ineq = [i for i in row_ineq if list(row_ineq).count(i)==1]
             # exclude knockable constraints
             var_bound_constraint_ineq = [i for i in var_bound_constraint_ineq if i not in z_map_constr_ineq.nonzero()[1]]
-            
+            # retrieve all bounds from inequality constraints
+            for i in var_bound_constraint_ineq:
+                idx_r = A_ineq[i,:].nonzero()[1] # get reaction from constraint (column of entry)
+                if A_ineq[i,idx_r]>0: # upper bound constraint
+                    ub[i] += [b_ineq[i]/A_ineq[i,idx_r].toarray()[0][0]]
+                else: # lower bound constraint
+                    lb[i] += [b_ineq[i]/A_ineq[i,idx_r].toarray()[0][0]]
 
-            # for i = var_bound_constraint_ineq(:)'
-            #     idx_r = find(A_ineq(i,:));
-            #     if A_ineq(i,idx_r)>0 % upper bound constraint
-            #         ub{idx_r} = [ub{idx_r} b_ineq(i)/A_ineq(i,idx_r)];
-            #     else % lower bound constraint
-            #         lb{idx_r} = [lb{idx_r} b_ineq(i)/A_ineq(i,idx_r)];
-            #     end
-            # end
-            # # find all entries in A_eq and filter for rows with only one entry
-            # [row_eq  ,  ~] = find(A_eq);
-            # [num_occ_eq,   row_eq]  = hist(row_eq,unique(row_eq));
-            # var_bound_constraint_eq = row_eq(num_occ_eq == 1)';
-            # # don't include knockable constraints
-            # var_bound_constraint_eq = setdiff(var_bound_constraint_eq, find(any(z_map_constr_eq,1)));
-            # # Also partly set lb or ub derived from equality constraints, for instance:
-            # # If x =  5, set ub = 5 and keep the inequality constraint -x <= -5.
-            # # If x = -5, set lb =-5 and keep the inequality constraint  x <=  5.
-            # A_ineq_new = [];
-            # b_ineq_new = [];
-            # for i = var_bound_constraint_eq(:)'
-            #     idx_r = find(A_eq(i,:));
-            #     if any(z_map_vars(:,idx_r)) % if knockable
-            #         if A_eq(i,idx_r) * b_eq(i) >0 # upper bound constraint
-            #             ub{idx_r} = [ub{idx_r} b_eq(i)/A_eq(i,idx_r)];
-            #             A_ineq_new = [A_ineq_new; -A_eq(i,:)];
-            #             b_ineq_new = [b_ineq_new; -b_eq(i)];
-            #         elseif A_eq(i,idx_r) * b_eq(i) <0 # lower bound constraint
-            #             lb{idx_r} = [lb{idx_r} b_eq(i)/A_eq(i,idx_r)];
-            #             A_ineq_new = [A_ineq_new;  A_eq(i,:)];
-            #             b_ineq_new = [b_ineq_new;  b_eq(i)];
-            #         else
-            #             lb{idx_r} = [lb{idx_r} 0];
-            #             ub{idx_r} = [ub{idx_r} 0];
-            #         end
-            #     else # if notknockable
-            #         lb{idx_r} = [lb{idx_r} b_eq(i)/A_eq(i,idx_r)];
-            #         ub{idx_r} = [ub{idx_r} b_eq(i)/A_eq(i,idx_r)];
-            #     end
-            # end
-            # for i = 1:n
-            #     if any(z_map_vars(:,i))   % if knockable, select losest bounds
-            #         ub{i} = max(ub{i}(~isinf(ub{i}))); # select largest non-inf upper bound
-            #         lb{i} = min(lb{i}(~isinf(lb{i}))); # select smallest non-inf lower bound
-            #     else % if not knockable, select tightest bounds
-            #         ub{i} = min(ub{i}(~isinf(ub{i}))); # select largest non-inf upper bound
-            #         lb{i} = max(lb{i}(~isinf(lb{i}))); # select smallest non-inf lower bound
-            #     end
-            # end
-            # ub(cellfun(@isempty,ub)) = { inf};
-            # lb(cellfun(@isempty,lb)) = {-inf};
-            # ub = cell2mat(ub);
-            # lb = cell2mat(lb);
-            
-            # if any(lb>ub)
-            #     error('Variables have contradictory bounds/constraints.');
-            # end
-            # # remove constraints that became redundant
-            # A_ineq(var_bound_constraint_ineq,:)            = [];
-            # b_ineq(var_bound_constraint_ineq)              = [];
-            # z_map_constr_ineq(:,var_bound_constraint_ineq) = [];
-            # A_eq(var_bound_constraint_eq,:)                = [];
-            # b_eq(var_bound_constraint_eq)                  = [];
-            # z_map_constr_eq(:,var_bound_constraint_eq)     = [];
-            # % add equality constraints that transformed to inequality constraints
-            # A_ineq            = [A_ineq; A_ineq_new];
-            # b_ineq            = [b_ineq; b_ineq_new];
-            # z_map_constr_ineq = [z_map_constr_ineq, zeros(size(z_map_constr_ineq,1),size(A_ineq_new,1))];
+            # find all entries in A_eq
+            row_eq = A_eq.nonzero()[0]
+            # filter for rows with only one entry 
+            var_bound_constraint_eq = [i for i in row_eq if list(row_eq).count(i)==1]
+            # exclude knockable constraints
+            var_bound_constraint_eq = [i for i in var_bound_constraint_eq if i not in z_map_constr_eq.nonzero()[1]]
+            # retrieve all bounds from equality constraints
+            # and partly set lb or ub derived from equality constraints, for instance:
+            # If x =  5, set ub = 5 and keep the inequality constraint -x <= -5.
+            # If x = -5, set lb =-5 and keep the inequality constraint  x <=  5.
+            A_ineq_new = sparse.csr_matrix((0,numr))
+            b_ineq_new = []
+            for i in var_bound_constraint_eq:
+                idx_r = A_eq[i,:].nonzero()[1] # get reaction from constraint (column of entry)
+                if any(z_map_vars[:,idx_r]): # if reaction is knockable
+                    if A_eq[i,idx_r]*b_eq[i]>0: # upper bound constraint
+                        ub[i] += [b_eq[i]/A_eq[i,idx_r].toarray()[0][0]]
+                        A_ineq_new = sparse.vstack((A_ineq_new,-A_eq[i,:]))
+                        b_ineq_new += [-b_eq[i]]
+                    elif A_eq[i,idx_r]*b_eq[i]<0: # lower bound constraint
+                        lb[i] += [b_eq[i]/A_eq[i,idx_r].toarray()[0][0]]
+                        A_ineq_new = sparse.vstack((A_ineq_new,A_eq[i,:]))
+                        b_ineq_new += [b_eq[i]]
+                    else:
+                        ub[i] += [0]
+                        lb[i] += [0]
+                else:
+                    lb[i] += [b_eq[i]/A_eq[i,idx_r].toarray()[0][0]]
+                    ub[i] += [b_eq[i]/A_eq[i,idx_r].toarray()[0][0]]
+            # set tightest bounds (avoid inf)
+            lb = [max([i for i in l if not np.isinf(i)]+[np.nan]) for l in lb]
+            ub = [min([i for i in u if not np.isinf(i)]+[np.nan]) for u in ub]
+            # set if only if no other bound remains
+            lb = [-np.inf if np.isnan(l) else l for l in lb]
+            ub = [ np.inf if np.isnan(u) else u for u in ub]
+
+            # check if bounds are consistent
+            if any(np.greater(lb,ub)):
+                raise Exception("There is a lower bound that is greater than its upper bound counterpart.")
+
+            # remove constraints that became redundant
+            A_ineq = A_ineq[[False if i in var_bound_constraint_ineq else True for i in range(0,A_ineq.shape[0])]]
+            b_ineq = [b_ineq[i] for i in var_bound_constraint_ineq]
+            z_map_constr_ineq[:,[False if i in var_bound_constraint_ineq else True for i in range(0,A_ineq.shape[0])]]
+            A_eq = A_eq[[False if i in var_bound_constraint_eq else True for i in range(0,A_eq.shape[0])]]
+            b_eq = [b_eq[i] for i in var_bound_constraint_eq]
+            z_map_constr_eq[:,[False if i in var_bound_constraint_eq else True for i in range(0,A_eq.shape[0])]]
+            # add equality constraints that transformed to inequality constraints
+            A_ineq = sparse.vstack((A_ineq,A_ineq_new))
+            b_ineq += b_ineq_new
+            z_map_constr_ineq = sparse.hstack((z_map_constr_ineq,sparse.csr_matrix((self.num_z,A_ineq_new.shape[0]))))
+            return A_ineq, b_ineq, A_eq, b_eq, lb, ub, z_map_constr_ineq, z_map_constr_eq
 
     def lineq2mat(self,equations) -> Tuple[sparse.csr_matrix, Tuple, sparse.csr_matrix, Tuple]:
         numr = len(self.model.reactions)
