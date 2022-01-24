@@ -39,15 +39,25 @@ class MILP_LP:
         elif not self.solver in avail_solvers:
             raise Exception("Selected solver is not installed / set up correctly.")
         # Copy parameters to object
-        try:
+        if self.A_ineq is not None:
             numvars = self.A_ineq.shape[1]
-        except:
+        elif self.A_eq is not None:
             numvars = self.A_eq.shape[1]
+        elif self.ub is not None:
+            numvars = len(self.ub)
+        else:
+            raise Exception("Number of variables could not be determined.")
         if self.c == None:
             self.c = [0]*numvars
+        if self.A_eq is None:
+            self.A_eq = sparse.csr_matrix((0,numvars))
+        if self.b_eq is None:
+            self.b_eq = []
         numineq = self.A_ineq.shape[0]
-        self.A_ineq = self.A_ineq[[True if not np.isinf(self.b_ineq[i]) else False for i in range(0,numineq)],:]
-        self.b_ineq = [self.b_ineq[i] for i in range(0,numineq) if not np.isinf(self.b_ineq[i])]
+        # Remove unbounded constraints
+        if any(np.isinf(self.b_ineq)) and self.solver == 'cplex':
+            print("CPLEX does not support unbounded inequalities. Inf bound is replaced by +/-1e9")
+            self.b_ineq = [np.sign(self.b_ineq[i])*1e9 if np.isinf(self.b_ineq[i]) else self.b_ineq[i] for i in range(len(self.b_ineq))]
         if self.A_eq == None:
             self.A_eq = sparse.csr_matrix((0,numvars))
         if self.b_eq == None:
@@ -85,6 +95,7 @@ class MILP_LP:
                 self.cpx.solve()
                 x = self.cpx.solution.get_values()
                 min_cx = self.cpx.solution.get_objective_value()
+                x = [x[i] if self.vtype[i]=='C' else int(round(x[i])) for i in range(len(x))]
                 return x, min_cx, 0
             except CplexError as exc:
                 if not exc.args[2]==1217: 
@@ -97,3 +108,57 @@ class MILP_LP:
         self.c = c
         if self.solver == 'cplex':
             self.cpx.objective.set_linear([[i,c[i]] for i in range(len(c))])
+
+    def add_eq_constraint(self,A_ineq,b_ineq):
+        if self.solver == 'cplex':
+            pass
+        pass
+
+    def add_ineq_constraint(self,A_ineq,b_ineq):
+        A_ineq = sparse.csr_matrix(A_ineq)
+        A_ineq.eliminate_zeros()
+        b_ineq = [float(b) for b in b_ineq]
+        self.A_ineq = sparse.vstack((self.A_ineq,A_ineq))
+        self.b_ineq += b_ineq
+        if self.solver == 'cplex':
+            numconst = self.cpx.linear_constraints.get_num()
+            numnewconst = A_ineq.shape[0]
+            newconst_idx = [numconst+i for i in range(numnewconst)]
+            self.cpx.linear_constraints.add(rhs=b_ineq, senses='L'*numnewconst)
+            # retrieve row and column indices from sparse matrix and convert them to int
+            A_ineq = A_ineq.tocoo()
+            rows_A = [int(a)+numconst for a in A_ineq.row]
+            cols_A = [int(a) for a in A_ineq.col]
+            data_A = [float(a) for a in A_ineq.data]
+            # convert matrix coefficients to float
+            data_A = [float(a) for a in A_ineq.data]
+            self.cpx.linear_constraints.set_coefficients(zip(rows_A, cols_A, data_A))
+            pass
+        pass
+
+    # ONLY DUMMIES SO FAR
+    def add_indic_constraint(self,A_ineq,b_ineq):
+        if self.solver == 'cplex':
+            pass
+        pass
+
+    def reset_objective(self):
+        pass
+
+    def set_time_limit(self):
+        pass
+
+    def populate(self):
+        pass
+
+    def set_targetable_z(self):
+        pass
+
+    def reset_targetable_z(self):
+        pass
+
+    def reset_objective(self):
+        pass
+
+    def clear_objective(self):
+        pass

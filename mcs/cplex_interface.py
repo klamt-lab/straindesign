@@ -62,7 +62,7 @@ def init_cpx_milp(c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype=None,indic_constr=None,x
         b = [float(i) for i in indic_constr.b]
         sense = [str(i) for i in indic_constr.sense]
         indvar = [int(i) for i in indic_constr.binv]
-        complem = [int(i) for i in indic_constr.indicval]
+        complem = [1-int(i) for i in indic_constr.indicval]
         # call CPLEX function to add indicators
         prob.indicator_constraints.add_batch(lin_expr=A, sense=sense,rhs=b,
                                             indvar=indvar,complemented=complem)
