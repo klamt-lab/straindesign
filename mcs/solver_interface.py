@@ -111,7 +111,6 @@ class MILP_LP:
         self.c = c
         if self.solver == 'cplex':
             self.cpx.objective.set_linear([[i,c[i]] for i in range(len(c))])
-            
 
     def add_eq_constraint(self,A_ineq,b_ineq):
         if self.solver == 'cplex':
@@ -147,7 +146,9 @@ class MILP_LP:
         pass
 
     def reset_objective(self):
-        pass
+        self.c = [0]*len(self.c)
+        if self.solver == 'cplex':
+            self.cpx.objective.set_linear([[i,0] for i in range(self.cpx.variables.get_num())])
 
     def set_time_limit(self):
         pass
