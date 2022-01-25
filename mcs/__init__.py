@@ -9,3 +9,6 @@ from .mcs_module import *
 from .cplex_interface import *
 from .indicator_constraints import *
 from .solver_interface import *
+from .constr2mat import *
+from .fba import *
+from .fva import *

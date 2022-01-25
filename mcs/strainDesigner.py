@@ -5,7 +5,6 @@ import cobra
 import re
 from typing import Dict, List, Tuple
 import mcs
-import ray
 
 class StrainDesigner(mcs.StrainDesignMILPBuilder):
     def __init__(self, *args, **kwargs):

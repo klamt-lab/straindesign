@@ -19,6 +19,7 @@ from typing import List, Tuple, Union, Set, FrozenSet
 import time
 import re
 import sympy
+from mcs.constr2mat import *
 
 """
 MCS module (:class:`MCS_Module`)

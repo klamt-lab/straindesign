@@ -75,32 +75,6 @@ def init_cpx_milp(c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype=None,indic_constr=None,x
     prob.parameters.simplex.tolerances.feasibility.set(1e-9)
     return prob
 
-# FBA for cobra model with CPLEX
-def cplex_fba(model):
-    # prepare vectors and matrices
-    S = cobra.util.create_stoichiometric_matrix(model)
-    S = sparse.csr_matrix(S)
-    lb = [v.lower_bound for v in model.reactions]
-    ub = [v.upper_bound for v in model.reactions]
-    c  = [i.objective_coefficient for i in model.reactions]
-    numreac = len(model.reactions)
-    if model.objective_direction == 'max':
-        c = [ -i for i in c]
-    # build CPLEX object
-    cpx = init_cpx_milp(c,[],[],S,[0]*numreac,lb,ub)
-    try:
-        cpx.solve()
-        fv = cpx.solution.get_values()
-        max_v = cpx.solution.get_objective_value()
-        if model.objective_direction == 'max':
-            max_v = -max_v
-        return fv, max_v
-    except CplexError as exc:
-        print(exc)
-        max_v = np.nan
-        fv = [np.nan] * numreac
-        return fv, max_v
-
 # FVA for cobra model with CPLEX
 def cplex_fva(model,reacs=None):
     # prepare vectors and matrices

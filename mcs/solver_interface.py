@@ -88,6 +88,9 @@ class MILP_LP:
         if self.solver == 'cplex':
             self.cpx = cplex_interface.init_cpx_milp(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
                                                      self.indic_constr,self.x0)
+        elif self.solver == 'gurobi':
+            self.gurobi = gurobi_interface.init_gurobi_milp(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
+                                                     self.indic_constr,self.x0)
 
     def solve(self) -> Tuple[List,float,float]:
         if self.solver == 'cplex':
@@ -108,6 +111,7 @@ class MILP_LP:
         self.c = c
         if self.solver == 'cplex':
             self.cpx.objective.set_linear([[i,c[i]] for i in range(len(c))])
+            
 
     def add_eq_constraint(self,A_ineq,b_ineq):
         if self.solver == 'cplex':

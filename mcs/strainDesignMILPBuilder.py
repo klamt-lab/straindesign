@@ -1,10 +1,14 @@
 import numpy as np
 from scipy import sparse
 import cobra
-import re
 from typing import Dict, List, Tuple, Union, FrozenSet
-from mcs import mcs_module, solver_interface, indicator_constraints
-import ray
+from mcs import mcs_module, solver_interface
+from mcs.constr2mat import *
+from mcs.indicator_constraints import *
+try:
+    import ray
+except:
+    pass
 
 
 class StrainDesignMILPBuilder:
@@ -170,7 +174,7 @@ class StrainDesignMILPBuilder:
         else:
             ub = [r.upper_bound for r in self.model.reactions]
         # 1. Translate (in)equalities into matrix form
-        V_ineq, v_ineq, V_eq, v_eq = self.lineq2mat(mcs_module.equations)
+        V_ineq, v_ineq, V_eq, v_eq = lineq2mat(mcs_module.equations,self.model.reactions.list_attr('id'))
 
         # 2. Construct LP for module
         # if mcs_module.module_type == 'lin_constraints':
@@ -433,23 +437,24 @@ class StrainDesignMILPBuilder:
 
         # Run LPs to determine maximal values knockable constraints can take.
         # This task is supported by the parallelization module 'Ray', if Ray is initialized
-        if ray.is_initialized():
-            # a) Build an Actor - a stateful worker based on a class
-            @ray.remote  # class is decorated with ray.remote to for parallel use
-            class M_optimizer(object):
-                def __init__(self):  # The LP object is only constructed once upon Actor creation.
-                    self.lp = solver_interface.MILP_LP(A_ineq=M_A_ineq, b_ineq=M_b_ineq, A_eq=M_A_eq, b_eq=M_b_eq,
-                                                       lb=M_lb, ub=M_ub)
+        if 'ray' in locals():
+            if ray.is_initialized():
+                # a) Build an Actor - a stateful worker based on a class
+                @ray.remote  # class is decorated with ray.remote to for parallel use
+                class M_optimizer(object):
+                    def __init__(self):  # The LP object is only constructed once upon Actor creation.
+                        self.lp = solver_interface.MILP_LP(A_ineq=M_A_ineq, b_ineq=M_b_ineq, A_eq=M_A_eq, b_eq=M_b_eq,
+                                                        lb=M_lb, ub=M_ub)
 
-                def compute(self, c):  # With each function call only the objective function is changed
-                    self.lp.set_objective(c)
-                    x, min, status = self.lp.solve()
-                    return -min
+                    def compute(self, c):  # With each function call only the objective function is changed
+                        self.lp.set_objective(c)
+                        x, min, status = self.lp.solve()
+                        return -min
 
-            # b) Create pool of Actors on which the computations should be executed. Number of Actors = number of CPUs
-            parpool = ray.util.ActorPool([M_optimizer.remote() for _ in range(int(ray.available_resources()['CPU']))])
-            # c) Run M computations on actor pool. lambda is an inline function 
-            max_Ax = list(parpool.map(lambda a, x: a.compute.remote(x), M_A))
+                # b) Create pool of Actors on which the computations should be executed. Number of Actors = number of CPUs
+                parpool = ray.util.ActorPool([M_optimizer.remote() for _ in range(int(ray.available_resources()['CPU']))])
+                # c) Run M computations on actor pool. lambda is an inline function 
+                max_Ax = list(parpool.map(lambda a, x: a.compute.remote(x), M_A))
         # If Ray is not available, use regular loop
         else:
             max_Ax = [np.nan] * len(M_A)
@@ -547,7 +552,7 @@ class StrainDesignMILPBuilder:
         ic_indicval = [0 if i == 1 else 1 for i in ic_indicval]
         # in z-maps: -1 => z=1 -> A_ineq*x <= b_ineq
         #             1 => z=0 -> A_ineq*x <= b_ineq
-        self.indic_constr = indicator_constraints.Indicator_constraints(ic_binv, ic_A, ic_b, ic_sense, ic_indicval)
+        self.indic_constr = Indicator_constraints(ic_binv, ic_A, ic_b, ic_sense, ic_indicval)
 
         # 7. Remove knockable (in)equalities from static problem, as they are now indicator constraints
         keep_ineq = [False if i in knockable_constr_ineq_ic else True for i in range(self.A_ineq.shape[0])]
@@ -642,61 +647,6 @@ class StrainDesignMILPBuilder:
         b_ineq += b_ineq_new
         z_map_constr_ineq = sparse.hstack((z_map_constr_ineq, sparse.csc_matrix((self.num_z, A_ineq_new.shape[0]))))
         return A_ineq, b_ineq, A_eq, b_eq, lb, ub, z_map_constr_ineq, z_map_constr_eq
-
-    def lineq2mat(self, equations) -> Tuple[sparse.csr_matrix, Tuple, sparse.csr_matrix, Tuple]:
-        numr = len(self.model.reactions)
-        A_ineq = sparse.csr_matrix((0, numr))
-        b_ineq = []
-        A_eq = sparse.csr_matrix((0, numr))
-        b_eq = []
-        for equation in equations:
-            try:
-                lhs, rhs = re.split('<=|=|>=', equation)
-                eq_sign = re.search('<=|>=|=', equation)[0]
-                rhs = float(rhs)
-            except:
-                raise Exception(
-                    "Equations must contain exactly one (in)equality sign: <=,=,>=. Right hand side must be a float number.")
-            A = self.linexpr2mat(lhs)
-            if eq_sign == '=':
-                A_eq = sparse.vstack((A_eq, A))
-                b_eq += [rhs]
-            elif eq_sign == '<=':
-                A_ineq = sparse.vstack((A_ineq, A))
-                b_ineq += [rhs]
-            elif eq_sign == '>=':
-                A_ineq = sparse.vstack((A_ineq, -A))
-                b_ineq += [-rhs]
-        return A_ineq, b_ineq, A_eq, b_eq
-
-    def linexpr2mat(self, lhs) -> sparse.csr_matrix:
-        # linexpr2mat translates the left hand side of a linear expression into a matrix
-        #
-        # e.g.: Model with reactions R1, R2, R3, R4
-        #       Expression: '2 R3 - R1'
-        #     translates into list:
-        #       A = [-1 0 2 0]
-        # 
-        A = sparse.lil_matrix((1, len(self.model.reactions)))
-        # split expression into parts and strip away special characters
-        ridx = [re.sub(r'^(\s|-|\+|\()*|(\s|-|\+|\))*$', '', part) for part in lhs.split()]
-        # identify reaction identifiers by comparing with models reaction list
-        ridx = [r for r in ridx if r in self.model.reactions.list_attr('id')]
-        if not len(ridx) == len(set(ridx)):  # check for duplicates
-            raise Exception("Reaction identifiers may only occur once in each linear expression.")
-        # iterate through reaction identifiers and retrieve coefficients from linear expression
-        for rid in ridx:
-            coeff = re.search('(\s|^)(\s|\d|-|\+|\.)*?(?=' + rid + '(\s|$))', lhs)[0]
-            coeff = re.sub('\s', '', coeff)
-            if coeff in ['', '+']:
-                coeff = 1
-            if coeff == '-':
-                coeff = -1
-            else:
-                coeff = float(coeff)
-            A[0, self.model.reactions.list_attr('id').index(rid)] = coeff
-        return A.tocsr()
-
 
 class ContMILP:
     def __init__(self, A_ineq, b_ineq, A_eq, b_eq, lb, ub, c, z_map_constr_ineq, z_map_constr_eq, z_map_vars):
