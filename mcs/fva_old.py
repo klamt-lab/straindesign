@@ -1,11 +1,11 @@
+import cobra
 from optlang.interface import OPTIMAL
 from scipy import sparse
 import mcs
 from typing import Tuple
 from pandas import DataFrame
+from sympy import E
 import numpy as np
-from cobra.core import Configuration
-from cobra.util import ProcessPool, create_stoichiometric_matrix
 
 # FBA for cobra model with CPLEX
 # the user may provide the optional arguments
@@ -19,23 +19,6 @@ def idx2c(i,n) -> int:
     sign = np.sign(np.mod(i,2)-0.5)
     c = [0 if not j == col else sign for j in range(n)]
     return c
-
-def worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0):
-    global lp_glob
-    lp_glob = mcs.MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
-                                    lb=lb, ub=ub, x0=x0)
-    global prev
-    prev=0
-
-def worker_compute(i):
-    global lp_glob
-    global prev
-    print(i)
-    c = idx2c(i,len(lp_glob.ub))
-    lp_glob.set_objective(c)
-    _, min_cx, _ = lp_glob.solve()
-    prev=i
-    return (i,min_cx)
 
 def fva(model,*kwargs):
     try:
@@ -52,7 +35,7 @@ def fva(model,*kwargs):
     
     numr = len(model.reactions)
     # prepare vectors and matrices
-    A_eq_base = create_stoichiometric_matrix(model)
+    A_eq_base = cobra.util.create_stoichiometric_matrix(model)
     A_eq_base = sparse.csr_matrix(A_eq_base)
     b_eq_base = [0]*len(model.metabolites)
     if 'A_eq' in locals():
@@ -69,37 +52,37 @@ def fva(model,*kwargs):
 
     # build LP
     lp = mcs.MILP_LP(   A_ineq=A_ineq,
-                        b_ineq=b_ineq,
-                        A_eq=A_eq,
-                        b_eq=b_eq,
-                        lb=lb,
-                        ub=ub,
-                        solver='cplex')
-    x0, _, status = lp.solve()
+                    b_ineq=b_ineq,
+                    A_eq=A_eq,
+                    b_eq=b_eq,
+                    lb=lb,
+                    ub=ub,
+                    solver='cplex')
+    _, _, status = lp.solve()
     if status is not 0:
         raise Exception('FVA problem not feasible.')
-
-    processes = Configuration().processes
-    num_reactions = len(reaction_ids)
-    processes = min(processes, num_reactions)
-
     x = [np.nan]*2*numr
-
-    if processes > 1:
-        with ProcessPool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0),
-                        ) as pool:
-            print('initialized')
-            chunk_size = len(reaction_ids) // processes
-            # x = pool.imap_unordered(worker_compute, range(2*numr), chunksize=chunk_size)
-            for i, value in pool.imap_unordered( worker_compute, range(2*numr), chunksize=chunk_size):
-                x[i] = value
-
-        # C = np.array_split(range(2*numr),20)
-        # x = pool.map(worker_compute, C)
-        # with mp.Pool(processes=mp.cpu_count(), initializer=worker_init, initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub)) as pool:
-
-        # x = np.concatenate(x)
-
+    if 'ray' in locals() and ray.is_initialized():
+        # Build an Actor - a stateful worker based on a class
+        @ray.remote  # class is decorated with ray.remote to for parallel use
+        class M_optimizer(object):
+            def __init__(self):  # The LP object is only constructed once upon Actor creation.
+                self.lp = mcs.MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
+                                                lb=lb, ub=ub)
+                self.numr = len(lb)
+                self.lp.cpx.parameters.threads.set(1)
+            def compute(self, idx_set):  # With each function call only the objective function is changed
+                for i in range(len(idx_set)):
+                    c = idx2c(idx_set[i],self.numr)
+                    self.lp.set_objective(c)
+                    _, x[i], _ = self.lp.solve()
+                return x
+        # b) Create pool of Actors on which the computations should be executed. Number of Actors = number of CPUs
+        numcpus = int(ray.available_resources()['CPU'])
+        parpool = ray.util.ActorPool([M_optimizer.remote() for _ in range(numcpus)])
+        # c) Run M computations on actor pool. lambda is an inline function
+        C = np.array_split(range(2*numr),numcpus)
+        x = list(parpool.map(lambda a, x: a.compute.remote(x), C))
     else:
         for i in range(2*numr):
             lp.set_objective(idx2c(i,numr))

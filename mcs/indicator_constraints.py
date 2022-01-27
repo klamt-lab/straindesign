@@ -1,3 +1,5 @@
+from pyrsistent import b
+
 class Indicator_constraints:
     def __init__(self, binv, A, b, sense, indicval):
         self.binv     = binv # index of binary variable

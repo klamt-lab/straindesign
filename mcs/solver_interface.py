@@ -112,6 +112,12 @@ class MILP_LP:
         if self.solver == 'cplex':
             self.cpx.objective.set_linear([[i,c[i]] for i in range(len(c))])
 
+    def set_objective_idx(self,C):
+        raise Exception('This is on the Todo list')
+        self.c = [self.c[k] if not k in C[1,:] else C[2,k] for k in range(len(self.c))]
+        if self.solver == 'cplex':
+            self.cpx.objective.set_linear([[i,c[i]] for i in range(len(c))])
+
     def add_eq_constraint(self,A_ineq,b_ineq):
         if self.solver == 'cplex':
             pass
@@ -136,8 +142,6 @@ class MILP_LP:
             # convert matrix coefficients to float
             data_A = [float(a) for a in A_ineq.data]
             self.cpx.linear_constraints.set_coefficients(zip(rows_A, cols_A, data_A))
-            pass
-        pass
 
     # ONLY DUMMIES SO FAR
     def add_indic_constraint(self,A_ineq,b_ineq):

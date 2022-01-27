@@ -1,8 +1,7 @@
+from cvxpy import CPLEX
 from scipy import sparse
 import numpy as np
 import cplex as cp
-import ray
-import cobra
 from cplex.exceptions import CplexError
 from mcs import indicator_constraints
 
@@ -22,7 +21,7 @@ from mcs import indicator_constraints
 #  
 
 # Create a CPLEX-object from a matrix-based problem setup
-def init_cpx_milp(c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype=None,indic_constr=None,x0=None,options=None):
+def init_cpx_milp(c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype=None,indic_constr=None,x0=None,options=None) -> CPLEX:
     
     prob = cp.Cplex()
     prob.objective.set_sense(prob.objective.sense.minimize)
@@ -74,69 +73,3 @@ def init_cpx_milp(c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype=None,indic_constr=None,x
     prob.parameters.simplex.tolerances.optimality.set(1e-9)
     prob.parameters.simplex.tolerances.feasibility.set(1e-9)
     return prob
-
-# FVA for cobra model with CPLEX
-def cplex_fva(model,reacs=None):
-    # prepare vectors and matrices
-    S = cobra.util.create_stoichiometric_matrix(model)
-    S = sparse.csr_matrix(S)
-    lb = [v.lower_bound for v in model.reactions]
-    ub = [v.upper_bound for v in model.reactions]
-    numreac = len(model.reactions)
-    c = [0]*numreac
-    # build CPLEX object
-    cpx = init_cpx_milp(c,[],[],S,[0]*numreac,lb,ub)
-    # TODO: specify range of reactions for which FVA should be done
-    if reacs:
-        reacRange = []
-    try:
-        # maximize and minimize successively flux for all reactions
-        for i in range(0,numreac-1): # TODO: Use user-specified range only
-            if i >= 1:
-                cpx.objective.set_linear(i-1,0)
-            cpx.objective.set_linear(i,1)
-            cpx.solve()
-            lb[i] = cpx.solution.get_objective_value()
-            cpx.objective.set_linear(i,-1)
-            cpx.solve()
-            ub[i] = -cpx.solution.get_objective_value()
-        return lb, ub
-    except CplexError as exc:
-        print(exc)
-        lb = [np.nan] * numreac
-        ub = [np.nan] * numreac
-        return lb,ub
-
-# FVA for cobra model with CPLEX
-@ray.remote
-def cplex_fva_ray(model,reacs=None):
-    ray.init(num_cpus=16, ignore_reinit_error=True)
-    # prepare vectors and matrices
-    S = cobra.util.create_stoichiometric_matrix(model)
-    S = sparse.csr_matrix(S)
-    lb = [v.lower_bound for v in model.reactions]
-    ub = [v.upper_bound for v in model.reactions]
-    numreac = len(model.reactions)
-    c = [0]*numreac
-    # build CPLEX object
-    cpx = init_cpx_milp(c,[],[],S,[0]*numreac,lb,ub)
-    # TODO: specify range of reactions for which FVA should be done
-    if reacs:
-        reacRange = []
-    try:
-        # maximize and minimize successively flux for all reactions
-        for i in range(0,numreac-1): # TODO: Use user-specified range only
-            if i >= 1:
-                cpx.objective.set_linear(i-1,0)
-            cpx.objective.set_linear(i,1)
-            cpx.solve()
-            lb[i] = cpx.solution.get_objective_value()
-            cpx.objective.set_linear(i,-1)
-            cpx.solve()
-            ub[i] = -cpx.solution.get_objective_value()
-        return lb, ub
-    except CplexError as exc:
-        print(exc)
-        lb = [np.nan] * numreac
-        ub = [np.nan] * numreac
-        return lb,ub
