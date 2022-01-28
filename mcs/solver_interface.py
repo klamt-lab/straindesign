@@ -1,8 +1,7 @@
-from re import X
-import cobra
-import numpy as np
+from cobra.util import solvers
+from numpy import inf, isinf, sign, nan, unique
 from scipy import sparse
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 from mcs import cplex_interface,indicator_constraints
 from cplex.exceptions import CplexError
 
@@ -21,7 +20,7 @@ class MILP_LP:
             if key not in kwargs.keys():
                 setattr(self,key,None)
         # Select solver (either by choice or automatically cplex > gurobi > glpk)
-        avail_solvers = list(cobra.util.solvers.keys())
+        avail_solvers = list(solvers.keys())
         try:
             import pyscipopt
             avail_solvers += ['scip']
@@ -55,17 +54,17 @@ class MILP_LP:
             self.b_eq = []
         numineq = self.A_ineq.shape[0]
         # Remove unbounded constraints
-        if any(np.isinf(self.b_ineq)) and self.solver == 'cplex':
+        if any(isinf(self.b_ineq)) and self.solver == 'cplex':
             print("CPLEX does not support unbounded inequalities. Inf bound is replaced by +/-1e9")
-            self.b_ineq = [np.sign(self.b_ineq[i])*1e9 if np.isinf(self.b_ineq[i]) else self.b_ineq[i] for i in range(len(self.b_ineq))]
+            self.b_ineq = [sign(self.b_ineq[i])*1e9 if isinf(self.b_ineq[i]) else self.b_ineq[i] for i in range(len(self.b_ineq))]
         if self.A_eq == None:
             self.A_eq = sparse.csr_matrix((0,numvars))
         if self.b_eq == None:
             self.b_eq = []
         if self.lb == None:
-            self.lb = [-np.inf()]*numvars
+            self.lb = [-inf()]*numvars
         if self.ub == None:
-            self.ub = [ np.inf()]*numvars
+            self.ub = [ inf()]*numvars
         if self.vtype == None:
             self.vtype = 'C'*numvars
         # check dimensions
@@ -103,9 +102,18 @@ class MILP_LP:
             except CplexError as exc:
                 if not exc.args[2]==1217: 
                     print(exc)
-                min_cx = np.nan
-                x = [np.nan] * self.cpx.variables.get_num()
+                min_cx = nan
+                x = [nan] * self.cpx.variables.get_num()
                 return x, min_cx, -1
+
+    def slim_solve(self) -> float:
+        if self.solver == 'cplex':
+            try:
+                self.cpx.solve()
+                opt = self.cpx.solution.get_objective_value()
+                return opt
+            except CplexError as exc:
+                return nan
 
     def set_objective(self,c):
         self.c = c
@@ -113,10 +121,14 @@ class MILP_LP:
             self.cpx.objective.set_linear([[i,c[i]] for i in range(len(c))])
 
     def set_objective_idx(self,C):
-        raise Exception('This is on the Todo list')
-        self.c = [self.c[k] if not k in C[1,:] else C[2,k] for k in range(len(self.c))]
+        # when indices occur multiple times, take first one
+        C_idx = [C[i][0] for i in range (len(C))]
+        C_idx = unique([C_idx.index(C_idx[i]) for i in range(len(C_idx))])
+        C = [C[i] for i in C_idx]
+        for i in range(len(C)):
+            self.c[C[i][0]] = C[i][1]
         if self.solver == 'cplex':
-            self.cpx.objective.set_linear([[i,c[i]] for i in range(len(c))])
+            self.cpx.objective.set_linear(C)
 
     def add_eq_constraint(self,A_ineq,b_ineq):
         if self.solver == 'cplex':

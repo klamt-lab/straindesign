@@ -39,7 +39,7 @@ def init_cpx_milp(c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype=None,indic_constr=None,x
     if isinstance(A_ineq,list):
         if not A_ineq:
             A_ineq = sparse.csr_matrix((0,numvars))
-    A = sparse.vstack((A_ineq,A_eq),format='csr') # concatenate coefficient matrices
+    A = sparse.vstack((A_ineq,A_eq),format='coo') # concatenate coefficient matrices
     sense = len(b_ineq)*'L' + len(b_eq)*'E'
 
     # construct CPLEX problem. Add variables and linear constraints
@@ -47,12 +47,7 @@ def init_cpx_milp(c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype=None,indic_constr=None,x
         vtype = 'C'*numvars
     prob.variables.add(obj=c, lb=lb, ub=ub, types=vtype)
     prob.linear_constraints.add(rhs=b, senses=sense)
-
-    # retrieve row and column indices from sparse matrix and convert them to int
-    sparse_indices_A = [[int(j) for j in i] for i in A.nonzero()]
-    # convert matrix coefficients to float
-    data_A = [float(i) for i in A.data]
-    prob.linear_constraints.set_coefficients(zip(sparse_indices_A[0], sparse_indices_A[1], data_A))
+    prob.linear_constraints.set_coefficients(zip(A.row.tolist(), A.col.tolist(), A.data.tolist()))
 
     # add indicator constraints
     if not indic_constr==None:

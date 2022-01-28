@@ -1,11 +1,12 @@
 from optlang.interface import OPTIMAL
 from scipy import sparse
-import mcs
+from mcs import MILP_LP, lineq2mat
 from typing import Tuple
 from pandas import DataFrame
-import numpy as np
+from numpy import floor, sign, mod, nan, unique
 from cobra.core import Configuration
-from cobra.util import ProcessPool, create_stoichiometric_matrix
+from cobra.util import ProcessPool, create_stoichiometric_matrix, solvers
+import cplex
 
 # FBA for cobra model with CPLEX
 # the user may provide the optional arguments
@@ -15,27 +16,79 @@ from cobra.util import ProcessPool, create_stoichiometric_matrix
 #   c:              Alternative objective in vector form
 
 def idx2c(i,n) -> int:
-    col = np.floor(i/2)
-    sign = np.sign(np.mod(i,2)-0.5)
-    c = [0 if not j == col else sign for j in range(n)]
+    col = floor(i/2)
+    sig = sign(mod(i,2)-0.5)
+    c = [0 if not j == col else sig for j in range(n)]
     return c
 
-def worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0):
+def worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver):
     global lp_glob
-    lp_glob = mcs.MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
-                                    lb=lb, ub=ub, x0=x0)
-    global prev
-    prev=0
+    lp_glob = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
+                                    lb=lb, ub=ub, x0=x0,solver=solver)
+    avail_solvers = list(solvers.keys())
+    if 'cplex' in avail_solvers:
+        # lp_glob.cpx.parameters.simplex.tolerances.optimality.set(1e-6)
+        # lp_glob.cpx.parameters.simplex.tolerances.feasibility.set(1e-6)
+        lp_glob = lp_glob.cpx
+        lp_glob.solve()
+    # elif 'gurobi' in avail_solvers:
+    # elif 'scip' in avail_solvers:
+    # else:
+    lp_glob.solver = solver
+    lp_glob.prev = 0
+    # global prev
+    # global cpx
+    # prev = 0
+    # cpx = cplex.Cplex()
+    # cpx.objective.set_sense(cpx.objective.sense.minimize)
+    # A = sparse.vstack((A_ineq,A_eq),format='coo')
+    # b = b_ineq + b_eq
+    # sense = len(b_ineq)*'L' + len(b_eq)*'E'
+    # cpx.variables.add(lb=lb, ub=ub)
+    # cpx.linear_constraints.add(rhs=b, senses=sense)
+    # cpx.linear_constraints.set_coefficients(zip(A.row.tolist(), A.col.tolist(), A.data.tolist()))
+    # # set parameters
+    # cpx.set_log_stream(None)
+    # cpx.set_error_stream(None)
+    # cpx.set_warning_stream(None)
+    # cpx.set_results_stream(None)
+    # cpx.parameters.simplex.tolerances.optimality.set(1e-9)
+    # cpx.parameters.simplex.tolerances.feasibility.set(1e-9)    
 
-def worker_compute(i):
+def worker_compute(i) -> Tuple[int,float]:
     global lp_glob
-    global prev
-    print(i)
-    c = idx2c(i,len(lp_glob.ub))
-    lp_glob.set_objective(c)
-    _, min_cx, _ = lp_glob.solve()
-    prev=i
-    return (i,min_cx)
+    col = int(floor(i/2))
+    sig = sign(mod(i,2)-0.5)
+    C = [[col,sig],[lp_glob.prev,0.0]]
+    C_idx = [C[i][0] for i in range (len(C))]
+    C_idx = unique([C_idx.index(C_idx[i]) for i in range(len(C_idx))])
+
+    if lp_glob.solver == 'cplex':
+        C = [C[i] for i in C_idx]
+        lp_glob.objective.set_linear(C)
+        lp_glob.solve()
+        lp_glob.presolve(1)
+        # min_cx = lp_glob.solution.get_objective_value()
+        min_cx =1
+
+
+    # lp_glob.set_objective_idx([[col,sig],[lp_glob.prev,0.0]])
+    # min_cx = lp_glob.slim_solve()
+    lp_glob.prev = col
+    return i, min_cx
+    # global prev
+    # global cpx
+    # col = int(floor(i/2))
+    # sig = sign(mod(i,2)-0.5)
+    # C = [[col,sig],[prev,0.0]]
+    # C_idx = [C[i][0] for i in range (len(C))]
+    # C_idx = unique([C_idx.index(C_idx[i]) for i in range(len(C_idx))])
+    # C = [C[i] for i in C_idx]
+    # cpx.objective.set_linear(C)
+    # cpx.solve()
+    # min_cx = cpx.solution.get_objective_value()
+    # prev = col
+    # return i, min_cx
 
 def fva(model,*kwargs):
     try:
@@ -48,7 +101,7 @@ def fva(model,*kwargs):
     if ('A_ineq' in locals() or 'A_eq' in locals()) and 'const' in locals():
         raise Exception('Define either A_ineq, b_ineq or const, but not both.')
     if 'const' in locals():
-        A_ineq, b_ineq, A_eq, b_eq = mcs.lineq2mat(const, reaction_ids)
+        A_ineq, b_ineq, A_eq, b_eq = lineq2mat(const, reaction_ids)
     
     numr = len(model.reactions)
     # prepare vectors and matrices
@@ -68,13 +121,13 @@ def fva(model,*kwargs):
     ub = [v.upper_bound for v in model.reactions]
 
     # build LP
-    lp = mcs.MILP_LP(   A_ineq=A_ineq,
-                        b_ineq=b_ineq,
-                        A_eq=A_eq,
-                        b_eq=b_eq,
-                        lb=lb,
-                        ub=ub,
-                        solver='cplex')
+    lp = MILP_LP(   A_ineq=A_ineq,
+                    b_ineq=b_ineq,
+                    A_eq=A_eq,
+                    b_eq=b_eq,
+                    lb=lb,
+                    ub=ub,
+                    solver='cplex')
     x0, _, status = lp.solve()
     if status is not 0:
         raise Exception('FVA problem not feasible.')
@@ -83,23 +136,20 @@ def fva(model,*kwargs):
     num_reactions = len(reaction_ids)
     processes = min(processes, num_reactions)
 
-    x = [np.nan]*2*numr
+    x = [nan]*2*numr
+
+    # Dummy to check if optimization runs
+    worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,list(solvers.keys())[0])
+    worker_compute(2)
 
     if processes > 1:
-        with ProcessPool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0),
-                        ) as pool:
+        with ProcessPool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,
+                        x0,list(solvers.keys())[0])) as pool:
             print('initialized')
             chunk_size = len(reaction_ids) // processes
             # x = pool.imap_unordered(worker_compute, range(2*numr), chunksize=chunk_size)
             for i, value in pool.imap_unordered( worker_compute, range(2*numr), chunksize=chunk_size):
                 x[i] = value
-
-        # C = np.array_split(range(2*numr),20)
-        # x = pool.map(worker_compute, C)
-        # with mp.Pool(processes=mp.cpu_count(), initializer=worker_init, initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub)) as pool:
-
-        # x = np.concatenate(x)
-
     else:
         for i in range(2*numr):
             lp.set_objective(idx2c(i,numr))
