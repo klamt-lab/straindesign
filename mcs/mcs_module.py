@@ -40,59 +40,67 @@ class MCS_Module:
     Attributes
     ----------
         module_sense: 'desired' or 'target'
-        module_type: 'lin_constraints', 'bilev_w_constr', 'yield_w_constr'
+        module_type: 'mcs_lin', 'mcs_bilvl', 'mcs_yield'
         equation: String to specify linear constraints: A v <= b, A v >= b, A v = b
             (e.g. T v <= t with 'target' or D v <= d with 'desired')
     ----------
     Module type specific attributes:
-        lin_constraints: <none>
-        bilev_w_constr: inner_objective: Inner optimization vector
-        yield_w_constr: numerator: numerator of yield function,
+        mcs_lin: <none>
+        mcs_bilvl: inner_objective: Inner optimization expression
+        mcs_yield: numerator: numerator of yield function,
                         denominator: denominator of yield function
     Examples
     --------
-        modules = [         mcs_module.MCS_Module(network,"target","lin_constraints","R4 >= 1")]
-        modules = [modules, mcs_module.MCS_Module(network,"desired","lin_constraints","R3 >= 1")]
+        modules = [         mcs_module.MCS_Module(network,"mcs_lin",module_sense="target",constraints="R4 >= 1")]
+        modules = [modules, mcs_module.MCS_Module(network,"mcs_lin",module_sense="desired",constraints="R3 >= 1")]
         ...
     """
-    def __init__(self, model, module_sense, module_type, equations, inner_objective=None, numerator=None, \
-                 denomin=None, lb =[], ub = [], *args, **kwargs):
-        self.module_sense = str(module_sense)
-        self.module_type  = str(module_type)
+    def __init__(self, model, module_type, *args, **kwargs):
+        self.module_type = module_type
+        allowed_keys = {'module_sense', 'constraints','inner_objective','numerator','denomin','lb','ub'}
+        # set all keys passed in kwargs
+        for key,value in kwargs.items():
+            if key in allowed_keys:
+                setattr(self,key,value)
+            else:
+                raise Exception("Key "+key+" is not supported.")
+        # set all remaining keys to None
+        for key in allowed_keys:
+            if key not in kwargs.keys():
+                setattr(self,key,None)
+
+        if self.lb is None:
+            self.lb = [r.lower_bound for r in model.reactions]
+        if self.ub is None:
+            self.ub = [r.upper_bound for r in model.reactions]        
         
-        if self.module_sense not in ["desired", "target"]:
+        if 'mcs' in self.module_type and self.module_sense not in ["desired", "target"]:
             raise ValueError('"module_sense" must be "target" or "desired".')
 
         reac_id = model.reactions.list_attr('id')
 
-        if "\n" in equations:
-            equations = re.split(r"\n",equations)
-        if type(equations) is not list:
-            equations = [equations]
-        self.equations = equations
-        # verify equations
+        if "\n" in self.constraints:
+            self.constraints = re.split(r"\n",self.constraints)
+        if type(self.constraints) is not list:
+            self.constraints = [self.constraints]
+
+        # verify self.constraints
         try:
-            for eq in equations:
+            for eq in self.constraints:
                 re.search('<=|>=|=',eq)
                 eq_sign = re.search('<=|>=|=',eq)[0]
                 split_eq = re.split('<=|>=|=',eq)
                 self.check_lhs(split_eq[0],reac_id)
         except:
-            raise NameError('Equations must contain a sign (<=,=,>=)')
+            raise NameError('self.constraints must contain a sign (<=,=,>=)')
 
-        if self.module_type not in  ["lin_constraints", "bilev_w_constr", "yield_w_constr"]:
-            raise ValueError('"module_type" must be "lin_constraints", "bilev_w_constr" or "yield_w_constr".')
-    
-        self.inner_objective = inner_objective
-        self.numerator = numerator
-        self.denomin = denomin
-        self.lb = lb
-        self.ub = ub
+        if self.module_type not in  ["mcs_lin", "mcs_bilvl", "mcs_yield"]:
+            raise ValueError('"module_type" must be "mcs_lin", "mcs_bilvl" or "mcs_yield".')
 
-        if (self.module_type == "bilev_w_constr") & (self.inner_objective == None):
-            raise ValueError('When module type is "bilev_w_constr", an objective function must be provided.')
-        elif (self.module_type == "yield_w_constr") & ((self.numerator==None) & (self.denomin==None)):
-            raise ValueError('When module type is "bilev_w_constr", a numerator and denominator must be provided.')
+        if (self.module_type == "mcs_bilvl") & (self.inner_objective == None):
+            raise ValueError('When module type is "mcs_bilvl", an objective function must be provided.')
+        elif (self.module_type == "mcs_yield") & ((self.numerator==None) & (self.denomin==None)):
+            raise ValueError('When module type is "mcs_yield", a numerator and denominator must be provided.')
 
 
     def check_lhs(self, lhs: str, model_reac_ids: List) -> str:

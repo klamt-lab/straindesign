@@ -26,7 +26,7 @@ class MILP_LP:
             avail_solvers += ['scip']
         except Exception:
             False
-        if self.solver == None:
+        if self.solver is None:
             if 'cplex' in avail_solvers:
                 self.solver = 'cplex'
             elif 'gurobi' in avail_solvers:
@@ -46,7 +46,7 @@ class MILP_LP:
             numvars = len(self.ub)
         else:
             raise Exception("Number of variables could not be determined.")
-        if self.c == None:
+        if self.c is None:
             self.c = [0]*numvars
         if self.A_eq is None:
             self.A_eq = sparse.csr_matrix((0,numvars))

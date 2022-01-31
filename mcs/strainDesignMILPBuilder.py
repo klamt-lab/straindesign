@@ -27,9 +27,9 @@ class StrainDesignMILPBuilder:
             if key not in dict(kwargs).keys():
                 setattr(self, key, None)
 
-        #     print ("%s == %s" %(key, value))
-        # ko_cost: , ki_cost: Dict[str, float]={}, M=None, max_cost=None, solver=None,
-        # select solver
+        if type(mcs_modules) is "mcs_module":
+            mcs_modules = [mcs_modules]
+            
         avail_solvers = list(cobra.util.solvers.keys())
         try:
             import pyscipopt
@@ -150,15 +150,15 @@ class StrainDesignMILPBuilder:
         # Attributes
         # ----------
         #     module_sense: 'desired' or 'target'
-        #     module_type: 'lin_constraints', 'bilev_w_constr', 'yield_w_constr'
+        #     module_type: 'mcs_lin', 'mcs_bilvl', 'mcs_yield'
         #     equation: String to specify linear constraints: A v <= b, A v >= b, A v = b
         #         (e.g. T v <= t with 'target' or D v <= d with 'desired')
         # ----------
         # Module type specific attributes:
-        #     lin_constraints: <none>
-        #     bilev_w_constr: inner_objective: Inner optimization vector
-        #     yield_w_constr: numerator: numerator of yield function,
-        #                     denominator: denominator of yield function
+        #     mcs_lin: <none>
+        #     mcs_bilvl: inner_objective: Inner optimization vector
+        #     mcs_yield: numerator: numerator of yield function,
+        #                denominator: denominator of yield function
         #
         self.num_modules += 1
         z_map_constr_ineq_i = []
@@ -174,29 +174,29 @@ class StrainDesignMILPBuilder:
         else:
             ub = [r.upper_bound for r in self.model.reactions]
         # 1. Translate (in)equalities into matrix form
-        V_ineq, v_ineq, V_eq, v_eq = lineq2mat(mcs_module.equations,self.model.reactions.list_attr('id'))
+        V_ineq, v_ineq, V_eq, v_eq = lineq2mat(mcs_module.constraints,self.model.reactions.list_attr('id'))
 
         # 2. Construct LP for module
-        # if mcs_module.module_type == 'lin_constraints':
-        #     # Classical MCS
-        A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p = self.build_primal(
-            V_ineq, v_ineq, V_eq, v_eq, [], lb, ub)
-        # 3. Prepare module as target or desired
-        if mcs_module.module_sense == 'desired':
-            A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.reassign_lb_ub_from_ineq(
-                A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
-            z_map_vars_i = z_map_vars_p
-        elif mcs_module.module_sense == 'target':
-            c_p = [0] * len(c_p)
-            A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, c_d, lb_i, ub_i, z_map_constr_ineq_d, z_map_constr_eq_d, z_map_vars_i = self.dualize(
-                A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p,
-                z_map_vars_p)
-            A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.dual_2_farkas(A_ineq_d,
-                                                                                                            b_ineq_d,
-                                                                                                            A_eq_d,
-                                                                                                            b_eq_d, c_d,
-                                                                                                            z_map_constr_ineq_d,
-                                                                                                            z_map_constr_eq_d)
+        if mcs_module.module_type == 'mcs_lin':
+            # Classical MCS
+            A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p = self.build_primal(
+                V_ineq, v_ineq, V_eq, v_eq, [], lb, ub)
+            # 3. Prepare module as target or desired
+            if mcs_module.module_sense == 'desired':
+                A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.reassign_lb_ub_from_ineq(
+                    A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
+                z_map_vars_i = z_map_vars_p
+            elif mcs_module.module_sense == 'target':
+                c_p = [0] * len(c_p)
+                A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, c_d, lb_i, ub_i, z_map_constr_ineq_d, z_map_constr_eq_d, z_map_vars_i = self.dualize(
+                    A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p,
+                    z_map_vars_p)
+                A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.dual_2_farkas(A_ineq_d,
+                                                                                                                b_ineq_d,
+                                                                                                                A_eq_d,
+                                                                                                                b_eq_d, c_d,
+                                                                                                                z_map_constr_ineq_d,
+                                                                                                                z_map_constr_eq_d)
 
         # 3. Add module to global MILP
         self.z_map_constr_ineq = sparse.hstack((self.z_map_constr_ineq, z_map_constr_ineq_i)).tocsc()
