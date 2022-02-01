@@ -50,26 +50,31 @@ def worker_compute(i) -> Tuple[int,float]:
     lp_glob.prev = col
     return i, min_cx
 
-def fva(model,*kwargs):
-    try:
-        import ray
-    except:
-        pass
-
-    # Check type and size of A_ineq and b_ineq if they exist
+def fva(model,**kwargs):
     reaction_ids = model.reactions.list_attr("id")
-    if ('A_ineq' in locals() or 'A_eq' in locals()) and 'const' in locals():
-        raise Exception('Define either A_ineq, b_ineq or const, but not both.')
-    if 'const' in locals():
-        A_ineq, b_ineq, A_eq, b_eq = lineq2mat(const, reaction_ids)
-    
     numr = len(model.reactions)
+    if ('A_ineq' in kwargs or 'A_ineq' in kwargs) and 'constr' in kwargs:
+        raise Exception('Define either A_ineq, b_ineq or constr, but not both.')
+        
+    if 'constr' in kwargs:
+        A_ineq, b_ineq, A_eq, b_eq = lineq2mat(kwargs['constr'], reaction_ids)
+    if 'A_ineq' in kwargs and 'b_ineq' in kwargs:
+        A_ineq = kwargs['A_ineq']
+        b_ineq = kwargs['b_ineq']
+    if 'A_eq' in kwargs and 'b_eq' in kwargs:
+        A_eq = kwargs['A_eq']
+        b_eq = kwargs['b_eq']
+    else:
+        A_eq = sparse.csr_matrix((0,numr))
+        b_eq = []
+    
+    
     # prepare vectors and matrices
     A_eq_base = create_stoichiometric_matrix(model)
     A_eq_base = sparse.csr_matrix(A_eq_base)
     b_eq_base = [0]*len(model.metabolites)
     if 'A_eq' in locals():
-        A_eq  = sparse.vstack((A_eq_base, A_eq_supp))
+        A_eq  = sparse.vstack((A_eq_base, A_eq))
         b_eq  = b_eq_base+b_eq
     else:
         A_eq = A_eq_base

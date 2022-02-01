@@ -10,24 +10,48 @@ from typing import Dict
 #   A_ineq, b_ineq: Additional constraints in matrix form
 #   obj:            Alternative objective in text form
 #   c:              Alternative objective in vector form
-def fba(model,*kwargs):
+def fba(model,**kwargs):
+    allowed_keys = {'obj', 'A_ineq','b_ineq','A_eq','b_eq','constr','c','obj'}
+    # # set all keys passed in kwargs
+    # for key,value in kwargs.items():
+    #     if key in allowed_keys:
+    #         locals()[key] = value
+    #     else:
+    #         raise Exception("Key "+key+" is not supported.")
+    # # set all remaining keys to None
+    # for key in allowed_keys:
+    #     if key not in kwargs.keys():
+    #         locals()[key] = None
     # Check type and size of A_ineq and b_ineq if they exist
     reaction_ids = model.reactions.list_attr("id")
-    if ('A_ineq' in locals() or 'A_eq' in locals()) and 'const' in locals():
-        raise Exception('Define either A_ineq, b_ineq or const, but not both.')
-    if 'obj' in locals() and 'c' in locals():
+    numr = len(model.reactions)
+    if ('A_ineq' in kwargs or 'A_ineq' in kwargs) and 'constr' in kwargs:
+        raise Exception('Define either A_ineq, b_ineq or constr, but not both.')
+    if 'obj' in kwargs and 'c' in kwargs:
         raise Exception('Define either obj or c, but not both.')
-    if 'const' in locals():
-        A_ineq, b_ineq, A_eq, b_eq = lineq2mat(const, reaction_ids)
-    if 'obj' in locals():
-        c = linexpr2mat(obj, reaction_ids)
+        
+    if 'constr' in kwargs:
+        A_ineq, b_ineq, A_eq, b_eq = lineq2mat(kwargs['constr'], reaction_ids)
+    if 'A_ineq' in kwargs and 'b_ineq' in kwargs:
+        A_ineq = kwargs['A_ineq']
+        b_ineq = kwargs['b_ineq']
+    if 'A_eq' in kwargs and 'b_eq' in kwargs:
+        A_eq = kwargs['A_eq']
+        b_eq = kwargs['b_eq']
+    else:
+        A_eq = sparse.csr_matrix((0,numr))
+        b_eq = []
+    if 'obj' in kwargs:
+        c = linexpr2mat(kwargs['obj'], reaction_ids)
+    elif 'c' in kwargs:
+        c = kwargs['c']
     
     # prepare vectors and matrices
     A_eq_base = cobra.util.create_stoichiometric_matrix(model)
     A_eq_base = sparse.csr_matrix(A_eq_base)
     b_eq_base = [0]*len(model.metabolites)
     if 'A_eq' in locals():
-        A_eq  = sparse.vstack((A_eq_base, A_eq_supp))
+        A_eq  = sparse.vstack((A_eq_base, A_eq))
         b_eq  = b_eq_base+b_eq
     else:
         A_eq = A_eq_base

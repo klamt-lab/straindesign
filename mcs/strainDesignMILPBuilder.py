@@ -27,7 +27,7 @@ class StrainDesignMILPBuilder:
             if key not in dict(kwargs).keys():
                 setattr(self, key, None)
 
-        if type(mcs_modules) is "mcs_module":
+        if "MCS_Module" in str(type(mcs_modules)):
             mcs_modules = [mcs_modules]
             
         avail_solvers = list(cobra.util.solvers.keys())
@@ -179,24 +179,48 @@ class StrainDesignMILPBuilder:
         # 2. Construct LP for module
         if mcs_module.module_type == 'mcs_lin':
             # Classical MCS
-            A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p = self.build_primal(
-                V_ineq, v_ineq, V_eq, v_eq, [], lb, ub)
-            # 3. Prepare module as target or desired
-            if mcs_module.module_sense == 'desired':
-                A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.reassign_lb_ub_from_ineq(
-                    A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
-                z_map_vars_i = z_map_vars_p
-            elif mcs_module.module_sense == 'target':
-                c_p = [0] * len(c_p)
-                A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, c_d, lb_i, ub_i, z_map_constr_ineq_d, z_map_constr_eq_d, z_map_vars_i = self.dualize(
-                    A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p,
-                    z_map_vars_p)
-                A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.dual_2_farkas(A_ineq_d,
-                                                                                                                b_ineq_d,
-                                                                                                                A_eq_d,
-                                                                                                                b_eq_d, c_d,
-                                                                                                                z_map_constr_ineq_d,
-                                                                                                                z_map_constr_eq_d)
+            A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p \
+                = self.build_primal(V_ineq, v_ineq, V_eq, v_eq, [], lb, ub)
+        elif mcs_module.module_type == 'mcs_bilvl':
+            c = linexpr2mat(mcs_module.inner_objective,self.model.reactions.list_attr('id'))
+            c = c.toarray()[0].tolist()
+            # 1. build primal w/ desired constraint (build_primal) - also store variable c
+            A_ineq_v, b_ineq_v, A_eq_v, b_eq_v, c_v, lb_v, ub_v, z_map_constr_ineq_v, z_map_constr_eq_v, z_map_vars_v \
+                = self.build_primal(V_ineq, v_ineq, V_eq, v_eq, c, lb, ub)
+            # 2. build primal w/o desired constraint (build_primal) - store c_inner
+            A_ineq_inner, b_ineq_inner, A_eq_inner, b_eq_inner, c_inner, lb_inner, ub_inner, z_map_constr_ineq_inner, z_map_constr_eq_inner, z_map_vars_inner \
+                = self.build_primal([], [], [], [], c, lb, ub)
+            # 3. build dual from primal w/o desired constraint (build_dual w/o the farkas-option) - store c_inner_dual
+            A_ineq_dual, b_ineq_dual, A_eq_dual, b_eq_dual, c_inner_dual, lb_dual, ub_dual, z_map_constr_ineq_dual, z_map_constr_eq_dual, z_map_vars_dual \
+                = self.dualize(A_ineq_inner, b_ineq_inner, A_eq_inner, b_eq_inner, c_inner, lb_inner, ub_inner, z_map_constr_ineq_inner, z_map_constr_eq_inner, z_map_vars_inner)
+            # 4. connect primal w/ target region and dual w/o target region (i.e. biomass) via c = c_inner.
+            A_ineq_p = sparse.block_diag((A_ineq_v,A_ineq_dual)).tocsr()
+            b_ineq_p = b_ineq_v + b_ineq_dual
+            A_eq_p = sparse.vstack((sparse.block_diag((A_eq_v,A_eq_dual)),sparse.hstack((c_v,c_inner_dual)))).tocsr()
+            b_eq_p = b_eq_v + b_eq_dual + [0.0]
+            lb_p = lb_v + lb_dual
+            ub_p = ub_v + ub_dual
+            # 5. Update z-associations
+            z_map_vars_p = sparse.hstack((z_map_vars_v,z_map_vars_dual))
+            z_map_constr_ineq_p = sparse.hstack((z_map_constr_ineq_v,z_map_constr_ineq_dual))
+            z_map_constr_eq_p = sparse.hstack((z_map_constr_eq_v,z_map_constr_eq_dual,sparse.csc_matrix((self.num_z,1))))
+
+        # 3. Prepare module as target or desired
+        if mcs_module.module_sense == 'desired':
+            A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.reassign_lb_ub_from_ineq(
+                A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
+            z_map_vars_i = z_map_vars_p
+        elif mcs_module.module_sense == 'target':
+            c_p = [0] * len(c_p)
+            A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, c_d, lb_i, ub_i, z_map_constr_ineq_d, z_map_constr_eq_d, z_map_vars_i = self.dualize(
+                A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p,
+                z_map_vars_p)
+            A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.dual_2_farkas(A_ineq_d,
+                                                                                                            b_ineq_d,
+                                                                                                            A_eq_d,
+                                                                                                            b_eq_d, c_d,
+                                                                                                            z_map_constr_ineq_d,
+                                                                                                            z_map_constr_eq_d)
 
         # 3. Add module to global MILP
         self.z_map_constr_ineq = sparse.hstack((self.z_map_constr_ineq, z_map_constr_ineq_i)).tocsc()
@@ -217,8 +241,7 @@ class StrainDesignMILPBuilder:
     # standard form: A_ineq x <= b_ineq, A_eq x = b_eq, lb <= x <= ub, min{c'x}.
     # returns A_ineq, b_ineq, A_eq, b_eq, c, lb, ub, z_map_constr_ineq, z_map_constr_eq, z_map_vars
     def build_primal(self, V_ineq, v_ineq, V_eq, v_eq, c, lb, ub) -> \
-            Tuple[
-                sparse.csr_matrix, Tuple, sparse.csr_matrix, Tuple, Tuple, Tuple, sparse.csr_matrix, sparse.csr_matrix, sparse.csr_matrix]:
+            Tuple[sparse.csr_matrix, Tuple, sparse.csr_matrix, Tuple, Tuple, Tuple, sparse.csr_matrix, sparse.csr_matrix, sparse.csr_matrix]:
         numr = len(self.model.reactions)
         # initialize matices (if not provided in function call)
         if V_ineq == []: V_ineq = sparse.csr_matrix((0, numr))
@@ -230,8 +253,8 @@ class StrainDesignMILPBuilder:
         # fill matrices
         A_eq = sparse.vstack((S, V_eq))
         b_eq = [0] * S.shape[0] + v_eq
-        A_ineq = V_ineq
-        b_ineq = v_ineq
+        A_ineq = V_ineq.copy()
+        b_ineq = v_ineq.copy()
         z_map_vars = sparse.identity(numr, 'd', format="csc")
         z_map_constr_eq = sparse.csc_matrix((self.num_z, A_eq.shape[0]))
         z_map_constr_ineq = sparse.csc_matrix((self.num_z, A_ineq.shape[0]))
@@ -291,7 +314,7 @@ class StrainDesignMILPBuilder:
 
         numr = len(self.model.reactions)
         if c_p == []:
-            c_p = [0] * numr
+            c_p = [0.0] * numr
 
         # Translate inhomogenous bounds into inequality constraints
         lb_inh_bounds = [i for i in np.nonzero(lb_p)[0] if not np.isinf(i)]
@@ -315,7 +338,7 @@ class StrainDesignMILPBuilder:
         b_ineq = [c_p[i] for i in x_geq0] + [-c_p[i] for i in x_leq0]
         A_eq = sparse.hstack((np.transpose(A_eq_p[:, x_eR]), np.transpose(A_ineq_p[:, x_eR]))).tocsr()
         b_eq = [c_p[i] for i in x_eR]
-        lb = [-np.inf] * A_eq_p.shape[0] + [0] * A_ineq_p.shape[0]
+        lb = [-np.inf] * A_eq_p.shape[0] + [0.0] * A_ineq_p.shape[0]
         ub = [np.inf] * (A_eq_p.shape[0] + A_ineq_p.shape[0])
         c = b_eq_p + b_ineq_p
 
@@ -349,18 +372,18 @@ class StrainDesignMILPBuilder:
 
     def prevent_boundary_knockouts(self, A_ineq, b_ineq, lb, ub, z_map_constr_ineq, z_map_vars) -> \
             Tuple[sparse.csr_matrix, Tuple, Tuple, Tuple, sparse.csr_matrix]:
-        numr = A_ineq.shape[0]
-        for i in range(0, A_ineq.shape[0]):
-            if any(z_map_vars[:, 0]) and lb[i] > 0:
+        numr = A_ineq.shape[1]
+        for i in range(0, numr):
+            if any(z_map_vars[:,i]) and lb[i] > 0:
                 A_ineq = sparse.vstack((A_ineq, sparse.csr_matrix(([-1], ([0], [i])), shape=(1, numr))))
                 b_ineq += [-lb[i]]
                 z_map_constr_ineq = sparse.hstack((z_map_constr_ineq, sparse.csc_matrix((self.num_z, 1))))
-                lb[i] = 0
-            if any(z_map_vars[:, 0]) and ub[i] < 0:
+                lb[i] = 0.0
+            if any(z_map_vars[:,i]) and ub[i] < 0:
                 A_ineq = sparse.vstack((A_ineq, sparse.csr_matrix(([1], ([0], [i])), shape=(1, numr))))
                 b_ineq += [ub[i]]
                 z_map_constr_ineq = sparse.hstack((z_map_constr_ineq, sparse.csc_matrix((self.num_z, 1))))
-                ub[i] = 0
+                ub[i] = 0.0
         return A_ineq, b_ineq, lb, ub, z_map_constr_ineq
 
     def link_z(self):
@@ -587,11 +610,11 @@ class StrainDesignMILPBuilder:
         var_bound_constraint_ineq = [i for i in var_bound_constraint_ineq if i not in z_map_constr_ineq.nonzero()[1]]
         # retrieve all bounds from inequality constraints
         for i in var_bound_constraint_ineq:
-            idx_r = A_ineq[i, :].nonzero()[1]  # get reaction from constraint (column of entry)
+            idx_r = A_ineq[i, :].nonzero()[1][0]  # get reaction from constraint (column of entry)
             if A_ineq[i, idx_r] > 0:  # upper bound constraint
-                ub[i] += [b_ineq[i] / A_ineq[i, idx_r].toarray()[0][0]]
+                ub[idx_r] += [b_ineq[i] / A_ineq[i, idx_r]]
             else:  # lower bound constraint
-                lb[i] += [b_ineq[i] / A_ineq[i, idx_r].toarray()[0][0]]
+                lb[idx_r] += [b_ineq[i] / A_ineq[i, idx_r]]
 
         # find all entries in A_eq
         row_eq = A_eq.nonzero()[0]
@@ -606,22 +629,22 @@ class StrainDesignMILPBuilder:
         A_ineq_new = sparse.csr_matrix((0, numr))
         b_ineq_new = []
         for i in var_bound_constraint_eq:
-            idx_r = A_eq[i, :].nonzero()[1]  # get reaction from constraint (column of entry)
+            idx_r = A_eq[i, :].nonzero()[1][0]  # get reaction from constraint (column of entry)
             if any(z_map_vars[:, idx_r]):  # if reaction is knockable
                 if A_eq[i, idx_r] * b_eq[i] > 0:  # upper bound constraint
-                    ub[i] += [b_eq[i] / A_eq[i, idx_r].toarray()[0][0]]
+                    ub[idx_r] += [b_eq[i] / A_eq[i, idx_r]]
                     A_ineq_new = sparse.vstack((A_ineq_new, -A_eq[i, :]))
                     b_ineq_new += [-b_eq[i]]
                 elif A_eq[i, idx_r] * b_eq[i] < 0:  # lower bound constraint
-                    lb[i] += [b_eq[i] / A_eq[i, idx_r].toarray()[0][0]]
+                    lb[idx_r] += [b_eq[i] / A_eq[i, idx_r]]
                     A_ineq_new = sparse.vstack((A_ineq_new, A_eq[i, :]))
                     b_ineq_new += [b_eq[i]]
                 else:
-                    ub[i] += [0]
-                    lb[i] += [0]
+                    ub[idx_r] += [0.0]
+                    lb[idx_r] += [0.0]
             else:
-                lb[i] += [b_eq[i] / A_eq[i, idx_r].toarray()[0][0]]
-                ub[i] += [b_eq[i] / A_eq[i, idx_r].toarray()[0][0]]
+                lb[idx_r] += [b_eq[i] / A_eq[i, idx_r]]
+                ub[idx_r] += [b_eq[i] / A_eq[i, idx_r]]
         # set tightest bounds (avoid inf)
         lb = [max([i for i in l if not np.isinf(i)] + [np.nan]) for l in lb]
         ub = [min([i for i in u if not np.isinf(i)] + [np.nan]) for u in ub]
@@ -634,14 +657,16 @@ class StrainDesignMILPBuilder:
             raise Exception("There is a lower bound that is greater than its upper bound counterpart.")
 
         # remove constraints that became redundant
-        A_ineq = A_ineq[[False if i in var_bound_constraint_ineq else True for i in range(0, A_ineq.shape[0])]]
+        numineq = A_ineq.shape[0]
+        A_ineq = A_ineq[[False if i in var_bound_constraint_ineq else True for i in range(0, numineq)]]
         b_ineq = [b_ineq[i] for i in range(0, len(b_ineq)) if i not in var_bound_constraint_ineq]
         z_map_constr_ineq = z_map_constr_ineq[:,
-                            [False if i in var_bound_constraint_ineq else True for i in range(0, A_ineq.shape[0])]]
-        A_eq = A_eq[[False if i in var_bound_constraint_eq else True for i in range(0, A_eq.shape[0])]]
+                            [False if i in var_bound_constraint_ineq else True for i in range(0, numineq)]]
+        numeq = A_eq.shape[0]
+        A_eq = A_eq[[False if i in var_bound_constraint_eq else True for i in range(0, numeq)]]
         b_eq = [b_eq[i] for i in range(0, len(b_eq)) if i not in var_bound_constraint_eq]
         z_map_constr_eq = z_map_constr_eq[:,
-                          [False if i in var_bound_constraint_eq else True for i in range(0, A_eq.shape[0])]]
+                          [False if i in var_bound_constraint_eq else True for i in range(0, numeq)]]
         # add equality constraints that transformed to inequality constraints
         A_ineq = sparse.vstack((A_ineq, A_ineq_new))
         b_ineq += b_ineq_new
