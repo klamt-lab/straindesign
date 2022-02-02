@@ -95,10 +95,25 @@ class MILP_LP:
         if self.solver == 'cplex':
             try:
                 self.cpx.solve()
+                status = self.cpx.solution.get_status()
+                if status == 101: # solution integer optimal
+                    min_cx = self.cpx.solution.get_objective_value()
+                    status = 0
+                elif status == 118: # solution unbounded
+                    min_cx = -inf
+                    status = 4
+                elif status == 103: # infeasible
+                    x = [nan]*len(self.c)
+                    min_cx = nan
+                    status = -1
+                    return x, min_cx, status
+                else:
+                    print(self.cpx.solution.get_status_string())
+                    raise Exception("Case not yet handeld")
+
                 x = self.cpx.solution.get_values()
-                min_cx = self.cpx.solution.get_objective_value()
                 x = [x[i] if self.vtype[i]=='C' else int(round(x[i])) for i in range(len(x))]
-                return x, min_cx, 0
+                return x, min_cx, status
             except CplexError as exc:
                 if not exc.args[2]==1217: 
                     print(exc)
@@ -110,7 +125,16 @@ class MILP_LP:
         if self.solver == 'cplex':
             try:
                 self.cpx.solve()
-                opt = self.cpx.solution.get_objective_value()
+                status = self.cpx.solution.get_status()
+                if status == 101: # solution integer optimal
+                    opt = self.cpx.solution.get_objective_value()
+                elif status in [118,119]: # solution unbounded (or inf or unbdd)
+                    opt = -inf
+                elif status == 103: # infeasible
+                    opt = nan
+                else:
+                    print(self.cpx.solution.get_status_string())
+                    raise Exception("Case not yet handeld")
                 return opt
             except CplexError as exc:
                 return nan

@@ -1,8 +1,10 @@
 import numpy as np
 from scipy import sparse
-import cobra
+from cobra.util import ProcessPool, solvers, create_stoichiometric_matrix
+from cobra import Model
+from cobra.core import Configuration
 from typing import Dict, List, Tuple, Union, FrozenSet
-from mcs import mcs_module, solver_interface
+from mcs import mcs_module, solver_interface, MILP_LP
 from mcs.constr2mat import *
 from mcs.indicator_constraints import *
 try:
@@ -14,7 +16,7 @@ except:
 class StrainDesignMILPBuilder:
     """Class for computing Minimal Cut Sets (MCS)"""
 
-    def __init__(self, model: cobra.Model, mcs_modules: List[mcs_module.MCS_Module], *args, **kwargs):
+    def __init__(self, model: Model, mcs_modules: List[mcs_module.MCS_Module], *args, **kwargs):
         allowed_keys = {'ko_cost', 'ki_cost', 'solver', 'max_cost', 'M'}
         # set all keys passed in kwargs
         for key, value in dict(kwargs).items():
@@ -30,7 +32,7 @@ class StrainDesignMILPBuilder:
         if "MCS_Module" in str(type(mcs_modules)):
             mcs_modules = [mcs_modules]
             
-        avail_solvers = list(cobra.util.solvers.keys())
+        avail_solvers = list(solvers.keys())
         try:
             import pyscipopt
             avail_solvers += ['scip']
@@ -56,7 +58,7 @@ class StrainDesignMILPBuilder:
             self.M = 1000.0
         elif self.M is None:
             self.M = np.inf
-        # the matrices in mcs_modules, ko_cost and ki_cost should be np.array or scipy.sparse (csr, csc, lil) format
+        # the matrices in mcs_modules, ko_cost and ki_cost should be numpy.array or scipy.sparse (csr, csc, lil) format
         self.model = model
         reac_ids = model.reactions.list_attr("id")
         numr = len(model.reactions)
@@ -130,6 +132,15 @@ class StrainDesignMILPBuilder:
 
         # 4. Link LP module to z-variables
         self.link_z()
+
+        # # for debuging
+        # A = sparse.vstack(( self.A_ineq,sparse.csr_matrix([np.nan]*len(self.c)),\
+        #                     self.A_eq,sparse.csr_matrix([np.nan]*len(self.c)),\
+        #                     self.indic_constr.A,sparse.csr_matrix([np.nan]*len(self.c)),\
+        #                     sparse.csr_matrix(self.ub),sparse.csr_matrix(self.lb)))
+        # b = self.b_ineq + [np.nan] + self.b_eq + [np.nan] + self.indic_constr.b + [np.nan, np.nan, np.nan]
+        # Ab = sparse.hstack((A,sparse.csr_matrix([np.nan]*len(b)).transpose(),sparse.csr_matrix(b).transpose()))
+        # np.savetxt("Ab_py.tsv", Ab.todense(), delimiter='\t')
 
         self.vtype = 'B' * self.num_z + 'C' * (self.z_map_vars.shape[1] - self.num_z)
 
@@ -211,7 +222,7 @@ class StrainDesignMILPBuilder:
                 A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
             z_map_vars_i = z_map_vars_p
         elif mcs_module.module_sense == 'target':
-            c_p = [0] * len(c_p)
+            c_p = [0] * A_ineq_p.shape[1]
             A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, c_d, lb_i, ub_i, z_map_constr_ineq_d, z_map_constr_eq_d, z_map_vars_i = self.dualize(
                 A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p,
                 z_map_vars_p)
@@ -249,7 +260,7 @@ class StrainDesignMILPBuilder:
         if lb == []:     lb = [v.lower_bound for v in self.model.reactions]
         if ub == []:     ub = [v.upper_bound for v in self.model.reactions]
         if c == []:     c = [i.objective_coefficient for i in self.model.reactions]
-        S = sparse.csr_matrix(cobra.util.create_stoichiometric_matrix(self.model))
+        S = sparse.csr_matrix(create_stoichiometric_matrix(self.model))
         # fill matrices
         A_eq = sparse.vstack((S, V_eq))
         b_eq = [0] * S.shape[0] + v_eq
@@ -289,7 +300,7 @@ class StrainDesignMILPBuilder:
         #    would be posible, and yield b'y < 0 in the farkas' lemma.
         # Maybe splitting is required, but I actually don't think so. Using the
         # special case of b'y < 0 for b'y ~= 0 should be enough.
-        numr = A_ineq_p.shape[0]
+        numr = A_ineq_p.shape[1]
 
         if z_map_vars_p == []:
             z_map_vars_p = sparse.csc_matrix((self.num_z, A_ineq_p.shape[1]))
@@ -312,13 +323,12 @@ class StrainDesignMILPBuilder:
             raise Exception(
                 "knockouts of variables and constraints must not overlap in the problem matrix. Something went wrong during the construction of the primal problem.")
 
-        numr = len(self.model.reactions)
         if c_p == []:
             c_p = [0.0] * numr
 
         # Translate inhomogenous bounds into inequality constraints
-        lb_inh_bounds = [i for i in np.nonzero(lb_p)[0] if not np.isinf(i)]
-        ub_inh_bounds = [i for i in np.nonzero(ub_p)[0] if not np.isinf(i)]
+        lb_inh_bounds = [i for i in np.nonzero(lb_p)[0] if not np.isinf(lb_p[i])]
+        ub_inh_bounds = [i for i in np.nonzero(ub_p)[0] if not np.isinf(ub_p[i])]
         x_geq0 = np.nonzero(np.greater_equal(lb_p, 0) & np.greater(ub_p, 0))[0]
         x_eR = np.nonzero(np.greater(0, lb_p) & np.greater(ub_p, 0))[0]
         x_leq0 = np.nonzero(np.greater(0, lb_p) & np.greater_equal(0, ub_p))[0]
@@ -397,20 +407,20 @@ class StrainDesignMILPBuilder:
         #
 
         # 1. Split knockable equality constraints into foward and reverse direction
-        knockable_constr_eq = self.z_map_constr_eq.nonzero()  # first array: z, second array: eq constr
-        eq_constr_A = sparse.vstack((self.A_eq[knockable_constr_eq[1], :], -self.A_eq[knockable_constr_eq[1], :]))
-        eq_constr_b = [self.b_eq[i] for i in knockable_constr_eq[1]] + [-self.b_eq[i] for i in knockable_constr_eq[1]]
-        z_eq = self.z_map_constr_eq[:, tuple(knockable_constr_eq[1]) * 2]
+        knockable_constr_eq = self.z_map_constr_eq.nonzero()[1]  # first array: z, second array: eq constr
+        eq_constr_A = sparse.vstack((self.A_eq[knockable_constr_eq, :], -self.A_eq[knockable_constr_eq, :]))
+        eq_constr_b = [self.b_eq[i] for i in knockable_constr_eq] + [-self.b_eq[i] for i in knockable_constr_eq]
+        z_eq = self.z_map_constr_eq[:, tuple(knockable_constr_eq) * 2]
         # Add knockable inequalities to global A_ineq matrix
         self.A_ineq = sparse.vstack((self.A_ineq, eq_constr_A)).tocsr()
         self.b_ineq += eq_constr_b
         self.z_map_constr_ineq = sparse.hstack((self.z_map_constr_ineq, z_eq)).tocsc()
         # Remove knockable equalities from A_eq
         n_rows_eq = self.A_eq.shape[0]
-        self.A_eq = self.A_eq[[False if i in knockable_constr_eq[1] else True for i in range(0, n_rows_eq)]]
-        self.b_eq = [self.b_eq[i] for i in range(0, len(self.b_eq)) if i not in knockable_constr_eq[1]]
+        self.A_eq = self.A_eq[[False if i in knockable_constr_eq else True for i in range(0, n_rows_eq)]]
+        self.b_eq = [self.b_eq[i] for i in range(0, len(self.b_eq)) if i not in knockable_constr_eq]
         self.z_map_constr_eq = self.z_map_constr_eq[:,
-                               [False if i in knockable_constr_eq[1] else True for i in range(0, n_rows_eq)]]
+                               [False if i in knockable_constr_eq else True for i in range(0, n_rows_eq)]]
 
         # 2. Translate all variable knockouts to inequality knockouts
         numvars = self.A_ineq.shape[1]
@@ -458,36 +468,58 @@ class StrainDesignMILPBuilder:
         M_A = [(-M_A[i, :])[0].toarray()[0] for i in range(len(knockable_constr_ineq))]
         M_b = [self.b_ineq[i] for i in range(0, self.A_ineq.shape[0]) if i in knockable_constr_ineq]
 
-        # Run LPs to determine maximal values knockable constraints can take.
-        # This task is supported by the parallelization module 'Ray', if Ray is initialized
-        if 'ray' in locals():
-            if ray.is_initialized():
-                # a) Build an Actor - a stateful worker based on a class
-                @ray.remote  # class is decorated with ray.remote to for parallel use
-                class M_optimizer(object):
-                    def __init__(self):  # The LP object is only constructed once upon Actor creation.
-                        self.lp = solver_interface.MILP_LP(A_ineq=M_A_ineq, b_ineq=M_b_ineq, A_eq=M_A_eq, b_eq=M_b_eq,
-                                                        lb=M_lb, ub=M_ub)
+        # # Run LPs to determine maximal values knockable constraints can take.
+        # # This task is supported by the parallelization module 'Ray', if Ray is initialized
+        # if 'ray' in locals():
+        #     if ray.is_initialized():
+        #         # a) Build an Actor - a stateful worker based on a class
+        #         @ray.remote  # class is decorated with ray.remote to for parallel use
+        #         class M_optimizer(object):
+        #             def __init__(self):  # The LP object is only constructed once upon Actor creation.
+        #                 self.lp = solver_interface.MILP_LP(A_ineq=M_A_ineq, b_ineq=M_b_ineq, A_eq=M_A_eq, b_eq=M_b_eq,
+        #                                                 lb=M_lb, ub=M_ub)
 
-                    def compute(self, c):  # With each function call only the objective function is changed
-                        self.lp.set_objective(c)
-                        x, min, status = self.lp.solve()
-                        return -min
+        #             def compute(self, c):  # With each function call only the objective function is changed
+        #                 self.lp.set_objective(c)
+        #                 x, min, status = self.lp.solve()
+        #                 return -min
 
-                # b) Create pool of Actors on which the computations should be executed. Number of Actors = number of CPUs
-                parpool = ray.util.ActorPool([M_optimizer.remote() for _ in range(int(ray.available_resources()['CPU']))])
-                # c) Run M computations on actor pool. lambda is an inline function 
-                max_Ax = list(parpool.map(lambda a, x: a.compute.remote(x), M_A))
-        # If Ray is not available, use regular loop
+        #         # b) Create pool of Actors on which the computations should be executed. Number of Actors = number of CPUs
+        #         parpool = ray.util.ActorPool([M_optimizer.remote() for _ in range(int(ray.available_resources()['CPU']))])
+        #         # c) Run M computations on actor pool. lambda is an inline function 
+        #         max_Ax = list(parpool.map(lambda a, x: a.compute.remote(x), M_A))
+        # # If Ray is not available, use regular loop
+        # else:
+        #     max_Ax = [np.nan] * len(M_A)
+        #     lp = solver_interface.MILP_LP(A_ineq=M_A_ineq, b_ineq=M_b_ineq, A_eq=M_A_eq, b_eq=M_b_eq, lb=M_lb, ub=M_ub)
+        #     for i in range(len(M_A)):
+        #         lp.set_objective(M_A[i])
+        #         x, min, status = lp.solve()
+        #         max_Ax[i] = -min
+
+        processes = Configuration().processes
+        num_Ms = len(M_A)
+        processes = min(processes, num_Ms)
+
+        max_Ax = [np.nan] * num_Ms
+
+        # Dummy to check if optimization runs
+        worker_init(M_A,M_A_ineq,M_b_ineq,M_A_eq,M_b_eq,M_lb,M_ub,list(solvers.keys())[0])
+        worker_compute(1)
+
+        if processes > 1 and num_Ms > 1000:
+            with ProcessPool(processes,initializer=worker_init,initargs=(M_A,M_A_ineq,M_b_ineq,M_A_eq,M_b_eq,M_lb,M_ub,
+                            list(solvers.keys())[0])) as pool:
+                chunk_size = num_Ms // processes
+                for i, value in pool.imap_unordered( worker_compute, range(num_Ms), chunksize=chunk_size):
+                    max_Ax[i] = value
         else:
-            max_Ax = [np.nan] * len(M_A)
-            lp = solver_interface.MILP_LP(A_ineq=M_A_ineq, b_ineq=M_b_ineq, A_eq=M_A_eq, b_eq=M_b_eq, lb=M_lb, ub=M_ub)
-            for i in range(len(M_A)):
-                lp.set_objective(M_A[i])
-                x, min, status = lp.solve()
-                max_Ax[i] = -min
+            worker_init(M_A,M_A_ineq,M_b_ineq,M_A_eq,M_b_eq,M_lb,M_ub,list(solvers.keys())[0])
+            for i in range(num_Ms):
+                _, max_Ax[i] = worker_compute(i)
 
-        Ms = [M - b if not np.isnan(M) else self.M for M, b in zip(max_Ax, M_b)]
+        # round Ms up to 3 digits
+        Ms = [np.ceil((M-b)*1e3)/1e3 if not np.isnan(M) else self.M for M, b in zip(max_Ax, M_b)]
         # fill up M-vector also for notknockable reactions
         Ms = [Ms[np.array([i == j for j in knockable_constr_ineq]).nonzero()[0][
             0]] if i in knockable_constr_ineq else np.nan for i in range(self.A_ineq.shape[0])]
@@ -685,3 +717,32 @@ class ContMILP:
         self.z_map_constr_ineq = z_map_constr_ineq
         self.z_map_constr_eq = z_map_constr_eq
         self.z_map_vars = z_map_vars
+
+def worker_init(A,A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver):
+    global lp_glob
+    lp_glob = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
+                                    lb=lb, ub=ub, solver=solver)
+    avail_solvers = list(solvers.keys())
+    if 'cplex' in avail_solvers:
+        lp_glob.cpx.parameters.lpmethod.set(1)
+        if Configuration().processes > 1:
+            lp_glob.cpx.parameters.threads.set(2)
+    # elif 'gurobi' in avail_solvers:
+    # elif 'scip' in avail_solvers:
+    # else:
+    lp_glob.solver = solver
+    lp_glob.A = A
+
+def worker_compute(i) -> Tuple[int,float]:
+    global lp_glob
+    lp_glob.set_objective(lp_glob.A[i])
+    min_cx = -lp_glob.slim_solve()
+    # for debuging
+    # A = sparse.vstack(( lp_glob.A[i],sparse.csr_matrix([np.nan]*len(lp_glob.A[i])),\
+    #                     lp_glob.A_ineq,sparse.csr_matrix([np.nan]*len(lp_glob.A[i])),\
+    #                     lp_glob.A_eq,sparse.csr_matrix([np.nan]*len(lp_glob.A[i])),\
+    #                     sparse.csr_matrix(lp_glob.ub),sparse.csr_matrix(lp_glob.lb)))
+    # b = [np.nan, np.nan] + lp_glob.b_ineq + [np.nan] + lp_glob.b_eq + [np.nan, np.nan, np.nan]
+    # Ab = sparse.hstack((A,sparse.csr_matrix(b).transpose()))
+    # np.savetxt("Ab.tsv", Ab, delimiter='\t')
+    return i, min_cx

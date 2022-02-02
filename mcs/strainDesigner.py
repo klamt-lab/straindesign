@@ -66,7 +66,8 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
             if status is not 0:
                 break
             z = sparse.csr_matrix([x[i] for i in self.idx_z])
-            print({self.model.reactions[i].name : z[0,i] for i in range(len(self.model.reactions))})
+            print({self.model.reactions[i].name : z[0,i] if self.z_inverted[i] else -z[0,i] \
+                   for i in range(len(self.model.reactions))})
             self.add_exclusion_constraint(z)
             mcs_sols = sparse.vstack((mcs_sols,z))
         # maybe translate solutions into dict for returning

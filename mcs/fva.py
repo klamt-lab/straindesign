@@ -112,15 +112,15 @@ def fva(model,**kwargs):
     if processes > 1:
         with ProcessPool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,
                         x0,list(solvers.keys())[0])) as pool:
-            print('initialized')
             chunk_size = len(reaction_ids) // processes
             # x = pool.imap_unordered(worker_compute, range(2*numr), chunksize=chunk_size)
             for i, value in pool.imap_unordered( worker_compute, range(2*numr), chunksize=chunk_size):
                 x[i] = value
     else:
+        worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,list(solvers.keys())[0])
         for i in range(2*numr):
             lp.set_objective_idx(idx2c(i))
-            _, x[i], _ = lp.solve()
+            _, x[i] = worker_compute(i)
     
     fva_result = DataFrame(
         {
