@@ -14,6 +14,14 @@ import cplex
 #   A_ineq, b_ineq: Additional constraints in matrix form
 #   obj:            Alternative objective in text form
 #   c:              Alternative objective in vector form
+def idx2c(i):
+    col = int(floor(i/2))
+    sig = sign(mod(i,2)-0.5)
+    C = [[col,sig],[lp_glob.prev,0.0]]
+    C_idx = [C[i][0] for i in range (len(C))]
+    C_idx = unique([C_idx.index(C_idx[i]) for i in range(len(C_idx))])
+    C = [C[i] for i in C_idx]
+    return C
 
 def worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver):
     global lp_glob
@@ -32,13 +40,7 @@ def worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver):
 
 def worker_compute(i) -> Tuple[int,float]:
     global lp_glob
-    col = int(floor(i/2))
-    sig = sign(mod(i,2)-0.5)
-    C = [[col,sig],[lp_glob.prev,0.0]]
-    C_idx = [C[i][0] for i in range (len(C))]
-    C_idx = unique([C_idx.index(C_idx[i]) for i in range(len(C_idx))])
-    C = [C[i] for i in C_idx]
-
+    C = idx2c(i)
     if lp_glob.solver == 'cplex':
         lp_glob.objective.set_linear(C)
         lp_glob.solve()
@@ -47,7 +49,7 @@ def worker_compute(i) -> Tuple[int,float]:
         lp_glob.set_objective_idx(C)
         min_cx = lp_glob.slim_solve()
 
-    lp_glob.prev = col
+    lp_glob.prev = C[0][0]
     return i, min_cx
 
 def fva(model,**kwargs):
@@ -104,8 +106,8 @@ def fva(model,**kwargs):
     x = [nan]*2*numr
 
     # Dummy to check if optimization runs
-    worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,list(solvers.keys())[0])
-    worker_compute(1)
+    # worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,list(solvers.keys())[0])
+    # worker_compute(1)
 
     if processes > 1:
         with ProcessPool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,
@@ -117,7 +119,7 @@ def fva(model,**kwargs):
                 x[i] = value
     else:
         for i in range(2*numr):
-            lp.set_objective(idx2c(i,numr))
+            lp.set_objective_idx(idx2c(i))
             _, x[i], _ = lp.solve()
     
     fva_result = DataFrame(

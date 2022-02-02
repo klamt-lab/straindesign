@@ -97,7 +97,7 @@ class StrainDesignMILPBuilder:
         self.z_map_constr_eq = sparse.csc_matrix((numr, 0))
         self.rownames_eq = []
         self.num_modules = 0
-        self.indicators = []  # Add instances of the class 'Indicator_constraint' later
+        self.indic_constr = []  # Add instances of the class 'Indicator_constraint' later
         # Initialize association between z and variables and variables
         self.z_map_vars = sparse.csc_matrix((numr, numr))
         for i in range(0, len(mcs_modules)):
@@ -258,7 +258,7 @@ class StrainDesignMILPBuilder:
         z_map_vars = sparse.identity(numr, 'd', format="csc")
         z_map_constr_eq = sparse.csc_matrix((self.num_z, A_eq.shape[0]))
         z_map_constr_ineq = sparse.csc_matrix((self.num_z, A_ineq.shape[0]))
-        A_ineq, b_ineq, lb, ub, z_map_constr_ineq = self.prevent_boundary_knockouts(A_ineq, b_ineq, lb, ub,
+        A_ineq, b_ineq, lb, ub, z_map_constr_ineq = self.prevent_boundary_knockouts(A_ineq, b_ineq, lb.copy(), ub.copy(),
                                                                                     z_map_constr_ineq, z_map_vars)
         return A_ineq, b_ineq, A_eq, b_eq, c, lb, ub, z_map_constr_ineq, z_map_constr_eq, z_map_vars
 
