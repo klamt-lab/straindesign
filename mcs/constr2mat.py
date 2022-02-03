@@ -37,10 +37,25 @@ def linexpr2mat(expr, reaction_ids) -> sparse.csr_matrix:
     # 
     A = sparse.lil_matrix((1, len(reaction_ids)))
     # split expression into parts and strip away special characters
-    ridx = [re.sub(r'^(\s|-|\+|\()*|(\s|-|\+|\))*$', '', part) for part in expr.split()]
+    expr_parts = [re.sub(r'^(\s|-|\+|\()*|(\s|-|\+|\))*$', '', part) for part in expr.split()]
     # identify reaction identifiers by comparing with models reaction list
-    ridx = [r for r in ridx if r in reaction_ids]
-    if not len(ridx) == len(set(ridx)):  # check for duplicates
+    ridx = [r for r in expr_parts if r in reaction_ids]
+    # verify syntax of expression
+    # 1. there must not be two numbers in a row
+    # 2. there must not remain words that are not reaction identifiers 
+    # 3. there must be no reaction id duplicates
+    last_was_number = False
+    for part in expr_parts:
+        if part in ridx:
+            last_was_number = False
+            continue
+        if re.match('^\d*$',part) is not None:
+            if last_was_number:
+                raise Exception("Expression invalid. The expression contains at least two numbers in a row.")
+            last_was_number = True
+            continue
+        raise Exception("Expression invalid. Unknown identifier "+part+".")
+    if not len(ridx) == len(set(ridx)):
         raise Exception("Reaction identifiers may only occur once in each linear expression.")
     # iterate through reaction identifiers and retrieve coefficients from linear expression
     for rid in ridx:

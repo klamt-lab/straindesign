@@ -8,7 +8,7 @@ from cplex.exceptions import CplexError
 class MILP_LP:
     def __init__(self, *args, **kwargs):
         allowed_keys = {'c', 'A_ineq','b_ineq','A_eq','b_eq','lb','ub','vtype',
-                        'indic_constr','x0','options','solver','skip_checks'}
+                        'indic_constr','x0','options','solver','skip_checks','tlim'}
         # set all keys passed in kwargs
         for key,value in kwargs.items():
             if key in allowed_keys:
@@ -90,23 +90,35 @@ class MILP_LP:
         elif self.solver == 'gurobi':
             self.gurobi = gurobi_interface.init_gurobi_milp(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
                                                      self.indic_constr,self.x0)
+        if self.tlim is None:
+            self.set_time_limit(1e9)
+        else:
+            self.set_time_limit(self.tlim)
 
     def solve(self) -> Tuple[List,float,float]:
         if self.solver == 'cplex':
             try:
                 self.cpx.solve()
                 status = self.cpx.solution.get_status()
-                if status == 101: # solution integer optimal
+                if status in [101,102,115,128,129,130]: # solution integer optimal
                     min_cx = self.cpx.solution.get_objective_value()
                     status = 0
-                elif status == 118: # solution unbounded
-                    min_cx = -inf
-                    status = 4
+                elif status == 108: # timeout without solution
+                    x = [nan]*len(self.c)
+                    min_cx = nan
+                    status = 1
+                    return x, min_cx, status
                 elif status == 103: # infeasible
                     x = [nan]*len(self.c)
                     min_cx = nan
-                    status = -1
+                    status = 2
                     return x, min_cx, status
+                elif status == 107: # timeout with solution
+                    min_cx = self.cpx.solution.get_objective_value()
+                    status = 3
+                elif status == [118,119]: # solution unbounded
+                    min_cx = -inf
+                    status = 4
                 else:
                     print(self.cpx.solution.get_status_string())
                     raise Exception("Case not yet handeld")
@@ -126,11 +138,11 @@ class MILP_LP:
             try:
                 self.cpx.solve()
                 status = self.cpx.solution.get_status()
-                if status == 101: # solution integer optimal
+                if status in [101,102,107,115,128,129,130]: # solution integer optimal (tolerance)
                     opt = self.cpx.solution.get_objective_value()
                 elif status in [118,119]: # solution unbounded (or inf or unbdd)
                     opt = -inf
-                elif status == 103: # infeasible
+                elif status == [103,108]: # infeasible
                     opt = nan
                 else:
                     print(self.cpx.solution.get_status_string())
@@ -190,8 +202,10 @@ class MILP_LP:
         if self.solver == 'cplex':
             self.cpx.objective.set_linear([[i,0] for i in range(self.cpx.variables.get_num())])
 
-    def set_time_limit(self):
-        pass
+    def set_time_limit(self,t):
+        self.tlim = t
+        if self.solver == 'cplex':
+            self.cpx.parameters.timelimit.set(t)
 
     def populate(self):
         pass

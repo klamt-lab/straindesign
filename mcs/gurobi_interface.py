@@ -19,7 +19,9 @@ from mcs import indicator_constraints
 
 # Create a CPLEX-object from a matrix-based problem setup
 def init_cpx_milp(c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype=None,indic_constr=None,x0=None,options=None):
-    
+    elif self.solver == 'gurobi':
+    self.gurobi = gurobi_interface.init_gurobi_milp(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
+                                                self.indic_constr,self.x0)
     prob = cp.Cplex()
     prob.objective.set_sense(prob.objective.sense.minimize)
 

@@ -3,8 +3,8 @@ from scipy import sparse
 from cobra.util import ProcessPool, solvers, create_stoichiometric_matrix
 from cobra import Model
 from cobra.core import Configuration
-from typing import Dict, List, Tuple, Union, FrozenSet
-from mcs import mcs_module, solver_interface, MILP_LP
+from typing import List, Tuple
+from mcs import mcs_module, solver_interface
 from mcs.constr2mat import *
 from mcs.indicator_constraints import *
 try:
@@ -102,6 +102,7 @@ class StrainDesignMILPBuilder:
         self.indic_constr = []  # Add instances of the class 'Indicator_constraint' later
         # Initialize association between z and variables and variables
         self.z_map_vars = sparse.csc_matrix((numr, numr))
+        print('Constructing MCS MILP.')
         for i in range(0, len(mcs_modules)):
             self.addModule(mcs_modules[i])
 
@@ -504,9 +505,10 @@ class StrainDesignMILPBuilder:
         max_Ax = [np.nan] * num_Ms
 
         # Dummy to check if optimization runs
-        worker_init(M_A,M_A_ineq,M_b_ineq,M_A_eq,M_b_eq,M_lb,M_ub,list(solvers.keys())[0])
-        worker_compute(1)
+        # worker_init(M_A,M_A_ineq,M_b_ineq,M_A_eq,M_b_eq,M_lb,M_ub,list(solvers.keys())[0])
+        # worker_compute(1)
 
+        print('Bounding MILP.')
         if processes > 1 and num_Ms > 1000:
             with ProcessPool(processes,initializer=worker_init,initargs=(M_A,M_A_ineq,M_b_ineq,M_A_eq,M_b_eq,M_lb,M_ub,
                             list(solvers.keys())[0])) as pool:
@@ -720,7 +722,7 @@ class ContMILP:
 
 def worker_init(A,A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver):
     global lp_glob
-    lp_glob = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
+    lp_glob = solver_interface.MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
                                     lb=lb, ub=ub, solver=solver)
     avail_solvers = list(solvers.keys())
     if 'cplex' in avail_solvers:
