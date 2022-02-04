@@ -4,9 +4,10 @@ from cobra.util import ProcessPool, solvers, create_stoichiometric_matrix
 from cobra import Model
 from cobra.core import Configuration
 from typing import List, Tuple
-from mcs import mcs_module, solver_interface
+from mcs.strainDesignModule import *
 from mcs.constr2mat import *
 from mcs.indicator_constraints import *
+from mcs.solver_interface import *
 try:
     import ray
 except:
@@ -16,7 +17,7 @@ except:
 class StrainDesignMILPBuilder:
     """Class for computing Minimal Cut Sets (MCS)"""
 
-    def __init__(self, model: Model, mcs_modules: List[mcs_module.MCS_Module], *args, **kwargs):
+    def __init__(self, model: Model, sd_modules: List[SD_Module], *args, **kwargs):
         allowed_keys = {'ko_cost', 'ki_cost', 'solver', 'max_cost', 'M'}
         # set all keys passed in kwargs
         for key, value in dict(kwargs).items():
@@ -29,8 +30,8 @@ class StrainDesignMILPBuilder:
             if key not in dict(kwargs).keys():
                 setattr(self, key, None)
 
-        if "MCS_Module" in str(type(mcs_modules)):
-            mcs_modules = [mcs_modules]
+        if "SD_Module" in str(type(sd_modules)):
+            sd_modules = [sd_modules]
             
         avail_solvers = list(solvers.keys())
         try:
@@ -58,7 +59,7 @@ class StrainDesignMILPBuilder:
             self.M = 1000.0
         elif self.M is None:
             self.M = np.inf
-        # the matrices in mcs_modules, ko_cost and ki_cost should be numpy.array or scipy.sparse (csr, csc, lil) format
+        # the matrices in sd_modules, ko_cost and ki_cost should be numpy.array or scipy.sparse (csr, csc, lil) format
         self.model = model
         reac_ids = model.reactions.list_attr("id")
         numr = len(model.reactions)
@@ -103,8 +104,8 @@ class StrainDesignMILPBuilder:
         # Initialize association between z and variables and variables
         self.z_map_vars = sparse.csc_matrix((numr, numr))
         print('Constructing MCS MILP.')
-        for i in range(0, len(mcs_modules)):
-            self.addModule(mcs_modules[i])
+        for i in range(0, len(sd_modules)):
+            self.addModule(sd_modules[i])
 
         # Assign knock-ins/outs correctly by taking into account z_inverted
         # invert *(-1) rows in z_map_constr_eq, z_map_constr_ineq, z_map_vars
@@ -145,11 +146,12 @@ class StrainDesignMILPBuilder:
 
         self.vtype = 'B' * self.num_z + 'C' * (self.z_map_vars.shape[1] - self.num_z)
 
-    def addModule(self, mcs_module):
+    def addModule(self, sd_module):
         # Generating LP and z-linking-matrix for each module
         #
-        # Modules to describe desired or undesired flux states for MCS strain design.
-        # mcs_module needs to be an Instance of the class 'MCS_Module'
+        # Modules to describe strain design problems like
+        # desired or undesired flux states for MCS strain design.
+        # sd_module needs to be an Instance of the class 'SD_Module'
         #
         # There are three kinds of flux states that can be described
         # 1. The wild type model, constrained with additional inequalities:
@@ -177,24 +179,24 @@ class StrainDesignMILPBuilder:
         z_map_constr_eq_i = []
         z_map_vars_i = []
         # get lower and upper bound from module if available, otherwise from model
-        if not mcs_module.lb == []:
-            lb = mcs_module.lb
+        if not sd_module.lb == []:
+            lb = sd_module.lb
         else:
             lb = [r.lower_bound for r in self.model.reactions]
-        if not mcs_module.ub == []:
-            ub = mcs_module.ub
+        if not sd_module.ub == []:
+            ub = sd_module.ub
         else:
             ub = [r.upper_bound for r in self.model.reactions]
         # 1. Translate (in)equalities into matrix form
-        V_ineq, v_ineq, V_eq, v_eq = lineq2mat(mcs_module.constraints,self.model.reactions.list_attr('id'))
+        V_ineq, v_ineq, V_eq, v_eq = lineq2mat(sd_module.constraints,self.model.reactions.list_attr('id'))
 
         # 2. Construct LP for module
-        if mcs_module.module_type == 'mcs_lin':
+        if sd_module.module_type == 'mcs_lin':
             # Classical MCS
             A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p \
                 = self.build_primal(V_ineq, v_ineq, V_eq, v_eq, [], lb, ub)
-        elif mcs_module.module_type == 'mcs_bilvl':
-            c = linexpr2mat(mcs_module.inner_objective,self.model.reactions.list_attr('id'))
+        elif sd_module.module_type == 'mcs_bilvl':
+            c = linexpr2mat(sd_module.inner_objective,self.model.reactions.list_attr('id'))
             c = c.toarray()[0].tolist()
             # 1. build primal w/ desired constraint (build_primal) - also store variable c
             A_ineq_v, b_ineq_v, A_eq_v, b_eq_v, c_v, lb_v, ub_v, z_map_constr_ineq_v, z_map_constr_eq_v, z_map_vars_v \
@@ -218,11 +220,11 @@ class StrainDesignMILPBuilder:
             z_map_constr_eq_p = sparse.hstack((z_map_constr_eq_v,z_map_constr_eq_dual,sparse.csc_matrix((self.num_z,1))))
 
         # 3. Prepare module as target or desired
-        if mcs_module.module_sense == 'desired':
+        if sd_module.module_sense == 'desired':
             A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.reassign_lb_ub_from_ineq(
                 A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
             z_map_vars_i = z_map_vars_p
-        elif mcs_module.module_sense == 'target':
+        elif sd_module.module_sense == 'target':
             c_p = [0] * A_ineq_p.shape[1]
             A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, c_d, lb_i, ub_i, z_map_constr_ineq_d, z_map_constr_eq_d, z_map_vars_i = self.dualize(
                 A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p,
@@ -722,15 +724,15 @@ class ContMILP:
 
 def worker_init(A,A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver):
     global lp_glob
-    lp_glob = solver_interface.MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
+    lp_glob = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
                                     lb=lb, ub=ub, solver=solver)
     avail_solvers = list(solvers.keys())
-    if 'cplex' in avail_solvers:
-        lp_glob.cpx.parameters.lpmethod.set(1)
+    if lp_glob == 'cplex':
+        lp_glob.backend.parameters.lpmethod.set(1)
         if Configuration().processes > 1:
-            lp_glob.cpx.parameters.threads.set(2)
-    # elif 'gurobi' in avail_solvers:
-    # elif 'scip' in avail_solvers:
+            lp_glob.backend.parameters.threads.set(2)
+    # elif lp_glob == 'gurobi':
+    # elif lp_glob == 'scip':
     # else:
     lp_glob.solver = solver
     lp_glob.A = A

@@ -64,10 +64,10 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
         mcs_sols = sparse.csr_matrix((0,self.num_z))
         print('Enumerating smallest MCS ...')
         while mcs_sols.shape[0] < self.max_solutions and \
-              status is 0 and \
-              endtime-time.time() > 0:
+          status is 0 and \
+          endtime-time.time() > 0:
             self.milp.set_time_limit(endtime-time.time())
-            x, min_cx, status = self.milp.solve()
+            x, _ , status = self.milp.solve()
             if status is not 0:
                 break
             z = sparse.csr_matrix([x[i] for i in self.idx_z])

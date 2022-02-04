@@ -22,11 +22,12 @@ import sympy
 from mcs.constr2mat import *
 
 """
-MCS module (:class:`MCS_Module`)
-MCS modules are used to describe desired or undesired flux states for MCS strain design.
+Strain design module (:class:`SD_Module`)
+Strain design modules are used to describe strain design problems, 
+e.g. desired or undesired flux states for MCS strain design.
 """
 
-class MCS_Module:
+class SD_Module:
     """Modules to describe desired or undesired flux states for MCS strain design.
     There are three kinds of flux states that can be described
           1. The wildtype model, constrainted with additional inequalities:

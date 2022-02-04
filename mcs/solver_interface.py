@@ -1,8 +1,8 @@
 from cobra.util import solvers
-from numpy import inf, isinf, sign, nan, unique
+from numpy import inf, isinf, sign, nan, isnan, unique
 from scipy import sparse
 from typing import List, Tuple
-from mcs import cplex_interface,indicator_constraints
+from mcs.cplex_interface import CPLEX_MILP_LP
 from cplex.exceptions import CplexError
 
 class MILP_LP:
@@ -84,77 +84,35 @@ class MILP_LP:
                         len(self.indic_constr.b)==num_ic and len(self.indic_constr.binv)==num_ic and \
                         len(self.indic_constr.sense)==num_ic and len(self.indic_constr.indicval)==num_ic):
                     raise Exception("Check dimensions of indicator constraints.")
+        # Create backend
         if self.solver == 'cplex':
-            self.cpx = cplex_interface.init_cpx_milp(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
-                                                     self.indic_constr,self.x0)
+            self.backend = CPLEX_MILP_LP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
+                                            self.indic_constr,self.x0,self.options)
         elif self.solver == 'gurobi':
-            self.gurobi = gurobi_interface.init_gurobi_milp(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
-                                                     self.indic_constr,self.x0)
+            self.solver = None
+        elif self.solver == 'scip':
+            self.solver = None
+        elif self.solver == 'glpk':
+            self.solver = None
+        
         if self.tlim is None:
-            self.set_time_limit(1e9)
+            self.set_time_limit(inf)
         else:
             self.set_time_limit(self.tlim)
 
     def solve(self) -> Tuple[List,float,float]:
-        if self.solver == 'cplex':
-            try:
-                self.cpx.solve()
-                status = self.cpx.solution.get_status()
-                if status in [101,102,115,128,129,130]: # solution integer optimal
-                    min_cx = self.cpx.solution.get_objective_value()
-                    status = 0
-                elif status == 108: # timeout without solution
-                    x = [nan]*len(self.c)
-                    min_cx = nan
-                    status = 1
-                    return x, min_cx, status
-                elif status == 103: # infeasible
-                    x = [nan]*len(self.c)
-                    min_cx = nan
-                    status = 2
-                    return x, min_cx, status
-                elif status == 107: # timeout with solution
-                    min_cx = self.cpx.solution.get_objective_value()
-                    status = 3
-                elif status == [118,119]: # solution unbounded
-                    min_cx = -inf
-                    status = 4
-                else:
-                    print(self.cpx.solution.get_status_string())
-                    raise Exception("Case not yet handeld")
-
-                x = self.cpx.solution.get_values()
-                x = [x[i] if self.vtype[i]=='C' else int(round(x[i])) for i in range(len(x))]
-                return x, min_cx, status
-            except CplexError as exc:
-                if not exc.args[2]==1217: 
-                    print(exc)
-                min_cx = nan
-                x = [nan] * self.cpx.variables.get_num()
-                return x, min_cx, -1
+        x, min_cx, status = self.backend.solve()
+        if not isnan(x[0]): # if solution exists (is not nan), round integers
+            x = [x[i] if self.vtype[i]=='C' else int(round(x[i])) for i in range(len(x))]
+        return x, min_cx, status
 
     def slim_solve(self) -> float:
-        if self.solver == 'cplex':
-            try:
-                self.cpx.solve()
-                status = self.cpx.solution.get_status()
-                if status in [101,102,107,115,128,129,130]: # solution integer optimal (tolerance)
-                    opt = self.cpx.solution.get_objective_value()
-                elif status in [118,119]: # solution unbounded (or inf or unbdd)
-                    opt = -inf
-                elif status == [103,108]: # infeasible
-                    opt = nan
-                else:
-                    print(self.cpx.solution.get_status_string())
-                    raise Exception("Case not yet handeld")
-                return opt
-            except CplexError as exc:
-                return nan
+        a = self.backend.slim_solve()
+        return a
 
     def set_objective(self,c):
         self.c = c
-        if self.solver == 'cplex':
-            self.cpx.objective.set_linear([[i,c[i]] for i in range(len(c))])
+        self.backend.set_objective(c)
 
     def set_objective_idx(self,C):
         # when indices occur multiple times, take first one
@@ -163,13 +121,15 @@ class MILP_LP:
         C = [C[i] for i in C_idx]
         for i in range(len(C)):
             self.c[C[i][0]] = C[i][1]
-        if self.solver == 'cplex':
-            self.cpx.objective.set_linear(C)
+        self.backend.set_objective_idx(C)
 
-    def add_eq_constraint(self,A_ineq,b_ineq):
-        if self.solver == 'cplex':
-            pass
-        pass
+    def add_eq_constraint(self,A_eq,b_eq):
+        A_eq = sparse.csr_matrix(A_eq)
+        A_eq.eliminate_zeros()
+        b_eq = [float(b) for b in b_eq]
+        self.A_eq = sparse.vstack((self.A_eq,A_eq))
+        self.b_eq += b_eq
+        self.backend.add_ineq_constraint(A_eq,b_eq)
 
     def add_ineq_constraint(self,A_ineq,b_ineq):
         A_ineq = sparse.csr_matrix(A_ineq)
@@ -177,19 +137,8 @@ class MILP_LP:
         b_ineq = [float(b) for b in b_ineq]
         self.A_ineq = sparse.vstack((self.A_ineq,A_ineq))
         self.b_ineq += b_ineq
-        if self.solver == 'cplex':
-            numconst = self.cpx.linear_constraints.get_num()
-            numnewconst = A_ineq.shape[0]
-            newconst_idx = [numconst+i for i in range(numnewconst)]
-            self.cpx.linear_constraints.add(rhs=b_ineq, senses='L'*numnewconst)
-            # retrieve row and column indices from sparse matrix and convert them to int
-            A_ineq = A_ineq.tocoo()
-            rows_A = [int(a)+numconst for a in A_ineq.row]
-            cols_A = [int(a) for a in A_ineq.col]
-            data_A = [float(a) for a in A_ineq.data]
-            # convert matrix coefficients to float
-            data_A = [float(a) for a in A_ineq.data]
-            self.cpx.linear_constraints.set_coefficients(zip(rows_A, cols_A, data_A))
+        self.backend.add_ineq_constraint(A_ineq,b_ineq)
+
 
     # ONLY DUMMIES SO FAR
     def add_indic_constraint(self,A_ineq,b_ineq):
@@ -198,14 +147,11 @@ class MILP_LP:
         pass
 
     def reset_objective(self):
-        self.c = [0]*len(self.c)
-        if self.solver == 'cplex':
-            self.cpx.objective.set_linear([[i,0] for i in range(self.cpx.variables.get_num())])
+        self.set_objective([0]*len(self.c))
 
     def set_time_limit(self,t):
         self.tlim = t
-        if self.solver == 'cplex':
-            self.cpx.parameters.timelimit.set(t)
+        self.backend.set_time_limit(t)
 
     def populate(self):
         pass

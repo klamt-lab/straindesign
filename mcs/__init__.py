@@ -5,10 +5,10 @@
 # from mcs.solver_interface import solver_interface
 from .strainDesignMILPBuilder import *
 from .strainDesigner import *
-from .mcs_module import *
-from .cplex_interface import *
+from .strainDesignModule import *
 from .indicator_constraints import *
 from .solver_interface import *
+from .cplex_interface import *
 from .constr2mat import *
 from .fba import *
 from .fva import *
