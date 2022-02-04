@@ -8,11 +8,6 @@ from mcs.strainDesignModule import *
 from mcs.constr2mat import *
 from mcs.indicator_constraints import *
 from mcs.solver_interface import *
-try:
-    import ray
-except:
-    pass
-
 
 class StrainDesignMILPBuilder:
     """Class for computing Minimal Cut Sets (MCS)"""
@@ -88,8 +83,6 @@ class StrainDesignMILPBuilder:
         else:
             self.b_ineq = [0, self.max_cost]
         self.z_map_constr_ineq = sparse.csc_matrix((numr, 2))
-        self.rownames_ineq = ['sum_z_min', 'sum_z_max']
-        self.colnames = ['z' + str(i) for i in range(0, numr)]
         self.c = self.cost.copy()
         self.lb = [0] * numr
         self.ub = [1 - float(i) for i in self.z_non_targetable]
@@ -98,7 +91,6 @@ class StrainDesignMILPBuilder:
         self.A_eq = sparse.csc_matrix((0, numr))
         self.b_eq = []
         self.z_map_constr_eq = sparse.csc_matrix((numr, 0))
-        self.rownames_eq = []
         self.num_modules = 0
         self.indic_constr = []  # Add instances of the class 'Indicator_constraint' later
         # Initialize association between z and variables and variables
@@ -128,9 +120,9 @@ class StrainDesignMILPBuilder:
                                   [self.lb[i] for i in cont_vars],
                                   [self.ub[i] for i in cont_vars],
                                   [self.c[i] for i in cont_vars],
-                                  self.z_map_constr_ineq,
-                                  self.z_map_constr_eq,
-                                  self.z_map_vars[:, cont_vars])
+                                  self.z_map_constr_ineq.tocoo(),
+                                  self.z_map_constr_eq.tocoo(),
+                                  self.z_map_vars[:, cont_vars].tocoo())
 
         # 4. Link LP module to z-variables
         self.link_z()
@@ -247,9 +239,6 @@ class StrainDesignMILPBuilder:
         self.c += [0] * A_ineq_i.shape[1]
         self.lb += lb_i
         self.ub += ub_i
-        self.rownames_ineq += [str(self.num_modules) + '_mod_ineq_' + str(i) for i in range(0, A_ineq_i.shape[0])]
-        self.rownames_eq += [str(self.num_modules) + '_mod_eq_' + str(i) for i in range(0, A_eq_i.shape[0])]
-        self.colnames += [str(self.num_modules) + '_mod_var_' + str(i) for i in range(0, A_ineq_i.shape[1])]
 
     # Builds primal LP problem for a module in the
     # standard form: A_ineq x <= b_ineq, A_eq x = b_eq, lb <= x <= ub, min{c'x}.
@@ -470,35 +459,6 @@ class StrainDesignMILPBuilder:
               cont_vars]
         M_A = [(-M_A[i, :])[0].toarray()[0] for i in range(len(knockable_constr_ineq))]
         M_b = [self.b_ineq[i] for i in range(0, self.A_ineq.shape[0]) if i in knockable_constr_ineq]
-
-        # # Run LPs to determine maximal values knockable constraints can take.
-        # # This task is supported by the parallelization module 'Ray', if Ray is initialized
-        # if 'ray' in locals():
-        #     if ray.is_initialized():
-        #         # a) Build an Actor - a stateful worker based on a class
-        #         @ray.remote  # class is decorated with ray.remote to for parallel use
-        #         class M_optimizer(object):
-        #             def __init__(self):  # The LP object is only constructed once upon Actor creation.
-        #                 self.lp = solver_interface.MILP_LP(A_ineq=M_A_ineq, b_ineq=M_b_ineq, A_eq=M_A_eq, b_eq=M_b_eq,
-        #                                                 lb=M_lb, ub=M_ub)
-
-        #             def compute(self, c):  # With each function call only the objective function is changed
-        #                 self.lp.set_objective(c)
-        #                 x, min, status = self.lp.solve()
-        #                 return -min
-
-        #         # b) Create pool of Actors on which the computations should be executed. Number of Actors = number of CPUs
-        #         parpool = ray.util.ActorPool([M_optimizer.remote() for _ in range(int(ray.available_resources()['CPU']))])
-        #         # c) Run M computations on actor pool. lambda is an inline function 
-        #         max_Ax = list(parpool.map(lambda a, x: a.compute.remote(x), M_A))
-        # # If Ray is not available, use regular loop
-        # else:
-        #     max_Ax = [np.nan] * len(M_A)
-        #     lp = solver_interface.MILP_LP(A_ineq=M_A_ineq, b_ineq=M_b_ineq, A_eq=M_A_eq, b_eq=M_b_eq, lb=M_lb, ub=M_ub)
-        #     for i in range(len(M_A)):
-        #         lp.set_objective(M_A[i])
-        #         x, min, status = lp.solve()
-        #         max_Ax[i] = -min
 
         processes = Configuration().processes
         num_Ms = len(M_A)

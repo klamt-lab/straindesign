@@ -2,6 +2,7 @@ from scipy import sparse
 from numpy import nan, inf, isinf
 from cplex import Cplex
 from cplex.exceptions import CplexError
+from typing import Tuple, List
 from mcs import indicator_constraints, solver_interface
 
 # Collection of CPLEX-related functions that facilitate the creation
@@ -14,7 +15,7 @@ from mcs import indicator_constraints, solver_interface
 #  
 
 # Create a CPLEX-object from a matrix-based problem setup
-class CPLEX_MILP_LP(Cplex):
+class Cplex_MILP_LP(Cplex):
     def __init__(self,c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype,indic_constr,x0,options):
         super().__init__()
         self.objective.set_sense(self.objective.sense.minimize)
@@ -60,7 +61,7 @@ class CPLEX_MILP_LP(Cplex):
         self.parameters.simplex.tolerances.optimality.set(1e-9)
         self.parameters.simplex.tolerances.feasibility.set(1e-9)
 
-    def solve(self):
+    def solve(self) -> Tuple[List,float,float]:
         try:
             super().solve() # call parent solve function (that was overwritten in this class)
             status = self.solution.get_status()
@@ -80,13 +81,13 @@ class CPLEX_MILP_LP(Cplex):
             elif status == 107: # timeout with solution
                 min_cx = self.solution.get_objective_value()
                 status = 3
-            elif status == [118,119]: # solution unbounded
+            elif status in [118,119]: # solution unbounded
                 min_cx = -inf
                 status = 4
             else:
+                print(status)
                 print(self.solution.get_status_string())
                 raise Exception("Case not yet handeld")
-
             x = self.solution.get_values()
             return x, min_cx, status
 
@@ -105,20 +106,27 @@ class CPLEX_MILP_LP(Cplex):
                 opt = self.solution.get_objective_value()
             elif status in [118,119]: # solution unbounded (or inf or unbdd)
                 opt = -inf
-            elif status == [103,108]: # infeasible
+            elif status in [103,108]: # infeasible
                 opt = nan
             else:
+                print(status)
                 print(self.solution.get_status_string())
                 raise Exception("Case not yet handeld")
             return opt
         except CplexError as exc:
             return nan
 
+    def populate(self) -> Tuple[List,float,float]:
+        pass
+
     def set_objective(self,c):
         self.objective.set_linear([[i,c[i]] for i in range(len(c))])
 
     def set_objective_idx(self,C):
         self.objective.set_linear(C)
+
+    def set_ub(self,ub):
+        self.variables.set_upper_bounds(ub)
 
     def set_time_limit(self,t):
         if isinf(t):

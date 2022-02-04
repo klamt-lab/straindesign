@@ -2,8 +2,8 @@ from cobra.util import solvers
 from numpy import inf, isinf, sign, nan, isnan, unique
 from scipy import sparse
 from typing import List, Tuple
-from mcs.cplex_interface import CPLEX_MILP_LP
-from cplex.exceptions import CplexError
+from mcs.cplex_interface import Cplex_MILP_LP
+from mcs.gurobi_interface import Gurobi_MILP_LP
 
 class MILP_LP:
     def __init__(self, *args, **kwargs):
@@ -86,9 +86,10 @@ class MILP_LP:
                     raise Exception("Check dimensions of indicator constraints.")
         # Create backend
         if self.solver == 'cplex':
-            self.backend = CPLEX_MILP_LP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
+            self.backend = Cplex_MILP_LP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
                                             self.indic_constr,self.x0,self.options)
         elif self.solver == 'gurobi':
+            self.backend = Gurobi_MILP_LP()
             self.solver = None
         elif self.solver == 'scip':
             self.solver = None
@@ -110,6 +111,15 @@ class MILP_LP:
         a = self.backend.slim_solve()
         return a
 
+    def populate(self) -> Tuple[List,float,float]:
+        if self.solver in ['cplex','gurobi']:
+            self.backend.populate()
+        # TODO    
+        # first solve, then add constraint to fix costs and iterate solution until everything is found
+        else: 
+            pass
+        return x, min_cx, status
+
     def set_objective(self,c):
         self.c = c
         self.backend.set_objective(c)
@@ -122,6 +132,10 @@ class MILP_LP:
         for i in range(len(C)):
             self.c[C[i][0]] = C[i][1]
         self.backend.set_objective_idx(C)
+
+    def set_ub(self,ub):
+        self.ub = ub
+        self.backend.set_ub(ub)
 
     def add_eq_constraint(self,A_eq,b_eq):
         A_eq = sparse.csr_matrix(A_eq)
@@ -139,14 +153,7 @@ class MILP_LP:
         self.b_ineq += b_ineq
         self.backend.add_ineq_constraint(A_ineq,b_ineq)
 
-
-    # ONLY DUMMIES SO FAR
-    def add_indic_constraint(self,A_ineq,b_ineq):
-        if self.solver == 'cplex':
-            pass
-        pass
-
-    def reset_objective(self):
+    def clear_objective(self):
         self.set_objective([0]*len(self.c))
 
     def set_time_limit(self,t):
@@ -154,16 +161,4 @@ class MILP_LP:
         self.backend.set_time_limit(t)
 
     def populate(self):
-        pass
-
-    def set_targetable_z(self):
-        pass
-
-    def reset_targetable_z(self):
-        pass
-
-    def reset_objective(self):
-        pass
-
-    def clear_objective(self):
         pass

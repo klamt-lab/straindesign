@@ -57,8 +57,9 @@ class SD_Module:
         ...
     """
     def __init__(self, model, module_type, *args, **kwargs):
+        self.model = model
         self.module_type = module_type
-        allowed_keys = {'module_sense', 'constraints','inner_objective','numerator','denomin','lb','ub'}
+        allowed_keys = {'module_sense', 'constraints','inner_objective','numerator','denomin','lb','ub','skip_checks'}
         # set all keys passed in kwargs
         for key,value in kwargs.items():
             if key in allowed_keys:
@@ -89,14 +90,15 @@ class SD_Module:
             self.constraints=[]
 
         # verify self.constraints
-        try:
-            for eq in self.constraints:
-                re.search('<=|>=|=',eq)
-                eq_sign = re.search('<=|>=|=',eq)[0]
-                split_eq = re.split('<=|>=|=',eq)
-                self.check_lhs(split_eq[0],reac_id)
-        except:
-            raise NameError('self.constraints must contain a sign (<=,=,>=)')
+        if self.skip_checks is None or not self.skip_checks:
+            try:
+                for eq in self.constraints:
+                    re.search('<=|>=|=',eq)
+                    eq_sign = re.search('<=|>=|=',eq)[0]
+                    split_eq = re.split('<=|>=|=',eq)
+                    self.check_lhs(split_eq[0],reac_id)
+            except:
+                raise NameError('self.constraints must contain a sign (<=,=,>=)')
 
         if self.module_type not in  ["mcs_lin", "mcs_bilvl", "mcs_yield"]:
             raise ValueError('"module_type" must be "mcs_lin", "mcs_bilvl" or "mcs_yield".')

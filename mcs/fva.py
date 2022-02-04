@@ -14,10 +14,10 @@ import cplex
 #   A_ineq, b_ineq: Additional constraints in matrix form
 #   obj:            Alternative objective in text form
 #   c:              Alternative objective in vector form
-def idx2c(i):
+def idx2c(i,prev):
     col = int(floor(i/2))
     sig = sign(mod(i,2)-0.5)
-    C = [[col,sig],[lp_glob.prev,0.0]]
+    C = [[col,sig],[prev,0.0]]
     C_idx = [C[i][0] for i in range (len(C))]
     C_idx = unique([C_idx.index(C_idx[i]) for i in range(len(C_idx))])
     C = [C[i] for i in C_idx]
@@ -27,24 +27,20 @@ def worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver):
     global lp_glob
     lp_glob = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
                                     lb=lb, ub=ub, x0=x0,solver=solver)
-    avail_solvers = list(solvers.keys())
-    if 'cplex' in avail_solvers:
-        lp_glob = lp_glob.cpx
-        lp_glob.parameters.threads.set(2)
-        lp_glob.parameters.lpmethod.set(1)
+    if 'cplex' in lp_glob.solver == 'cplex':
+        lp_glob.backend.parameters.threads.set(2)
+        lp_glob.backend.parameters.lpmethod.set(1)
     # elif 'gurobi' in avail_solvers:
     # elif 'scip' in avail_solvers:
     # else:
-    lp_glob.solver = solver
     lp_glob.prev = 0
 
 def worker_compute(i) -> Tuple[int,float]:
     global lp_glob
-    C = idx2c(i)
+    C = idx2c(i,lp_glob.prev)
     if lp_glob.solver == 'cplex':
-        lp_glob.objective.set_linear(C)
-        lp_glob.solve()
-        min_cx = lp_glob.solution.get_objective_value()
+        lp_glob.backend.set_objective_idx(C)
+        min_cx = lp_glob.backend.slim_solve()
     else:
         lp_glob.set_objective_idx(C)
         min_cx = lp_glob.slim_solve()
