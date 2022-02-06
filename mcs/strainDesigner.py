@@ -33,21 +33,23 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
                                 options     =self.options,
                                 solver      =self.solver)
 
-    def add_exclusion_constraint(self,z):
-        A_ineq = z.copy()
-        A_ineq.resize((1,self.milp.A_ineq.shape[1]))
-        b_ineq = np.sum(z)-1
-        self.A_ineq = sparse.vstack((self.A_ineq,A_ineq))
-        self.b_ineq += b_ineq
-        self.milp.add_ineq_constraint(A_ineq,[b_ineq])
+    def add_exclusion_constraints(self,z):
+        for i in range(z.shape[0]):
+            A_ineq = z[i].copy()
+            A_ineq.resize((1,self.milp.A_ineq.shape[1]))
+            b_ineq = np.sum(z[i])-1
+            self.A_ineq = sparse.vstack((self.A_ineq,A_ineq))
+            self.b_ineq += b_ineq
+            self.milp.add_ineq_constraint(A_ineq,[b_ineq])
 
     def addExclusionConstraintsIneq(self,z):
-        A_ineq = [1.0 if z[i] else -1.0 for i in self.idx_z]
-        A_ineq.resize((1,self.milp.A_ineq.shape[1]))
-        b_ineq = np.sum(z)-1
-        self.A_ineq = sparse.vstack((self.A_ineq,A_ineq))
-        self.b_ineq += b_ineq
-        self.milp.add_ineq_constraint(A_ineq,[b_ineq])
+        for j in range(z.shape[0]):
+            A_ineq = [1.0 if z[j,i] else -1.0 for i in self.idx_z]
+            A_ineq.resize((1,self.milp.A_ineq.shape[1]))
+            b_ineq = np.sum(z[j])-1
+            self.A_ineq = sparse.vstack((self.A_ineq,A_ineq))
+            self.b_ineq += b_ineq
+            self.milp.add_ineq_constraint(A_ineq,[b_ineq])
 
     def mcs2dict(self,sol) -> Dict:
         output = {}
@@ -62,6 +64,12 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
     def solveZ(self) -> Tuple[List,int]:
         x, _ , status = self.milp.solve()
         z = sparse.csr_matrix([x[i] for i in self.idx_z])
+        return z, status
+
+    def populateZ(self,n) -> Tuple[List,int]:
+        x, _ , status = self.milp.populate(n)
+        z = sparse.csr_matrix([[x[j][i] for i in self.idx_z] for j in range(len(x))])
+        z.resize((len(x),self.num_z))
         return z, status
 
     def clearObjective(self):
@@ -82,10 +90,8 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
         self.milp.set_ub([[i,0] for i in self.idx_z if not sol[0,i]])
 
     def verify_mcs(self,sols) -> List:
-        if type(sols[0]) is not 'List':
-            sols = [sols]
-        valid = [False]*len(sols)
-        for i,sol in zip(range(len(sols)),sols):
+        valid = [False]*sols.shape[0]
+        for i,sol in zip(range(sols.shape[0]),sols):
             inactive_vars = [var for z_i,var,sense in \
                             zip(self.cont_MILP.z_map_vars.row,self.cont_MILP.z_map_vars.col,self.cont_MILP.z_map_vars.data)\
                             if np.logical_xor(sol[0,z_i],sense==-1)]
@@ -128,20 +134,20 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
         endtime = time.time() + self.time_limit
         status = 0
         mcs_sols = sparse.csr_matrix((0,self.num_z))
-        print('Enumerating smallest MCS ...')
+        print('Finding smallest MCS ...')
         while mcs_sols.shape[0] < self.max_solutions and \
           status is 0 and \
           endtime-time.time() > 0:
             self.milp.set_time_limit(endtime-time.time())
             z, status = self.solveZ()
             output = self.mcs2dict(z)
-            if status in [0,3] and all(self.verify_mcs(x)):
+            if status in [0,3] and all(self.verify_mcs(z)):
                 print('MCS with cost '+str((z*self.cost)[0])+': '+str(output))
-                self.add_exclusion_constraint(z)
+                self.add_exclusion_constraints(z)
                 mcs_sols = sparse.vstack((mcs_sols,z))
             elif status in [0,3]:
                 print('Invalid (minimal) solution found: '+ str(output))
-                self.add_exclusion_constraint(z)
+                self.add_exclusion_constraints(z)
             if status is not 0:
                 break
         if status == 2 and mcs_sols.shape[0] > 0: # all solutions found
@@ -153,14 +159,14 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
         elif endtime-time.time() > 0:
             print('Finished. No solutions exist.')
         else:
-            pring('Time limit reached.')
+            print('Time limit reached.')
         # Translate solutions into dict if not stated otherwise
         if self.output_format is None or self.output_format=='dict':
             mcs_dict = []
             for mcs in mcs_sols:
                 mcs_dict += [self.mcs2dict(mcs)]
             return mcs_dict, status
-        else
+        else:
             return mcs_sols, status
 
     # Find iteratively MCS of arbitrary size
@@ -182,7 +188,7 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
         endtime = time.time() + self.time_limit
         status = 0
         mcs_sols = sparse.csr_matrix((0,self.num_z))
-        print('Enumerating smallest MCS ...')
+        print('Finding MCS of arbitrary size ...')
         while mcs_sols.shape[0] < self.max_solutions and \
           status is 0 and \
           endtime-time.time() > 0:
@@ -199,7 +205,7 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
                 self.setTargetableZ(z);
                 z1, status1 = self.solveZ()
                 if status1 == 0 and not self.verify_mcs(z1):
-                    self.add_exclusion_constraint(z1)
+                    self.add_exclusion_constraints(z1)
                     output = self.mcs2dict(z1)
                     print('Invalid minimal solution found: '+ str(output))
                     continue
@@ -224,11 +230,11 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
                 output = self.mcs2dict(z1)
                 if status1 in [0,3] and all(self.verify_mcs(z1)):
                     print('MCS with cost '+str((z1*self.cost)[0])+': '+str(output))
-                    self.add_exclusion_constraint(z1)
+                    self.add_exclusion_constraints(z1)
                     mcs_sols = sparse.vstack((mcs_sols,z1))
                 elif status1 in [0,3]:
                     print('Invalid minimal solution found: '+ str(output))
-                    self.add_exclusion_constraint(z)
+                    self.add_exclusion_constraints(z)
                 else: # return to outside loop
                     break
         if status == 2 and mcs_sols.shape[0] > 0: # all solutions found
@@ -240,12 +246,122 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
         elif endtime-time.time() > 0:
             print('Finished. No solutions exist.')
         else:
-            pring('Time limit reached.')
+            print('Time limit reached.')
         # Translate solutions into dict if not stated otherwise
         if self.output_format is None or self.output_format=='dict':
             mcs_dict = []
             for mcs in mcs_sols:
                 mcs_dict += [self.mcs2dict(mcs)]
             return mcs_dict, status
-        else
+        else:
             return mcs_sols, status
+
+    # Find iteratively MCS of arbitrary size
+    # output format: list of 'dict' (default) or 'sparse'
+    def enumerate_mcs(self, **kwargs):
+        keys = {'max_solutions','time_limit','output_format'}
+        # set keys passed in kwargs
+        for key,value in dict(kwargs).items():
+            if key in keys:
+                setattr(self,key,value)
+        # set all remaining keys to None
+        for key in keys:
+            if key not in dict(kwargs).keys():
+                setattr(self,key,None)
+        if self.max_solutions is None:
+            self.max_solutions = np.inf
+        if self.time_limit is None:
+            self.time_limit = np.inf
+        endtime = time.time() + self.time_limit
+        status = 0
+        mcs_sols = sparse.csr_matrix((0,self.num_z))
+        print('Enumerating MCS ...')
+        while mcs_sols.shape[0] < self.max_solutions and \
+          status is 0 and \
+          endtime-time.time() > 0:
+            self.milp.set_time_limit(endtime-time.time())
+            z, status = self.populateZ(self.max_solutions - mcs_sols.shape[0])
+            if status in [0,3]:
+                for i in range(z.shape[0]):
+                    output = [self.mcs2dict(z[i])]
+                    if all(self.verify_mcs(z[i])):
+                        print('MCS with cost '+str((z*self.cost)[0])+': '+str(output))
+                        self.add_exclusion_constraints(z[i])
+                        mcs_sols = sparse.vstack((mcs_sols,z[i]))
+                    else:
+                        print('Invalid (minimal) solution found: '+ str(output))
+                        self.add_exclusion_constraints(z)
+            if status is not 0:
+                break
+        if status == 2 and mcs_sols.shape[0] > 0: # all solutions found or solution limit reached
+            status = 0
+        if status == 1 and mcs_sols.shape[0] > 0: # some solutions found, timelimit reached
+            status = 3
+        if endtime-time.time() > 0 and mcs_sols.shape[0] > 0:
+            print('Finished. '+ str(mcs_sols.shape[0]) +' solutions found.')
+        elif endtime-time.time() > 0:
+            print('Finished. No solutions exist.')
+        else:
+            print('Time limit reached.')
+        # Translate solutions into dict if not stated otherwise
+        if self.output_format is None or self.output_format=='dict':
+            mcs_dict = []
+            for mcs in mcs_sols:
+                mcs_dict += [self.mcs2dict(mcs)]
+            return mcs_dict, status
+        else:
+            return mcs_sols, status
+
+#     % This function uses the CPLEX class API and the populate function
+#     while minCost < obj.maxCost && endtime-now*86400 > 0 && size(obj.mcs,2) < maxSolutions % Abort at time limit, maxCost or maxSolutions
+#         obj = obj.setTimeLimit(endtime-now*86400);
+#         if true % find smallest solution first, then enumerate all solutions of that size
+#             obj = obj.setMaxCost(obj.maxCost);
+#             [obj, sol, status ] = obj.solveZ();
+#             if  status ~= 0
+#                 break;
+#             elseif status == 0 && ~obj.verify_mcs(sol)
+#                 displ(['Invalid minimal solution found: ' obj.mcs2text(sol)],obj.verbose);
+#                 obj = obj.addExclusionConstraints(sol);
+#                 continue;
+#             end
+#             minCost = obj.c(obj.idx_z)'*sol;
+#             displ(['Size ' num2str(minCost) ' ... '],obj.verbose);
+#             % enforce cost
+#             obj = obj.setMinCost(minCost);
+#             obj = obj.setMaxCost(minCost);
+#             obj = obj.clearObjective();
+#         else % increase size stepwise
+#             minCost = minCost+1;
+#             obj = obj.setMinCost(minCost);
+#             obj = obj.setMaxCost(minCost);
+#         end
+#         obj = obj.setTimeLimit(endtime-now*86400);
+        
+#         % pool MCS
+#         [obj, sol, status ] = obj.populateZ(min(1e9,maxSolutions - size(obj.mcs,2)));
+        
+#         if status == 0 || status == 3
+#             mcs_valid = obj.verify_mcs(sol);
+#             displ([num2str(size(sol,2)) ' solutions of size (cost) ' num2str(unique(obj.cost*sol)) ' found.'],obj.verbose);
+#             if any(~mcs_valid) % if a solution is invalid, only remove that particular solution, supersets are allowed.
+#                 displ([num2str(sum(~mcs_valid)) ' solution(s) invalid.'],obj.verbose);
+#                 obj = obj.addExclusionConstraintsIneq(sol(:,~mcs_valid));
+#             end
+#             obj = obj.addExclusionConstraints(sol(:,mcs_valid));
+#             obj = obj.addSolutions(sol(:,mcs_valid));
+#             obj = obj.resetObjective();
+#             obj = obj.setMaxCost(obj.maxCost);
+#         end
+#     end
+#     mcs = obj.mcs;
+#     if status == 2 && size(mcs,2) > 0
+#         status = 0;
+#     end
+#     if status == 1 && size(mcs,2) > 0
+#         status = 3;
+#         displ('Time limit reached.',obj.verbose);
+#     elseif status == 1 && size(mcs,2) == 0
+#         displ('Time limit reached before a solution could be found.',obj.verbose);
+#     end
+# end

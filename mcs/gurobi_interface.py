@@ -10,8 +10,8 @@ from typing import Tuple, List
 # vector-matrix-based problem setups.
 #
 
-# Create a CPLEX-object from a matrix-based problem setup
-class Gurobi_MILP_LP(gp.Model):
+# Create a Gurobi-object from a matrix-based problem setup
+class Gurobi_MILP_LP(Cplex):
     def __init__(self,c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype,indic_constr,x0,options):
         super().__init__()
         self.objective.set_sense(self.objective.sense.minimize)
@@ -54,6 +54,9 @@ class Gurobi_MILP_LP(gp.Model):
         self.set_error_stream(None)
         self.set_warning_stream(None)
         self.set_results_stream(None)
+        self.parameters.mip.pool.absgap.set(0.0)
+        self.parameters.mip.pool.relgap.set(0.0)
+        # yield only optimal solutions in pool
         self.parameters.simplex.tolerances.optimality.set(1e-9)
         self.parameters.simplex.tolerances.feasibility.set(1e-9)
 
@@ -77,13 +80,13 @@ class Gurobi_MILP_LP(gp.Model):
             elif status == 107: # timeout with solution
                 min_cx = self.solution.get_objective_value()
                 status = 3
-            elif status == [118,119]: # solution unbounded
+            elif status in [118,119]: # solution unbounded
                 min_cx = -inf
                 status = 4
             else:
+                print(status)
                 print(self.solution.get_status_string())
                 raise Exception("Case not yet handeld")
-
             x = self.solution.get_values()
             return x, min_cx, status
 
@@ -102,24 +105,65 @@ class Gurobi_MILP_LP(gp.Model):
                 opt = self.solution.get_objective_value()
             elif status in [118,119]: # solution unbounded (or inf or unbdd)
                 opt = -inf
-            elif status == [103,108]: # infeasible
+            elif status in [103,108]: # infeasible
                 opt = nan
             else:
+                print(status)
                 print(self.solution.get_status_string())
                 raise Exception("Case not yet handeld")
             return opt
         except CplexError as exc:
             return nan
 
-    def populate(self) -> Tuple[List,float,float]:
-        super().populate_solution_pool()
-        pass
+    def populate(self,n) -> Tuple[List,float,float]:
+        try:
+            if isinf(n):
+                self.parameters.mip.pool.capacity.set(self.parameters.mip.pool.capacity.max())
+            else:
+                self.parameters.mip.pool.capacity.set(n)
+            self.populate_solution_pool() # call parent solve function (that was overwritten in this class)
+            status = self.solution.get_status()
+            if status in [101,102,115,128,129,130]: # solution integer optimal
+                min_cx = self.solution.get_objective_value()
+                status = 0
+            elif status == 108: # timeout without solution
+                x = []
+                min_cx = nan
+                status = 1
+                return x, min_cx, status
+            elif status == 103: # infeasible
+                x = []
+                min_cx = nan
+                status = 2
+                return x, min_cx, status
+            elif status == 107: # timeout with solution
+                min_cx = self.solution.get_objective_value()
+                status = 3
+            elif status in [118,119]: # solution unbounded
+                min_cx = -inf
+                status = 4
+            else:
+                print(status)
+                print(self.solution.get_status_string())
+                raise Exception("Case not yet handeld")
+            x = [self.solution.pool.get_values(i) for i in range(self.solution.pool.get_num())]
+            return x, min_cx, status
+
+        except CplexError as exc:
+            if not exc.args[2]==1217: 
+                print(exc)
+            min_cx = nan
+            x = [nan] * self.variables.get_num()
+            return x, min_cx, -1
 
     def set_objective(self,c):
         self.objective.set_linear([[i,c[i]] for i in range(len(c))])
 
     def set_objective_idx(self,C):
         self.objective.set_linear(C)
+
+    def set_ub(self,ub):
+        self.variables.set_upper_bounds(ub)
 
     def set_time_limit(self,t):
         if isinf(t):

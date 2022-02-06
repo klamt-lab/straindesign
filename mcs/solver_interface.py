@@ -111,9 +111,11 @@ class MILP_LP:
         a = self.backend.slim_solve()
         return a
 
-    def populate(self) -> Tuple[List,float,float]:
+    def populate(self,n) -> Tuple[List,float,float]:
+        # add constraint that enforces optimality
+        # 
         if self.solver in ['cplex','gurobi']:
-            self.backend.populate()
+            x, min_cx, status = self.backend.populate(n)
         # TODO    
         # first solve, then add constraint to fix costs and iterate solution until everything is found
         else: 
@@ -159,6 +161,3 @@ class MILP_LP:
     def set_time_limit(self,t):
         self.tlim = t
         self.backend.set_time_limit(t)
-
-    def populate(self):
-        pass

@@ -11,7 +11,7 @@ from mcs import indicator_constraints, solver_interface
 #
 #
 #   Philipp Schneider (schneiderp@mpi-magdeburg.mpg.de)
-# - December 2021
+# - February 2021
 #  
 
 # Create a CPLEX-object from a matrix-based problem setup
@@ -58,6 +58,9 @@ class Cplex_MILP_LP(Cplex):
         self.set_error_stream(None)
         self.set_warning_stream(None)
         self.set_results_stream(None)
+        self.parameters.mip.pool.absgap.set(0.0)
+        self.parameters.mip.pool.relgap.set(0.0)
+        # yield only optimal solutions in pool
         self.parameters.simplex.tolerances.optimality.set(1e-9)
         self.parameters.simplex.tolerances.feasibility.set(1e-9)
 
@@ -116,8 +119,46 @@ class Cplex_MILP_LP(Cplex):
         except CplexError as exc:
             return nan
 
-    def populate(self) -> Tuple[List,float,float]:
-        pass
+    def populate(self,n) -> Tuple[List,float,float]:
+        try:
+            if isinf(n):
+                self.parameters.mip.pool.capacity.set(self.parameters.mip.pool.capacity.max())
+            else:
+                self.parameters.mip.pool.capacity.set(n)
+            self.populate_solution_pool() # call parent solve function (that was overwritten in this class)
+            status = self.solution.get_status()
+            if status in [101,102,115,128,129,130]: # solution integer optimal
+                min_cx = self.solution.get_objective_value()
+                status = 0
+            elif status == 108: # timeout without solution
+                x = []
+                min_cx = nan
+                status = 1
+                return x, min_cx, status
+            elif status == 103: # infeasible
+                x = []
+                min_cx = nan
+                status = 2
+                return x, min_cx, status
+            elif status == 107: # timeout with solution
+                min_cx = self.solution.get_objective_value()
+                status = 3
+            elif status in [118,119]: # solution unbounded
+                min_cx = -inf
+                status = 4
+            else:
+                print(status)
+                print(self.solution.get_status_string())
+                raise Exception("Case not yet handeld")
+            x = [self.solution.pool.get_values(i) for i in range(self.solution.pool.get_num())]
+            return x, min_cx, status
+
+        except CplexError as exc:
+            if not exc.args[2]==1217: 
+                print(exc)
+            min_cx = nan
+            x = [nan] * self.variables.get_num()
+            return x, min_cx, -1
 
     def set_objective(self,c):
         self.objective.set_linear([[i,c[i]] for i in range(len(c))])
