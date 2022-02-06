@@ -11,7 +11,7 @@ from typing import Tuple, List
 #
 
 # Create a Gurobi-object from a matrix-based problem setup
-class Gurobi_MILP_LP(Cplex):
+class Gurobi_MILP_LP(gp.Model):
     def __init__(self,c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype,indic_constr,x0,options):
         super().__init__()
         self.objective.set_sense(self.objective.sense.minimize)
@@ -31,7 +31,7 @@ class Gurobi_MILP_LP(Cplex):
         A = sparse.vstack((A_ineq,A_eq),format='coo') # concatenate coefficient matrices
         sense = len(b_ineq)*'L' + len(b_eq)*'E'
 
-        # construct CPLEX problem. Add variables and linear constraints
+        # construct Gurobi problem. Add variables and linear constraints
         if not vtype: # when undefined, all variables are continous
             vtype = 'C'*numvars
         self.variables.add(obj=c, lb=lb, ub=ub, types=vtype)
