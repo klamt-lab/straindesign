@@ -91,11 +91,10 @@ class MILP_LP:
         elif self.solver == 'gurobi':
             self.backend = Gurobi_MILP_LP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
                                             self.indic_constr,self.x0,self.options)
-            self.solver = None
         elif self.solver == 'scip':
-            self.solver = None
+            raise Exception('SCIP is not yet supported')
         elif self.solver == 'glpk':
-            self.solver = None
+            raise Exception('GLPK is not yet supported')
         
         if self.tlim is None:
             self.set_time_limit(inf)

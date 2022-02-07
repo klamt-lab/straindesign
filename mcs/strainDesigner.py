@@ -223,9 +223,10 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
             print('Searching in subspace with '+str(sum(z.toarray()[0]))+' possible targets.')
             while mcs_sols.shape[0] < self.max_solutions and \
                     status is 0 and \
-                    endtime-time.time() > 0:             
+                    endtime-time.time() > 0:    
+                self.milp.set_time_limit(endtime-time.time())
                 self.resetObjective()
-                self.setTargetableZ(z);
+                self.setTargetableZ(z)
                 z1, status1 = self.solveZ()
                 output = self.mcs2dict(z1)
                 if status1 in [0,3] and all(self.verify_mcs(z1)):
@@ -311,57 +312,3 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
             return mcs_dict, status
         else:
             return mcs_sols, status
-
-#     % This function uses the CPLEX class API and the populate function
-#     while minCost < obj.maxCost && endtime-now*86400 > 0 && size(obj.mcs,2) < maxSolutions % Abort at time limit, maxCost or maxSolutions
-#         obj = obj.setTimeLimit(endtime-now*86400);
-#         if true % find smallest solution first, then enumerate all solutions of that size
-#             obj = obj.setMaxCost(obj.maxCost);
-#             [obj, sol, status ] = obj.solveZ();
-#             if  status ~= 0
-#                 break;
-#             elseif status == 0 && ~obj.verify_mcs(sol)
-#                 displ(['Invalid minimal solution found: ' obj.mcs2text(sol)],obj.verbose);
-#                 obj = obj.addExclusionConstraints(sol);
-#                 continue;
-#             end
-#             minCost = obj.c(obj.idx_z)'*sol;
-#             displ(['Size ' num2str(minCost) ' ... '],obj.verbose);
-#             % enforce cost
-#             obj = obj.setMinCost(minCost);
-#             obj = obj.setMaxCost(minCost);
-#             obj = obj.clearObjective();
-#         else % increase size stepwise
-#             minCost = minCost+1;
-#             obj = obj.setMinCost(minCost);
-#             obj = obj.setMaxCost(minCost);
-#         end
-#         obj = obj.setTimeLimit(endtime-now*86400);
-        
-#         % pool MCS
-#         [obj, sol, status ] = obj.populateZ(min(1e9,maxSolutions - size(obj.mcs,2)));
-        
-#         if status == 0 || status == 3
-#             mcs_valid = obj.verify_mcs(sol);
-#             displ([num2str(size(sol,2)) ' solutions of size (cost) ' num2str(unique(obj.cost*sol)) ' found.'],obj.verbose);
-#             if any(~mcs_valid) % if a solution is invalid, only remove that particular solution, supersets are allowed.
-#                 displ([num2str(sum(~mcs_valid)) ' solution(s) invalid.'],obj.verbose);
-#                 obj = obj.addExclusionConstraintsIneq(sol(:,~mcs_valid));
-#             end
-#             obj = obj.addExclusionConstraints(sol(:,mcs_valid));
-#             obj = obj.addSolutions(sol(:,mcs_valid));
-#             obj = obj.resetObjective();
-#             obj = obj.setMaxCost(obj.maxCost);
-#         end
-#     end
-#     mcs = obj.mcs;
-#     if status == 2 && size(mcs,2) > 0
-#         status = 0;
-#     end
-#     if status == 1 && size(mcs,2) > 0
-#         status = 3;
-#         displ('Time limit reached.',obj.verbose);
-#     elseif status == 1 && size(mcs,2) == 0
-#         displ('Time limit reached before a solution could be found.',obj.verbose);
-#     end
-# end

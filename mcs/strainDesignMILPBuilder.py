@@ -47,7 +47,7 @@ class StrainDesignMILPBuilder:
             raise Exception("Selected solver is not installed / set up correctly.")
         else:
             self.solver = self.solver
-        if self.solver in ['scip', 'gurobi', 'glpk']:
+        if self.solver in ['scip', 'glpk']:
             raise Exception(self.solver + ' not yet supported')
         elif self.M is None and self.solver == 'glpk':
             print('GLPK only supports MCS computation with the bigM method. Default: M=1000')

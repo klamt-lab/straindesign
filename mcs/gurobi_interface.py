@@ -1,6 +1,7 @@
 from scipy import sparse
-import numpy as np
+from numpy import nan, inf, isinf, sum, array
 import gurobipy as gp
+from gurobipy import GRB as grb
 import cobra
 from mcs import indicator_constraints
 from typing import Tuple, List
@@ -14,7 +15,6 @@ from typing import Tuple, List
 class Gurobi_MILP_LP(gp.Model):
     def __init__(self,c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype,indic_constr,x0,options):
         super().__init__()
-        self.objective.set_sense(self.objective.sense.minimize)
         try:
             numvars = A_ineq.shape[1]
         except:
@@ -28,105 +28,96 @@ class Gurobi_MILP_LP(gp.Model):
         if isinstance(A_ineq,list):
             if not A_ineq:
                 A_ineq = sparse.csr_matrix((0,numvars))
-        A = sparse.vstack((A_ineq,A_eq),format='coo') # concatenate coefficient matrices
-        sense = len(b_ineq)*'L' + len(b_eq)*'E'
 
         # construct Gurobi problem. Add variables and linear constraints
-        if not vtype: # when undefined, all variables are continous
-            vtype = 'C'*numvars
-        self.variables.add(obj=c, lb=lb, ub=ub, types=vtype)
-        self.linear_constraints.add(rhs=b, senses=sense)
-        self.linear_constraints.set_coefficients(zip(A.row.tolist(), A.col.tolist(), A.data.tolist()))
+        x = self.addMVar(len(c),obj=c, lb=lb, ub=ub, vtype=[k for k in vtype])
+        self.setObjective(array(c) @ x, grb.MINIMIZE)
+        self.addConstr(A_eq   @ x == array(b_eq))
+        self.addConstr(A_ineq @ x <= array(b_ineq))
 
         # add indicator constraints
         if not indic_constr==None:
-            # cast variables and translate coefficient matrix A to right input format for CPLEX
-            A = [[[int(i) for i in list(a.indices)], [float(i) for i in list(a.data)]] for a in sparse.csr_matrix(indic_constr.A)]
-            b = [float(i) for i in indic_constr.b]
-            sense = [str(i) for i in indic_constr.sense]
-            indvar = [int(i) for i in indic_constr.binv]
-            complem = [1-int(i) for i in indic_constr.indicval]
-            # call CPLEX function to add indicators
-            self.indicator_constraints.add_batch(lin_expr=A, sense=sense,rhs=b,
-                                                indvar=indvar,complemented=complem)
+            for i in range(len(indic_constr.sense)):
+                self.addGenConstrIndicator(x[indic_constr.binv[i]], 
+                                        bool(indic_constr.indicval[i]), 
+                                        sum([indic_constr.A[i,j] * x[j] \
+                                            for j in range(len(c)) if not indic_constr.A[i,j] == 0.0]), 
+                                        '=' if indic_constr.sense[1] =='E' else '<', 
+                                        indic_constr.b[i])
+
         # set parameters
-        self.set_log_stream(None)
-        self.set_error_stream(None)
-        self.set_warning_stream(None)
-        self.set_results_stream(None)
-        self.parameters.mip.pool.absgap.set(0.0)
-        self.parameters.mip.pool.relgap.set(0.0)
+        self.params.OutputFlag = 0
+        self.params.OptimalityTol = 1e-9
+        self.params.FeasibilityTol = 1e-9
+        self.params.IntFeasTol = 1e-9 # (0 is not allowed by Gurobi)
         # yield only optimal solutions in pool
-        self.parameters.simplex.tolerances.optimality.set(1e-9)
-        self.parameters.simplex.tolerances.feasibility.set(1e-9)
+        self.params.PoolGap = 0.0
+        self.params.PoolGapAbs = 0.0
+        self.params.PoolSearchMode = 2
 
     def solve(self) -> Tuple[List,float,float]:
         try:
-            super().solve() # call parent solve function (that was overwritten in this class)
-            status = self.solution.get_status()
-            if status in [101,102,115,128,129,130]: # solution integer optimal
-                min_cx = self.solution.get_objective_value()
+            super().optimize() # call parent solve function (that was overwritten in this class)
+            status = self.Status
+            if status in [2,10,13,15]: # solution
+                min_cx = self.ObjVal
                 status = 0
-            elif status == 108: # timeout without solution
-                x = [nan]*self.variables.get_num()
+            elif status == 9 and not hasattr(self._Model__vars[0],'X'): # timeout without solution
+                x = [nan]*self.NumVars
                 min_cx = nan
                 status = 1
                 return x, min_cx, status
-            elif status == 103: # infeasible
-                x = [nan]*self.variables.get_num()
+            elif status == 3: # infeasible
+                x = [nan]*self.NumVars
                 min_cx = nan
                 status = 2
                 return x, min_cx, status
-            elif status == 107: # timeout with solution
-                min_cx = self.solution.get_objective_value()
+            elif status == 9 and hasattr(self._Model__vars[0],'X'): # timeout with solution
+                min_cx = self.ObjVal
                 status = 3
-            elif status in [118,119]: # solution unbounded
+            elif status in [4,5]: # solution unbounded
                 min_cx = -inf
                 status = 4
             else:
-                print(status)
-                print(self.solution.get_status_string())
-                raise Exception("Case not yet handeld")
-            x = self.solution.get_values()
+                raise Exception('Status code '+str(status)+" not yet handeld.")
+            x = self.getSolutions()
             return x, min_cx, status
 
-        except CplexError as exc:
-            if not exc.args[2]==1217: 
-                print(exc)
+        except gp.GurobiError as e:
+            print('Error code ' + str(e.errno) + ": " + str(e))
             min_cx = nan
-            x = [nan] * self.variables.get_num()
+            x = [nan] * self.NumVars
             return x, min_cx, -1
 
     def slim_solve(self) -> float:
         try:
-            super().solve() # call parent solve function (that was overwritten in this class)
-            status = self.solution.get_status()
-            if status in [101,102,107,115,128,129,130]: # solution integer optimal (tolerance)
-                opt = self.solution.get_objective_value()
-            elif status in [118,119]: # solution unbounded (or inf or unbdd)
+            super().optimize() # call parent solve function (that was overwritten in this class)
+            status = self.Status
+            if status in [2,10,13,15]: # solution integer optimal (tolerance)
+                opt = self.ObjVal
+            elif status in [4,5]: # solution unbounded (or inf or unbdd)
                 opt = -inf
-            elif status in [103,108]: # infeasible
+            elif status == 3 or status == 9: # infeasible or timeout
                 opt = nan
             else:
-                print(status)
-                print(self.solution.get_status_string())
-                raise Exception("Case not yet handeld")
+                raise Exception('Status code '+str(status)+" not yet handeld.")
             return opt
-        except CplexError as exc:
+        except gp.GurobiError as e:
+            print('Error code ' + str(e.errno) + ": " + str(e))
             return nan
 
     def populate(self,n) -> Tuple[List,float,float]:
         try:
             if isinf(n):
-                self.parameters.mip.pool.capacity.set(self.parameters.mip.pool.capacity.max())
+                self.params.PoolSolutions = grb.MAXINT
             else:
-                self.parameters.mip.pool.capacity.set(n)
-            self.populate_solution_pool() # call parent solve function (that was overwritten in this class)
-            status = self.solution.get_status()
-            if status in [101,102,115,128,129,130]: # solution integer optimal
-                min_cx = self.solution.get_objective_value()
+                self.params.PoolSolutions = n
+            self.optimize() # call parent solve function (that was overwritten in this class)
+            status = self.Status
+            if status in [2,10,13,15]: # solution integer optimal
+                min_cx = self.ObjVal
                 status = 0
-            elif status == 108: # timeout without solution
+            elif status == 9: # timeout without solution
                 x = []
                 min_cx = nan
                 status = 1
@@ -137,64 +128,42 @@ class Gurobi_MILP_LP(gp.Model):
                 status = 2
                 return x, min_cx, status
             elif status == 107: # timeout with solution
-                min_cx = self.solution.get_objective_value()
+                min_cx = self.ObjVal
                 status = 3
             elif status in [118,119]: # solution unbounded
                 min_cx = -inf
                 status = 4
             else:
-                print(status)
-                print(self.solution.get_status_string())
-                raise Exception("Case not yet handeld")
+                raise Exception('Status code '+str(status)+" not yet handeld.")
             x = [self.solution.pool.get_values(i) for i in range(self.solution.pool.get_num())]
             return x, min_cx, status
 
-        except CplexError as exc:
-            if not exc.args[2]==1217: 
-                print(exc)
+        except gp.GurobiError as e:
+            print('Error code ' + str(e.errno) + ": " + str(e))
             min_cx = nan
-            x = [nan] * self.variables.get_num()
+            x = [nan] * self.NumVars
             return x, min_cx, -1
 
     def set_objective(self,c):
-        self.objective.set_linear([[i,c[i]] for i in range(len(c))])
+        for i in range(len(self._Model__vars)):
+            self._Model__vars[i].Obj = c[i]
 
     def set_objective_idx(self,C):
-        self.objective.set_linear(C)
+        for c in C:
+            self._Model__vars[c[0]].Obj = c[1]
 
     def set_ub(self,ub):
-        self.variables.set_upper_bounds(ub)
+        for i in range(len(self._Model__vars)):
+            self._Model__vars[i].ub = ub[i]
 
     def set_time_limit(self,t):
-        if isinf(t):
-            self.parameters.timelimit.set(self.parameters.timelimit.max())
-        else:
-            self.parameters.timelimit.set(t)
+        self.params.TimeLimit = t
 
     def add_ineq_constraint(self,A_ineq,b_ineq):
-        numconst = self.linear_constraints.get_num()
-        numnewconst = A_ineq.shape[0]
-        newconst_idx = [numconst+i for i in range(numnewconst)]
-        self.linear_constraints.add(rhs=b_ineq, senses='L'*numnewconst)
-        # retrieve row and column indices from sparse matrix and convert them to int
-        A_ineq = A_ineq.tocoo()
-        rows_A = [int(a)+numconst for a in A_ineq.row]
-        cols_A = [int(a) for a in A_ineq.col]
-        data_A = [float(a) for a in A_ineq.data]
-        # convert matrix coefficients to float
-        data_A = [float(a) for a in A_ineq.data]
-        self.linear_constraints.set_coefficients(zip(rows_A, cols_A, data_A))
+        self.addConstr(A_ineq @ self._Model__vars <= array(b_ineq))
 
     def add_eq_constraint(self,A_eq,b_eq):
-        numconst = self.linear_constraints.get_num()
-        numnewconst = A_eq.shape[0]
-        newconst_idx = [numconst+i for i in range(numnewconst)]
-        self.linear_constraints.add(rhs=b_eq, senses='E'*numnewconst)
-        # retrieve row and column indices from sparse matrix and convert them to int
-        A_eq = A_eq.tocoo()
-        rows_A = [int(a)+numconst for a in A_eq.row]
-        cols_A = [int(a) for a in A_eq.col]
-        data_A = [float(a) for a in A_eq.data]
-        # convert matrix coefficients to float
-        data_A = [float(a) for a in A_eq.data]
-        self.linear_constraints.set_coefficients(zip(rows_A, cols_A, data_A))
+        self.addConstr(A_eq   @ self._Model__vars == array(b_eq))
+
+    def getSolutions(self) -> list:
+        return [x.X for x in self._Model__vars]

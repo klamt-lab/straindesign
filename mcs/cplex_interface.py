@@ -36,8 +36,6 @@ class Cplex_MILP_LP(Cplex):
         sense = len(b_ineq)*'L' + len(b_eq)*'E'
 
         # construct CPLEX problem. Add variables and linear constraints
-        if not vtype: # when undefined, all variables are continous
-            vtype = 'C'*numvars
         self.variables.add(obj=c, lb=lb, ub=ub, types=vtype)
         self.linear_constraints.add(rhs=b, senses=sense)
         self.linear_constraints.set_coefficients(zip(A.row.tolist(), A.col.tolist(), A.data.tolist()))

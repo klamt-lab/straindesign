@@ -27,10 +27,11 @@ def worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver):
     global lp_glob
     lp_glob = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
                                     lb=lb, ub=ub, x0=x0,solver=solver)
-    if 'cplex' in lp_glob.solver == 'cplex':
+    if lp_glob.solver == 'cplex':
         lp_glob.backend.parameters.threads.set(2)
         lp_glob.backend.parameters.lpmethod.set(1)
-    # elif 'gurobi' in avail_solvers:
+    elif lp_glob.solver == 'gurobi':
+        lp_glob.backend.params
     # elif 'scip' in avail_solvers:
     # else:
     lp_glob.prev = 0
@@ -65,6 +66,10 @@ def fva(model,**kwargs):
     else:
         A_eq = sparse.csr_matrix((0,numr))
         b_eq = []
+    if 'solver' in kwargs:
+        solver = kwargs['solver']
+    else:
+        solver = None
     
     
     # prepare vectors and matrices
@@ -90,7 +95,7 @@ def fva(model,**kwargs):
                     b_eq=b_eq,
                     lb=lb,
                     ub=ub,
-                    solver='cplex')
+                    solver=solver)
     x0, _, status = lp.solve()
     if status is not 0:
         raise Exception('FVA problem not feasible.')
@@ -102,18 +107,17 @@ def fva(model,**kwargs):
     x = [nan]*2*numr
 
     # Dummy to check if optimization runs
-    # worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,list(solvers.keys())[0])
-    # worker_compute(1)
+    worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver)
+    worker_compute(1)
 
     if processes > 1:
-        with ProcessPool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,
-                        x0,list(solvers.keys())[0])) as pool:
+        with ProcessPool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver)) as pool:
             chunk_size = len(reaction_ids) // processes
             # x = pool.imap_unordered(worker_compute, range(2*numr), chunksize=chunk_size)
             for i, value in pool.imap_unordered( worker_compute, range(2*numr), chunksize=chunk_size):
                 x[i] = value
     else:
-        worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,list(solvers.keys())[0])
+        worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver)
         for i in range(2*numr):
             lp.set_objective_idx(idx2c(i))
             _, x[i] = worker_compute(i)
