@@ -19,8 +19,6 @@ class Gurobi_MILP_LP(gp.Model):
             numvars = A_ineq.shape[1]
         except:
             numvars = A_eq.shape[1]
-        # concatenate right hand sides
-        b = b_ineq + b_eq
         # prepare coefficient matrix
         if isinstance(A_eq,list):
             if not A_eq:
@@ -42,7 +40,7 @@ class Gurobi_MILP_LP(gp.Model):
                                         bool(indic_constr.indicval[i]), 
                                         sum([indic_constr.A[i,j] * x[j] \
                                             for j in range(len(c)) if not indic_constr.A[i,j] == 0.0]), 
-                                        '=' if indic_constr.sense[1] =='E' else '<', 
+                                        '=' if indic_constr.sense[i] =='E' else '<', 
                                         indic_constr.b[i])
 
         # set parameters
@@ -53,7 +51,6 @@ class Gurobi_MILP_LP(gp.Model):
         # yield only optimal solutions in pool
         self.params.PoolGap = 0.0
         self.params.PoolGapAbs = 0.0
-        self.params.PoolSearchMode = 2
 
     def solve(self) -> Tuple[List,float,float]:
         try:
@@ -80,7 +77,7 @@ class Gurobi_MILP_LP(gp.Model):
                 status = 4
             else:
                 raise Exception('Status code '+str(status)+" not yet handeld.")
-            x = self.getSolutions()
+            x = self.getSolution()
             return x, min_cx, status
 
         except gp.GurobiError as e:
@@ -112,33 +109,40 @@ class Gurobi_MILP_LP(gp.Model):
                 self.params.PoolSolutions = grb.MAXINT
             else:
                 self.params.PoolSolutions = n
+            self.params.PoolSearchMode = 2
             self.optimize() # call parent solve function (that was overwritten in this class)
+            self.params.PoolSearchMode = 0
             status = self.Status
             if status in [2,10,13,15]: # solution integer optimal
                 min_cx = self.ObjVal
                 status = 0
-            elif status == 9: # timeout without solution
+            elif status == 9 and not hasattr(self._Model__vars[0],'X'): # timeout without solution
                 x = []
                 min_cx = nan
                 status = 1
                 return x, min_cx, status
-            elif status == 103: # infeasible
+            elif status == 3: # infeasible
                 x = []
                 min_cx = nan
                 status = 2
                 return x, min_cx, status
-            elif status == 107: # timeout with solution
+            elif status == 9 and hasattr(self._Model__vars[0],'X'): # timeout with solution
                 min_cx = self.ObjVal
                 status = 3
-            elif status in [118,119]: # solution unbounded
+            elif status in [4,5]: # solution unbounded
                 min_cx = -inf
                 status = 4
             else:
                 raise Exception('Status code '+str(status)+" not yet handeld.")
-            x = [self.solution.pool.get_values(i) for i in range(self.solution.pool.get_num())]
+            nSols = self.SolCount
+            x = []
+            for i in range(nSols):
+                self.setParam(grb.Param.SolutionNumber, i)
+                x += [self.getSolutionN()]
             return x, min_cx, status
 
         except gp.GurobiError as e:
+            self.params.PoolSearchMode = 0
             print('Error code ' + str(e.errno) + ": " + str(e))
             min_cx = nan
             x = [nan] * self.NumVars
@@ -153,17 +157,25 @@ class Gurobi_MILP_LP(gp.Model):
             self._Model__vars[c[0]].Obj = c[1]
 
     def set_ub(self,ub):
-        for i in range(len(self._Model__vars)):
-            self._Model__vars[i].ub = ub[i]
+        for i in range(len(ub)):
+            self._Model__vars[ub[i][0]].ub = ub[i][1]
 
     def set_time_limit(self,t):
         self.params.TimeLimit = t
 
     def add_ineq_constraint(self,A_ineq,b_ineq):
-        self.addConstr(A_ineq @ self._Model__vars <= array(b_ineq))
+        vars = self._Model__vars
+        for i in range(A_ineq.shape[0]):
+            self.addConstr(sum([A_ineq[i,j] * vars[j] for j in range(len(vars)) if not A_ineq[i,j] == 0.0]) <= b_ineq[i])
 
     def add_eq_constraint(self,A_eq,b_eq):
-        self.addConstr(A_eq   @ self._Model__vars == array(b_eq))
+        vars = self._Model__vars
+        for i in range(A_eq.shape[0]):
+            self.addConstr(sum([A_eq[i,j] * vars[j] for j in range(len(vars)) if not A_eq[i,j] == 0.0]) <= b_eq[i])
 
-    def getSolutions(self) -> list:
+
+    def getSolution(self) -> list:
         return [x.X for x in self._Model__vars]
+
+    def getSolutionN(self) -> list:
+        return [x.Xn for x in self._Model__vars]

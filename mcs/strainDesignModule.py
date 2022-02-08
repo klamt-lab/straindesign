@@ -41,7 +41,7 @@ class SD_Module:
     Attributes
     ----------
         module_sense: 'desired' or 'target'
-        module_type: 'mcs_lin', 'mcs_bilvl', 'mcs_yield'
+        module_type: 'mcs_lin', 'mcs_bilvl', 'mcs_yield', 'optknock'
         equation: String to specify linear constraints: A v <= b, A v >= b, A v = b
             (e.g. T v <= t with 'target' or D v <= d with 'desired')
     ----------
@@ -50,6 +50,8 @@ class SD_Module:
         mcs_bilvl: inner_objective: Inner optimization expression
         mcs_yield: numerator: numerator of yield function,
                         denominator: denominator of yield function
+        optknock: inner_objective: Inner optimization expression
+                  outer_objective: Outer optimization expression
     Examples
     --------
         modules = [         mcs_module.MCS_Module(network,"mcs_lin",module_sense="target",constraints="R4 >= 1")]
@@ -59,7 +61,8 @@ class SD_Module:
     def __init__(self, model, module_type, *args, **kwargs):
         self.model = model
         self.module_type = module_type
-        allowed_keys = {'module_sense', 'constraints','inner_objective','numerator','denomin','lb','ub','skip_checks'}
+        allowed_keys = {'module_sense', 'constraints','inner_objective','outer_objective',
+                        'numerator','denomin','lb','ub','skip_checks'}
         # set all keys passed in kwargs
         for key,value in kwargs.items():
             if key in allowed_keys:
@@ -91,22 +94,36 @@ class SD_Module:
 
         # verify self.constraints
         if self.skip_checks is None or not self.skip_checks:
-            try:
-                for eq in self.constraints:
-                    re.search('<=|>=|=',eq)
-                    eq_sign = re.search('<=|>=|=',eq)[0]
-                    split_eq = re.split('<=|>=|=',eq)
-                    self.check_lhs(split_eq[0],reac_id)
-            except:
-                raise NameError('self.constraints must contain a sign (<=,=,>=)')
+            if self.constraints is not None:
+                try:
+                    for eq in self.constraints:
+                        re.search('<=|>=|=',eq)
+                        eq_sign = re.search('<=|>=|=',eq)[0]
+                        split_eq = re.split('<=|>=|=',eq)
+                        linexpr2mat(split_eq[0],reac_id)
+                except:
+                    raise NameError('self.constraints must contain a sign (<=,=,>=)')
+            if self.inner_objective is not None:
+                try:
+                    linexpr2mat(split_eq[0],reac_id)
+                except:
+                    raise NameError('Invalid inner objectve '+self.inner_objective)
+            if self.outer_objective is not None:
+                try:
+                    linexpr2mat(split_eq[0],reac_id)
+                except:
+                    raise NameError('Invalid outer objectve '+self.outer_objective)
 
-        if self.module_type not in  ["mcs_lin", "mcs_bilvl", "mcs_yield"]:
-            raise ValueError('"module_type" must be "mcs_lin", "mcs_bilvl" or "mcs_yield".')
+
+        if self.module_type not in  ["mcs_lin", "mcs_bilvl", "mcs_yield", "optknock"]:
+            raise ValueError('"module_type" must be "mcs_lin", "mcs_bilvl", "mcs_yield", "optknock".')
 
         if (self.module_type == "mcs_bilvl") & (self.inner_objective == None):
             raise ValueError('When module type is "mcs_bilvl", an objective function must be provided.')
         elif (self.module_type == "mcs_yield") & ((self.numerator==None) & (self.denomin==None)):
             raise ValueError('When module type is "mcs_yield", a numerator and denominator must be provided.')
+        if (self.module_type == "optknock") & ((self.inner_objective == None) or (self.outer_objective == None)):
+            raise ValueError('When module type is "optknock", an objective function must be provided.')
 
 
     def check_lhs(self, lhs: str, model_reac_ids: List) -> str:

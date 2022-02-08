@@ -116,10 +116,6 @@ class MILP_LP:
         # 
         if self.solver in ['cplex','gurobi']:
             x, min_cx, status = self.backend.populate(n)
-        # TODO    
-        # first solve, then add constraint to fix costs and iterate solution until everything is found
-        else: 
-            pass
         return x, min_cx, status
 
     def set_objective(self,c):
@@ -148,6 +144,24 @@ class MILP_LP:
         self.backend.add_ineq_constraint(A_eq,b_eq)
 
     def add_ineq_constraint(self,A_ineq,b_ineq):
+        A_ineq = sparse.csr_matrix(A_ineq)
+        A_ineq.eliminate_zeros()
+        b_ineq = [float(b) for b in b_ineq]
+        self.A_ineq = sparse.vstack((self.A_ineq,A_ineq))
+        self.b_ineq += b_ineq
+        self.backend.add_ineq_constraint(A_ineq,b_ineq)
+
+    def remove_last_constraint(self):
+        return
+        A_ineq = sparse.csr_matrix(A_ineq)
+        A_ineq.eliminate_zeros()
+        b_ineq = [float(b) for b in b_ineq]
+        self.A_ineq = sparse.vstack((self.A_ineq,A_ineq))
+        self.b_ineq += b_ineq
+        self.backend.add_ineq_constraint(A_ineq,b_ineq)
+
+    def remove_constraint(self):
+        return
         A_ineq = sparse.csr_matrix(A_ineq)
         A_ineq.eliminate_zeros()
         b_ineq = [float(b) for b in b_ineq]

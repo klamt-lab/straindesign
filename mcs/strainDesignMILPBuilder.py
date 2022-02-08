@@ -83,10 +83,10 @@ class StrainDesignMILPBuilder:
         else:
             self.b_ineq = [0, self.max_cost]
         self.z_map_constr_ineq = sparse.csc_matrix((numr, 2))
-        self.c = self.cost.copy()
         self.lb = [0] * numr
         self.ub = [1 - float(i) for i in self.z_non_targetable]
         self.idx_z = [i for i in range(0, numr)]
+        self.c = [0] * numr
         # Initialize also empty equality matrix
         self.A_eq = sparse.csc_matrix((0, numr))
         self.b_eq = []
@@ -96,7 +96,7 @@ class StrainDesignMILPBuilder:
         # Initialize association between z and variables and variables
         self.z_map_vars = sparse.csc_matrix((numr, numr))
         print('Constructing MCS MILP.')
-        for i in range(0, len(sd_modules)):
+        for i in range(len(sd_modules)):
             self.addModule(sd_modules[i])
 
         # Assign knock-ins/outs correctly by taking into account z_inverted
@@ -126,6 +126,20 @@ class StrainDesignMILPBuilder:
 
         # 4. Link LP module to z-variables
         self.link_z()
+
+        # if there are only mcs modules, minimize the knockout costs, 
+        # otherwise use objective function(s) from modules
+        if all(['mcs' in mod.module_type for mod in sd_modules]):
+            for i in self.idx_z:
+                self.c[i] = self.cost[i]
+            self.is_mcs_computation = True
+        else:
+            self.is_mcs_computation = False
+            for i in self.idx_z:
+                self.c[i] = 0
+
+        # backup objective function
+        self.c_bu = self.c.copy()
 
         # # for debuging
         # A = sparse.vstack(( self.A_ineq,sparse.csr_matrix([np.nan]*len(self.c)),\
@@ -216,6 +230,7 @@ class StrainDesignMILPBuilder:
             A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.reassign_lb_ub_from_ineq(
                 A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
             z_map_vars_i = z_map_vars_p
+            c_i = [0] * A_ineq_i.shape[1]
         elif sd_module.module_sense == 'target':
             c_p = [0] * A_ineq_p.shape[1]
             A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, c_d, lb_i, ub_i, z_map_constr_ineq_d, z_map_constr_eq_d, z_map_vars_i = self.dualize(
@@ -227,6 +242,7 @@ class StrainDesignMILPBuilder:
                                                                                                             b_eq_d, c_d,
                                                                                                             z_map_constr_ineq_d,
                                                                                                             z_map_constr_eq_d)
+            c_i = [0] * A_ineq_i.shape[1]
 
         # 3. Add module to global MILP
         self.z_map_constr_ineq = sparse.hstack((self.z_map_constr_ineq, z_map_constr_ineq_i)).tocsc()
@@ -236,7 +252,7 @@ class StrainDesignMILPBuilder:
         self.b_ineq += b_ineq_i
         self.A_eq = sparse.bmat([[self.A_eq, None], [None, A_eq_i]]).tocsr()
         self.b_eq += b_eq_i
-        self.c += [0] * A_ineq_i.shape[1]
+        self.c += c_i
         self.lb += lb_i
         self.ub += ub_i
 
