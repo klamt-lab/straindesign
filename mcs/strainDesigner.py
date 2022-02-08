@@ -79,7 +79,7 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
     def resetObjective(self):
         for i in range(self.c_bu):
             self.c[i] = self.c_bu[i]
-        self.milp.set_objective_idx([[i,self.cost[i]] for i in self.idx_z if not self.z_non_targetable[i]])
+        self.milp.set_objective_idx([[i,self.c[i]] for i in range(len(self.c))])
 
     def resetTargetableZ(self):
         self.ub = [1 - float(i) for i in self.z_non_targetable]
