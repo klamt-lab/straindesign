@@ -304,7 +304,7 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
                 sd_dict += [self.sd2dict(sol)]
             return sd_dict, status
         else:
-            return sd_sols, status
+            return sols, status
 
     # Enumerate iteratively optimal strain designs using the populate function
     # output format: list of 'dict' (default) or 'sparse'
