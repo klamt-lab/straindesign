@@ -27,11 +27,15 @@ class Gurobi_MILP_LP(gp.Model):
             if not A_ineq:
                 A_ineq = sparse.csr_matrix((0,numvars))
 
+        for i,v in enumerate(b_ineq):
+            if isinf(v):
+                b_ineq[i] = grb.INFINITY
+        # concatenate right hand sides
         # construct Gurobi problem. Add variables and linear constraints
         x = self.addMVar(len(c),obj=c, lb=lb, ub=ub, vtype=[k for k in vtype])
         self.setObjective(array(c) @ x, grb.MINIMIZE)
-        self.addConstr(A_eq   @ x == array(b_eq))
         self.addConstr(A_ineq @ x <= array(b_ineq))
+        self.addConstr(A_eq   @ x == array(b_eq))
 
         # add indicator constraints
         if not indic_constr==None:
@@ -163,16 +167,23 @@ class Gurobi_MILP_LP(gp.Model):
     def set_time_limit(self,t):
         self.params.TimeLimit = t
 
-    def add_ineq_constraint(self,A_ineq,b_ineq):
+    def add_ineq_constraints(self,A_ineq,b_ineq):
         vars = self._Model__vars
         for i in range(A_ineq.shape[0]):
             self.addConstr(sum([A_ineq[i,j] * vars[j] for j in range(len(vars)) if not A_ineq[i,j] == 0.0]) <= b_ineq[i])
 
-    def add_eq_constraint(self,A_eq,b_eq):
+    def add_eq_constraints(self,A_eq,b_eq):
         vars = self._Model__vars
         for i in range(A_eq.shape[0]):
             self.addConstr(sum([A_eq[i,j] * vars[j] for j in range(len(vars)) if not A_eq[i,j] == 0.0]) <= b_eq[i])
 
+    def set_ineq_constraint(self,idx,a_ineq,b_ineq):
+        constr = self._Model__constrs[idx]
+        [self.chgCoeff(constr,x,val) for x,val in zip(self._Model__vars,a_ineq)]
+        if isinf(b_ineq):
+            constr.rhs = grb.INFINITY
+        else:
+            constr.rhs = b_ineq
 
     def getSolution(self) -> list:
         return [x.X for x in self._Model__vars]

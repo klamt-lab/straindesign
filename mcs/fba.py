@@ -32,15 +32,16 @@ def fba(model,**kwargs):
         
     if 'constr' in kwargs:
         A_ineq, b_ineq, A_eq, b_eq = lineq2mat(kwargs['constr'], reaction_ids)
-    if 'A_ineq' in kwargs and 'b_ineq' in kwargs:
-        A_ineq = kwargs['A_ineq']
-        b_ineq = kwargs['b_ineq']
-    if 'A_eq' in kwargs and 'b_eq' in kwargs:
-        A_eq = kwargs['A_eq']
-        b_eq = kwargs['b_eq']
     else:
-        A_eq = sparse.csr_matrix((0,numr))
-        b_eq = []
+        if 'A_ineq' in kwargs and 'b_ineq' in kwargs:
+            A_ineq = kwargs['A_ineq']
+            b_ineq = kwargs['b_ineq']
+        if 'A_eq' in kwargs and 'b_eq' in kwargs:
+            A_eq = kwargs['A_eq']
+            b_eq = kwargs['b_eq']
+        else:
+            A_eq = sparse.csr_matrix((0,numr))
+            b_eq = []
     if 'obj' in kwargs:
         c = linexpr2mat(kwargs['obj'], reaction_ids)
     elif 'c' in kwargs:

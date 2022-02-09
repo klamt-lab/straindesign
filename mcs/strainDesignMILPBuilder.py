@@ -10,7 +10,7 @@ from mcs.indicator_constraints import *
 from mcs.solver_interface import *
 
 class StrainDesignMILPBuilder:
-    """Class for computing Minimal Cut Sets (MCS)"""
+    """Class for computing Strain Designs (SD)"""
 
     def __init__(self, model: Model, sd_modules: List[SD_Module], *args, **kwargs):
         allowed_keys = {'ko_cost', 'ki_cost', 'solver', 'max_cost', 'M'}
@@ -50,7 +50,7 @@ class StrainDesignMILPBuilder:
         if self.solver in ['scip', 'glpk']:
             raise Exception(self.solver + ' not yet supported')
         elif self.M is None and self.solver == 'glpk':
-            print('GLPK only supports MCS computation with the bigM method. Default: M=1000')
+            print('GLPK only supports strain design computation with the bigM method. Default: M=1000')
             self.M = 1000.0
         elif self.M is None:
             self.M = np.inf
@@ -76,17 +76,17 @@ class StrainDesignMILPBuilder:
         self.z_non_targetable = [np.isnan(x) for x in self.cost]
         for i in [i for i, x in enumerate(self.cost) if np.isnan(x)]:
             self.cost[i] = 0
-        # Prepare top lines of MILP (sum of KOs below and above threshold) and objective function
-        self.A_ineq = sparse.csr_matrix([[-i for i in self.cost], self.cost])
+        # Prepare top 3 lines of MILP (sum of KOs below (1) and above (2) threshold) and objective function (3)
+        self.A_ineq = sparse.csr_matrix([[-i for i in self.cost], self.cost, [0]*self.num_z])
         if self.max_cost is None:
-            self.b_ineq = [0, np.sum(np.abs(self.cost))]
+            self.b_ineq = [0.0, float(np.sum(np.abs(self.cost))), inf]
         else:
-            self.b_ineq = [0, self.max_cost]
-        self.z_map_constr_ineq = sparse.csc_matrix((numr, 2))
-        self.lb = [0] * numr
-        self.ub = [1 - float(i) for i in self.z_non_targetable]
+            self.b_ineq = [0.0, float(self.max_cost), inf]
+        self.z_map_constr_ineq = sparse.csc_matrix((numr, 3))
+        self.lb = [0.0] * numr
+        self.ub = [1.0 - float(i) for i in self.z_non_targetable]
         self.idx_z = [i for i in range(0, numr)]
-        self.c = [0] * numr
+        self.c = [0.0] * numr
         # Initialize also empty equality matrix
         self.A_eq = sparse.csc_matrix((0, numr))
         self.b_eq = []
@@ -95,7 +95,7 @@ class StrainDesignMILPBuilder:
         self.indic_constr = []  # Add instances of the class 'Indicator_constraint' later
         # Initialize association between z and variables and variables
         self.z_map_vars = sparse.csc_matrix((numr, numr))
-        print('Constructing MCS MILP.')
+        print('Constructing MILP.')
         for i in range(len(sd_modules)):
             self.addModule(sd_modules[i])
 
@@ -111,7 +111,7 @@ class StrainDesignMILPBuilder:
         self.z_map_constr_eq = z_kos_kis * self.z_map_constr_eq
         self.z_map_vars = z_kos_kis * self.z_map_vars
 
-        # Save continous part of MILP for easy MCS validation
+        # Save continous part of MILP for easy strain design validation
         cont_vars = [i for i in range(0, self.A_ineq.shape[1]) if not i in self.idx_z]
         self.cont_MILP = ContMILP(self.A_ineq[:, cont_vars],
                                   self.b_ineq.copy(),
@@ -136,7 +136,10 @@ class StrainDesignMILPBuilder:
         else:
             self.is_mcs_computation = False
             for i in self.idx_z:
-                self.c[i] = 0
+                self.c[i] = 0.0
+            self.A_ineq = self.A_ineq.tolil()
+            self.A_ineq[2] = sparse.lil_matrix(self.c) # set objective
+            self.A_ineq = self.A_ineq.tocsr()
 
         # backup objective function
         self.c_bu = self.c.copy()
@@ -149,14 +152,14 @@ class StrainDesignMILPBuilder:
         # b = self.b_ineq + [np.nan] + self.b_eq + [np.nan] + self.indic_constr.b + [np.nan, np.nan, np.nan]
         # Ab = sparse.hstack((A,sparse.csr_matrix([np.nan]*len(b)).transpose(),sparse.csr_matrix(b).transpose()))
         # np.savetxt("Ab_py.tsv", Ab.todense(), delimiter='\t')
-
         self.vtype = 'B' * self.num_z + 'C' * (self.z_map_vars.shape[1] - self.num_z)
 
     def addModule(self, sd_module):
         # Generating LP and z-linking-matrix for each module
         #
         # Modules to describe strain design problems like
-        # desired or undesired flux states for MCS strain design.
+        # desired or undesired flux states for MCS strain design
+        # or inner and outer objective functions for OptKnock.
         # sd_module needs to be an Instance of the class 'SD_Module'
         #
         # There are three kinds of flux states that can be described
@@ -179,6 +182,8 @@ class StrainDesignMILPBuilder:
         #     mcs_bilvl: inner_objective: Inner optimization vector
         #     mcs_yield: numerator: numerator of yield function,
         #                denominator: denominator of yield function
+        #     optknock: inner_objective: Inner optimization vector
+        #               outer_objective: Outer optimization vector
         #
         self.num_modules += 1
         z_map_constr_ineq_i = []
@@ -201,7 +206,7 @@ class StrainDesignMILPBuilder:
             # Classical MCS
             A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p \
                 = self.build_primal(V_ineq, v_ineq, V_eq, v_eq, [], lb, ub)
-        elif sd_module.module_type == 'mcs_bilvl':
+        elif sd_module.module_type in ['mcs_bilvl','optknock']:
             c = linexpr2mat(sd_module.inner_objective,self.model.reactions.list_attr('id'))
             c = c.toarray()[0].tolist()
             # 1. build primal w/ desired constraint (build_primal) - also store variable c
@@ -226,23 +231,25 @@ class StrainDesignMILPBuilder:
             z_map_constr_eq_p = sparse.hstack((z_map_constr_eq_v,z_map_constr_eq_dual,sparse.csc_matrix((self.num_z,1))))
 
         # 3. Prepare module as target or desired
-        if sd_module.module_sense == 'desired':
+        if 'mcs' in sd_module.module_type and sd_module.module_sense == 'desired':
             A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.reassign_lb_ub_from_ineq(
                 A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
             z_map_vars_i = z_map_vars_p
             c_i = [0] * A_ineq_i.shape[1]
-        elif sd_module.module_sense == 'target':
+        elif 'mcs' in sd_module.module_type and sd_module.module_sense == 'target':
             c_p = [0] * A_ineq_p.shape[1]
             A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, c_d, lb_i, ub_i, z_map_constr_ineq_d, z_map_constr_eq_d, z_map_vars_i = self.dualize(
                 A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p,
                 z_map_vars_p)
-            A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.dual_2_farkas(A_ineq_d,
-                                                                                                            b_ineq_d,
-                                                                                                            A_eq_d,
-                                                                                                            b_eq_d, c_d,
-                                                                                                            z_map_constr_ineq_d,
-                                                                                                            z_map_constr_eq_d)
+            A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.dual_2_farkas(A_ineq_d,b_ineq_d,A_eq_d,b_eq_d, c_d,z_map_constr_ineq_d,z_map_constr_eq_d)
             c_i = [0] * A_ineq_i.shape[1]
+        elif sd_module.module_type == 'optknock': 
+            A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.reassign_lb_ub_from_ineq(
+                A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
+            z_map_vars_i = z_map_vars_p
+            c_i = linexpr2mat(sd_module.outer_objective,self.model.reactions.list_attr('id'))
+            c_i.resize((1,A_ineq_i.shape[1]))
+            c_i = c_i.toarray()[0].tolist()
 
         # 3. Add module to global MILP
         self.z_map_constr_ineq = sparse.hstack((self.z_map_constr_ineq, z_map_constr_ineq_i)).tocsc()
@@ -366,14 +373,8 @@ class StrainDesignMILPBuilder:
         z_map_vars = sparse.hstack((z_map_constr_eq_p, z_map_constr_ineq_p,
                                     sparse.csc_matrix((self.num_z, len(lb_inh_bounds) + len(ub_inh_bounds))))).tocsc()
 
-        A_ineq, b_ineq, A_eq, b_eq, lb, ub, z_map_constr_ineq, z_map_constr_eq = self.reassign_lb_ub_from_ineq(A_ineq,
-                                                                                                               b_ineq,
-                                                                                                               A_eq,
-                                                                                                               b_eq, lb,
-                                                                                                               ub,
-                                                                                                               z_map_constr_ineq,
-                                                                                                               z_map_constr_eq,
-                                                                                                               z_map_vars)
+        A_ineq, b_ineq, A_eq, b_eq, lb, ub, z_map_constr_ineq, z_map_constr_eq = \
+            self.reassign_lb_ub_from_ineq(A_ineq, b_ineq, A_eq, b_eq, lb, ub,  z_map_constr_ineq, z_map_constr_eq, z_map_vars)
         return A_ineq, b_ineq, A_eq, b_eq, c, lb, ub, z_map_constr_ineq, z_map_constr_eq, z_map_vars
 
     def dual_2_farkas(self, A_ineq, b_ineq, A_eq, b_eq, c_dual, z_map_constr_ineq, z_map_constr_eq) -> \
@@ -531,7 +532,7 @@ class StrainDesignMILPBuilder:
         #   where every first entry of a row is positive
         # - search for row duplicates
         # - delete one if their first row entry had the same sign, lump to equality if they had opposite signs 
-        first_entry_A_ineq_sign = [np.sign(a.data[0]) for a in self.A_ineq]
+        first_entry_A_ineq_sign = [np.sign(a.data[0]) if a.nnz>0 else 0 for a in self.A_ineq]
         Ab_find_dupl = sparse.hstack((sparse.diags(first_entry_A_ineq_sign) * self.A_ineq, \
                                       sparse.coo_matrix(
                                           sparse.diags(first_entry_A_ineq_sign) * self.b_ineq).transpose(), \

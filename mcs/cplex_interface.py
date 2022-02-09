@@ -1,6 +1,6 @@
 from scipy import sparse
 from numpy import nan, inf, isinf
-from cplex import Cplex
+from cplex import Cplex, infinity
 from cplex.exceptions import CplexError
 from typing import Tuple, List
 from mcs import indicator_constraints, solver_interface
@@ -23,6 +23,10 @@ class Cplex_MILP_LP(Cplex):
             numvars = A_ineq.shape[1]
         except:
             numvars = A_eq.shape[1]
+        # replace numpy inf with cplex infinity
+        for i,v in enumerate(b_ineq):
+            if isinf(v):
+                b_ineq[i] = infinity
         # concatenate right hand sides
         b = b_ineq + b_eq
         # prepare coefficient matrix
@@ -173,7 +177,7 @@ class Cplex_MILP_LP(Cplex):
         else:
             self.parameters.timelimit.set(t)
 
-    def add_ineq_constraint(self,A_ineq,b_ineq):
+    def add_ineq_constraints(self,A_ineq,b_ineq):
         numconst = self.linear_constraints.get_num()
         numnewconst = A_ineq.shape[0]
         newconst_idx = [numconst+i for i in range(numnewconst)]
@@ -182,12 +186,14 @@ class Cplex_MILP_LP(Cplex):
         A_ineq = A_ineq.tocoo()
         rows_A = [int(a)+numconst for a in A_ineq.row]
         cols_A = [int(a) for a in A_ineq.col]
-        data_A = [float(a) for a in A_ineq.data]
         # convert matrix coefficients to float
         data_A = [float(a) for a in A_ineq.data]
+        for i,v in enumerate(b_ineq):
+            if isinf(v):
+                b_ineq[i] = infinity
         self.linear_constraints.set_coefficients(zip(rows_A, cols_A, data_A))
 
-    def add_eq_constraint(self,A_eq,b_eq):
+    def add_eq_constraints(self,A_eq,b_eq):
         numconst = self.linear_constraints.get_num()
         numnewconst = A_eq.shape[0]
         newconst_idx = [numconst+i for i in range(numnewconst)]
@@ -196,7 +202,12 @@ class Cplex_MILP_LP(Cplex):
         A_eq = A_eq.tocoo()
         rows_A = [int(a)+numconst for a in A_eq.row]
         cols_A = [int(a) for a in A_eq.col]
-        data_A = [float(a) for a in A_eq.data]
         # convert matrix coefficients to float
         data_A = [float(a) for a in A_eq.data]
         self.linear_constraints.set_coefficients(zip(rows_A, cols_A, data_A))
+
+    def set_ineq_constraint(self,idx,a_ineq,b_ineq):
+        if isinf(b_ineq):
+            b_ineq = infinity
+        self.linear_constraints.set_coefficients(zip([idx]*len(a_ineq), range(len(a_ineq)), a_ineq))
+        self.linear_constraints.set_rhs([[idx,b_ineq]])

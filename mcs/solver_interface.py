@@ -54,9 +54,6 @@ class MILP_LP:
             self.b_eq = []
         numineq = self.A_ineq.shape[0]
         # Remove unbounded constraints
-        if any(isinf(self.b_ineq)) and self.solver == 'cplex':
-            print("CPLEX does not support unbounded inequalities. Inf bound is replaced by +/-1e9")
-            self.b_ineq = [sign(self.b_ineq[i])*1e9 if isinf(self.b_ineq[i]) else self.b_ineq[i] for i in range(len(self.b_ineq))]
         if self.A_eq == None:
             self.A_eq = sparse.csr_matrix((0,numvars))
         if self.b_eq == None:
@@ -135,39 +132,26 @@ class MILP_LP:
         self.ub = ub
         self.backend.set_ub(ub)
 
-    def add_eq_constraint(self,A_eq,b_eq):
+    def add_eq_constraints(self,A_eq,b_eq):
         A_eq = sparse.csr_matrix(A_eq)
         A_eq.eliminate_zeros()
         b_eq = [float(b) for b in b_eq]
         self.A_eq = sparse.vstack((self.A_eq,A_eq))
         self.b_eq += b_eq
-        self.backend.add_ineq_constraint(A_eq,b_eq)
+        self.backend.add_ineq_constraints(A_eq,b_eq)
 
-    def add_ineq_constraint(self,A_ineq,b_ineq):
+    def add_ineq_constraints(self,A_ineq,b_ineq):
         A_ineq = sparse.csr_matrix(A_ineq)
         A_ineq.eliminate_zeros()
         b_ineq = [float(b) for b in b_ineq]
         self.A_ineq = sparse.vstack((self.A_ineq,A_ineq))
         self.b_ineq += b_ineq
-        self.backend.add_ineq_constraint(A_ineq,b_ineq)
+        self.backend.add_ineq_constraints(A_ineq,b_ineq)
 
-    def remove_last_constraint(self):
-        return
-        A_ineq = sparse.csr_matrix(A_ineq)
-        A_ineq.eliminate_zeros()
-        b_ineq = [float(b) for b in b_ineq]
-        self.A_ineq = sparse.vstack((self.A_ineq,A_ineq))
-        self.b_ineq += b_ineq
-        self.backend.add_ineq_constraint(A_ineq,b_ineq)
-
-    def remove_constraint(self):
-        return
-        A_ineq = sparse.csr_matrix(A_ineq)
-        A_ineq.eliminate_zeros()
-        b_ineq = [float(b) for b in b_ineq]
-        self.A_ineq = sparse.vstack((self.A_ineq,A_ineq))
-        self.b_ineq += b_ineq
-        self.backend.add_ineq_constraint(A_ineq,b_ineq)
+    def set_ineq_constraint(self,idx,a_ineq,b_ineq):
+        self.A_ineq[idx] = sparse.csr_matrix(a_ineq)
+        self.b_ineq[idx] = b_ineq
+        self.backend.set_ineq_constraint(idx,a_ineq,b_ineq)
 
     def clear_objective(self):
         self.set_objective([0]*len(self.c))
