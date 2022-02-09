@@ -9,6 +9,8 @@ from .strainDesignModule import *
 from .indicator_constraints import *
 from .solver_interface import *
 from .cplex_interface import *
+from .scip_interface import *
+from .glpk_interface import *
 from .constr2mat import *
 from .fba import *
 from .fva import *

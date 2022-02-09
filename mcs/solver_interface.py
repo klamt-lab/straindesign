@@ -4,6 +4,8 @@ from scipy import sparse
 from typing import List, Tuple
 from mcs.cplex_interface import Cplex_MILP_LP
 from mcs.gurobi_interface import Gurobi_MILP_LP
+from mcs.scip_interface import SCIP_MILP_LP
+from mcs.glpk_interface import GLPK_MILP_LP
 
 class MILP_LP:
     def __init__(self, *args, **kwargs):
@@ -89,9 +91,11 @@ class MILP_LP:
             self.backend = Gurobi_MILP_LP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
                                             self.indic_constr,self.x0,self.options)
         elif self.solver == 'scip':
-            raise Exception('SCIP is not yet supported')
+            self.backend = SCIP_MILP_LP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
+                                            self.indic_constr,self.x0,self.options)
         elif self.solver == 'glpk':
-            raise Exception('GLPK is not yet supported')
+            self.backend = GLPK_MILP_LP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
+                                            self.indic_constr,self.x0,self.options)
         
         if self.tlim is None:
             self.set_time_limit(inf)
