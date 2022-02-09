@@ -215,14 +215,13 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
     # output format: list of 'dict' (default) or 'sparse'
     def compute(self, **kwargs):
         keys = {'max_solutions','time_limit','output_format'}
-        
         # set keys passed in kwargs
-        for key,value in dict(kwargs).items():
+        for key,value in kwargs.items():
             if key in keys:
                 setattr(self,key,value)
         # set all remaining keys to None
         for key in keys:
-            if key not in dict(kwargs).keys():
+            if key not in kwargs.keys():
                 setattr(self,key,None)
         if self.max_solutions is None:
             self.max_solutions = np.inf
@@ -302,7 +301,7 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
         if self.output_format is None or self.output_format=='dict':
             sd_dict = []
             for sol in sols:
-                dict += [self.sd2dict(sol)]
+                sd_dict += [self.sd2dict(sol)]
             return sd_dict, status
         else:
             return sd_sols, status
