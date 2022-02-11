@@ -39,7 +39,7 @@ def worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver):
 def worker_compute(i) -> Tuple[int,float]:
     global lp_glob
     C = idx2c(i,lp_glob.prev)
-    if lp_glob.solver == 'cplex':
+    if lp_glob.solver in ['cplex','gurobi']:
         lp_glob.backend.set_objective_idx(C)
         min_cx = lp_glob.backend.slim_solve()
     else:

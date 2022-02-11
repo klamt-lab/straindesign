@@ -7,7 +7,7 @@ from mcs.gurobi_interface import Gurobi_MILP_LP
 from mcs.scip_interface import SCIP_MILP_LP
 from mcs.glpk_interface import GLPK_MILP_LP
 
-class MILP_LP:
+class MILP_LP(object):
     def __init__(self, *args, **kwargs):
         allowed_keys = {'c', 'A_ineq','b_ineq','A_eq','b_eq','lb','ub','vtype',
                         'indic_constr','x0','options','solver','skip_checks','tlim'}
@@ -75,8 +75,8 @@ class MILP_LP:
             if not (self.A_ineq.shape[1]==numvars and self.A_eq.shape[1]==numvars and len(self.c)==numvars and \
                     len(self.lb)==numvars and len(self.ub)==numvars and len(self.vtype)==numvars):
                 raise Exception("A_eq, A_ineq, c, lb, ub, vtype must have the same number of columns/elements")
-            if (not self.indic_constr==None) and (not self.solver in ['cplex', 'gurobi', 'scip']):
-                raise Exception("In order to use indicator constraints, you need to set up CPLEX, Gurobi or SCIP.")
+            # if (not self.indic_constr==None) and (not self.solver in ['cplex', 'gurobi', 'scip']):
+            #     raise Exception("In order to use indicator constraints, you need to set up CPLEX, Gurobi or SCIP.")
             elif (not self.indic_constr==None): # check dimensions of indicator constraints
                 num_ic = self.indic_constr.A.shape[0]
                 if not (self.indic_constr.A.shape[1] == numvars and \
