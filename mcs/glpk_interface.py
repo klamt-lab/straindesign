@@ -4,6 +4,7 @@ import cobra
 from mcs import indicator_constraints
 from typing import Tuple, List
 from swiglpk import *
+from sympy import unbranched_argument
 
 # Collection of Gurobi-related functions that facilitate the creation
 # of Gurobi-object and the solutions of LPs/MILPs with Gurobi from
@@ -70,7 +71,7 @@ class GLPK_MILP_LP():
             else:
                 M = 1e3
             print('There is no native support of indicator constraints with GLPK.')
-            print('Indicator constraints are translated to big-M constraints using M='+str(M)+'.')
+            print('Indicator constraints are translated to big-M constraints with M='+str(M)+'.')
             num_ic = len(indic_constr.binv)
 
             eq_type_indic = [] # [GLP_UP]*len(b_ineq)+[GLP_FX]*len(b_eq)
@@ -177,8 +178,9 @@ class GLPK_MILP_LP():
             return nan
 
     def populate(self,n) -> Tuple[List,float,float]:
+        
         try:
-            print('Gurobi does not support populate. Optimal solutions are generated iteratively instead.')
+            raise Exception('Gurobi does not support populate. Optimal solutions are generated iteratively instead.')
             if isinf(n):
                 self.params.PoolSolutions = grb.MAXINT
             else:
@@ -223,16 +225,27 @@ class GLPK_MILP_LP():
             return x, min_cx, -1
 
     def set_objective(self,c):
-        for i in range(len(self._Model__vars)):
-            self._Model__vars[i].Obj = c[i]
+        for i,c_i in enumerate(c):
+            glp_set_obj_coef(self.glpk,i+1,float(c_i))
 
     def set_objective_idx(self,C):
         for c in C:
-            self._Model__vars[c[0]].Obj = c[1]
+            glp_set_obj_coef(self.glpk,c[0]+1,float(c[1]))
 
     def set_ub(self,ub):
-        for i in range(len(ub)):
-            self._Model__vars[ub[i][0]].ub = ub[i][1]
+        setvars = [ub[i][0] for i in range(len(ub))]
+        lb = [glp_get_col_lb(self.glpk,i+1) for i in setvars]
+        ub = [ub[i][1] for i in range(len(ub))]
+        type = [glp_get_col_type(self.glpk,i+1) for i in setvars]
+        for i,l,u,t in zip(setvars,lb,ub,type):
+            if   t in [GLP_FR,GLP_LO]   and  isinf(u):
+                glp_set_col_bnds(self.glpk,i+1,t,l,u)
+            elif t == GLP_UP and isinf(u):
+                glp_set_col_bnds(self.glpk,i+1,GLP_FR,l,u)
+            elif t in [GLP_LO,GLP_DB] and not isinf(u):
+                glp_set_col_bnds(self.glpk,i+1,GLP_DB,l,u)
+            elif t == GLP_FX and not isinf(u) and l == u:
+                glp_set_col_bnds(self.glpk,i+1,GLP_FX,l,u)
 
     def set_time_limit(self,t):
         if isinf(t):
@@ -243,22 +256,48 @@ class GLPK_MILP_LP():
             self.lp_params.tm_lim = t
 
     def add_ineq_constraints(self,A_ineq,b_ineq):
-        vars = self._Model__vars
-        for i in range(A_ineq.shape[0]):
-            self.addConstr(sum([A_ineq[i,j] * vars[j] for j in range(len(vars)) if not A_ineq[i,j] == 0.0]) <= b_ineq[i])
+        numvars = glp_get_num_cols(self.glpk)
+        numrows = glp_get_num_rows(self.glpk)
+        num_newrows = A_ineq.shape[0]
+        col = intArray(numvars+1)
+        val = doubleArray(numvars+1)
+        glp_add_rows(self.glpk,num_newrows)
+        for j in range(num_newrows):
+            for i,v in enumerate(A_ineq[j].toarray()[0]):
+                col[i+1] = i+1
+                val[i+1] = float(v)
+            glp_set_mat_row(self.glpk,numrows+j+1,numvars,col,val)
+            if isinf(b_ineq[j]):
+                glp_set_row_bnds(self.glpk,numrows+j+1,GLP_FR,-inf,b_ineq[j])
+            else:
+                glp_set_row_bnds(self.glpk,numrows+j+1,GLP_UP,-inf,b_ineq[j])
 
     def add_eq_constraints(self,A_eq,b_eq):
-        vars = self._Model__vars
-        for i in range(A_eq.shape[0]):
-            self.addConstr(sum([A_eq[i,j] * vars[j] for j in range(len(vars)) if not A_eq[i,j] == 0.0]) <= b_eq[i])
-
+        numvars = glp_get_num_cols(self.glpk)
+        numrows = glp_get_num_rows(self.glpk)
+        num_newrows = A_eq.shape[0]
+        col = intArray(numvars+1)
+        val = doubleArray(numvars+1)
+        glp_add_rows(self.glpk,num_newrows)
+        for j in range(num_newrows):
+            for i,v in enumerate(A_eq[j].toarray()[0]):
+                col[i+1] = i+1
+                val[i+1] = float(v)
+            glp_set_mat_row(self.glpk,numrows+j+1,numvars,col,val)
+            glp_set_row_bnds(self.glpk,numrows+j+1,GLP_FX,b_eq[j],b_eq[j])
+  
     def set_ineq_constraint(self,idx,a_ineq,b_ineq):
-        constr = self._Model__constrs[idx]
-        [self.chgCoeff(constr,x,val) for x,val in zip(self._Model__vars,a_ineq)]
+        numvars = glp_get_num_cols(self.glpk)
+        col = intArray(numvars+1)
+        val = doubleArray(numvars+1)
+        for i,v in enumerate(a_ineq):
+            col[i+1] = i+1
+            val[i+1] = float(v)
+        glp_set_mat_row(self.glpk,idx+1,numvars,col,val)
         if isinf(b_ineq):
-            constr.rhs = grb.INFINITY
+            glp_set_col_bnds(self.glpk,idx+1,GLP_FR,-inf,b_ineq)
         else:
-            constr.rhs = b_ineq
+            glp_set_col_bnds(self.glpk,idx+1,GLP_UP,-inf,b_ineq)
 
     def getSolution(self) -> list:
         if self.ismilp:

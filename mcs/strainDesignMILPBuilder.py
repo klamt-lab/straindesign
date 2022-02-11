@@ -47,9 +47,7 @@ class StrainDesignMILPBuilder:
             raise Exception("Selected solver is not installed / set up correctly.")
         else:
             self.solver = self.solver
-        if self.solver in ['scip', 'glpk']:
-            raise Exception(self.solver + ' not yet supported')
-        elif self.M is None and self.solver == 'glpk':
+        if self.M is None and self.solver == 'glpk':
             print('GLPK only supports strain design computation with the bigM method. Default: M=1000')
             self.M = 1000.0
         elif self.M is None:
