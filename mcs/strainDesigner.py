@@ -6,6 +6,7 @@ import re
 import time
 from typing import Dict, List, Tuple
 import mcs
+from warnings import warn
 
 class StrainDesigner(mcs.StrainDesignMILPBuilder):
     def __init__(self, *args, **kwargs):
@@ -276,7 +277,8 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
                     status is 0 and \
                     endtime-time.time() > 0:    
                 self.milp.set_time_limit(endtime-time.time())
-                z1, status1 = self.solveZ()
+                x1, min_cx , status1 = self.milp.solve()
+                z1 = sparse.csr_matrix([x1[i] for i in self.idx_z])
                 output = self.sd2dict(z1)
                 if status1 in [0,3] and all(self.verify_sd(z1)):
                     print('Strain design with cost '+str((z1*self.cost)[0])+': '+str(output))
@@ -322,6 +324,9 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
             self.max_solutions = np.inf
         if self.time_limit is None:
             self.time_limit = np.inf
+        if self.solver == 'glpk':
+            warn("GLPK does not natively support solution pool generation."+ \
+                "An instable high-level implementation of populate is used.")
         endtime = time.time() + self.time_limit
         status = 0
         sols = sparse.csr_matrix((0,self.num_z))
@@ -346,7 +351,7 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
                 for i in range(z.shape[0]):
                     output = [self.sd2dict(z[i])]
                     if all(self.verify_sd(z[i])):
-                        print('Strain designs with cost '+str((z*self.cost)[0])+': '+str(output))
+                        print('Strain designs with cost '+str((z[i]*self.cost)[0])+': '+str(output))
                         self.add_exclusion_constraints(z[i])
                         sols = sparse.vstack((sols,z[i]))
                     else:

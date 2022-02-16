@@ -113,11 +113,7 @@ class MILP_LP(object):
         return a
 
     def populate(self,n) -> Tuple[List,float,float]:
-        # add constraint that enforces optimality
-        # 
-        if self.solver in ['cplex','gurobi']:
-            x, min_cx, status = self.backend.populate(n)
-        return x, min_cx, status
+        return self.backend.populate(n)
 
     def set_objective(self,c):
         self.c = c

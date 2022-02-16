@@ -149,7 +149,7 @@ class Gurobi_MILP_LP(gp.Model):
             self.params.PoolSearchMode = 0
             print('Error code ' + str(e.errno) + ": " + str(e))
             min_cx = nan
-            x = [nan] * self.NumVars
+            x = []
             return x, min_cx, -1
 
     def set_objective(self,c):

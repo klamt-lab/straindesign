@@ -11,7 +11,7 @@ from typing import Dict
 #   obj:            Alternative objective in text form
 #   c:              Alternative objective in vector form
 def fba(model,**kwargs):
-    allowed_keys = {'obj', 'A_ineq','b_ineq','A_eq','b_eq','constr','c','obj'}
+    allowed_keys = {'obj', 'A_ineq','b_ineq','A_eq','b_eq','constr','c','obj','solver'}
     # # set all keys passed in kwargs
     # for key,value in kwargs.items():
     #     if key in allowed_keys:
@@ -46,6 +46,10 @@ def fba(model,**kwargs):
         c = linexpr2mat(kwargs['obj'], reaction_ids)
     elif 'c' in kwargs:
         c = kwargs['c']
+    if 'solver' in kwargs:
+        solver = kwargs['solver']
+    else:
+        solver = None
     
     # prepare vectors and matrices
     A_eq_base = cobra.util.create_stoichiometric_matrix(model)
@@ -74,7 +78,7 @@ def fba(model,**kwargs):
                         b_eq=b_eq,
                         lb=lb,
                         ub=ub,
-                        solver='cplex')
+                        solver=solver)
 
     x, opt_cx, status = my_prob.solve()
     if status == 0:

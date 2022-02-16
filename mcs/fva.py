@@ -6,7 +6,6 @@ from pandas import DataFrame
 from numpy import floor, sign, mod, nan, unique
 from cobra.core import Configuration
 from cobra.util import ProcessPool, create_stoichiometric_matrix, solvers
-import cplex
 
 # FBA for cobra model with CPLEX
 # the user may provide the optional arguments
@@ -31,8 +30,10 @@ def worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver):
         lp_glob.backend.parameters.threads.set(2)
         lp_glob.backend.parameters.lpmethod.set(1)
     elif lp_glob.solver == 'gurobi':
-        lp_glob.backend.params
-    # elif 'scip' in avail_solvers:
+        pass
+        # lp_glob.backend.params
+    elif lp_glob.solver == 'scip':
+        lp_glob.backend.enableReoptimization()
     # else:
     lp_glob.prev = 0
 
@@ -120,7 +121,6 @@ def fva(model,**kwargs):
     else:
         worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver)
         for i in range(2*numr):
-            lp.set_objective_idx(idx2c(i))
             _, x[i] = worker_compute(i)
     
     fva_result = DataFrame(

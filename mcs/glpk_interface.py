@@ -1,17 +1,17 @@
 from scipy import sparse
-from numpy import nan, inf, isinf, sum, array
+from numpy import nan, isnan, inf, isinf, sum, array
 import cobra
 from mcs import indicator_constraints
 from typing import Tuple, List
 from swiglpk import *
 from sympy import unbranched_argument
 
-# Collection of Gurobi-related functions that facilitate the creation
-# of Gurobi-object and the solutions of LPs/MILPs with Gurobi from
+# Collection of GLPK-related functions that facilitate the creation
+# of GLPK-object and the solutions of LPs/MILPs with GLPK from
 # vector-matrix-based problem setups.
 #
 
-# Create a Gurobi-object from a matrix-based problem setup
+# Create a GLPK-object from a matrix-based problem setup
 class GLPK_MILP_LP():
     def __init__(self,c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype,indic_constr,x0,options):
         self.glpk = glp_create_prob()
@@ -128,6 +128,7 @@ class GLPK_MILP_LP():
 
     def __del__(self):
         glp_delete_prob(self.glpk)
+        # glp_free(self.glpk)
 
     def solve(self) -> Tuple[List,float,float]:
         try:
@@ -153,6 +154,8 @@ class GLPK_MILP_LP():
             else:
                 raise Exception('Status code '+str(status)+" not yet handeld.")
             x = self.getSolution()
+            x = [round(y,12) for y in x] # workaround, round to 12 decimals
+            min_cx = round(min_cx,12)
             return x, min_cx, status
 
         except:
@@ -172,56 +175,57 @@ class GLPK_MILP_LP():
                 opt = nan
             else:
                 raise Exception('Status code '+str(status)+" not yet handeld.")
+            opt = round(opt,12) # workaround, round to 12 decimals
             return opt
         except:
             print('Error while running GLPK.')
             return nan
 
-    def populate(self,n) -> Tuple[List,float,float]:
-        
+    def populate(self,pool_limit) -> Tuple[List,float,float]:
+        numvars = glp_get_num_cols(self.glpk)
+        numrows = glp_get_num_rows(self.glpk)
         try:
-            raise Exception('Gurobi does not support populate. Optimal solutions are generated iteratively instead.')
-            if isinf(n):
-                self.params.PoolSolutions = grb.MAXINT
-            else:
-                self.params.PoolSolutions = n
-            self.params.PoolSearchMode = 2
-            self.optimize() # call parent solve function (that was overwritten in this class)
-            self.params.PoolSearchMode = 0
-            status = self.Status
-            if status in [2,10,13,15]: # solution integer optimal
-                min_cx = self.ObjVal
-                status = 0
-            elif status == 9 and not hasattr(self._Model__vars[0],'X'): # timeout without solution
-                x = []
-                min_cx = nan
-                status = 1
-                return x, min_cx, status
-            elif status == 3: # infeasible
-                x = []
-                min_cx = nan
-                status = 2
-                return x, min_cx, status
-            elif status == 9 and hasattr(self._Model__vars[0],'X'): # timeout with solution
-                min_cx = self.ObjVal
-                status = 3
-            elif status in [4,5]: # solution unbounded
-                min_cx = -inf
-                status = 4
-            else:
-                raise Exception('Status code '+str(status)+" not yet handeld.")
-            nSols = self.SolCount
+            if pool_limit > 0:
+                sols = []
+                stoptime = glp_time() + self.milp_params.tm_lim*1000
+                # 1. find optimal solution
+                self.set_time_limit(glp_difftime(stoptime,glp_time()))
+                x, min_cx, status = self.solve()
+                if status not in [0,4]:
+                    return sols, min_cx, status
+                sols = [x]
+                # 2. constrain problem to optimality
+                c = [glp_get_obj_coef(self.glpk,i+1) for i in range(numvars)]
+                self.add_ineq_constraints(sparse.csr_matrix(c),[min_cx])
+                # 3. exclude first solution pool
+                self.addExclusionConstraintsIneq(x)
+                # 4. loop solve and exclude until problem becomes infeasible
+                while status in [0,4] and not isnan(x[0]) \
+                  and glp_difftime(stoptime,glp_time()) > 0 and pool_limit > len(sols):
+                    self.set_time_limit(glp_difftime(stoptime,glp_time()))
+                    x, _, status = self.solve()
+                    if status in [0,4]:
+                        self.addExclusionConstraintsIneq(x)
+                        sols += [x]
+                if glp_difftime(stoptime,glp_time()) < 0:
+                    status = 3
+                elif status == 2:
+                    status = 0
+                # 5. remove auxiliary constraints
+                # Here, we only free the upper bound of the constraints
+                totrows = glp_get_num_rows(self.glpk)
+                for j in range(numrows,totrows):
+                    self.set_ineq_constraint(j,[0]*numvars,inf)
+                # Alternatively rows may be deleted, but this seems to be very unstable
+                # delrows = intArray(totrows-numrows)
+                # for i,j in range(numrows,totrows):
+                    # delrows[i+1] = j+1
+                # glp_del_rows(self.glpk,totrows-numrows,delrows)
+                return sols, min_cx, status
+        except:
+            print('Error while running GLPK.')
             x = []
-            for i in range(nSols):
-                self.setParam(grb.Param.SolutionNumber, i)
-                x += [self.getSolutionN()]
-            return x, min_cx, status
-
-        except gp.GurobiError as e:
-            self.params.PoolSearchMode = 0
-            print('Error code ' + str(e.errno) + ": " + str(e))
             min_cx = nan
-            x = [nan] * self.NumVars
             return x, min_cx, -1
 
     def set_objective(self,c):
@@ -242,18 +246,18 @@ class GLPK_MILP_LP():
                 glp_set_col_bnds(self.glpk,i+1,t,l,u)
             elif t == GLP_UP and isinf(u):
                 glp_set_col_bnds(self.glpk,i+1,GLP_FR,l,u)
-            elif t in [GLP_LO,GLP_DB] and not isinf(u):
+            elif t in [GLP_LO,GLP_DB,GLP_FX] and not isinf(u) and l < u:
                 glp_set_col_bnds(self.glpk,i+1,GLP_DB,l,u)
-            elif t == GLP_FX and not isinf(u) and l == u:
+            elif t in [GLP_LO,GLP_DB,GLP_FX] and not isinf(u) and l == u:
                 glp_set_col_bnds(self.glpk,i+1,GLP_FX,l,u)
 
     def set_time_limit(self,t):
-        if isinf(t):
+        if t*1000 > self.max_tlim:
             self.milp_params.tm_lim = self.max_tlim
             self.lp_params.tm_lim = self.max_tlim
         else:
-            self.milp_params.tm_lim = t
-            self.lp_params.tm_lim = t
+            self.milp_params.tm_lim = int(t*1000)
+            self.lp_params.tm_lim = int(t*1000)
 
     def add_ineq_constraints(self,A_ineq,b_ineq):
         numvars = glp_get_num_cols(self.glpk)
@@ -295,9 +299,9 @@ class GLPK_MILP_LP():
             val[i+1] = float(v)
         glp_set_mat_row(self.glpk,idx+1,numvars,col,val)
         if isinf(b_ineq):
-            glp_set_col_bnds(self.glpk,idx+1,GLP_FR,-inf,b_ineq)
+            glp_set_row_bnds(self.glpk,idx+1,GLP_FR,-inf,b_ineq)
         else:
-            glp_set_col_bnds(self.glpk,idx+1,GLP_UP,-inf,b_ineq)
+            glp_set_row_bnds(self.glpk,idx+1,GLP_UP,-inf,b_ineq)
 
     def getSolution(self) -> list:
         if self.ismilp:
@@ -319,3 +323,14 @@ class GLPK_MILP_LP():
             opt = glp_get_obj_val(self.glpk)
             timelim_reached = glp_difftime(glp_time(),starttime) >= self.lp_params.tm_lim
         return opt, status, timelim_reached
+
+    def addExclusionConstraintsIneq(self,x):
+        numvars = glp_get_num_cols(self.glpk)
+        # Here, we also need to take integer variables into account, because GLPK changes
+        # variable type to integer when you lock a binary variable to zero
+        binvars = [i for i in range(numvars) if glp_get_col_kind(self.glpk,i+1) in [GLP_BV,GLP_IV]]
+        data = [1.0 if x[i] else -1.0 for i in binvars]
+        row = [0]*len(binvars)
+        A_ineq = sparse.csr_matrix((data,(row,binvars)),(1,numvars))
+        b_ineq = sum([x[i] for i in binvars])-1
+        self.add_ineq_constraints(A_ineq,[b_ineq])

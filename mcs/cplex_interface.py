@@ -159,7 +159,7 @@ class Cplex_MILP_LP(Cplex):
             if not exc.args[2]==1217: 
                 print(exc)
             min_cx = nan
-            x = [nan] * self.variables.get_num()
+            x = []
             return x, min_cx, -1
 
     def set_objective(self,c):
