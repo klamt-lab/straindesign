@@ -61,8 +61,8 @@ class SD_Module:
     def __init__(self, model, module_type, *args, **kwargs):
         self.model = model
         self.module_type = module_type
-        allowed_keys = {'module_sense', 'constraints','inner_objective','outer_objective',
-                        'numerator','denomin','lb','ub','skip_checks'}
+        allowed_keys = {'module_sense', 'constraints','inner_objective','inner_opt_sense','outer_objective',
+                        'outer_opt_sense','prod_id','numerator','denomin','lb','ub','skip_checks','min_gcp'}
         # set all keys passed in kwargs
         for key,value in kwargs.items():
             if key in allowed_keys:
@@ -105,26 +105,38 @@ class SD_Module:
                     raise NameError('self.constraints must contain a sign (<=,=,>=)')
             if self.inner_objective is not None:
                 try:
-                    linexpr2mat(split_eq[0],reac_id)
+                    linexpr2mat(self.inner_objective,reac_id)
+                    if self.inner_opt_sense is None or self.inner_opt_sense not in ['minimize', 'maximize']:
+                        self.inner_opt_sense = 'maximize'
                 except:
                     raise NameError('Invalid inner objectve '+self.inner_objective)
             if self.outer_objective is not None:
                 try:
-                    linexpr2mat(split_eq[0],reac_id)
+                    linexpr2mat(self.outer_objective,reac_id)
+                    if self.outer_opt_sense is None or self.outer_opt_sense not in ['minimize', 'maximize']:
+                        self.outer_opt_sense = 'maximize'
                 except:
                     raise NameError('Invalid outer objectve '+self.outer_objective)
+            if self.prod_id is not None:
+                try:
+                    linexpr2mat(self.prod_id,reac_id)
+                except:
+                    raise NameError('Invalid outer prodcut id (prod_id) '+self.prod_id)
+            if self.min_gcp is not None:
+                if type(self.min_gcp) is not float:
+                    raise NameError('Minimum growth coupling potential (min_gcp) must be provided as a float')
 
-
-        if self.module_type not in  ["mcs_lin", "mcs_bilvl", "mcs_yield", "optknock"]:
-            raise ValueError('"module_type" must be "mcs_lin", "mcs_bilvl", "mcs_yield", "optknock".')
+        if self.module_type not in  ["mcs_lin", "mcs_bilvl", "mcs_yield", "optknock", "robustknock","optcouple"]:
+            raise ValueError('"module_type" must be "mcs_lin", "mcs_bilvl", "mcs_yield", "optknock", "robustknock", "optcouple".')
 
         if (self.module_type == "mcs_bilvl") & (self.inner_objective == None):
             raise ValueError('When module type is "mcs_bilvl", an objective function must be provided.')
         elif (self.module_type == "mcs_yield") & ((self.numerator==None) & (self.denomin==None)):
             raise ValueError('When module type is "mcs_yield", a numerator and denominator must be provided.')
-        if (self.module_type == "optknock") & ((self.inner_objective == None) or (self.outer_objective == None)):
-            raise ValueError('When module type is "optknock", an objective function must be provided.')
-
+        if (self.module_type in ["optknock","robustknock"]) & ((self.inner_objective == None) or (self.outer_objective == None)):
+            raise ValueError('When module type is "optknock" or "robustknock", an inner and outer objective function must be provided.')
+        if (self.module_type == "optcouple") & ((self.inner_objective == None) or (self.prod_id == None)):
+            raise ValueError('When module type is "optcouple", an inner objective function and the production reaction id must be provided.')
 
     def check_lhs(self, lhs: str, model_reac_ids: List) -> str:
         ridx = [re.sub(r'^(\s|-|\+|\.|\()*|(\s|-|\+|\.|\))*$','',part) for part in lhs.split()]

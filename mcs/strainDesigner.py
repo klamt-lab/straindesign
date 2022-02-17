@@ -324,9 +324,16 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
             self.max_solutions = np.inf
         if self.time_limit is None:
             self.time_limit = np.inf
+        if self.solver == 'scip':
+            warn("SCIP does not natively support solution pool generation. "+ \
+                "An high-level implementation of populate is used. " + \
+                "Consider using compute_optimal instead of enumerate, as " + \
+                "it returns the same results but faster.")
         if self.solver == 'glpk':
-            warn("GLPK does not natively support solution pool generation."+ \
-                "An instable high-level implementation of populate is used.")
+            warn("GLPK does not natively support solution pool generation. "+ \
+            "An instable high-level implementation of populate is used. "
+            "Consider using compute_optimal instead of enumerate, as " + \
+            "it returns the same results but faster." )
         endtime = time.time() + self.time_limit
         status = 0
         sols = sparse.csr_matrix((0,self.num_z))

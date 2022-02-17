@@ -68,7 +68,7 @@ class Gurobi_MILP_LP(gp.Model):
                 min_cx = nan
                 status = 1
                 return x, min_cx, status
-            elif status == 3: # infeasible
+            elif status in [3,4] and not hasattr(self._Model__vars[0],'X'): # infeasible
                 x = [nan]*self.NumVars
                 min_cx = nan
                 status = 2
@@ -76,7 +76,7 @@ class Gurobi_MILP_LP(gp.Model):
             elif status == 9 and hasattr(self._Model__vars[0],'X'): # timeout with solution
                 min_cx = self.ObjVal
                 status = 3
-            elif status in [4,5]: # solution unbounded
+            elif status in [4,5] and hasattr(self._Model__vars[0],'X'): # solution unbounded
                 min_cx = -inf
                 status = 4
             else:

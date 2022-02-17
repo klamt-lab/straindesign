@@ -204,15 +204,19 @@ class StrainDesignMILPBuilder:
             # Classical MCS
             A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p \
                 = self.build_primal(V_ineq, v_ineq, V_eq, v_eq, [], lb, ub)
-        elif sd_module.module_type in ['mcs_bilvl','optknock']:
-            c = linexpr2mat(sd_module.inner_objective,self.model.reactions.list_attr('id'))
-            c = c.toarray()[0].tolist()
+        elif sd_module.module_type in ['mcs_bilvl','optknock','optcouple']:
+            c_in = linexpr2mat(sd_module.inner_objective,self.model.reactions.list_attr('id'))
+            # by default, assume maximization of the inner objective
+            if not hasattr(sd_module,'inner_opt_sense') or sd_module.inner_opt_sense is None or \
+                sd_module.inner_opt_sense not in ['minimize', 'maximize'] or sd_module.inner_opt_sense == 'maximize':
+                c_in = -c_in
+            c_in = c_in.toarray()[0].tolist()
             # 1. build primal w/ desired constraint (build_primal) - also store variable c
             A_ineq_v, b_ineq_v, A_eq_v, b_eq_v, c_v, lb_v, ub_v, z_map_constr_ineq_v, z_map_constr_eq_v, z_map_vars_v \
-                = self.build_primal(V_ineq, v_ineq, V_eq, v_eq, c, lb, ub)
+                = self.build_primal(V_ineq, v_ineq, V_eq, v_eq, c_in, lb, ub)
             # 2. build primal w/o desired constraint (build_primal) - store c_inner
             A_ineq_inner, b_ineq_inner, A_eq_inner, b_eq_inner, c_inner, lb_inner, ub_inner, z_map_constr_ineq_inner, z_map_constr_eq_inner, z_map_vars_inner \
-                = self.build_primal([], [], [], [], c, lb, ub)
+                = self.build_primal([], [], [], [], c_in, lb, ub)
             # 3. build dual from primal w/o desired constraint (build_dual w/o the farkas-option) - store c_inner_dual
             A_ineq_dual, b_ineq_dual, A_eq_dual, b_eq_dual, c_inner_dual, lb_dual, ub_dual, z_map_constr_ineq_dual, z_map_constr_eq_dual, z_map_vars_dual \
                 = self.dualize(A_ineq_inner, b_ineq_inner, A_eq_inner, b_eq_inner, c_inner, lb_inner, ub_inner, z_map_constr_ineq_inner, z_map_constr_eq_inner, z_map_vars_inner)
@@ -227,8 +231,110 @@ class StrainDesignMILPBuilder:
             z_map_vars_p = sparse.hstack((z_map_vars_v,z_map_vars_dual))
             z_map_constr_ineq_p = sparse.hstack((z_map_constr_ineq_v,z_map_constr_ineq_dual))
             z_map_constr_eq_p = sparse.hstack((z_map_constr_eq_v,z_map_constr_eq_dual,sparse.csc_matrix((self.num_z,1))))
+        elif sd_module.module_type == 'robustknock':
+            # RobustKnock has three layers, inner maximization and an outer min-max problem
+            c_in = linexpr2mat(sd_module.inner_objective,self.model.reactions.list_attr('id'))
+            # by default, assume maximization of the inner objective
+            if not hasattr(sd_module,'inner_opt_sense') or sd_module.inner_opt_sense is None or \
+                sd_module.inner_opt_sense not in ['minimize', 'maximize'] or sd_module.inner_opt_sense == 'maximize':
+                c_in = -c_in
+            c_in = c_in.toarray()[0].tolist()
+            # 1. build primal of inner problem (build_primal) - also store variable c
+            A_ineq_v, b_ineq_v, A_eq_v, b_eq_v, c_v, lb_v, ub_v, z_map_constr_ineq_v, z_map_constr_eq_v, z_map_vars_v \
+                = self.build_primal([], [], [], [], c_in, lb, ub)
+            # 2. build primal of outer problem (base of inner outer problem) (build_primal) - with inner objective
+            A_ineq_inner, b_ineq_inner, A_eq_inner, b_eq_inner, c_inner, lb_inner, ub_inner, z_map_constr_ineq_inner, z_map_constr_eq_inner, z_map_vars_inner \
+                = self.build_primal([], [], [], [], c_in, lb, ub)
+            # 3. build primal of outer problem (outer outer problem) (build_primal) - store c_inner
+            c_out = linexpr2mat(sd_module.outer_objective,self.model.reactions.list_attr('id')) # get outer objective
+            if not hasattr(sd_module,'outer_opt_sense') or sd_module.outer_opt_sense is None or \
+                sd_module.outer_opt_sense not in ['minimize', 'maximize'] or sd_module.outer_opt_sense == 'maximize':
+                c_out = -c_out
+            c_out = c_out.toarray()[0].tolist()
+            A_ineq_r, b_ineq_r, A_eq_r, b_eq_r, c_r, lb_r, ub_r, z_map_constr_ineq_r, z_map_constr_eq_r, z_map_vars_r \
+                = self.build_primal(V_ineq, v_ineq, V_eq, v_eq, [-c for c in c_out], lb, ub)
+            # 4. build dual of innerst problem - store c_inner_dual
+            A_ineq_dual, b_ineq_dual, A_eq_dual, b_eq_dual, c_inner_dual, lb_dual, ub_dual, z_map_constr_ineq_dual, z_map_constr_eq_dual, z_map_vars_dual \
+                = self.dualize(A_ineq_inner, b_ineq_inner, A_eq_inner, b_eq_inner, c_inner, lb_inner, ub_inner, z_map_constr_ineq_inner, z_map_constr_eq_inner, z_map_vars_inner)
+            # 5. connect primal w/ target region and dual w/o target region (i.e. biomass) via c = c_inner.
+            A_ineq_p = sparse.block_diag((A_ineq_v,A_ineq_dual)).tocsr()
+            b_ineq_p = b_ineq_v + b_ineq_dual
+            A_eq_p = sparse.vstack((sparse.block_diag((A_eq_v,A_eq_dual)),sparse.hstack((c_v,c_inner_dual)))).tocsr()
+            b_eq_p = b_eq_v + b_eq_dual + [0.0]
+            lb_p = lb_v + lb_dual
+            ub_p = ub_v + ub_dual
+            c_out_in_p = -sparse.csr_matrix(c_out)
+            c_out_in_p.resize((1,A_ineq_p.shape[1]))
+            c_out_in_p = c_out_in_p.toarray()[0].tolist()
+            # 6. Update z-associations
+            z_map_vars_p = sparse.hstack((z_map_vars_v,z_map_vars_dual))
+            z_map_constr_ineq_p = sparse.hstack((z_map_constr_ineq_v,z_map_constr_ineq_dual))
+            z_map_constr_eq_p = sparse.hstack((z_map_constr_eq_v,z_map_constr_eq_dual,sparse.csc_matrix((self.num_z,1))))
+            # 7. Dualize the joint inner problem
+            A_ineq_dl_mmx, b_ineq_dl_mmx, A_eq_dl_mmx, b_eq_dl_mmx, c_dl_mmx, lb_dl_mmx, ub_dl_mmx, z_map_constr_ineq_dl_mmx, z_map_constr_eq_dl_mmx, z_map_vars_dl_mmx \
+                = self.dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_out_in_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
+            # 8. Connect outer problem to the dualized combined inner problem to construct min-max problem.
+            A_ineq_q = sparse.block_diag((A_ineq_r,A_ineq_dl_mmx)).tocsr()
+            b_ineq_q = b_ineq_r + b_ineq_dl_mmx
+            A_eq_q = sparse.vstack((sparse.block_diag((A_eq_r,A_eq_dl_mmx)),sparse.hstack((c_r,c_dl_mmx)))).tocsr()
+            b_eq_q = b_eq_r + b_eq_dl_mmx + [0.0]
+            lb_q = lb_r + lb_dl_mmx
+            ub_q = ub_r + ub_dl_mmx
+            # 9. Update z-associations
+            z_map_vars_q = sparse.hstack((z_map_vars_r,z_map_vars_dl_mmx))
+            z_map_constr_ineq_q = sparse.hstack((z_map_constr_ineq_r,z_map_constr_ineq_dl_mmx))
+            z_map_constr_eq_q = sparse.hstack((z_map_constr_eq_r,z_map_constr_eq_dl_mmx,sparse.csc_matrix((self.num_z,1))))
+            # 10. reassign lb, ub where possible
+            A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.reassign_lb_ub_from_ineq(
+                A_ineq_q, b_ineq_q, A_eq_q, b_eq_q, lb_q, ub_q, z_map_constr_ineq_q, z_map_constr_eq_q, z_map_vars_q)
+            z_map_vars_i = z_map_vars_q
+            c_i = sparse.csr_matrix(c_out)
+            c_i.resize((1,A_ineq_i.shape[1]))
+            c_i = c_i.toarray()[0].tolist()
+        if sd_module.module_type == 'optcouple':
+            c_p = c_v + [0]*len(c_inner_dual)
+            # (continued from optknock)
+            Prod_eq = linexpr2mat(sd_module.prod_id,self.model.reactions.list_attr('id'))
+            # 6.  build primal system with no production - also store variable c
+            A_ineq_r, b_ineq_r, A_eq_r, b_eq_r, c_r, lb_r, ub_r, z_map_constr_ineq_r, z_map_constr_eq_r, z_map_vars_r \
+                = self.build_primal([], [], Prod_eq, [0], c_in, lb, ub)
+            # 7. Dualize no-production system.
+            A_ineq_r_dl, b_ineq_dl_r_dl, A_eq_dl_r_dl, b_eq_r_dl, c_r_dl, lb_r_dl, ub_r_dl, z_map_constr_ineq_r_dl, z_map_constr_eq_r_dl, z_map_vars_r_dl \
+                = self.dualize(A_ineq_r, b_ineq_r, A_eq_r, b_eq_r, c_r, lb_r, ub_r, z_map_constr_ineq_r, z_map_constr_eq_r, z_map_vars_r)
+            # 8. Create no-production bi-level system.
+            A_ineq_b = sparse.block_diag((A_ineq_r,A_ineq_r_dl),format='csr')
+            b_ineq_b = b_ineq_r + b_ineq_dl_r_dl
+            A_eq_b = sparse.vstack((sparse.block_diag((A_eq_r,A_eq_dl_r_dl)),sparse.hstack((c_r,c_r_dl))),format='csr')
+            b_eq_b = b_eq_r + b_eq_r_dl + [0.0]
+            lb_b = lb_r + lb_r_dl
+            ub_b = ub_r + ub_r_dl
+            c_b = c_r + [0]*len(c_r_dl)
+            z_map_vars_b = sparse.hstack((z_map_vars_r,z_map_vars_r_dl))
+            z_map_constr_ineq_b = sparse.hstack((z_map_constr_ineq_r,z_map_constr_ineq_r_dl))
+            z_map_constr_eq_b = sparse.hstack((z_map_constr_eq_r,z_map_constr_eq_r_dl,sparse.csc_matrix((self.num_z,1))))
+            # 9. Connect optknock-problem to the no-production-bilevel system to construct the optcouple problem.
+            A_ineq_q = sparse.block_diag((A_ineq_p,A_ineq_b),format='csr')
+            b_ineq_q = b_ineq_p + b_ineq_b
+            A_eq_q = sparse.block_diag((A_eq_p,A_eq_b),format='csr')
+            b_eq_q = b_eq_p + b_eq_b
+            lb_q = lb_p + lb_b
+            ub_q = ub_p + ub_b
+            z_map_vars_q = sparse.hstack((z_map_vars_p,z_map_vars_b))
+            z_map_constr_ineq_q = sparse.hstack((z_map_constr_ineq_p,z_map_constr_ineq_b))
+            z_map_constr_eq_q = sparse.hstack((z_map_constr_eq_p,z_map_constr_eq_b))
+            # if minimum growth-coupling potential is specified, enforce it through inequality
+            if hasattr(sd_module,'min_gcp'):
+                A_ineq_q = sparse.vstack((A_ineq_q,sparse.hstack((c_p,[-c for c in c_b]))),format='csr')
+                b_ineq_q = b_ineq_q + [-sd_module.min_gcp]
+                z_map_constr_ineq_q = sparse.hstack((z_map_constr_ineq_q,sparse.csc_matrix((self.num_z,1))))
+            # 10. reassign lb, ub where possible
+            A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.reassign_lb_ub_from_ineq(
+                A_ineq_q, b_ineq_q, A_eq_q, b_eq_q, lb_q, ub_q, z_map_constr_ineq_q, z_map_constr_eq_q, z_map_vars_q)
+            z_map_vars_i = z_map_vars_q
+            # 11. objective: maximize distance between growth rate at production and no production
+            c_i = c_p + [-c for c in c_b]
 
-        # 3. Prepare module as target or desired
+        # 3. Prepare module as target, desired or other
         if 'mcs' in sd_module.module_type and sd_module.module_sense == 'desired':
             A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.reassign_lb_ub_from_ineq(
                 A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
@@ -245,8 +351,12 @@ class StrainDesignMILPBuilder:
             A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.reassign_lb_ub_from_ineq(
                 A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
             z_map_vars_i = z_map_vars_p
+            # prepare outer objective
             c_i = linexpr2mat(sd_module.outer_objective,self.model.reactions.list_attr('id'))
             c_i.resize((1,A_ineq_i.shape[1]))
+            if not hasattr(sd_module,'outer_opt_sense') or sd_module.outer_opt_sense is None or \
+                sd_module.outer_opt_sense not in ['minimize', 'maximize'] or sd_module.outer_opt_sense == 'maximize':
+                c_i = -c_i
             c_i = c_i.toarray()[0].tolist()
 
         # 3. Add module to global MILP

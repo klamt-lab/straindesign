@@ -80,15 +80,15 @@ class SCIP_MILP_LP(pso.Model):
         # if self.getObjective().terms == {}:
         #     dummy = self.addVar(lb=-1, ub=1, obj=1, vtype='C')
 
-        for i in range(len(self.vars)):
-            if ub[i] is None:
-                self.chgVarUb(self.vars[i],1e4)
-            else:
-                self.chgVarUb(self.vars[i],ub[i])
-            if lb[i] is None:
-                self.chgVarLb(self.vars[i],1e4)
-            else:
-                self.chgVarLb(self.vars[i],lb[i])
+        # for i in range(len(self.vars)):
+        #     if ub[i] is None:
+        #         self.chgVarUb(self.vars[i],1e4)
+        #     else:
+        #         self.chgVarUb(self.vars[i],ub[i])
+        #     if lb[i] is None:
+        #         self.chgVarLb(self.vars[i],1e4)
+        #     else:
+        #         self.chgVarLb(self.vars[i],lb[i])
 
         # set parameters
         self.max_tlim = self.getParam('limits/time')
