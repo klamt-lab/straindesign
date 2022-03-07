@@ -124,6 +124,9 @@ class GLPK_MILP_LP():
         self.milp_params.tol_int = 1e-12
         self.milp_params.tol_obj = 1e-9
         self.lp_params.tol_bnd = 1e-9
+        self.lp_params.msg_lev = 0
+        self.milp_params.msg_lev = 0
+        
         
 
     def __del__(self):

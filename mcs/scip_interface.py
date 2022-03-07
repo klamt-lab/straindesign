@@ -16,7 +16,7 @@ class SCIP_MILP_LP(pso.Model):
     def __init__(self,c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype,indic_constr,x0,options):
         super().__init__()
         # uncomment to forward SCIP output to python terminal
-        # self.redirectOutput()
+        self.redirectOutput()
         try:
             numvars = A_ineq.shape[1]
         except:
@@ -92,6 +92,7 @@ class SCIP_MILP_LP(pso.Model):
 
         # set parameters
         self.max_tlim = self.getParam('limits/time')
+        self.setParam('display/verblevel',0)
         # self.enableReoptimization()
         # self.setParam('display/lpinfo',False)
         # self.setParam('reoptimization/enable',True)
