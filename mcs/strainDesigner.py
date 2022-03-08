@@ -80,7 +80,9 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
 
     def fixObjective(self,c,cx):
         self.milp.set_ineq_constraint(2,c,cx)
-        self.A_ineq[2] = sparse.csr_matrix(c)
+        self.A_ineq = self.A_ineq.tolil()
+        self.A_ineq[2] = sparse.lil_matrix(c)
+        self.A_ineq = self.A_ineq.tocsr()
         self.b_ineq = cx
 
     def resetObjective(self):
