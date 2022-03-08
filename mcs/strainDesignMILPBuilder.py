@@ -816,8 +816,8 @@ def worker_init(A,A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver):
         lp_glob.backend.parameters.lpmethod.set(1)
         if Configuration().processes > 1:
             lp_glob.backend.parameters.threads.set(2)
-    elif lp_glob.solver == 'scip':
-        lp_glob.backend.enableReoptimization()
+    # elif lp_glob.solver == 'scip':
+    #     lp_glob.backend.enableReoptimization()
     # elif lp_glob == 'gurobi':
     # elif lp_glob == 'scip':
     # else:

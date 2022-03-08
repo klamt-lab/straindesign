@@ -58,7 +58,7 @@ class Gurobi_MILP_LP(gp.Model):
 
     def solve(self) -> Tuple[List,float,float]:
         try:
-            super().optimize() # call parent solve function (that was overwritten in this class)
+            self.optimize() # call parent solve function (that was overwritten in this class)
             status = self.Status
             if status in [2,10,13,15]: # solution
                 min_cx = self.ObjVal
@@ -92,7 +92,7 @@ class Gurobi_MILP_LP(gp.Model):
 
     def slim_solve(self) -> float:
         try:
-            super().optimize() # call parent solve function (that was overwritten in this class)
+            self.optimize() # call parent solve function (that was overwritten in this class)
             status = self.Status
             if status in [2,10,13,15]: # solution integer optimal (tolerance)
                 opt = self.ObjVal

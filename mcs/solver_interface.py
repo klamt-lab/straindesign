@@ -4,7 +4,7 @@ from scipy import sparse
 from typing import List, Tuple
 from mcs.cplex_interface import Cplex_MILP_LP
 from mcs.gurobi_interface import Gurobi_MILP_LP
-from mcs.scip_interface import SCIP_MILP_LP
+from mcs.scip_interface import SCIP_MILP, SCIP_LP
 from mcs.glpk_interface import GLPK_MILP_LP
 
 class MILP_LP(object):
@@ -91,8 +91,14 @@ class MILP_LP(object):
             self.backend = Gurobi_MILP_LP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
                                             self.indic_constr,self.x0,self.options)
         elif self.solver == 'scip':
-            self.backend = SCIP_MILP_LP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
-                                            self.indic_constr,self.x0,self.options)
+            self.isLP = all(v=='C' for v in self.vtype)
+            if self.isLP:
+                self.backend = SCIP_LP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.x0,self.options)
+                return
+            else:
+                self.backend = SCIP_MILP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
+                                self.indic_constr,self.x0,self.options)
+
         elif self.solver == 'glpk':
             self.backend = GLPK_MILP_LP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
                                             self.indic_constr,self.x0,self.options)
