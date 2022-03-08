@@ -149,7 +149,9 @@ class MILP_LP(object):
         self.backend.add_ineq_constraints(A_ineq,b_ineq)
 
     def set_ineq_constraint(self,idx,a_ineq,b_ineq):
-        self.A_ineq[idx] = sparse.csr_matrix(a_ineq)
+        self.A_ineq.tolil()
+        self.A_ineq[idx] = sparse.lil_matrix(a_ineq)
+        self.A_ineq.tocsr()
         self.b_ineq[idx] = b_ineq
         self.backend.set_ineq_constraint(idx,a_ineq,b_ineq)
 
