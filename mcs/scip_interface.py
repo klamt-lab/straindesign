@@ -281,7 +281,7 @@ class SCIP_MILP(pso.Model):
 # Create a SCIP-object from a matrix-based problem setup
 class SCIP_LP(pso.LP):
     def __init__(self,c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,options):
-        super().__init__(sense="minimize")
+        super().__init__(sense='minimize')
         # uncomment to forward SCIP output to python terminal
         try:
             numvars = A_ineq.shape[1]
@@ -311,36 +311,23 @@ class SCIP_LP(pso.LP):
 
     def solve(self) -> Tuple[List,float,float]:
         try:
-            opt = self.optimize() # this function was inherited from super().solve() during initialization
-            error(asasd)
-            if status in ['optimal']: # solution
-                min_cx = self.getObjVal()
-                status = 0
-            elif status == 'timelimit' and self.getSols() == []: # timeout without solution
-                x = [nan]*len(self.vars)
-                min_cx = nan
-                status = 1
-                return x, min_cx, status
-            elif status == 'infeasible': # infeasible
-                x = [nan]*len(self.vars)
-                min_cx = nan
-                status = 2
-                return x, min_cx, status
-            elif status == 'timelimit' and not self.getSols() == []: # timeout with solution
-                min_cx = self.getObjVal()
-                status = 3
-            elif status in ['inforunbd','unbounded']: # solution unbounded
+            min_cx = self.optimize() # this function was inherited from super().solve() during initialization
+            if self.isInfinity(-min_cx): # solution
                 min_cx = -inf
                 status = 4
+            elif self.isInfinity(min_cx):
+                min_cx = nan
+                status = 2
+            if not isnan(min_cx) and not isinf(min_cx):
+                x = self.getPrimal()
+                status = 0
             else:
-                raise Exception('Status code '+str(status)+" not yet handeld.")
-            x = self.getSolution()
+                x = [nan] * len(self.getPrimal())
             return x, min_cx, status
-
         except:
             print('Error while running SCIP.')
             min_cx = nan
-            x = [nan] * len(self.vars)
+            x = [nan] * len(self.getPrimal())
             return x, min_cx, -1
 
     def slim_solve(self) -> float:
@@ -348,56 +335,12 @@ class SCIP_LP(pso.LP):
             opt = self.optimize() # this function was inherited from super().solve() during initialization
             if self.isInfinity(-opt): # solution
                 opt = -inf
+            elif self.isInfinity(opt):
+                opt = nan
             return opt
-
         except:
             print('Error while running SCIP.')
             return nan
-
-    def populate(self,pool_limit) -> Tuple[List,float,float]:
-        numvars = len(self.vars)
-        numrows = len(self.constr)
-        
-        try:
-            if pool_limit > 0:
-                sols = []
-                stoptime = t.time() + self.getParam('limits/time')
-                # 1. find optimal solution
-                self.set_time_limit(stoptime-t.time())
-                x, min_cx, status = self.solve()
-                if status not in [0,4]:
-                    return sols, min_cx, status
-                sols = [x]
-                # 2. constrain problem to optimality
-                objTerms = self.getObjective().terms
-                c = [objTerms[x] if x in objTerms.keys() else 0.0 for x in self.trms]
-                self.add_ineq_constraints(sparse.csr_matrix(c),[min_cx])
-                # 3. exclude first solution pool
-                self.addExclusionConstraintIneq(x)
-                # 4. loop solve and exclude until problem becomes infeasible
-                while status in [0,4] and not isnan(x[0]) \
-                    and stoptime-t.time() > 0 and pool_limit > len(sols):
-                    self.set_time_limit(stoptime-t.time())
-                    x, _, status = self.solve()
-                    if status in [0,4]:
-                        self.addExclusionConstraintIneq(x)
-                        sols += [x]
-                if stoptime-t.time() < 0:
-                    status = 3
-                elif status == 2:
-                    status = 0
-                # 5. remove auxiliary constraints
-                # Here, we only free the upper bound of the constraints
-                totrows = len(self.constr)
-                self.freeTransform()
-                for j in range(numrows,totrows):
-                    self.chgRhs(self.constr[j],None)
-                return sols, min_cx, status
-        except:
-            print('Error while running SCIP.')
-            min_cx = nan
-            x = []
-            return x, min_cx, -1
 
     def set_objective(self,c):
         for i in range(len(c)):
@@ -408,59 +351,16 @@ class SCIP_LP(pso.LP):
             self.chgObj(i, v)
 
     def set_ub(self,ub):
-        self.freeTransform()
-        for i in range(len(ub)):
-            if not isinf(ub[i][1]):
-                self.chgVarUb(self.vars[ub[i][0]],float(ub[i][1]))
-            else:
-                self.chgVarUb(self.vars[ub[i][0]],None)
+        raise Exception('SCIP changing UBs in LP is not yet implemented')
 
     def set_time_limit(self,t):
-        if t >= self.max_tlim:
-            self.setParam('limits/time',self.max_tlim)
-        else:
-            self.setParam('limits/time', t)
+        raise Exception('SCIP LP does not support time limits')
 
     def add_ineq_constraints(self,A_ineq,b_ineq):
-        self.freeTransform()
-        ineqs = [self.addCons(pso.Expr() <= b_i) for b_i in b_ineq]
-        for row,a_ineq in zip(ineqs,A_ineq):
-            X = [self.vars[i] for i in a_ineq.indices]
-            for col,coeff in zip(X,a_ineq.data):
-                self.addConsCoeff(row,col,float(coeff))
-        self.constr += ineqs
-
+        raise Exception('SCIP adding ineq constraints to LPs is not yet implemented')
 
     def add_eq_constraints(self,A_eq,b_eq):
-        self.freeTransform()
-        eqs = [self.addCons(pso.Expr() == b_i) for b_i in b_eq]
-        for row,a_eq in zip(eqs,A_eq):
-            X = [self.vars[i] for i in a_eq.indices]
-            for col,coeff in zip(X,a_eq.data):
-                self.addConsCoeff(row,col,float(coeff))
-        self.constr += eqs
+        raise Exception('SCIP adding eq constraints to LPs is not yet implemented')
 
     def set_ineq_constraint(self,idx,a_ineq,b_ineq):
-        self.freeTransform()
-        # Make previous constraint non binding. removing or
-        # changing old constraints would be better but doesn't work
-        self.chgRhs(self.constr[idx],None)
-        # add new constraint and replace constraint pointer in list
-        self.constr[idx] = self.addCons(pso.Expr() <= 0)
-        for i,a in enumerate(a_ineq):
-            self.addConsCoeff(self.constr[idx],self.vars[i],a)
-        if isinf(b_ineq):
-            self.chgRhs(self.constr[idx],None)
-        else:
-            self.chgRhs(self.constr[idx],b_ineq)
-        pass
-
-    def getSolution(self) -> list:
-        return [self.getVal(x) for x in self.vars]
-
-    def addExclusionConstraintIneq(self,x):
-        data = [1.0 if x[i] else -1.0 for i in self.binvars]
-        row = [0]*len(self.binvars)
-        A_ineq = sparse.csr_matrix((data,(row,self.binvars)),(1,len(self.vars)))
-        b_ineq = sum([x[i] for i in self.binvars])-1
-        self.add_ineq_constraints(A_ineq,[b_ineq])
+        raise Exception('SCIP changing ineq constraints in LPs is not yet implemented')
