@@ -4,10 +4,7 @@ from cobra.util import ProcessPool, solvers, create_stoichiometric_matrix
 from cobra import Model
 from cobra.core import Configuration
 from typing import List, Tuple
-from mcs.strainDesignModule import *
-from mcs.constr2mat import *
-from mcs.indicator_constraints import *
-from mcs.solver_interface import *
+from mcs import SD_Module, Indicator_constraints, lineq2mat, linexpr2mat, MILP_LP
 
 class StrainDesignMILPBuilder:
     """Class for computing Strain Designs (SD)"""
@@ -77,9 +74,9 @@ class StrainDesignMILPBuilder:
         # Prepare top 3 lines of MILP (sum of KOs below (1) and above (2) threshold) and objective function (3)
         self.A_ineq = sparse.csr_matrix([[-i for i in self.cost], self.cost, [0]*self.num_z])
         if self.max_cost is None:
-            self.b_ineq = [0.0, float(np.sum(np.abs(self.cost))), inf]
+            self.b_ineq = [0.0, float(np.sum(np.abs(self.cost))), np.inf]
         else:
-            self.b_ineq = [0.0, float(self.max_cost), inf]
+            self.b_ineq = [0.0, float(self.max_cost), np.inf]
         self.z_map_constr_ineq = sparse.csc_matrix((numr, 3))
         self.lb = [0.0] * numr
         self.ub = [1.0 - float(i) for i in self.z_non_targetable]

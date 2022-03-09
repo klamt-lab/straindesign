@@ -118,14 +118,14 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                             if np.logical_xor(sol[0,z_i],sense==-1) ]
             active_eqs = [i for i in range(self.cont_MILP.z_map_constr_eq.shape[1]) if i not in inactive_eqs]
 
-            lp = mcs.MILP_LP(A_ineq  = self.cont_MILP.A_ineq[active_ineqs,:][:,active_vars],
-                             b_ineq  = [self.cont_MILP.b_ineq[i] for i in active_ineqs],
-                             A_eq    = self.cont_MILP.A_eq[active_eqs,:][:,active_vars],
-                             b_eq    = [self.cont_MILP.b_eq[i] for i in active_eqs],
-                             lb      = [self.cont_MILP.lb[i] for i in active_vars],
-                             ub      = [self.cont_MILP.ub[i] for i in active_vars],
-                             options = self.options,
-                             solver  = self.solver)
+            lp = MILP_LP(   A_ineq  = self.cont_MILP.A_ineq[active_ineqs,:][:,active_vars],
+                            b_ineq  = [self.cont_MILP.b_ineq[i] for i in active_ineqs],
+                            A_eq    = self.cont_MILP.A_eq[active_eqs,:][:,active_vars],
+                            b_eq    = [self.cont_MILP.b_eq[i] for i in active_eqs],
+                            lb      = [self.cont_MILP.lb[i] for i in active_vars],
+                            ub      = [self.cont_MILP.ub[i] for i in active_vars],
+                            options = self.options,
+                            solver  = self.solver)
             valid[i] = not np.isnan(lp.slim_solve())
         return valid
 
