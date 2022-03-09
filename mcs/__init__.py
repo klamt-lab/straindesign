@@ -4,7 +4,7 @@
 # from mcs.mcs_module import mcs_module
 # from mcs.solver_interface import solver_interface
 from .strainDesignMILPBuilder import *
-from .strainDesigner import *
+from .strainDesignMILP import *
 from .strainDesignModule import *
 from .indicator_constraints import *
 from .solver_interface import *

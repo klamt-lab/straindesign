@@ -1,14 +1,11 @@
-from httpx import options
 import numpy as np
 from scipy import sparse
-import cobra
-import re
 import time
 from typing import Dict, List, Tuple
-import mcs
+from mcs import StrainDesignMILPBuilder, MILP_LP
 from warnings import warn
 
-class StrainDesigner(mcs.StrainDesignMILPBuilder):
+class StrainDesignMILP(StrainDesignMILPBuilder):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         keys = {'threads', 'mem', 'options'}        
@@ -22,17 +19,17 @@ class StrainDesigner(mcs.StrainDesignMILPBuilder):
                 setattr(self,key,None)
         if self.mem == None:
             self.mem = 2048
-        self.milp = mcs.MILP_LP(c           =self.c,
-                                A_ineq      =self.A_ineq,
-                                b_ineq      =self.b_ineq,
-                                A_eq        =self.A_eq,
-                                b_eq        =self.b_eq,
-                                lb          =self.lb,
-                                ub          =self.ub,
-                                vtype       =self.vtype,
-                                indic_constr=self.indic_constr,
-                                options     =self.options,
-                                solver      =self.solver)
+        self.milp = MILP_LP(c           =self.c,
+                            A_ineq      =self.A_ineq,
+                            b_ineq      =self.b_ineq,
+                            A_eq        =self.A_eq,
+                            b_eq        =self.b_eq,
+                            lb          =self.lb,
+                            ub          =self.ub,
+                            vtype       =self.vtype,
+                            indic_constr=self.indic_constr,
+                            options     =self.options,
+                            solver      =self.solver)
 
     def add_exclusion_constraints(self,z):
         for i in range(z.shape[0]):

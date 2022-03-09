@@ -347,8 +347,8 @@ class SCIP_LP(pso.LP):
             self.chgObj(i, c[i])
 
     def set_objective_idx(self,C):
-        for i,v in zip(C.indices(),C.data()):
-            self.chgObj(i, v)
+        for i_v in C:
+            self.chgObj(i_v[0], i_v[1])
 
     def set_ub(self,ub):
         raise Exception('SCIP changing UBs in LP is not yet implemented')

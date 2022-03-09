@@ -29,12 +29,6 @@ def worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver):
     if lp_glob.solver == 'cplex':
         lp_glob.backend.parameters.threads.set(2)
         lp_glob.backend.parameters.lpmethod.set(1)
-    elif lp_glob.solver == 'gurobi':
-        pass
-        # lp_glob.backend.params
-    elif lp_glob.solver == 'scip':
-        lp_glob.backend.enableReoptimization()
-    # else:
     lp_glob.prev = 0
 
 def worker_compute(i) -> Tuple[int,float]:
@@ -46,7 +40,6 @@ def worker_compute(i) -> Tuple[int,float]:
     else:
         lp_glob.set_objective_idx(C)
         min_cx = lp_glob.slim_solve()
-
     lp_glob.prev = C[0][0]
     return i, min_cx
 
@@ -73,10 +66,8 @@ def fva(model,**kwargs):
     else:
         solver = None
     
-    
     # prepare vectors and matrices
-    A_eq_base = create_stoichiometric_matrix(model)
-    A_eq_base = sparse.csr_matrix(A_eq_base)
+    A_eq_base = sparse.csr_matrix(create_stoichiometric_matrix(model))
     b_eq_base = [0]*len(model.metabolites)
     if 'A_eq' in locals():
         A_eq  = sparse.vstack((A_eq_base, A_eq))
@@ -109,9 +100,8 @@ def fva(model,**kwargs):
     x = [nan]*2*numr
 
     # Dummy to check if optimization runs
-    worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver)
-    worker_compute(1)
-
+    # worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver)
+    # worker_compute(1)
     if processes > 1:
         with ProcessPool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver)) as pool:
             chunk_size = len(reaction_ids) // processes
