@@ -69,3 +69,15 @@ def linexpr2mat(expr, reaction_ids) -> sparse.csr_matrix:
             coeff = float(coeff)
         A[0, reaction_ids.index(rid)] = coeff
     return A.tocsr()
+
+def get_rids(expr,reaction_ids):
+    expr_parts = [re.sub(r'^(\s|-|\+|\()*|(\s|-|\+|\|<|=|>))*$', '', part) for part in expr.split()]
+    ridx = [r for r in expr_parts if r in reaction_ids]
+    last_was_number = False
+    for part in expr_parts:
+        if part in ridx:
+            continue
+        if re.match('^\d*$',part) is not None:
+            continue
+        raise Exception("Expression invalid. Unknown identifier "+part+".")
+    

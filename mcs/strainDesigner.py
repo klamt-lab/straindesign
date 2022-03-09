@@ -21,6 +21,13 @@ class StrainDesigner(StrainDesignMILP):
             if key not in dict(kwargs).keys():
                 locals()[key] = None
         # Preprocess Model
-        subT = efmtool4cobra.compress_model_sympy(model)
+        
+        # Compress model
+        # exclude reactions named in strain design modules from compression
+        'constraints','inner_objective','outer_objective','prod_id','numerator','denomin'
+        cmp_model, cmp_mapReac = compress(model)
         # Build MILP
         super().__init__(model,sd_modules, *args, **kwargs)
+
+    def compress(model: Model): -> Tuple[Model, sparse.csr_matrix]
+        subT = efmtool4cobra.compress_model_sympy(model)
