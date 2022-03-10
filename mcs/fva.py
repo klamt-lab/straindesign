@@ -27,8 +27,8 @@ def worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver):
     lp_glob = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
                                     lb=lb, ub=ub, x0=x0,solver=solver)
     if lp_glob.solver == 'cplex':
-        lp_glob.backend.parameters.threads.set(2)
-        lp_glob.backend.parameters.lpmethod.set(1)
+        lp_glob.backend.parameters.threads.set(1)
+        #lp_glob.backend.parameters.lpmethod.set(1)
     lp_glob.prev = 0
 
 def worker_compute(i) -> Tuple[int,float]:

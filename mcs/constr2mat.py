@@ -49,7 +49,7 @@ def linexpr2mat(expr, reaction_ids) -> sparse.csr_matrix:
         if part in ridx:
             last_was_number = False
             continue
-        if re.match('^\d*$',part) is not None:
+        if re.match('^\d*\.{0,1}\d*$',part) is not None:
             if last_was_number:
                 raise Exception("Expression invalid. The expression contains at least two numbers in a row.")
             last_was_number = True
@@ -71,13 +71,14 @@ def linexpr2mat(expr, reaction_ids) -> sparse.csr_matrix:
     return A.tocsr()
 
 def get_rids(expr,reaction_ids):
-    expr_parts = [re.sub(r'^(\s|-|\+|\()*|(\s|-|\+|\|<|=|>))*$', '', part) for part in expr.split()]
-    ridx = [r for r in expr_parts if r in reaction_ids]
-    last_was_number = False
+    expr_parts = [re.sub(r'^(\s|-|\+|\()*|(\s|-|\+|\|<|\=|>)*$', '', part) for part in expr.split()]
+    reacIDs = []
     for part in expr_parts:
-        if part in ridx:
+        if part in reaction_ids:
+            reacIDs += [part]
             continue
-        if re.match('^\d*$',part) is not None:
+        if re.match('^\d*\.{0,1}\d*$',part) is not None:
             continue
         raise Exception("Expression invalid. Unknown identifier "+part+".")
+    return reacIDs
     
