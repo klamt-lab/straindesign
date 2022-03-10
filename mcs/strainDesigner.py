@@ -4,28 +4,42 @@ import numpy as np
 from scipy import sparse
 from typing import Dict, List, Tuple
 from scipy import sparse
-from cobra import Model
+from cobra import Model, Metabolite
+from cobra.util.array import create_stoichiometric_matrix
 from mcs import StrainDesignMILP, StrainDesignMILPBuilder, MILP_LP, SD_Module, get_rids
 from warnings import warn
 import jpype
-import sympy
+from sympy import Rational, nsimplify
 import efmtool_link.efmtool4cobra as efm
 import efmtool_link.efmtool_intern as efmi
 import java.util.HashSet
 
 # compression function imported from efmtool
-def compress_model(model, keep_rxns=[]):
+def compress_model(model, protected_rxns=[]):
     # modifies the model that is passed as first parameter; if you want to preserve the original model copy it first
-    # removes reactions with bounds (0, 0)
     # all irreversible reactions in the compressed model will flow in the forward direction
-    # does not remove the conservation relations, see remove_conservation_relations_sympy for this
     remove_gene_reaction_rules=True # This was formerly in the function parameters
     if remove_gene_reaction_rules:
         # remove all rules because processing them during combination of reactions into subsets
         # can sometimes raise MemoryErrors (probably when subsets get very large)
         for r in model.reactions:
             r.gene_reaction_rule = ''
+    # remove conservation relations
+    stoich_mat = create_stoichiometric_matrix(model, array_type='lil')
+    basic_metabolites = efmi.basic_columns_rat(stoich_mat.transpose().toarray(), tolerance=0)
+    dependent_metabolites = [model.metabolites[i].id for i in set(range(len(model.metabolites))) - set(basic_metabolites)]
+    # print("The following metabolites have been removed from the model:")
+    # print(dependent_metabolites)
+    for m in dependent_metabolites:
+        model.metabolites.get_by_id(m).remove_from_model()
+    # start reaction compression
     remove_rxns = [] # This was formerly in the function parameters
+
+    # add pseudo metabolites for reactions that should not be lumped with others.
+    # aux_metab_no_lump = ['no_lump_'+kr for kr in protected_rxns]
+    # [model.add_metabolites(Metabolite(s)) for s in aux_metab_no_lump]
+    # [getattr(model.reactions,r).add_metabolites({m:1}) for r,m in zip(protected_rxns,aux_metab_no_lump)]
+
     config = efm.Configuration()
     num_met = len(model.metabolites)
     num_reac = len(model.reactions)
@@ -40,7 +54,7 @@ def compress_model(model, keep_rxns=[]):
         elif model.reactions[i].upper_bound <= 0: # can run in backwards direction only (is and stays classified as irreversible)
             model.reactions[i] *= -1
             flipped.append(i)
-            print("Flipped", model.reactions[i].id)
+            # print("Flipped", model.reactions[i].id)
         # have to use _metabolites because metabolites gives only a copy
         for k, v in model.reactions[i]._metabolites.items():
             if type(v) is float or type(v) is int:
@@ -48,13 +62,13 @@ def compress_model(model, keep_rxns=[]):
                     # v = int(v)
                     # n = int2jBigInteger(v)
                     # d = BigInteger.ONE
-                    v = sympy.Rational(v) # for simplicity and actually slighlty faster (?)
+                    v = Rational(v) # for simplicity and actually slighlty faster (?)
                 else:
                     rational_conversion='base10' # This was formerly in the function parameters 
-                    v = sympy.nsimplify(v, rational=True, rational_conversion=rational_conversion)
+                    v = nsimplify(v, rational=True, rational_conversion=rational_conversion)
                     # v = sympy.Rational(v)
                 model.reactions[i]._metabolites[k] = v # only changes coefficient in the model, not in the solver
-            elif type(v) is not sympy.Rational:
+            elif type(v) is not Rational:
                 raise TypeError
             n, d = efm.sympyRat2jBigIntegerPair(v)
             # does not work although there is a public void setValueAt(int row, int col, BigInteger numerator, BigInteger denominator) method
@@ -70,8 +84,8 @@ def compress_model(model, keep_rxns=[]):
     else:
         reacNames = jpype.JString[:](model.reactions.list_attr('id'))
         remove_rxns = java.util.HashSet(remove_rxns) # works because of some jpype magic
-        print("Removing", remove_rxns.size(), "reactions:")
-        print(remove_rxns.toString())
+        # print("Removing", remove_rxns.size(), "reactions:")
+        # print(remove_rxns.toString())
     comprec = smc.compress(stoich_mat, reversible, jpype.JString[num_met], reacNames, remove_rxns)
     del remove_rxns
     # print(time.monotonic() - start_time) # 20 seconds in iJO1366 without remove_rxns
@@ -81,20 +95,34 @@ def compress_model(model, keep_rxns=[]):
     # with rationals from efmtool
     subset_matrix= efmi.jpypeArrayOfArrays2numpy_mat(comprec.post.getDoubleRows())
     del_rxns = np.logical_not(np.any(subset_matrix, axis=1)) # blocked reactions
+    # do not lump protected reactions
+    subset_matrix = sparse.csr_matrix(subset_matrix)
+    for i,s in enumerate(model.reactions.list_attr('id')):
+        if s in protected_rxns:
+            col_idx = subset_matrix[i].indices[0]
+            col_old = subset_matrix[:,col_idx]
+            # if reaction was marked to be lumped with another, separate them again.
+            if col_old.nnz == 0:
+                raise Exception('reaction '+s+' was deleted unexpectedly during network compression')
+            if col_old.nnz > 1:
+                subset_matrix[i,col_idx] = 0
+                col_new = sparse.csc_matrix(([1.],([i],[0])),(subset_matrix.shape[0],1))
+                subset_matrix = sparse.hstack((subset_matrix[:,range(col_idx)],col_new,subset_matrix[:,range(col_idx,subset_matrix.shape[1])]),format='csr')
     for j in range(subset_matrix.shape[1]):
         rxn_idx = subset_matrix[:, j].nonzero()[0]
-        for i in range(len(rxn_idx)): # rescale all reactions in this subset
-            # !! swaps lb, ub when the scaling factor is < 0, but does not change the magnitudes
-            factor = efm.jBigFraction2sympyRat(comprec.post.getBigFractionValueAt(rxn_idx[i], j))
-            # factor = jBigFraction2intORsympyRat(comprec.post.getBigFractionValueAt(rxn_idx[i], j)) # does not appear to make a speed difference
-            model.reactions[rxn_idx[i]] *=  factor #subset_matrix[rxn_idx[i], j]
-            # factor = abs(float(factor)) # context manager has trouble with non-float bounds
-            if model.reactions[rxn_idx[i]].lower_bound not in (0, config.lower_bound, -float('inf')):
-                model.reactions[rxn_idx[i]].lower_bound/= abs(subset_matrix[rxn_idx[i], j]) #factor
-            if model.reactions[rxn_idx[i]].upper_bound not in (0, config.upper_bound, float('inf')):
-                model.reactions[rxn_idx[i]].upper_bound/= abs(subset_matrix[rxn_idx[i], j]) #factor
+        for i in range(len(rxn_idx)): # rescale reactions in this subset
+            if model.reactions[rxn_idx[i]].id not in protected_rxns: # except for protected reactions
+                # !! swaps lb, ub when the scaling factor is < 0, but does not change the magnitudes
+                factor = efm.jBigFraction2sympyRat(comprec.post.getBigFractionValueAt(rxn_idx[i], j))
+                # factor = jBigFraction2intORsympyRat(comprec.post.getBigFractionValueAt(rxn_idx[i], j)) # does not appear to make a speed difference
+                model.reactions[rxn_idx[i]] *=  factor #subset_matrix[rxn_idx[i], j]
+                # factor = abs(float(factor)) # context manager has trouble with non-float bounds
+                if model.reactions[rxn_idx[i]].lower_bound not in (0, config.lower_bound, -float('inf')):
+                    model.reactions[rxn_idx[i]].lower_bound/= abs(subset_matrix[rxn_idx[i], j]) #factor
+                if model.reactions[rxn_idx[i]].upper_bound not in (0, config.upper_bound, float('inf')):
+                    model.reactions[rxn_idx[i]].upper_bound/= abs(subset_matrix[rxn_idx[i], j]) #factor
         model.reactions[rxn_idx[0]].subset_rxns = rxn_idx # reaction indices of the base model
-        model.reactions[rxn_idx[0]].subset_stoich = subset_matrix[rxn_idx, j] # use rationals here?
+        model.reactions[rxn_idx[0]].subset_stoich = subset_matrix[rxn_idx, j].data[0] # use rationals here?
         for i in range(1, len(rxn_idx)): # merge reactions
             # !! keeps bounds of reactions[rxn_idx[0]]
             model.reactions[rxn_idx[0]] += model.reactions[rxn_idx[i]]
@@ -112,8 +140,27 @@ def compress_model(model, keep_rxns=[]):
         subT[model.reactions[j].subset_rxns, j] = model.reactions[j].subset_stoich
     for i in flipped: # adapt so that it matches the reaction direction before flipping
             subT[i, :] *= -1
-    # adapt compressed_model name
+    # maybe add adapt compressed_model name
+    # cast coefficients back from rational to integer or float
+    num_reac = len(model.reactions)
+    for i in range(num_reac):
+        for k, v in model.reactions[i]._metabolites.items():
+            if v.is_Integer:
+                model.reactions[i]._metabolites[k] = int(v)
+            elif v.is_Float or v.is_Rational:
+                model.reactions[i]._metabolites[k] = float(v)
+            else:
+                raise Exception('unknown data type')
+    # again remove conservation relations if remaining
+    stoich_mat = create_stoichiometric_matrix(model, array_type='lil')
+    basic_metabolites = efmi.basic_columns_rat(stoich_mat.transpose().toarray(), tolerance=0)
+    dependent_metabolites = [model.metabolites[i].id for i in set(range(len(model.metabolites))) - set(basic_metabolites)]
+    # print("The following metabolites have been removed from the model:")
+    # print(dependent_metabolites)
+    for m in dependent_metabolites:
+        model.metabolites.get_by_id(m).remove_from_model()
     return subT
+
 
 class StrainDesigner(StrainDesignMILP):
     def __init__(self, model: Model, sd_modules: List[SD_Module], *args, **kwargs):
@@ -146,8 +193,10 @@ class StrainDesigner(StrainDesignMILP):
                         rid = get_rids(s,model.reactions.list_attr('id'))
                         [no_compress_reacs.append(r) for r in rid if r not in no_compress_reacs]
         
-        cmp_model = model.copy()
-        cmp_mapReac = compress_model(cmp_model, no_compress_reacs)
+        orig_model = model.copy()
+        print('Compress Network')
+        cmp_mapReac = compress_model(model, no_compress_reacs)
+
         # Build MILP
         super().__init__(model,sd_modules, *args, **kwargs)
 
