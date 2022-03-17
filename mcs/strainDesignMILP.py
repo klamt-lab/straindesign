@@ -7,8 +7,15 @@ from warnings import warn
 
 class StrainDesignMILP(StrainDesignMILPBuilder):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        keys = {'threads', 'mem', 'options'}        
+        keys = {'threads', 'mem', 'options'}
+        # remove keys that are irrelevant for MILP construction
+        kwargs1 = kwargs.copy()
+        for k in keys:
+            try:
+                del kwargs1[k]
+            except:
+                pass
+        super().__init__(*args, **kwargs1)  
         # set keys passed in kwargs
         for key,value in dict(kwargs).items():
             if key in keys:
@@ -197,9 +204,13 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         if status == 1 and sols.shape[0] > 0: # some solutions found, timelimit reached
             status = 3
         if endtime-time.time() > 0 and sols.shape[0] > 0:
-            print('Finished. '+ str(sols.shape[0]) +' solutions found.')
+            print('Finished. ')
+            if 'strainDesignMILP' in self.__module__:
+                print(str(sols.shape[0]) +' solutions found.')
         elif endtime-time.time() > 0:
-            print('Finished. No solutions exist.')
+            print('Finished.')
+            if 'strainDesignMILP' in self.__module__:
+                print(' No solutions exist.')
         else:
             print('Time limit reached.')
         # Translate solutions into dict if not stated otherwise
@@ -293,9 +304,13 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         if status == 1 and sols.shape[0] > 0: # some solutions found, timelimit reached
             status = 3
         if endtime-time.time() > 0 and sols.shape[0] > 0:
-            print('Finished. '+ str(sols.shape[0]) +' solutions found.')
+            print('Finished. ')
+            if 'strainDesignMILP' in self.__module__:
+                print(str(sols.shape[0]) +' solutions found.')
         elif endtime-time.time() > 0:
-            print('Finished. No solutions exist.')
+            print('Finished.')
+            if 'strainDesignMILP' in self.__module__:
+                print(' No solutions exist.')
         else:
             print('Time limit reached.')
         # Translate solutions into dict if not stated otherwise
@@ -363,16 +378,20 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                     else:
                         print('Invalid (minimal) solution found: '+ str(output))
                         self.add_exclusion_constraints(z)
-            if status is not 0:
+            if (status is not 0) or (z[i]*self.cost == self.max_cost):
                 break
         if status == 2 and sols.shape[0] > 0: # all solutions found or solution limit reached
             status = 0
         if status == 1 and sols.shape[0] > 0: # some solutions found, timelimit reached
             status = 3
         if endtime-time.time() > 0 and sols.shape[0] > 0:
-            print('Finished. '+ str(sols.shape[0]) +' solutions found.')
+            print('Finished. ')
+            if 'strainDesignMILP' in self.__module__:
+                print(str(sols.shape[0]) +' solutions found.')
         elif endtime-time.time() > 0:
-            print('Finished. No solutions exist.')
+            print('Finished.')
+            if 'strainDesignMILP' in self.__module__:
+                print(' No solutions exist.')
         else:
             print('Time limit reached.')
         # Translate solutions into dict if not stated otherwise

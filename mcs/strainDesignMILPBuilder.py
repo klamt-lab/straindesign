@@ -90,6 +90,15 @@ class StrainDesignMILPBuilder:
         self.indic_constr = []  # Add instances of the class 'Indicator_constraint' later
         # Initialize association between z and variables and variables
         self.z_map_vars = sparse.csc_matrix((numr, numr))
+
+        # replace bounds with inf if above a certain threshold
+        bound_thres = 1000
+        for i in range(len(self.model.reactions)):
+            if self.model.reactions[i].lower_bound <= -bound_thres:
+                model.reactions[i].lower_bound = -np.inf
+            if model.reactions[i].upper_bound >=  bound_thres:
+                model.reactions[i].upper_bound =  np.inf
+                
         print('Constructing MILP.')
         for i in range(len(sd_modules)):
             self.addModule(sd_modules[i])
@@ -185,11 +194,11 @@ class StrainDesignMILPBuilder:
         z_map_constr_eq_i = []
         z_map_vars_i = []
         # get lower and upper bound from module if available, otherwise from model
-        if not sd_module.lb == []:
+        if hasattr(sd_module,'lb') and sd_module.lb is not None:
             lb = sd_module.lb
         else:
             lb = [r.lower_bound for r in self.model.reactions]
-        if not sd_module.ub == []:
+        if hasattr(sd_module,'ub') and  sd_module.ub is not None:
             ub = sd_module.ub
         else:
             ub = [r.upper_bound for r in self.model.reactions]

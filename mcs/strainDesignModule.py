@@ -62,7 +62,7 @@ class SD_Module:
         self.model = model
         self.module_type = module_type
         allowed_keys = {'module_sense', 'constraints','inner_objective','inner_opt_sense','outer_objective',
-                        'outer_opt_sense','prod_id','numerator','denomin','lb','ub','skip_checks','min_gcp'}
+                        'outer_opt_sense','prod_id','numerator','denomin','skip_checks','min_gcp','lb','ub'}
         # set all keys passed in kwargs
         for key,value in kwargs.items():
             if key in allowed_keys:
@@ -72,12 +72,7 @@ class SD_Module:
         # set all remaining keys to None
         for key in allowed_keys:
             if key not in kwargs.keys():
-                setattr(self,key,None)
-
-        if self.lb is None:
-            self.lb = [r.lower_bound for r in model.reactions]
-        if self.ub is None:
-            self.ub = [r.upper_bound for r in model.reactions]        
+                setattr(self,key,None)      
         
         if 'mcs' in self.module_type and self.module_sense not in ["desired", "target"]:
             raise ValueError('"module_sense" must be "target" or "desired".')
@@ -154,10 +149,6 @@ class SD_Module:
             return error
         else:
             return ""
-
-    def set_model_lb_ub(self, lb, ub):
-        self.lb = lb
-        self.ub = ub
 
     def check_for_mcs_equation_errors(self) -> str:
         errors = ""

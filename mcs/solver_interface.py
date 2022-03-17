@@ -45,7 +45,7 @@ class MILP_LP(object):
         else:
             raise Exception("Number of variables could not be determined.")
         if self.c is None:
-            self.c = [0]*numvars
+            self.c = [0.0]*numvars
         if self.A_eq is None:
             self.A_eq = sparse.csr_matrix((0,numvars))
         if self.b_eq is None:
@@ -79,6 +79,19 @@ class MILP_LP(object):
                         len(self.indic_constr.b)==num_ic and len(self.indic_constr.binv)==num_ic and \
                         len(self.indic_constr.sense)==num_ic and len(self.indic_constr.indicval)==num_ic):
                     raise Exception("Check dimensions of indicator constraints.")
+        # Cast variables as float
+        self.A_ineq.dtype   = float
+        self.A_eq.dtype     = float
+        self.c      = [float(v) for v in self.c]
+        self.b_ineq = [float(v) for v in self.b_ineq]
+        self.b_eq   = [float(v) for v in self.b_eq]
+        self.lb     = [float(v) for v in self.lb]
+        self.ub     = [float(v) for v in self.ub]
+        if self.x0:
+            self.x0 = [float(v) for v in self.x0]
+        if self.indic_constr:
+            self.indic_constr.A.dtype = float
+            self.indic_constr.b = [float(v) for v in self.indic_constr.b]        
         # Create backend
         if self.solver == 'cplex':
             from mcs.cplex_interface import Cplex_MILP_LP
