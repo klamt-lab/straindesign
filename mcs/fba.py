@@ -6,12 +6,12 @@ from mcs.constr2mat import *
 from typing import Dict
 # FBA for cobra model with CPLEX
 # the user may provide the optional arguments
-#   constr:         Additional constraints in text form (list of lists)
+#   constraints:         Additional constraints in text form (list of lists)
 #   A_ineq, b_ineq: Additional constraints in matrix form
 #   obj:            Alternative objective in text form
 #   c:              Alternative objective in vector form
 def fba(model,**kwargs):
-    allowed_keys = {'obj', 'A_ineq','b_ineq','A_eq','b_eq','constr','c','obj','solver'}
+    allowed_keys = {'obj', 'A_ineq','b_ineq','A_eq','b_eq','constraints','c','obj','solver'}
     # # set all keys passed in kwargs
     # for key,value in kwargs.items():
     #     if key in allowed_keys:
@@ -25,13 +25,13 @@ def fba(model,**kwargs):
     # Check type and size of A_ineq and b_ineq if they exist
     reaction_ids = model.reactions.list_attr("id")
     numr = len(model.reactions)
-    if ('A_ineq' in kwargs or 'A_ineq' in kwargs) and 'constr' in kwargs:
-        raise Exception('Define either A_ineq, b_ineq or constr, but not both.')
+    if ('A_ineq' in kwargs or 'A_ineq' in kwargs) and 'constraints' in kwargs:
+        raise Exception('Define either A_ineq, b_ineq or constraints, but not both.')
     if 'obj' in kwargs and 'c' in kwargs:
         raise Exception('Define either obj or c, but not both.')
         
-    if 'constr' in kwargs:
-        A_ineq, b_ineq, A_eq, b_eq = lineq2mat(kwargs['constr'], reaction_ids)
+    if 'constraints' in kwargs:
+        A_ineq, b_ineq, A_eq, b_eq = lineq2mat(kwargs['constraints'], reaction_ids)
     else:
         if 'A_ineq' in kwargs and 'b_ineq' in kwargs:
             A_ineq = kwargs['A_ineq']

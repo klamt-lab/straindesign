@@ -1,15 +1,15 @@
-from optlang.interface import OPTIMAL
 from scipy import sparse
-from mcs import MILP_LP, lineq2mat
+from mcs import MILP_LP, lineq2mat, Pool
 from typing import Tuple
 from pandas import DataFrame
 from numpy import floor, sign, mod, nan, unique
-from cobra.core import Configuration
-from cobra.util import ProcessPool, create_stoichiometric_matrix, solvers
+from os import cpu_count
+from cobra.util import create_stoichiometric_matrix
+# from cobra.util import ProcessPool, create_stoichiometric_matrix
 
 # FBA for cobra model with CPLEX
 # the user may provide the optional arguments
-#   constr:         Additional constraints in text form (list of lists)
+#   constraints:    Additional constraints in text form (list of lists)
 #   A_ineq, b_ineq: Additional constraints in matrix form
 #   obj:            Alternative objective in text form
 #   c:              Alternative objective in vector form
@@ -46,11 +46,11 @@ def worker_compute(i) -> Tuple[int,float]:
 def fva(model,**kwargs):
     reaction_ids = model.reactions.list_attr("id")
     numr = len(model.reactions)
-    if ('A_ineq' in kwargs or 'A_ineq' in kwargs) and 'constr' in kwargs:
-        raise Exception('Define either A_ineq, b_ineq or constr, but not both.')
+    if ('A_ineq' in kwargs or 'A_ineq' in kwargs) and 'constraints' in kwargs:
+        raise Exception('Define either A_ineq, b_ineq or constraints, but not both.')
         
-    if 'constr' in kwargs:
-        A_ineq, b_ineq, A_eq, b_eq = lineq2mat(kwargs['constr'], reaction_ids)
+    if 'constraints' in kwargs:
+        A_ineq, b_ineq, A_eq, b_eq = lineq2mat(kwargs['constraints'], reaction_ids)
     else:
         if 'A_ineq' in kwargs and 'b_ineq' in kwargs:
             A_ineq = kwargs['A_ineq']
@@ -90,10 +90,13 @@ def fva(model,**kwargs):
                     ub=ub,
                     solver=solver)
     x0, _, status = lp.solve()
-    if status is not 0:
+    if status != 0:
         raise Exception('FVA problem not feasible.')
 
-    processes = Configuration().processes
+    processes = cpu_count()-1
+    if not processes:
+        print("The number of cores could not be detected - assuming one.")
+        processes = 1
     num_reactions = len(reaction_ids)
     processes = min(processes, num_reactions)
 
@@ -103,11 +106,11 @@ def fva(model,**kwargs):
     # worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver)
     # worker_compute(1)
     if processes > 1:
-        with ProcessPool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver)) as pool:
-            chunk_size = len(reaction_ids) // processes
-            # x = pool.imap_unordered(worker_compute, range(2*numr), chunksize=chunk_size)
-            for i, value in pool.imap_unordered( worker_compute, range(2*numr), chunksize=chunk_size):
-                x[i] = value
+        pool = Pool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver))
+        chunk_size = len(reaction_ids) // processes
+        # x = pool.imap_unordered(worker_compute, range(2*numr), chunksize=chunk_size)
+        for i, value in pool.imap_unordered( worker_compute, range(2*numr), chunksize=chunk_size):
+            x[i] = value
     else:
         worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver)
         for i in range(2*numr):

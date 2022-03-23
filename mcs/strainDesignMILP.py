@@ -60,7 +60,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         output = {}
         reacID = self.model.reactions.list_attr("id")
         for i in self.idx_z:
-            if not sol[0,i] == 0 and not np.isnan(sol[0,i]):
+            if sol[0,i] != 0 and not np.isnan(sol[0,i]):
                 if self.z_inverted[i]:
                     output[reacID[i]] =  sol[0,i]
                 else:
@@ -156,7 +156,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         sols = sparse.csr_matrix((0,self.num_z))
         print('Finding optimal strain designs ...')
         while sols.shape[0] < self.max_solutions and \
-          status is 0 and \
+          status == 0 and \
           endtime-time.time() > 0:
             self.milp.set_time_limit(endtime-time.time())
             self.resetTargetableZ()
@@ -175,7 +175,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                 elif status in [0,3]:
                     print('Invalid (minimal) solution found: '+ str(output))
                     self.add_exclusion_constraints(z)
-                if status is not 0:
+                if status != 0:
                     break
             else:
                 # Verify solution and explore subspace to get minimal intervention sets
@@ -185,7 +185,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                 self.setMinIntvCostObjective()
                 self.setTargetableZ(z)
                 while sols.shape[0] < self.max_solutions and \
-                        status is 0 and \
+                        status == 0 and \
                         endtime-time.time() > 0:    
                     self.milp.set_time_limit(endtime-time.time())
                     z1, status1 = self.solveZ()
@@ -243,7 +243,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         sols = sparse.csr_matrix((0,self.num_z))
         print('Finding (also non-optimal) strain designs ...')
         while sols.shape[0] < self.max_solutions and \
-          status is 0 and \
+          status == 0 and \
           endtime-time.time() > 0:
             print('Searching in full search space.')
             self.milp.set_time_limit(endtime-time.time())
@@ -265,7 +265,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                     output = self.sd2dict(z1)
                     print('Invalid minimal solution found: '+ str(output))
                     continue
-                if not status1 == 0 and not self.verify_sd(z1):
+                if status1 != 0 and not self.verify_sd(z1):
                     self.addExclusionConstraintsIneq(z);
                     output = self.sd2dict(z)
                     print('Invalid minimal solution found: '+ str(output))
@@ -284,7 +284,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
             self.setTargetableZ(z)
             self.fixObjective(self.c_bu,cx)
             while sols.shape[0] < self.max_solutions and \
-                    status is 0 and \
+                    status == 0 and \
                     endtime-time.time() > 0:    
                 self.milp.set_time_limit(endtime-time.time())
                 x1, min_cx , status1 = self.milp.solve()
@@ -353,7 +353,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         sols = sparse.csr_matrix((0,self.num_z))
         print('Enumerating strain designs ...')
         while sols.shape[0] < self.max_solutions and \
-          status is 0 and \
+          status == 0 and \
           endtime-time.time() > 0:
             self.milp.set_time_limit(endtime-time.time())
             if not self.is_mcs_computation:
@@ -378,7 +378,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                     else:
                         print('Invalid (minimal) solution found: '+ str(output))
                         self.add_exclusion_constraints(z)
-            if (status is not 0) or (z[i]*self.cost == self.max_cost):
+            if (status != 0): # or (z[i]*self.cost == self.max_cost):
                 break
         if status == 2 and sols.shape[0] > 0: # all solutions found or solution limit reached
             status = 0

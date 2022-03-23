@@ -1,4 +1,4 @@
-from cobra.util import solvers
+from importlib import find_loader as module_exists
 from numpy import inf, isinf, sign, nan, isnan, unique
 from scipy import sparse
 from typing import List, Tuple
@@ -18,12 +18,15 @@ class MILP_LP(object):
             if key not in kwargs.keys():
                 setattr(self,key,None)
         # Select solver (either by choice or automatically cplex > gurobi > glpk)
-        avail_solvers = list(solvers.keys())
-        try:
-            import pyscipopt
+        avail_solvers = []
+        if module_exists('swiglpk'):
+            avail_solvers += ['glpk']
+        if module_exists('cplex'):
+            avail_solvers += ['cplex']
+        if module_exists('gurobipy'):
+            avail_solvers += ['gurobi']
+        if module_exists('pyscipopt'):
             avail_solvers += ['scip']
-        except Exception:
-            False
         if self.solver is None:
             if 'cplex' in avail_solvers:
                 self.solver = 'cplex'
@@ -80,8 +83,8 @@ class MILP_LP(object):
                         len(self.indic_constr.sense)==num_ic and len(self.indic_constr.indicval)==num_ic):
                     raise Exception("Check dimensions of indicator constraints.")
         # Cast variables as float
-        self.A_ineq.dtype   = float
-        self.A_eq.dtype     = float
+        self.A_ineq = self.A_ineq.astype(float)
+        self.A_eq    = self.A_eq.astype(float)
         self.c      = [float(v) for v in self.c]
         self.b_ineq = [float(v) for v in self.b_ineq]
         self.b_eq   = [float(v) for v in self.b_eq]
@@ -90,7 +93,7 @@ class MILP_LP(object):
         if self.x0:
             self.x0 = [float(v) for v in self.x0]
         if self.indic_constr:
-            self.indic_constr.A.dtype = float
+            self.indic_constr.A = self.indic_constr.A.astype(float)
             self.indic_constr.b = [float(v) for v in self.indic_constr.b]        
         # Create backend
         if self.solver == 'cplex':

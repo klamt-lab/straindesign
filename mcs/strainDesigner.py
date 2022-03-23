@@ -1,10 +1,12 @@
 import numpy as np
 from scipy import sparse
+from contextlib import redirect_stdout
 from typing import Dict, List, Tuple
 from scipy import sparse
 from cobra import Model, Metabolite, Reaction
 from cobra.util.array import create_stoichiometric_matrix
 from mcs import StrainDesignMILP, StrainDesignMILPBuilder, MILP_LP, SD_Module, get_rids
+from mcs.fva import *
 from warnings import warn
 import jpype
 from sympy import Rational, nsimplify
@@ -12,9 +14,10 @@ import efmtool_link.efmtool4cobra as efm
 import efmtool_link.efmtool_intern as efmi
 import java.util.HashSet
 
-def remove_blocked_reactions(model):
+def remove_blocked_reactions(model) -> List:
     blocked_reactions = [reac for reac in model.reactions if reac.bounds == (0, 0)]
     model.remove_reactions(blocked_reactions)
+    return blocked_reactions
 
 def remove_ext_mets(model):
     external_mets = [i for i,cpts in zip(model.metabolites,model.metabolites.list_attr("compartment")) if cpts == 'External_Species']
@@ -238,8 +241,8 @@ class StrainDesigner(StrainDesignMILP):
                 self.cmp_ki_cost = value
                 self.orig_ki_cost = value
         if not kwargs['ko_cost']:
-            self.cmp_ko_cost = {k:1 for k in model.reactions.list_attr('id')}
-            self.orig_ko_cost = {k:1 for k in model.reactions.list_attr('id')}
+            self.cmp_ko_cost = {k:1.0 for k in model.reactions.list_attr('id')}
+            self.orig_ko_cost = {k:1.0 for k in model.reactions.list_attr('id')}
         if not kwargs['ki_cost']:
             self.cmp_ki_cost = {}
             self.orig_ki_cost = {}
@@ -248,18 +251,45 @@ class StrainDesigner(StrainDesignMILP):
             sd_modules = [sd_modules]
         # 1) Preprocess Model
         print('Preparing strain design computation.')
+        with redirect_stdout(None): # suppress standard output from copying model
+            cmp_model = model.copy()
         # remove external metabolites
-        remove_ext_mets(model)
+        remove_ext_mets(cmp_model)
         # replace model bounds with +/- inf if above a certain threshold
         bound_thres = 1000
-        for i in range(len(model.reactions)):
-            if model.reactions[i].lower_bound <= -bound_thres:
-                model.reactions[i].lower_bound = -np.inf
-            if model.reactions[i].upper_bound >=  bound_thres:
-                model.reactions[i].upper_bound =  np.inf
-        
+        for i in range(len(cmp_model.reactions)):
+            if cmp_model.reactions[i].lower_bound <= -bound_thres:
+                cmp_model.reactions[i].lower_bound = -np.inf
+            if cmp_model.reactions[i].upper_bound >=  bound_thres:
+                cmp_model.reactions[i].upper_bound =  np.inf
+        # FVAs to identify blocked, irreversible and essential reactions, as well as non-bounding bounds
+        essential_reacs = set()
+        print('FVA to identify blocked reactions and irreversibilities')
+        flux_limits = fva(cmp_model,solver=kwargs['solver'])
+        for (reac_id, limits) in flux_limits.iterrows():
+            r = cmp_model.reactions.get_by_id(reac_id)
+            # modify _lower_bound and _upper_bound to make changes permanent
+            if np.prod(limits) > 0: # find essential
+                essential_reacs.add(reac_id)
+            if limits.minimum < 0 and limits.minimum > r.lower_bound:
+                r._lower_bound = -np.inf
+            if limits.minimum >= 0:
+                r._lower_bound = 0
+            if limits.maximum > 0 and limits.maximum < r.upper_bound:
+                r._upper_bound = np.inf
+            if limits.maximum <= 0:
+                r._upper_bound = 0
+        print('FVA(s) to identify essential reactions')
+        for m in sd_modules:
+            if m.module_sense != 'target': # Essential reactions can only be determined from desired
+                                           # or opt-/robustknock modules
+                flux_limits = fva(cmp_model,solver=kwargs['solver'],constraints=m.constraints)
+                for (reac_id, limits) in flux_limits.iterrows():
+                    if np.prod(limits) > 0: # find essential
+                        essential_reacs.add(reac_id)
+        # remove ko-costs (and thus knockability) of essential reactions
+        [self.cmp_ko_cost.pop(er) for er in essential_reacs if er in self.cmp_ko_cost]
         # Compress model
-        cmp_model = model.copy()
         self.cmp_mapReac = []
         if  kwargs['compress'] is True or kwargs['compress'] is None: # If compression is activated (or not defined)
             print('Compressing Network ('+str(len(cmp_model.reactions))+' reactions).')
@@ -277,7 +307,10 @@ class StrainDesigner(StrainDesignMILP):
             # compress network by lumping sequential and parallel reactions alternatingly. 
             # Remove conservation relations.
             print('  Removing blocked reactions.')
-            remove_blocked_reactions(cmp_model)
+            blocked_reactions = remove_blocked_reactions(cmp_model)
+            # remove blocked reactions from ko- and ki-costs
+            [self.cmp_ko_cost.pop(br.id) for br in blocked_reactions if br.id in self.cmp_ko_cost]
+            [self.cmp_ki_cost.pop(br.id) for br in blocked_reactions if br.id in self.cmp_ki_cost]
             print('  Translating stoichiometric coefficients to rationals.')
             stoichmat_coeff2rational(cmp_model)
             print('  Removing conservation relations.')
@@ -342,6 +375,9 @@ class StrainDesigner(StrainDesignMILP):
         kwargs1['ko_cost'] = self.cmp_ko_cost
         kwargs1['ki_cost'] = self.cmp_ki_cost
         del kwargs1['compress']
+        print("Finished preprocessing:")
+        print("  Model size: "+str(len(cmp_model.reactions))+" reactions, "+str(len(cmp_model.metabolites))+" metabolites")
+        print("  "+str(len(self.cmp_ko_cost)+len(self.cmp_ki_cost))+" targetable reactions")
         super().__init__(cmp_model,sd_modules, *args, **kwargs1)
 
     def expand_mcs(self):

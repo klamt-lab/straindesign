@@ -57,7 +57,7 @@ class StrainDesignMILPBuilder:
         # If no knockable reactions are assigned, assume all are KO-able.
         # Generally, KIs overwrite KOs
         if self.ko_cost is None:
-            self.ko_cost = {rid: 1 for rid in reac_ids}
+            self.ko_cost = {rid: 1.0 for rid in reac_ids}
         if self.ki_cost is None:
             self.ki_cost = {}
         self.ko_cost = [self.ko_cost.get(key) if (key in self.ko_cost.keys()) else np.nan for key in reac_ids]
