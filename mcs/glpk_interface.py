@@ -13,7 +13,7 @@ from sympy import unbranched_argument
 
 # Create a GLPK-object from a matrix-based problem setup
 class GLPK_MILP_LP():
-    def __init__(self,c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype,indic_constr,x0,options):
+    def __init__(self,c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype,indic_constr,M=None):
         self.glpk = glp_create_prob()
         # Careful with indexing! GLPK indexing starts with 1 and not with 0 
         try:
@@ -66,9 +66,7 @@ class GLPK_MILP_LP():
         A_indic = sparse.lil_matrix((0,numvars))
         b_indic = []
         if not indic_constr==None:
-            if options is not None and hasattr(options,'M'):
-                M = options.M
-            else:
+            if not M:
                 M = 1e3
             print('There is no native support of indicator constraints with GLPK.')
             print('Indicator constraints are translated to big-M constraints with M='+str(M)+'.')

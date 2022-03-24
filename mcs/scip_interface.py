@@ -13,7 +13,7 @@ import time as t
 
 # Create a SCIP-object from a matrix-based problem setup
 class SCIP_MILP(pso.Model):
-    def __init__(self,c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype,indic_constr,x0,options):
+    def __init__(self,c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype,indic_constr):
         super().__init__()
         # uncomment to forward SCIP output to python terminal
         self.redirectOutput()
@@ -280,7 +280,7 @@ class SCIP_MILP(pso.Model):
         
 # Create a SCIP-object from a matrix-based problem setup
 class SCIP_LP(pso.LP):
-    def __init__(self,c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,options):
+    def __init__(self,c,A_ineq,b_ineq,A_eq,b_eq,lb,ub):
         super().__init__(sense='minimize')
         # uncomment to forward SCIP output to python terminal
         try:

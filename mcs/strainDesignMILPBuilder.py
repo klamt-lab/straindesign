@@ -60,8 +60,8 @@ class StrainDesignMILPBuilder:
             self.ko_cost = {rid: 1.0 for rid in reac_ids}
         if self.ki_cost is None:
             self.ki_cost = {}
-        self.ko_cost = [self.ko_cost.get(key) if (key in self.ko_cost.keys()) else np.nan for key in reac_ids]
-        self.ki_cost = [self.ki_cost.get(key) if (key in self.ki_cost.keys()) else np.nan for key in reac_ids]
+        self.ko_cost = [float(self.ko_cost.get(key)) if (key in self.ko_cost.keys()) else np.nan for key in reac_ids]
+        self.ki_cost = [float(self.ki_cost.get(key)) if (key in self.ki_cost.keys()) else np.nan for key in reac_ids]
         self.ko_cost = [self.ko_cost[i] if np.isnan(self.ki_cost[i]) else np.nan for i in range(numr)]
         self.num_z = numr
         self.cost = [i for i in self.ko_cost]
@@ -70,7 +70,7 @@ class StrainDesignMILPBuilder:
         self.z_inverted = [not np.isnan(x) for x in self.ki_cost]
         self.z_non_targetable = [np.isnan(x) for x in self.cost]
         for i in [i for i, x in enumerate(self.cost) if np.isnan(x)]:
-            self.cost[i] = 0
+            self.cost[i] = 0.0
         # Prepare top 3 lines of MILP (sum of KOs below (1) and above (2) threshold) and objective function (3)
         self.A_ineq = sparse.csr_matrix([[-i for i in self.cost], self.cost, [0]*self.num_z])
         if self.max_cost is None:
@@ -99,7 +99,7 @@ class StrainDesignMILPBuilder:
             if model.reactions[i].upper_bound >=  bound_thres:
                 model.reactions[i].upper_bound =  np.inf
                 
-        print('Constructing MILP.')
+        print('Constructing strain design MILP for solver: '+kwargs['solver']+'.')
         for i in range(len(sd_modules)):
             self.addModule(sd_modules[i])
 
@@ -614,7 +614,7 @@ class StrainDesignMILPBuilder:
                 _, max_Ax[i] = worker_compute(i)
 
         # round Ms up to 3 digits
-        Ms = [np.ceil((M-b)*1e3)/1e3 if not np.isnan(M) else self.M for M, b in zip(max_Ax, M_b)]
+        Ms = [np.ceil((M-b)*1e3)/1e3 if not np.isinf(M) else self.M for M, b in zip(max_Ax, M_b)]
         # fill up M-vector also for notknockable reactions
         Ms = [Ms[np.array([i == j for j in knockable_constr_ineq]).nonzero()[0][
             0]] if i in knockable_constr_ineq else np.nan for i in range(self.A_ineq.shape[0])]

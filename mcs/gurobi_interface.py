@@ -13,7 +13,7 @@ from typing import Tuple, List
 
 # Create a Gurobi-object from a matrix-based problem setup
 class Gurobi_MILP_LP(gp.Model):
-    def __init__(self,c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype,indic_constr,x0,options):
+    def __init__(self,c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype,indic_constr):
         super().__init__()
         try:
             numvars = A_ineq.shape[1]

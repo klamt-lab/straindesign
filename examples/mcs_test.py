@@ -32,19 +32,47 @@ network.remove_metabolites
 network.metabolites.list_attr("compartment")
 # specify MCS setup
 maxSolutions = np.inf
-maxCost = 3
+maxCost = 7
 solver = 'cplex'
-# ko_cost = {'EDD':2, 'EDA':3,'FBA':1.5,'ENO':1.2,'ATPS4rpp':1,'PPS':1,'PGI':1.1,'GND':1,'h_pEx':1,'PGM':1.0,'AKGDH':1,'TALA':1,'TKT1':6,'RPE':1}
-# ki_cost = {'ACKr':2.1, 'ICL':0.9,'MALS':1.5,'MDH':3, 'EDD':2, 'ENO':0.7}
+# ko_cost = { 'PTAr' 		: 1,
+#             'ACKr'		: 2,
+#             'FORtppi'	: 1.4,	
+#             'SUCDi'	    : 1.2,
+#             'H2Otpp'	: 2.6,	
+#             'ATPS4rpp'	: 1.3,
+#             'PFL'		: 0.7,
+#             'GLYCtex'	: 0.9,	
+#             'EX_ac_e'	: 0.4,	
+#             'ACtex'	    : 1.2,
+#             'CYTBO3_4pp': 2.1,	
+#             'O2tpp'		: 0.24,
+#             'O2tex'		: 0.77,
+#             'EX_o2_e'	: 0.4,	
+#             'POR5'		: 1.5,
+#             'CO2tpp'	: 3,	
+#             'ALCD19'	: 2,	
+#             'ASPtpp' 	: 0.25}
+# ki_cost = { 'EDD' 	 	: 0.5,
+#             'GAPP' 	 	: 0.4,
+#             'ENO'	 	: 0.6,
+#             'EDA' 	 	: 1.3,
+#             'AKGDH'  	: 0.7,
+#             'MALD' 	 	: 1.8,
+#             'NADTRHD'  	: 0.12,
+#             'LCARS'	 	: 0.13,
+#             'SUCCt1pp'	: 0.2,
+#             'SUCFUMtpp'	: 0.1}
 ko_cost = None
 ki_cost = None
+gko_cost = None
 
+M=None
 # construct MCS MILP
-mcsEnum = mcs.StrainDesigner(network,modules, max_cost=maxCost,ko_cost=ko_cost, ki_cost=ki_cost, solver=solver,M=None)
+mcsEnum = mcs.StrainDesigner(network,modules, max_cost=maxCost,ko_cost=ko_cost, ki_cost=ki_cost, gko_cost=gko_cost, solver=solver,M=M)
 # mcsEnum = mcs.StrainDesignMILP(network,modules,ko_cost=ko_cost, ki_cost=ki_cost, max_cost=maxCost,solver=solver,M=None)
 
 # solve MILP
-mcsEnum.enumerate(max_solutions=maxSolutions)
-# mcsEnum.compute_optimal(max_solutions=maxSolutions)
+# mcsEnum.enumerate(max_solutions=maxSolutions)
+mcsEnum.compute_optimal(max_solutions=maxSolutions)
 # rmcs = mcsEnum.compute(max_solutions=maxSolutions,time_limit=15)
 pass

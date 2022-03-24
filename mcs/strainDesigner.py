@@ -1,6 +1,6 @@
 import numpy as np
 from scipy import sparse
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 from typing import Dict, List, Tuple
 from scipy import sparse
 from cobra import Model, Metabolite, Reaction
@@ -9,10 +9,65 @@ from mcs import StrainDesignMILP, StrainDesignMILPBuilder, MILP_LP, SD_Module, g
 from mcs.fva import *
 from warnings import warn
 import jpype
-from sympy import Rational, nsimplify
+from sympy import Rational, nsimplify, parse_expr
 import efmtool_link.efmtool4cobra as efm
 import efmtool_link.efmtool_intern as efmi
+from zmq import EVENT_CLOSE_FAILED
 import java.util.HashSet
+
+def remove_irrelevant_genes(model,essential_reacs,gkis):
+    # 1) Remove gpr rules from blocked reactions
+    blocked_reactions = [reac.id for reac in model.reactions if reac.bounds == (0, 0)]
+    for rid in blocked_reactions:
+        model.reactions.get_by_id(rid).gene_reaction_rule = ''
+    for g in model.genes[::-1]: # iterate in reverse order to avoid mixing up the order of the list when removing genes
+        if not g.reactions:
+            model.genes.remove(g)
+    protected_genes = set()
+    # 1. Protect genes that only occur in essential reactions
+    for g in model.genes:
+        if not g.reactions or {r.id for r in g.reactions}.issubset(essential_reacs):
+            protected_genes.add(g)
+    # 2. Protect genes that are essential to essential reactions
+    for r in essential_reacs:
+        gpr = model.reactions.get_by_id(r).gpr
+        [protected_genes.add(model.genes.get_by_id(g)) for g in gpr.genes if not gpr.eval(g)]
+    # genes with kiCosts must be kept
+    protected_genes = protected_genes.difference({model.genes.get_by_id(g) for g in gkis.keys()})
+    protected_genes_dict = {pg.id: True for pg in protected_genes}
+    # 3. Simplify gpr rules and discard rules that cannot be knocked out
+    for r in model.reactions:
+        if r.gene_reaction_rule:
+            exp = parse_expr(r.gene_reaction_rule.replace(' or ',' | ').replace(' and ',' & '),protected_genes_dict)
+            if exp == True:
+                model.reactions.get_by_id(r.id).gene_reaction_rule = ''
+            elif exp == False:
+                print('Something went wrong during gpr rule simplification.')
+            else:
+                model.reactions.get_by_id(r.id).gene_reaction_rule = str(exp).replace(' & ',' and ').replace(' | ',' or ')
+    # 4. Remove obsolete genes and protected genes
+    for g in model.genes[::-1]:
+        if not g.reactions or g in protected_genes:
+            model.genes.remove(g)        
+    
+def compress_gpr_rules_and(model):
+    print('lol')
+    gpr_map_exp = {} # map compressed reactions to original reactions (needed for kiCost, koCost mapping and decompression)
+    for i in range(subT.shape[1]):
+        gpr_map_exp[cmp_model.reactions[i].id] = [prev_gpr_names[j] for j in subT[:,i].indices]
+    # store the information for decompression in a Tuple
+    # (0) compression matrix, (1) reac_id dictornary {cmp_rid: [orig_rids]}, (2) linear (True) or parallel (False) compression
+    # (3,4) ko and ki costs of expanded network
+    self.cmp_mapGPR += [(subT,gpr_map_exp,odd,self.cmp_ko_cost,self.cmp_ki_cost)]
+    
+def compress_gpr_rules_or(model):
+    gpr_map_exp = {} # map compressed reactions to original reactions (needed for kiCost, koCost mapping and decompression)
+    for i in range(subT.shape[1]):
+        gpr_map_exp[cmp_model.reactions[i].id] = [prev_gpr_names[j] for j in subT[:,i].indices]
+    # store the information for decompression in a Tuple
+    # (0) compression matrix, (1) reac_id dictornary {cmp_rid: [orig_rids]}, (2) linear (True) or parallel (False) compression
+    # (3,4) ko and ki costs of expanded network
+    self.cmp_mapGPR += [(subT,gpr_map_exp,odd,self.cmp_ko_cost,self.cmp_ki_cost)]
 
 def remove_blocked_reactions(model) -> List:
     blocked_reactions = [reac for reac in model.reactions if reac.bounds == (0, 0)]
@@ -223,7 +278,7 @@ def compress_model_parallel(model, protected_rxns=[]):
 
 class StrainDesigner(StrainDesignMILP):
     def __init__(self, model: Model, sd_modules: List[SD_Module], *args, **kwargs):
-        allowed_keys = {'solver', 'max_cost', 'M','threads', 'mem', 'compress', 'options','ko_cost','ki_cost'}
+        allowed_keys = {'solver', 'max_cost', 'M','threads', 'mem', 'compress','ko_cost','ki_cost','gko_cost','gki_cost'}
         # set all keys that are not in kwargs to None
         for key in allowed_keys:
             if key not in dict(kwargs).keys():
@@ -240,9 +295,28 @@ class StrainDesigner(StrainDesignMILP):
             if key == 'ki_cost':
                 self.cmp_ki_cost = value
                 self.orig_ki_cost = value
-        if not kwargs['ko_cost']:
+            if key == 'gko_cost':
+                self.cmp_gko_cost = value
+                self.orig_gko_cost = value
+            if key == 'gki_cost':
+                self.cmp_gki_cost = value
+                self.orig_gki_cost = value
+        if ('gko_cost' in kwargs or 'gki_cost' in kwargs) and hasattr(model,'genes') and model.genes:
+            gene_sd = True
+            if not kwargs['gko_cost']:
+                self.cmp_gko_cost = {k:1.0 for k in model.reactions.list_attr('id')}
+                self.orig_gko_cost = {k:1.0 for k in model.reactions.list_attr('id')}
+            if not kwargs['gki_cost']:
+                self.cmp_gki_cost = {}
+                self.orig_gki_cost = {}
+        else:
+            gene_sd = False
+        if not kwargs['ko_cost'] and not gene_sd:
             self.cmp_ko_cost = {k:1.0 for k in model.reactions.list_attr('id')}
             self.orig_ko_cost = {k:1.0 for k in model.reactions.list_attr('id')}
+        else:
+            self.cmp_ko_cost = {}
+            self.orig_ko_cost = {}
         if not kwargs['ki_cost']:
             self.cmp_ki_cost = {}
             self.orig_ki_cost = {}
@@ -251,7 +325,8 @@ class StrainDesigner(StrainDesignMILP):
             sd_modules = [sd_modules]
         # 1) Preprocess Model
         print('Preparing strain design computation.')
-        with redirect_stdout(None): # suppress standard output from copying model
+        print('Using '+kwargs['solver']+' for solving LPs during preprocessing.')
+        with redirect_stdout(None), redirect_stderr(None): # suppress standard output from copying model
             cmp_model = model.copy()
         # remove external metabolites
         remove_ext_mets(cmp_model)
@@ -263,32 +338,90 @@ class StrainDesigner(StrainDesignMILP):
             if cmp_model.reactions[i].upper_bound >=  bound_thres:
                 cmp_model.reactions[i].upper_bound =  np.inf
         # FVAs to identify blocked, irreversible and essential reactions, as well as non-bounding bounds
-        essential_reacs = set()
-        print('FVA to identify blocked reactions and irreversibilities')
+        print('FVA to identify blocked reactions and irreversibilities.')
         flux_limits = fva(cmp_model,solver=kwargs['solver'])
+        if kwargs['solver'] in ['scip','glpk']:
+            tol = 1e-10 # use tolerance for tightening problem bounds
+        else:
+            tol = 0.0
         for (reac_id, limits) in flux_limits.iterrows():
             r = cmp_model.reactions.get_by_id(reac_id)
             # modify _lower_bound and _upper_bound to make changes permanent
-            if np.prod(limits) > 0: # find essential
-                essential_reacs.add(reac_id)
-            if limits.minimum < 0 and limits.minimum > r.lower_bound:
+            if r.lower_bound < 0.0 and limits.minimum - tol > r.lower_bound:
                 r._lower_bound = -np.inf
-            if limits.minimum >= 0:
-                r._lower_bound = 0
-            if limits.maximum > 0 and limits.maximum < r.upper_bound:
+            if limits.minimum >= tol:
+                r._lower_bound = 0.0
+            if r.upper_bound > 0.0 and limits.maximum + tol < r.upper_bound:
                 r._upper_bound = np.inf
-            if limits.maximum <= 0:
-                r._upper_bound = 0
-        print('FVA(s) to identify essential reactions')
+            if limits.maximum <= -tol:
+                r._upper_bound = 0.0
+        print('FVA(s) to identify essential reactions.')
+        essential_reacs = set()
         for m in sd_modules:
             if m.module_sense != 'target': # Essential reactions can only be determined from desired
                                            # or opt-/robustknock modules
                 flux_limits = fva(cmp_model,solver=kwargs['solver'],constraints=m.constraints)
                 for (reac_id, limits) in flux_limits.iterrows():
-                    if np.prod(limits) > 0: # find essential
+                    if np.min(abs(limits)) > tol and np.prod(np.sign(limits)) > 0: # find essential
                         essential_reacs.add(reac_id)
         # remove ko-costs (and thus knockability) of essential reactions
         [self.cmp_ko_cost.pop(er) for er in essential_reacs if er in self.cmp_ko_cost]
+        # If computation of gene-gased intervention strategies, (optionally) compress gpr are rules and extend stoichimetric network with genes
+        if gene_sd:
+            if kwargs['compress'] is True or kwargs['compress'] is None:
+                print('Compressing GPR rules ('+str(len(cmp_model.genes))+' genes).')
+                remove_irrelevant_genes(cmp_model, essential_reacs,self.cmp_gki_cost)
+                odd = True
+                while True:
+                    prev_gene_names = cmp_model.genes.list_attr('id')
+                    if odd:
+                        print('  GPR Compression '+str(run)+': Reduce number of enzyme-subunits.')
+                        subT = sparse.csc_matrix(compress_gpr_rules_and(cmp_model))
+                    else:
+                        print('  GPR Compression '+str(run)+': Reduce number of isoenzymes.')
+                        subT = sparse.csc_matrix(compress_gpr_rules_or(cmp_model))
+                    if subT.shape[0] > subT.shape[1]:
+                        print('  Reduced to '+str(subT.shape[1])+' reactions.')
+                        gene_map_exp = {} # map compressed genes to original reactions (needed for gkiCost, gkoCost mapping and decompression)
+                        for i in range(subT.shape[1]):
+                            gene_map_exp[cmp_model.gene[i].id] = [prev_gene_names[j] for j in subT[:,i].indices]
+                        # store the information for decompression in a Tuple
+                        # (0) gene_id dictornary {cmp_gid: [orig_gids]}, (1) linear (True) or parallel (False) compression
+                        # (2,3) gko and gki costs of expanded network
+                        self.cmp_mapGenes += [(gene_map_exp,odd,self.cmp_gko_cost,self.cmp_gki_cost)]
+                        # compress ko_cost and ki_cost
+                        # ko_cost of lumped reactions: when reacs sequential: lowest of ko costs, when parallel: sum of ko costs
+                        # ki_cost of lumped reactions: when reacs sequential: sum of ki costs, when parallel: lowest of ki costs
+                        if self.cmp_gko_cost:
+                            gko_cost_new = {}
+                            for r in cmp_model.gene.list_attr('id'):
+                                if odd and not np.any([s in self.cmp_gki_cost for s in gene_map_exp[r]]):
+                                    if np.any([s in self.cmp_gko_cost for s in gene_map_exp[r]]):
+                                        if odd:
+                                            gko_cost_new[r] = np.min([self.cmp_gko_cost[s] for s in gene_map_exp[r] if s in self.cmp_gko_cost])
+                                        else:
+                                            gko_cost_new[r] = np.sum([self.cmp_gko_cost[s] for s in gene_map_exp[r] if s in self.cmp_gko_cost])
+                            self.cmp_gko_cost = gko_cost_new
+                        if self.cmp_gki_cost:
+                            gki_cost_new = {}
+                            for r in cmp_model.reactions.list_attr('id'):
+                                if not odd and not np.any([s in self.cmp_gko_cost for s in gene_map_exp[r]]):
+                                    if np.any([s in self.cmp_gki_cost for s in gene_map_exp[r]]):
+                                        if odd:
+                                            gki_cost_new[r] = np.sum([self.cmp_gki_cost[s] for s in gene_map_exp[r] if s in self.cmp_gki_cost])
+                                        else:
+                                            gki_cost_new[r] = np.min([self.cmp_gki_cost[s] for s in gene_map_exp[r] if s in self.cmp_gki_cost])
+                            self.cmp_gki_cost = gki_cost_new
+                        if odd:
+                            odd = False
+                        else:
+                            odd = True
+                        run += 1
+                    else:
+                        print('  Last step could not reduce size further ('+str(subT.shape[0])+' genes).')
+                        print('  GPR compression completed. ('+str(run-1)+' compression iterations)')
+                        break
+        
         # Compress model
         self.cmp_mapReac = []
         if  kwargs['compress'] is True or kwargs['compress'] is None: # If compression is activated (or not defined)
@@ -334,27 +467,29 @@ class StrainDesigner(StrainDesignMILP):
                     # store the information for decompression in a Tuple
                     # (0) compression matrix, (1) reac_id dictornary {cmp_rid: [orig_rids]}, (2) linear (True) or parallel (False) compression
                     # (3,4) ko and ki costs of expanded network
-                    self.cmp_mapReac += [(subT,reac_map_exp,odd,self.cmp_ko_cost,self.cmp_ki_cost)]
+                    self.cmp_mapReac += [(reac_map_exp,odd,self.cmp_ko_cost,self.cmp_ki_cost)]
                     # compress ko_cost and ki_cost
                     # ko_cost of lumped reactions: when reacs sequential: lowest of ko costs, when parallel: sum of ko costs
                     # ki_cost of lumped reactions: when reacs sequential: sum of ki costs, when parallel: lowest of ki costs
                     if self.cmp_ko_cost:
                         ko_cost_new = {}
                         for r in cmp_model.reactions.list_attr('id'):
-                            if np.any([s in self.cmp_ko_cost for s in reac_map_exp[r]]):
-                                if odd:
-                                    ko_cost_new[r] = np.min([self.cmp_ko_cost[s] for s in reac_map_exp[r] if s in self.cmp_ko_cost])
-                                else:
-                                    ko_cost_new[r] = np.sum([self.cmp_ko_cost[s] for s in reac_map_exp[r] if s in self.cmp_ko_cost])
+                            if odd and not np.any([s in self.cmp_ki_cost for s in reac_map_exp[r]]):
+                                if np.any([s in self.cmp_ko_cost for s in reac_map_exp[r]]):
+                                    if odd:
+                                        ko_cost_new[r] = np.min([self.cmp_ko_cost[s] for s in reac_map_exp[r] if s in self.cmp_ko_cost])
+                                    else:
+                                        ko_cost_new[r] = np.sum([self.cmp_ko_cost[s] for s in reac_map_exp[r] if s in self.cmp_ko_cost])
                         self.cmp_ko_cost = ko_cost_new
                     if self.cmp_ki_cost:
                         ki_cost_new = {}
                         for r in cmp_model.reactions.list_attr('id'):
-                            if np.any([s in self.cmp_ki_cost for s in reac_map_exp[r]]):
-                                if odd:
-                                    ki_cost_new[r] = np.sum([self.cmp_ki_cost[s] for s in reac_map_exp[r] if s in self.cmp_ki_cost])
-                                else:
-                                    ki_cost_new[r] = np.min([self.cmp_ki_cost[s] for s in reac_map_exp[r] if s in self.cmp_ki_cost])
+                            if not odd and not np.any([s in self.cmp_ko_cost for s in reac_map_exp[r]]):
+                                if np.any([s in self.cmp_ki_cost for s in reac_map_exp[r]]):
+                                    if odd:
+                                        ki_cost_new[r] = np.sum([self.cmp_ki_cost[s] for s in reac_map_exp[r] if s in self.cmp_ki_cost])
+                                    else:
+                                        ki_cost_new[r] = np.min([self.cmp_ki_cost[s] for s in reac_map_exp[r] if s in self.cmp_ki_cost])
                         self.cmp_ki_cost = ki_cost_new
                     if odd:
                         odd = False
@@ -369,7 +504,6 @@ class StrainDesigner(StrainDesignMILP):
                     break
             for m in sd_modules:
                 m.model = cmp_model
-
         # Build MILP
         kwargs1 = kwargs
         kwargs1['ko_cost'] = self.cmp_ko_cost
@@ -385,10 +519,10 @@ class StrainDesigner(StrainDesignMILP):
         # expand mcs by applying the compression steps in the reverse order
         cmp_map = self.cmp_mapReac[::-1]
         for exp in cmp_map:
-            reac_map_exp = exp[1]
-            par_reac_cmp = not exp[2] 
-            ko_cost = exp[3] 
-            ki_cost = exp[4] 
+            reac_map_exp = exp[0]
+            par_reac_cmp = not exp[1] # if parallel or sequential reactions were lumped
+            ko_cost = exp[2] 
+            ki_cost = exp[3] 
             for r_cmp,r_orig in reac_map_exp.items():
                 if len(r_orig) > 1:
                     for m in rmcs.copy():

@@ -16,7 +16,7 @@ from mcs import indicator_constraints, solver_interface
 
 # Create a CPLEX-object from a matrix-based problem setup
 class Cplex_MILP_LP(Cplex):
-    def __init__(self,c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype,indic_constr,x0,options):
+    def __init__(self,c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype,indic_constr):
         super().__init__()
         self.objective.set_sense(self.objective.sense.minimize)
         try:
@@ -62,6 +62,8 @@ class Cplex_MILP_LP(Cplex):
         self.set_results_stream(None)
         self.parameters.mip.pool.absgap.set(0.0)
         self.parameters.mip.pool.relgap.set(0.0)
+        # no integrality tolerance
+        self.parameters.mip.tolerances.integrality.set(0.0)
         # yield only optimal solutions in pool
         self.parameters.simplex.tolerances.optimality.set(1e-9)
         self.parameters.simplex.tolerances.feasibility.set(1e-9)

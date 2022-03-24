@@ -35,7 +35,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                             ub          =self.ub,
                             vtype       =self.vtype,
                             indic_constr=self.indic_constr,
-                            options     =self.options,
+                            M           =self.M,
                             solver      =self.solver)
 
     def add_exclusion_constraints(self,z):
@@ -131,7 +131,6 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                             b_eq    = [self.cont_MILP.b_eq[i] for i in active_eqs],
                             lb      = [self.cont_MILP.lb[i] for i in active_vars],
                             ub      = [self.cont_MILP.ub[i] for i in active_vars],
-                            options = self.options,
                             solver  = self.solver)
             valid[i] = not np.isnan(lp.slim_solve())
         return valid
@@ -169,7 +168,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
             output = self.sd2dict(z)
             if self.is_mcs_computation:
                 if status in [0,3] and all(self.verify_sd(z)):
-                    print('Strain design with cost '+str((z*self.cost)[0])+': '+str(output))
+                    print('Strain design with cost '+str(round((z*self.cost)[0],6))+': '+str(output))
                     self.add_exclusion_constraints(z)
                     sols = sparse.vstack((sols,z))
                 elif status in [0,3]:
@@ -191,7 +190,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                     z1, status1 = self.solveZ()
                     output = self.sd2dict(z1)
                     if status1 in [0,3] and all(self.verify_sd(z1)):
-                        print('Strain design with cost '+str((z1*self.cost)[0])+': '+str(output))
+                        print('Strain design with cost '+str(round((z1*self.cost)[0],6))+': '+str(output))
                         self.add_exclusion_constraints(z1)
                         sols = sparse.vstack((sols,z1))
                     elif status1 in [0,3]:
@@ -291,7 +290,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                 z1 = sparse.csr_matrix([x1[i] for i in self.idx_z])
                 output = self.sd2dict(z1)
                 if status1 in [0,3] and all(self.verify_sd(z1)):
-                    print('Strain design with cost '+str((z1*self.cost)[0])+': '+str(output))
+                    print('Strain design with cost '+str(round((z1*self.cost)[0],6))+': '+str(output))
                     self.add_exclusion_constraints(z1)
                     sols = sparse.vstack((sols,z1))
                 elif status1 in [0,3]:
@@ -372,7 +371,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                 for i in range(z.shape[0]):
                     output = [self.sd2dict(z[i])]
                     if all(self.verify_sd(z[i])):
-                        print('Strain designs with cost '+str((z[i]*self.cost)[0])+': '+str(output))
+                        print('Strain designs with cost '+str(round((z[i]*self.cost)[0],6))+': '+str(output))
                         self.add_exclusion_constraints(z[i])
                         sols = sparse.vstack((sols,z[i]))
                     else:

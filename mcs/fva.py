@@ -22,10 +22,10 @@ def idx2c(i,prev):
     C = [C[i] for i in C_idx]
     return C
 
-def worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver):
+def worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver):
     global lp_glob
     lp_glob = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
-                                    lb=lb, ub=ub, x0=x0,solver=solver)
+                                    lb=lb, ub=ub, solver=solver)
     if lp_glob.solver == 'cplex':
         lp_glob.backend.parameters.threads.set(1)
         #lp_glob.backend.parameters.lpmethod.set(1)
@@ -89,8 +89,8 @@ def fva(model,**kwargs):
                     lb=lb,
                     ub=ub,
                     solver=solver)
-    x0, _, status = lp.solve()
-    if status != 0:
+    _, _, status = lp.solve()
+    if status not in [0,4]: # if problem not feasible or unbounded
         raise Exception('FVA problem not feasible.')
 
     processes = cpu_count()-1
@@ -103,16 +103,16 @@ def fva(model,**kwargs):
     x = [nan]*2*numr
 
     # Dummy to check if optimization runs
-    # worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver)
+    # worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver)
     # worker_compute(1)
-    if processes > 1:
-        pool = Pool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver))
+    if processes > 1 & numr > 300:
+        pool = Pool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver))
         chunk_size = len(reaction_ids) // processes
         # x = pool.imap_unordered(worker_compute, range(2*numr), chunksize=chunk_size)
         for i, value in pool.imap_unordered( worker_compute, range(2*numr), chunksize=chunk_size):
             x[i] = value
     else:
-        worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,x0,solver)
+        worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver)
         for i in range(2*numr):
             _, x[i] = worker_compute(i)
     
