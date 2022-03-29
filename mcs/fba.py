@@ -1,17 +1,16 @@
 import cobra
-from optlang.interface import OPTIMAL
+from mcs.parse_constr import lineqlist2mat, linexprdict2mat
+from optlang.interface import OPTIMAL, INFEASIBLE, UNBOUNDED
 from scipy import sparse
-from mcs import MILP_LP
-from mcs.constr2mat import *
+from mcs import MILP_LP, parse_constraints, lineqlist2mat
 from typing import Dict
 # FBA for cobra model with CPLEX
 # the user may provide the optional arguments
 #   constraints:         Additional constraints in text form (list of lists)
 #   A_ineq, b_ineq: Additional constraints in matrix form
 #   obj:            Alternative objective in text form
-#   c:              Alternative objective in vector form
 def fba(model,**kwargs):
-    allowed_keys = {'obj', 'A_ineq','b_ineq','A_eq','b_eq','constraints','c','obj','solver'}
+    # allowed_keys = {'obj','constraints','obj','solver'}
     # # set all keys passed in kwargs
     # for key,value in kwargs.items():
     #     if key in allowed_keys:
@@ -24,28 +23,18 @@ def fba(model,**kwargs):
     #         locals()[key] = None
     # Check type and size of A_ineq and b_ineq if they exist
     reaction_ids = model.reactions.list_attr("id")
-    numr = len(model.reactions)
-    if ('A_ineq' in kwargs or 'A_ineq' in kwargs) and 'constraints' in kwargs:
-        raise Exception('Define either A_ineq, b_ineq or constraints, but not both.')
-    if 'obj' in kwargs and 'c' in kwargs:
-        raise Exception('Define either obj or c, but not both.')
-        
-    if 'constraints' in kwargs:
-        A_ineq, b_ineq, A_eq, b_eq = lineq2mat(kwargs['constraints'], reaction_ids)
-    else:
-        if 'A_ineq' in kwargs and 'b_ineq' in kwargs:
-            A_ineq = kwargs['A_ineq']
-            b_ineq = kwargs['b_ineq']
-        if 'A_eq' in kwargs and 'b_eq' in kwargs:
-            A_eq = kwargs['A_eq']
-            b_eq = kwargs['b_eq']
-        else:
-            A_eq = sparse.csr_matrix((0,numr))
-            b_eq = []
+
+    if 'constraints' in kwargs: 
+        kwargs['constraints'] = parse_constraints(kwargs['constraints'],reaction_ids)
+        A_ineq, b_ineq, A_eq, b_eq = lineqlist2mat(kwargs['constraints'], reaction_ids)        
+
     if 'obj' in kwargs:
-        c = linexpr2mat(kwargs['obj'], reaction_ids)
-    elif 'c' in kwargs:
-        c = kwargs['c']
+        if kwargs['obj'] is not None:
+            if type(kwargs['obj']) is str:
+                kwargs['obj'] = linexpr2dict(kwargs['obj'],reaction_ids)
+            if type(kwargs['obj']) is dict:
+                c = linexprdict2mat(kwargs['obj'],reaction_ids).toarray()[0].tolist()
+
     if 'solver' in kwargs:
         solver = kwargs['solver']
     else:
@@ -83,6 +72,10 @@ def fba(model,**kwargs):
     x, opt_cx, status = my_prob.solve()
     if status == 0:
         status = OPTIMAL
+    elif status == 4:
+        status = UNBOUNDED
+    else:
+        status = INFEASIBLE
     fluxes = {reaction_ids[i] : x[i] for i in range(len(x))}
     sol = cobra.core.Solution(objective_value=-opt_cx,status=status,fluxes=fluxes)
     return sol

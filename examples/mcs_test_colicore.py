@@ -9,7 +9,7 @@ from scipy import sparse
 import sys
 
 # load network
-network = cobra.io.read_sbml_model(os.path.dirname(os.path.abspath(__file__))+"/iML1515core.sbml")
+network = cobra.io.read_sbml_model(os.path.dirname(os.path.abspath(__file__))+"/e_coli_core.sbml")
 # cobra.flux_analysis.flux_variability_analysis(network)
 # network = cobra.io.read_sbml_model("iML1515core.sbml")
 # results = mcs.fva(network,solver='cplex')
@@ -24,9 +24,11 @@ network.remove_reactions(obsolete_reacs)
 # network.reactions.AcUp.upper_bound = 0
 # network.reactions.GlycUp.upper_bound = 0
 
-sol = mcs.fba(network,constraints=["EX_o2_e=0"])
 # specify modules
-modules = mcs.SD_Module(network,"mcs_bilvl",module_sense="desired",constraints=["2 BIOMASS_Ec_iML1515_core_75p37M >= 0.1","EX_etoh_e >= 1"],inner_objective="BIOMASS_Ec_iML1515_core_75p37M")
+modules = mcs.SD_Module(network,"mcs_bilvl",module_sense="desired",constraints=["2 BIOMASS_Ecoli_core_w_GAM >= 0.1","EX_etoh_e >= 1"],inner_objective="BIOMASS_Ecoli_core_w_GAM")
+
+mcs.fba(network,obj=modules.inner_objective)
+sol = mcs.fba(network,constraints=["EX_o2_e=0"])
 
 network.metabolites.list_attr("compartment")
 # specify MCS setup
@@ -73,5 +75,5 @@ mcsEnum = mcs.StrainDesigner(network,modules, max_cost=maxCost,ko_cost=ko_cost, 
 # solve MILP
 # mcsEnum.enumerate(max_solutions=maxSolutions)
 # mcsEnum.compute_optimal(max_solutions=maxSolutions)
-rmcs = mcsEnum.compute(max_solutions=maxSolutions,time_limit=15)
+rmcs = mcsEnum.compute(max_solutions=maxSolutions)
 pass

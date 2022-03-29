@@ -1,5 +1,5 @@
 from scipy import sparse
-from mcs import MILP_LP, lineq2mat, Pool
+from mcs import MILP_LP, parse_constraints, lineqlist2mat, Pool
 from typing import Tuple
 from pandas import DataFrame
 from numpy import floor, sign, mod, nan, unique
@@ -46,21 +46,11 @@ def worker_compute(i) -> Tuple[int,float]:
 def fva(model,**kwargs):
     reaction_ids = model.reactions.list_attr("id")
     numr = len(model.reactions)
-    if ('A_ineq' in kwargs or 'A_ineq' in kwargs) and 'constraints' in kwargs:
-        raise Exception('Define either A_ineq, b_ineq or constraints, but not both.')
         
-    if 'constraints' in kwargs:
-        A_ineq, b_ineq, A_eq, b_eq = lineq2mat(kwargs['constraints'], reaction_ids)
-    else:
-        if 'A_ineq' in kwargs and 'b_ineq' in kwargs:
-            A_ineq = kwargs['A_ineq']
-            b_ineq = kwargs['b_ineq']
-        if 'A_eq' in kwargs and 'b_eq' in kwargs:
-            A_eq = kwargs['A_eq']
-            b_eq = kwargs['b_eq']
-        else:
-            A_eq = sparse.csr_matrix((0,numr))
-            b_eq = []
+    if 'constraints' in kwargs: 
+        kwargs['constraints'] = parse_constraints(kwargs['constraints'],reaction_ids)
+        A_ineq, b_ineq, A_eq, b_eq = lineqlist2mat(kwargs['constraints'], reaction_ids) 
+
     if 'solver' in kwargs:
         solver = kwargs['solver']
     else:

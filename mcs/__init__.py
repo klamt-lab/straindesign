@@ -14,7 +14,7 @@ from .pool import Pool
 #     from .gurobi_interface import *
 # elif ismodule('pyscipopt'):
 #     from .scip_interface import *
-from .constr2mat import *
+from .parse_constr import *
 from .strainDesignMILPBuilder import *
 from .strainDesignMILP import *
 from .strainDesigner import *
