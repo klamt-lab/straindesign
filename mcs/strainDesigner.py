@@ -32,9 +32,12 @@ def remove_irrelevant_genes(model,essential_reacs,gkis,gkos):
         if not g.reactions or {r.id for r in g.reactions}.issubset(essential_reacs):
             protected_genes.add(g)
     # 2. Protect genes that are essential to essential reactions
-    for r in essential_reacs:
-        gpr = model.reactions.get_by_id(r).gpr
-        [protected_genes.add(model.genes.get_by_id(g)) for g in gpr.genes if not gpr.eval(g)]
+    for r in [model.reactions.get_by_id(s) for s in essential_reacs]:
+        for g in r.genes:
+            exp = r.gene_reaction_rule.replace(' or ',' | ').replace(' and ',' & ')
+            exp = to_dnf(parse_expr(exp,{g.id:False}),force=True)
+            if exp == False:
+                protected_genes.add(g)
     # 3. Remove essential genes, and knockouts without impact from gko_costs
     [gkos.pop(pg.id) for pg in protected_genes if pg.id in gkos]
     # 4. Add all notknockable genes to the protected list
@@ -61,13 +64,13 @@ def remove_irrelevant_genes(model,essential_reacs,gkis,gkos):
     return gkos
 
 def extend_model_gpr(model,gkos,gkis):
-    protein_pool_pseudomets = {r.id: 'protpool_'+r.id for r in model.reactions if r.gpr.body}
+    protein_pool_pseudomets = {r.id: 'protpool_'+r.id for r in model.reactions if r.gene_reaction_rule}
     gene_pseudomets = {g.id: 'gene_'+g.id for g in model.genes}
     # All reaction rules are provided in dnf. Make dict of dicts to look up
     # (1) how many disjuct terms there are (2) how the conjuncted terms look like inside
     gpr_associations = {}
     for r in model.reactions:
-        if r.gpr.body: # if reaction has a gpr rule
+        if r.gene_reaction_rule: # if reaction has a gpr rule
             for i,p in enumerate(r.gene_reaction_rule.split('or')):
                 conj_genes = set()
                 for g in p.replace('(','').replace(')','').split('and'):
@@ -79,17 +82,17 @@ def extend_model_gpr(model,gkos,gkis):
     del_reac = set()
     for r in model.reactions:
         reac_map.update({r.id:{}})
-        if not r.gpr.body:
+        if not r.gene_reaction_rule:
             reac_map[r.id].update({r.id: 1.0})
             continue
-        if r.gpr.body and r.bounds[0] < 0:
+        if r.gene_reaction_rule and r.bounds[0] < 0:
             r_rev = (r*-1)
-            if r.gpr.body and r.bounds[1] > 0:
+            if r.gene_reaction_rule and r.bounds[1] > 0:
                 r_rev.id = r.id+'_reverse_'+hex(hash(r))[8:]
             r_rev.lower_bound = np.max([0,r_rev.lower_bound])
             reac_map[r.id].update({r_rev.id: -1.0})
             rev_reac.add(r_rev)
-        if r.gpr.body and r.bounds[1] > 0:
+        if r.gene_reaction_rule and r.bounds[1] > 0:
             reac_map[r.id].update({r.id: 1.0})
             r._lower_bound = np.max([0,r._lower_bound])
         else:
@@ -426,13 +429,13 @@ class StrainDesigner(StrainDesignMILP):
         if gene_sd:
             if kwargs['compress'] is True or kwargs['compress'] is None:
                 num_genes = len(uncmp_model.genes)
-                num_gpr   = len([True for r in model.reactions if r.gpr.body])
+                num_gpr   = len([True for r in model.reactions if r.gene_reaction_rule])
                 print('Preprocessing GPR rules ('+str(num_genes)+' genes, '+str(num_gpr)+' gpr rules).')
                 # removing irrelevant genes will also remove essential reactions from the list of knockable genes
                 self.uncmp_gko_cost = remove_irrelevant_genes(uncmp_model, essential_reacs, self.uncmp_gki_cost, self.uncmp_gko_cost)
-                if len(uncmp_model.genes) < num_genes or len([True for r in model.reactions if r.gpr.body]) < num_gpr:
+                if len(uncmp_model.genes) < num_genes or len([True for r in model.reactions if r.gene_reaction_rule]) < num_gpr:
                     num_genes = len(uncmp_model.genes)
-                    num_gpr   = len([True for r in uncmp_model.reactions if r.gpr.body])
+                    num_gpr   = len([True for r in uncmp_model.reactions if r.gene_reaction_rule])
                     print('  Simplifyied to '+str(num_genes)+' genes and '+\
                         str(num_gpr)+' gpr rules.')
             print('  Extending metabolic network with gpr associations.')
