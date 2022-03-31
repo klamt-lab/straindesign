@@ -384,7 +384,7 @@ class StrainDesigner(StrainDesignMILP):
             sd_modules = [sd_modules]
         # 1) Preprocess Model
         print('Preparing strain design computation.')
-        print('Using '+kwargs['solver']+' for solving LPs during preprocessing.')
+        print('  Using '+kwargs['solver']+' for solving LPs during preprocessing.')
         with redirect_stdout(None), redirect_stderr(None): # suppress standard output from copying model
             uncmp_model = model.copy()
         # remove external metabolites
@@ -397,7 +397,7 @@ class StrainDesigner(StrainDesignMILP):
             if uncmp_model.reactions[i].upper_bound >=  bound_thres:
                 uncmp_model.reactions[i].upper_bound =  np.inf
         # FVAs to identify blocked, irreversible and essential reactions, as well as non-bounding bounds
-        print('FVA to identify blocked reactions and irreversibilities.')
+        print('  FVA to identify blocked reactions and irreversibilities.')
         flux_limits = fva(uncmp_model,solver=kwargs['solver'])
         if kwargs['solver'] in ['scip','glpk']:
             tol = 1e-10 # use tolerance for tightening problem bounds
@@ -414,7 +414,7 @@ class StrainDesigner(StrainDesignMILP):
                 r._upper_bound = np.inf
             if limits.maximum <= -tol:
                 r._upper_bound = np.min([0.0,r._upper_bound])
-        print('FVA(s) to identify essential reactions.')
+        print('  FVA(s) to identify essential reactions.')
         essential_reacs = set()
         for m in sd_modules:
             if m.module_sense != 'undesired': # Essential reactions can only be determined from desired
