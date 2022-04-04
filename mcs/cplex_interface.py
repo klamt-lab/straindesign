@@ -62,6 +62,7 @@ class Cplex_MILP_LP(Cplex):
         self.set_results_stream(None)
         self.parameters.mip.pool.absgap.set(0.0)
         self.parameters.mip.pool.relgap.set(0.0)
+        self.parameters.mip.pool.intensity.set(4)
         # no integrality tolerance
         self.parameters.mip.tolerances.integrality.set(0.0)
         # yield only optimal solutions in pool

@@ -27,8 +27,8 @@ solver = 'cplex'
 
 M=None
 # construct MCS MILP
-# mcsEnum = mcs.StrainDesigner(network,modules, max_cost=maxCost, solver=solver,M=M)
-mcsEnum = mcs.StrainDesignMILP(network,modules, max_cost=maxCost, solver=solver,M=M)
+mcsEnum = mcs.StrainDesigner(network,modules, max_cost=maxCost, solver=solver,M=M)
+# mcsEnum = mcs.StrainDesignMILP(network,modules, max_cost=maxCost, solver=solver,M=M)
 
 # solve MILP
 rmcs = mcsEnum.enumerate(max_solutions=maxSolutions)
