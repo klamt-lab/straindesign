@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from numpy import all
-from typing import List, Tuple, Union, Set, FrozenSet
+from typing import List, Dict, Tuple, Union, Set, FrozenSet
 import re
 from mcs.parse_constr import *
+from mcs.names import *
 from optlang.interface import OPTIMAL, INFEASIBLE, UNBOUNDED
 
 """
@@ -23,7 +24,7 @@ Strain design modules are used to describe strain design problems,
 e.g. desired or undesired flux states for MCS strain design.
 """
 
-class SD_Module:
+class SD_Module(Dict):
     """Modules to describe desired or undesired flux states for MCS strain design.
     There are three kinds of flux states that can be described
           1. The wildtype model, constrainted with additional inequalities:
@@ -57,95 +58,97 @@ class SD_Module:
         ...
     """
     def __init__(self, model, module_type, *args, **kwargs):
-        self.model = model
-        self.module_type = module_type
-        allowed_keys = {'module_sense', 'constraints','inner_objective','inner_opt_sense','outer_objective',
-                        'outer_opt_sense','prod_id','skip_checks','min_gcp'}
+        self[MODEL] = model
+        self[MODULE_TYPE] = module_type
+        allowed_keys = {MODULE_SENSE, CONSTRAINTS, INNER_OBJECTIVE, INNER_OPT_SENSE, OUTER_OBJECTIVE,
+                        OUTER_OPT_SENSE, PROD_ID, 'skip_checks', MIN_GCP}
         # set all keys passed in kwargs as properties of the SD_Module object
         for key,value in kwargs.items():
             if key in allowed_keys:
-                setattr(self,key,value)
+                self[key] = value
             else:
                 raise Exception("Key "+key+" is not supported.")
         # set all undefined keys to None
         for key in allowed_keys:
             if key not in kwargs.keys():
-                setattr(self,key,None)      
+                self[key] = None     
         
         # module sense must be desired or undesired when using mcs or else remain undefined/None.
-        if 'mcs' in self.module_type and self.module_sense not in ["desired", "undesired"]:
-            raise ValueError('"module_sense" must be "undesired" or "desired".')
-        elif 'mcs' not in self.module_type:
-            print('module_sense is ignored unless module_type is mcs_lin, mcs_bilvl or mcs_yield.')
+        if MCS in self[MODULE_TYPE] and self[MODULE_SENSE] not in [DESIRED, UNDESIRED]:
+            raise ValueError('"'+MODULE_SENSE+'" must be "'+UNDESIRED+'" or "'+DESIRED+'".')
+        elif self[MODULE_SENSE] and (MCS not in self[MODULE_TYPE]):
+            print('module_sense is ignored unless '+MODULE_TYPE+' is '+MCS_LIN+', '+MCS_BILVL+' or '+MCS_YIELD+'.')
             
         # check if there is sufficient information for each module type
-        if self.module_type not in  ["mcs_lin", "mcs_bilvl", "mcs_yield", "optknock", "robustknock","optcouple"]:
-            raise ValueError('"module_type" must be "mcs_lin", "mcs_bilvl", "mcs_yield", "optknock", "robustknock", "optcouple".')
-        if (self.module_type == "mcs_bilvl") & (self.inner_objective == None):
-            raise ValueError('When module type is "mcs_bilvl", an objective function must be provided.')
-        elif (self.module_type == "mcs_yield") & (self.constraints==None):
-            raise ValueError('When module type is "mcs_yield", a numerator and denominator must be provided.')
-        elif (self.module_type in ["optknock","robustknock"]):
-            if self.inner_opt_sense is None:
-                self.inner_opt_sense = 'maximize'
-            if self.outer_opt_sense is None:
-                self.outer_opt_sense = 'maximize'
-            elif self.inner_opt_sense not in ['minimize', 'maximize'] or self.outer_opt_sense not in ['minimize', 'maximize']:
-                raise ValueError('Inner and outer optimization sense must be "minimize" or "maximize" (default).')
-            if ((self.inner_objective == None) or (self.outer_objective == None)):
-                raise ValueError('When module type is "optknock" or "robustknock", an inner and outer objective function must be provided.')
-        elif (self.module_type == "optcouple"):
-            if self.inner_opt_sense is None:
-                self.inner_opt_sense = 'maximize'
-            if self.inner_opt_sense not in ['minimize', 'maximize']:
-                raise ValueError('Inner optimization sense must be "minimize" or "maximize" (default).')
-            if self.inner_objective == None:
-                raise ValueError('When module type is "optcouple", an inner objective function must be provided.')
-            if self.prod_id == None:
-                raise ValueError('When module type is "optcouple", the production reaction id must be provided.')
+        if self[MODULE_TYPE] not in  [MCS_LIN, MCS_BILVL, MCS_YIELD, OPTKNOCK, ROBUSTKNOCK,OPTCOUPLE]:
+            raise ValueError('"'+MODULE_TYPE+'" must be "'+MCS_LIN+'", "'+MCS_BILVL+'", "'+MCS_YIELD+'", "'+OPTKNOCK+'", "'+ROBUSTKNOCK+'", "'+OPTCOUPLE+'".')
+        if (self[MODULE_TYPE] == MCS_BILVL) & (self[INNER_OBJECTIVE] == None):
+            raise ValueError('When module type is "'+MCS_BILVL+'", an objective function must be provided.')
+        elif (self[MODULE_TYPE] == MCS_YIELD) & (self[CONSTRAINTS]==None):
+            raise ValueError('When module type is "'+MCS_YIELD+'", a numerator and denominator must be provided.')
+        elif (self[MODULE_TYPE] in [OPTKNOCK,ROBUSTKNOCK]):
+            if self[INNER_OPT_SENSE] is None:
+                self[INNER_OPT_SENSE] = MAXIMIZE
+            if self[OUTER_OPT_SENSE] is None:
+                self[OUTER_OPT_SENSE] = MAXIMIZE
+            elif self[INNER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE] or self[OUTER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE]:
+                raise ValueError('Inner and outer optimization sense must be "'+MINIMIZE+'" or "'+MAXIMIZE+'" (default).')
+            if ((self[INNER_OBJECTIVE] == None) or (self[OUTER_OBJECTIVE] == None)):
+                raise ValueError('When module type is "'+OPTKNOCK+'" or "'+ROBUSTKNOCK+'", an inner and outer objective function must be provided.')
+        elif (self[MODULE_TYPE] == OPTCOUPLE):
+            if self[INNER_OPT_SENSE] is None:
+                self[INNER_OPT_SENSE] = MAXIMIZE
+            if self[INNER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE]:
+                raise ValueError('Inner optimization sense must be "'+MINIMIZE+'" or "'+MAXIMIZE+'" (default).')
+            if self[INNER_OBJECTIVE] == None:
+                raise ValueError('When module type is "'+OPTCOUPLE+'", an inner objective function must be provided.')
+            if self[PROD_ID] == None:
+                raise ValueError('When module type is "'+OPTCOUPLE+'", the production reaction id must be provided.')
 
         reac_id = model.reactions.list_attr('id')
 
         # parse constraints and ensure they have the form:
         # [ [{'r1': -1, 'r3': 2}, '<=', 3],
         #   [{'r2': 1, 'r3': -1},  '=', 0]  ]
-        if self.constraints is not None:
-            self.constraints = parse_constraints(self.constraints,reac_id)
+        if self[CONSTRAINTS] is not None:
+            self[CONSTRAINTS] = parse_constraints(self[CONSTRAINTS],reac_id)
         else:
-            self.constraints=[]
+            self[CONSTRAINTS]=[]
             
         # parse inner objective
-        if self.inner_objective is not None:
-            if type(self.inner_objective) is str:
-                self.inner_objective = linexpr2dict(self.inner_objective,reac_id)
+        if self[INNER_OBJECTIVE] is not None:
+            if type(self[INNER_OBJECTIVE]) is str:
+                self[INNER_OBJECTIVE] = linexpr2dict(self[INNER_OBJECTIVE],reac_id)
 
         # parse outer objective
-        if self.outer_objective is not None:
-            if type(self.outer_objective) is str:
-                self.outer_objective = linexpr2dict(self.outer_objective,reac_id)
+        if self[OUTER_OBJECTIVE] is not None:
+            if type(self[OUTER_OBJECTIVE]) is str:
+                self[OUTER_OBJECTIVE] = linexpr2dict(self[OUTER_OBJECTIVE],reac_id)
 
         # parse prod_id
-        if self.prod_id is not None:
-            if type(self.prod_id) is str:
-                self.prod_id = linexpr2dict(self.prod_id,reac_id)
+        if self[PROD_ID] is not None:
+            if type(self[PROD_ID]) is str:
+                self[PROD_ID] = linexpr2dict(self[PROD_ID],reac_id)
 
-        # verify self.constraints
-        if self.skip_checks is None or not self.skip_checks:
+        # verify self[CONSTRAINTS]
+        if self['skip_checks'] is None:
             from mcs import fba
-            if fba(model,constraints=self.constraints).status == INFEASIBLE:
+            if fba(model,constraints=self[CONSTRAINTS]).status == INFEASIBLE:
                 raise Exception("There is no feasible solution of the model under the given constraints.")
             
-            if (self.inner_objective is not None) and (not all([True if r in reac_id else False for r in self.inner_objective.keys()])):
+            if (self[INNER_OBJECTIVE] is not None) and (not all([True if r in reac_id else False for r in self[INNER_OBJECTIVE].keys()])):
                 raise Exception("Inner objective invalid.")
 
-            if (self.outer_objective is not None) and (not all([True if r in reac_id else False for r in self.outer_objective.keys()])):
+            if (self[OUTER_OBJECTIVE] is not None) and (not all([True if r in reac_id else False for r in self[OUTER_OBJECTIVE].keys()])):
                 raise Exception("Outer objective invalid.")
 
-            if (self.prod_id is not None) and (not all([True if r in reac_id else False for r in self.prod_id.keys()])):
+            if (self[PROD_ID] is not None) and (not all([True if r in reac_id else False for r in self[PROD_ID].keys()])):
                 raise Exception("Production id (prod_id) invalid.")
             
-            if (self.min_gcp is not None) and type(self.min_gcp) is not None:
-                if type(self.min_gcp) is int:
-                    self.min_gcp = float(self.min_gcp)
+            if (self[MIN_GCP] is not None) and type(self[MIN_GCP]) is not None:
+                if type(self[MIN_GCP]) is float:
+                    pass
+                elif type(self[MIN_GCP]) is int:
+                    self[MIN_GCP] = float(self[MIN_GCP])
                 else:
-                    raise Exception("Minimum growth coupling potential (min_gcp).")
+                    raise Exception("Minimum growth coupling potential ("+MIN_GCP+").")

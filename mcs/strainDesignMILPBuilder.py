@@ -1,3 +1,4 @@
+from mcs.strainDesignModule import MINIMIZE
 import numpy as np
 from scipy import sparse
 from cobra.util import ProcessPool, solvers, create_stoichiometric_matrix
@@ -5,6 +6,7 @@ from cobra import Model
 from cobra.core import Configuration
 from typing import List, Tuple
 from mcs import SD_Module, Indicator_constraints, lineqlist2mat, linexprdict2mat, MILP_LP
+from mcs.strainDesignModule import *
 
 class StrainDesignMILPBuilder:
     """Class for computing Strain Designs (SD)"""
@@ -133,7 +135,7 @@ class StrainDesignMILPBuilder:
 
         # if there are only mcs modules, minimize the knockout costs, 
         # otherwise use objective function(s) from modules
-        if all(['mcs' in mod.module_type for mod in sd_modules]):
+        if all([MCS in mod[MODULE_TYPE] for mod in sd_modules]):
             for i in self.idx_z:
                 self.c[i] = self.cost[i]
             self.is_mcs_computation = True
@@ -203,18 +205,18 @@ class StrainDesignMILPBuilder:
         else:
             ub = [r.upper_bound for r in self.model.reactions]
         # 1. Translate (in)equalities into matrix form
-        V_ineq, v_ineq, V_eq, v_eq = lineqlist2mat(sd_module.constraints, self.model.reactions.list_attr('id'))
+        V_ineq, v_ineq, V_eq, v_eq = lineqlist2mat(sd_module[CONSTRAINTS], self.model.reactions.list_attr('id'))
 
         # 2. Construct LP for module
-        if sd_module.module_type == 'mcs_lin':
+        if sd_module[MODULE_TYPE] == MCS_LIN:
             # Classical MCS
             A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p \
                 = self.build_primal(V_ineq, v_ineq, V_eq, v_eq, [], lb, ub)
-        elif sd_module.module_type in ['mcs_bilvl','optknock','optcouple']:
-            c_in = linexprdict2mat(sd_module.inner_objective,self.model.reactions.list_attr('id'))
+        elif sd_module[MODULE_TYPE] in [MCS_BILVL,OPTKNOCK,OPTCOUPLE]:
+            c_in = linexprdict2mat(sd_module[INNER_OBJECTIVE],self.model.reactions.list_attr('id'))
             # by default, assume maximization of the inner objective
-            if not hasattr(sd_module,'inner_opt_sense') or sd_module.inner_opt_sense is None or \
-                sd_module.inner_opt_sense not in ['minimize', 'maximize'] or sd_module.inner_opt_sense == 'maximize':
+            if not hasattr(sd_module,INNER_OPT_SENSE) or sd_module[INNER_OPT_SENSE] is None or \
+                sd_module[INNER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE] or sd_module[INNER_OPT_SENSE] == MAXIMIZE:
                 c_in = -c_in
             c_in = c_in.toarray()[0].tolist()
             # 1. build primal w/ desired constraint (build_primal) - also store variable c
@@ -237,12 +239,12 @@ class StrainDesignMILPBuilder:
             z_map_vars_p = sparse.hstack((z_map_vars_v,z_map_vars_dual))
             z_map_constr_ineq_p = sparse.hstack((z_map_constr_ineq_v,z_map_constr_ineq_dual))
             z_map_constr_eq_p = sparse.hstack((z_map_constr_eq_v,z_map_constr_eq_dual,sparse.csc_matrix((self.num_z,1))))
-        elif sd_module.module_type == 'robustknock':
+        elif sd_module[MODULE_TYPE] == ROBUSTKNOCK:
             # RobustKnock has three layers, inner maximization and an outer min-max problem
-            c_in = linexprdict2mat(sd_module.inner_objective,self.model.reactions.list_attr('id'))
+            c_in = linexprdict2mat(sd_module[INNER_OBJECTIVE],self.model.reactions.list_attr('id'))
             # by default, assume maximization of the inner objective
-            if not hasattr(sd_module,'inner_opt_sense') or sd_module.inner_opt_sense is None or \
-                sd_module.inner_opt_sense not in ['minimize', 'maximize'] or sd_module.inner_opt_sense == 'maximize':
+            if not hasattr(sd_module,INNER_OPT_SENSE) or sd_module[INNER_OPT_SENSE] is None or \
+                sd_module[INNER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE] or sd_module[INNER_OPT_SENSE] == MAXIMIZE:
                 c_in = -c_in
             c_in = c_in.toarray()[0].tolist()
             # 1. build primal of inner problem (build_primal) - also store variable c
@@ -252,9 +254,9 @@ class StrainDesignMILPBuilder:
             A_ineq_inner, b_ineq_inner, A_eq_inner, b_eq_inner, c_inner, lb_inner, ub_inner, z_map_constr_ineq_inner, z_map_constr_eq_inner, z_map_vars_inner \
                 = self.build_primal([], [], [], [], c_in, lb, ub)
             # 3. build primal of outer problem (outer outer problem) (build_primal) - store c_inner
-            c_out = linexprdict2mat(sd_module.outer_objective,self.model.reactions.list_attr('id')) # get outer objective
-            if not hasattr(sd_module,'outer_opt_sense') or sd_module.outer_opt_sense is None or \
-                sd_module.outer_opt_sense not in ['minimize', 'maximize'] or sd_module.outer_opt_sense == 'maximize':
+            c_out = linexprdict2mat(sd_module[OUTER_OBJECTIVE],self.model.reactions.list_attr('id')) # get outer objective
+            if not hasattr(sd_module,OUTER_OPT_SENSE) or sd_module[OUTER_OPT_SENSE] is None or \
+                sd_module[OUTER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE] or sd_module[OUTER_OPT_SENSE] == MAXIMIZE:
                 c_out = -c_out
             c_out = c_out.toarray()[0].tolist()
             A_ineq_r, b_ineq_r, A_eq_r, b_eq_r, c_r, lb_r, ub_r, z_map_constr_ineq_r, z_map_constr_eq_r, z_map_vars_r \
@@ -297,7 +299,7 @@ class StrainDesignMILPBuilder:
             c_i = sparse.csr_matrix(c_out)
             c_i.resize((1,A_ineq_i.shape[1]))
             c_i = c_i.toarray()[0].tolist()
-        if sd_module.module_type == 'optcouple':
+        if sd_module[MODULE_TYPE] == OPTCOUPLE:
             c_p = c_v + [0]*len(c_inner_dual)
             # (continued from optknock)
             Prod_eq = linexprdict2mat(sd_module.prod_id,self.model.reactions.list_attr('id'))
@@ -329,7 +331,7 @@ class StrainDesignMILPBuilder:
             z_map_constr_ineq_q = sparse.hstack((z_map_constr_ineq_p,z_map_constr_ineq_b))
             z_map_constr_eq_q = sparse.hstack((z_map_constr_eq_p,z_map_constr_eq_b))
             # if minimum growth-coupling potential is specified, enforce it through inequality
-            if hasattr(sd_module,'min_gcp'):
+            if MIN_GCP in sd_module:
                 A_ineq_q = sparse.vstack((A_ineq_q,sparse.hstack((c_p,[-c for c in c_b]))),format='csr')
                 b_ineq_q = b_ineq_q + [-sd_module.min_gcp]
                 z_map_constr_ineq_q = sparse.hstack((z_map_constr_ineq_q,sparse.csc_matrix((self.num_z,1))))
@@ -341,27 +343,27 @@ class StrainDesignMILPBuilder:
             c_i = c_p + [-c for c in c_b]
 
         # 3. Prepare module as undesired, desired or other
-        if 'mcs' in sd_module.module_type and sd_module.module_sense == 'desired':
+        if MCS in sd_module[MODULE_TYPE] and sd_module[MODULE_SENSE] == DESIRED:
             A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.reassign_lb_ub_from_ineq(
                 A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
             z_map_vars_i = z_map_vars_p
             c_i = [0] * A_ineq_i.shape[1]
-        elif 'mcs' in sd_module.module_type and sd_module.module_sense == 'undesired':
+        elif MCS in sd_module[MODULE_TYPE] and sd_module[MODULE_SENSE] == UNDESIRED:
             c_p = [0] * A_ineq_p.shape[1]
             A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, c_d, lb_i, ub_i, z_map_constr_ineq_d, z_map_constr_eq_d, z_map_vars_i = self.dualize(
                 A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p,
                 z_map_vars_p)
             A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.dual_2_farkas(A_ineq_d,b_ineq_d,A_eq_d,b_eq_d, c_d,z_map_constr_ineq_d,z_map_constr_eq_d)
             c_i = [0] * A_ineq_i.shape[1]
-        elif sd_module.module_type == 'optknock': 
+        elif sd_module[MODULE_TYPE] == OPTKNOCK: 
             A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.reassign_lb_ub_from_ineq(
                 A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
             z_map_vars_i = z_map_vars_p
             # prepare outer objective
-            c_i = linexprdict2mat(sd_module.outer_objective,self.model.reactions.list_attr('id'))
+            c_i = linexprdict2mat(sd_module[OUTER_OBJECTIVE],self.model.reactions.list_attr('id'))
             c_i.resize((1,A_ineq_i.shape[1]))
-            if not hasattr(sd_module,'outer_opt_sense') or sd_module.outer_opt_sense is None or \
-                sd_module.outer_opt_sense not in ['minimize', 'maximize'] or sd_module.outer_opt_sense == 'maximize':
+            if OUTER_OPT_SENSE not in sd_module or sd_module[OUTER_OPT_SENSE] is None or \
+                sd_module[OUTER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE] or sd_module[OUTER_OPT_SENSE] == MAXIMIZE:
                 c_i = -c_i
             c_i = c_i.toarray()[0].tolist()
 

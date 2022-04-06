@@ -14,12 +14,12 @@ network = cobra.io.read_sbml_model(os.path.dirname(os.path.abspath(__file__))+"/
 # specify modules
 modules = mcs.SD_Module(network,"mcs_bilvl",module_sense="desired",constraints=["2 BIOMASS_Ecoli_core_w_GAM >= 0.1","EX_etoh_e >= 1"],inner_objective="BIOMASS_Ecoli_core_w_GAM")
 
-mcs.fba(network,obj=modules.inner_objective)
+mcs.fba(network,obj=modules['inner_objective'])
 sol = mcs.fba(network,constraints=["EX_o2_e=0"])
 
 # specify MCS setup
 maxSolutions = np.inf
-maxCost = 10
+maxCost = 4
 solver = 'cplex'
 ko_cost = { 'PFK'       : 1,
             'PFL'       : 2,
@@ -55,9 +55,9 @@ ki_cost = { 'ACALD'     : 0.5,
             'O2t'       : 0.2,    
             'PDH'       : 0.1}
 # ko_cost = {'EX_o2_e'	: 1}
-# ko_cost = None
-# ki_cost = None
-# gko_cost = None
+ko_cost = None
+ki_cost = None
+gko_cost = None
 
 M=None
 # construct MCS MILP
@@ -66,8 +66,8 @@ mcsEnum = mcs.StrainDesigner(network,modules, max_cost=maxCost,ko_cost=ko_cost, 
 # mcsEnum = mcs.StrainDesignMILP(network,modules,ko_cost=ko_cost, ki_cost=ki_cost, max_cost=maxCost,solver=solver,M=None)
 
 # solve MILP
-# rmcs,status = mcsEnum.enumerate(max_solutions=maxSolutions)
-rmcs,status = mcsEnum.compute_optimal(max_solutions=maxSolutions)
+rmcs,status = mcsEnum.enumerate(max_solutions=maxSolutions)
+# rmcs,status = mcsEnum.compute_optimal(max_solutions=maxSolutions)
 # rmcs = mcsEnum.compute(max_solutions=maxSolutions)
 [print(r) for r in rmcs]
 pass

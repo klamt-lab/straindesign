@@ -4,6 +4,8 @@ from scipy import sparse
 import re
 
 def parse_constraints(constr,reaction_ids) -> dict:
+    if not constr:
+        return []
     if type(constr) is str:
         if "\n" in constr:
             constr = re.split(r"\n",constr)
@@ -45,6 +47,8 @@ def lineq2list(equations, reaction_ids) -> List:
     numr = len(reaction_ids)
     D = []
     for equation in equations:
+        if not equation:
+            continue
         try:
             lhs, rhs = re.split('<=|=|>=', equation)
             eq_sign = re.search('<=|>=|=', equation)[0]
@@ -54,6 +58,14 @@ def lineq2list(equations, reaction_ids) -> List:
         expr = linexpr2dict(lhs,reaction_ids)
         D.append((linexpr2dict(lhs,reaction_ids),eq_sign,rhs))
     return D
+
+def lineqlist2str(D):
+    if D[0]:
+        return linexprdict2str(D[0]) + " " + D[1] + " " + str(D[2])
+    elif D[1] and D[2]:
+        return D[1] + " " + str(D[2])
+    else:
+        return ""
 
 def lineqlist2mat(D, reaction_ids) -> Tuple[sparse.csr_matrix, Tuple, sparse.csr_matrix, Tuple]:
     numr = len(reaction_ids)
@@ -176,6 +188,19 @@ def linexprdict2mat(D, reaction_ids) -> sparse.csr_matrix:
     for k,v in D.items():
         A[0, reaction_ids.index(k)] = v
     return A.tocsr()
+
+def linexprdict2str(D):
+    if D:
+        expr_parts = [str(v)+" "+k for k,v in D.items()]
+        expr = expr_parts[0]
+        for ep in expr_parts[1:]:
+            if ep[0] == '-':
+                expr += ' - '+ep[1:]
+            else:
+                expr += ' + ' + ep
+        return expr
+    else:
+        return ""
 
 def get_rids(expr,reaction_ids):
     expr_parts = [re.sub(r'^(\s|-|\+|\()*|(\s|-|\+|\|<|\=|>)*$', '', part) for part in expr.split()]

@@ -7,14 +7,12 @@ from warnings import warn
 
 class StrainDesignMILP(StrainDesignMILPBuilder):
     def __init__(self, *args, **kwargs):
-        keys = {'threads', 'mem', 'options'}
+        keys = {'options'}
         # remove keys that are irrelevant for MILP construction
         kwargs1 = kwargs.copy()
         for k in keys:
-            try:
+            if k in kwargs1:
                 del kwargs1[k]
-            except:
-                pass
         super().__init__(*args, **kwargs1)  
         # set keys passed in kwargs
         for key,value in dict(kwargs).items():
@@ -24,8 +22,6 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         for key in keys:
             if key not in dict(kwargs).keys():
                 setattr(self,key,None)
-        if self.mem == None:
-            self.mem = 2048
         self.milp = MILP_LP(c           =self.c,
                             A_ineq      =self.A_ineq,
                             b_ineq      =self.b_ineq,

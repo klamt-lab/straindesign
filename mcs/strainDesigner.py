@@ -7,6 +7,7 @@ from typing import Dict, List, Tuple
 from cobra import Model, Metabolite, Reaction
 from cobra.util.array import create_stoichiometric_matrix
 from mcs import StrainDesignMILP, StrainDesignMILPBuilder, MILP_LP, SD_Module, get_rids
+from mcs.strainDesignModule import *
 from mcs.fva import *
 from warnings import warn, catch_warnings
 import jpype
@@ -178,31 +179,29 @@ def stoichmat_coeff2float(model):
                 raise Exception('unknown data type')
             
 def modules_coeff2rational(sd_modules):
-    for i,m in enumerate(sd_modules):
-        for p in ['constraints','inner_objective','outer_objective','prod_id']:
-            if hasattr(m,p) and getattr(m,p) is not None:
-                param = getattr(m,p)
-                if p == 'constraints':
-                    for c in param:
-                        for k in c[0].keys():
-                            c[0][k] = nsimplify(c[0][k])
-                if p in ['inner_objective','outer_objective','prod_id']:
-                    for k in param.keys():
-                        param[k] = nsimplify(param[k])
+    for i,module in enumerate(sd_modules):
+        for param in [CONSTRAINTS,INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+            if param in module and module[param] is not None:
+                if param == CONSTRAINTS:
+                    for constr in module[CONSTRAINTS]:
+                        for reac in constr[0].keys():
+                            constr[0][reac] = nsimplify(constr[0][reac])
+                if param in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+                    for reac in module[param].keys():
+                        module[param][reac] = nsimplify(module[param][reac])
     return sd_modules
 
 def modules_coeff2float(sd_modules):
-    for i,m in enumerate(sd_modules):
-        for p in ['constraints','inner_objective','outer_objective','prod_id']:
-            if hasattr(m,p) and getattr(m,p) is not None:
-                param = getattr(m,p)
-                if p == 'constraints':
-                    for c in param:
-                        for k in c[0].keys():
-                            c[0][k] = float(c[0][k])
-                if p in ['inner_objective','outer_objective','prod_id']:
-                    for k in param.keys():
-                        param[k] = float(param[k])
+    for i,module in enumerate(sd_modules):
+        for param in [CONSTRAINTS,INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+            if param in module and module[param] is not None:
+                if param == CONSTRAINTS:
+                    for constr in module[CONSTRAINTS]:
+                        for reac in constr[0].keys():
+                            constr[0][reac] = float(constr[0][reac])
+                if param in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+                    for reac in module[param].keys():
+                        module[param][reac] = float(module[param][reac])
     return sd_modules
 
 # compression function (mostly copied from efmtool)
@@ -417,9 +416,9 @@ class StrainDesigner(StrainDesignMILP):
         print('  FVA(s) to identify essential reactions.')
         essential_reacs = set()
         for m in sd_modules:
-            if m.module_sense != 'undesired': # Essential reactions can only be determined from desired
+            if m[MODULE_SENSE] != UNDESIRED: # Essential reactions can only be determined from desired
                                             # or opt-/robustknock modules
-                flux_limits = fva(uncmp_model,solver=kwargs['solver'],constraints=m.constraints)
+                flux_limits = fva(uncmp_model,solver=kwargs['solver'],constraints=m[CONSTRAINTS])
                 for (reac_id, limits) in flux_limits.iterrows():
                     if np.min(abs(limits)) > tol and np.prod(np.sign(limits)) > 0: # find essential
                         essential_reacs.add(reac_id)
@@ -441,20 +440,19 @@ class StrainDesigner(StrainDesignMILP):
             print('  Extending metabolic network with gpr associations.')
             self.uncmp_gko_cost, self.uncmp_gki_cost, reac_map = extend_model_gpr(uncmp_model,self.uncmp_gko_cost, self.uncmp_gki_cost)
             for i,m in enumerate(sd_modules):
-                for p in ['constraints','inner_objective','outer_objective','prod_id']:
-                    if hasattr(m,p) and getattr(m,p) is not None:
-                        param = getattr(m,p)
-                        if p == 'constraints':
-                            for c in param:
+                for p in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+                    if p in m and m[p] is not None:
+                        if p == CONSTRAINTS:
+                            for c in m[p]:
                                 for k in list(c[0].keys()):
                                     v = c[0].pop(k)
                                     for n,w in reac_map[k].items():
                                         c[0][n] = v*w
-                        if p in ['inner_objective','outer_objective','prod_id']:
-                            for k in list(param.keys()):
-                                v = param.pop(k)
+                        if p in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+                            for k in list(m[p].keys()):
+                                v = m[p].pop(k)
                                 for n,w in reac_map[k].items():
-                                    param[n] = v*w
+                                    m[p][n] = v*w
             self.uncmp_ko_cost.update(self.uncmp_gko_cost)
             self.uncmp_ki_cost.update(self.uncmp_gki_cost)
         with redirect_stdout(None), redirect_stderr(None): # suppress standard output from copying model
@@ -469,14 +467,14 @@ class StrainDesigner(StrainDesignMILP):
             # Exclude reactions named in strain design modules from parallel compression
             no_par_compress_reacs = set()
             for m in sd_modules:
-                for p in ['constraints','inner_objective','outer_objective','prod_id']:
-                    if hasattr(m,p) and getattr(m,p) is not None:
-                        param = getattr(m,p)
-                        if p == 'constraints':
+                for p in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+                    if p in m and m[p] is not None:
+                        param = m[p]
+                        if p == CONSTRAINTS:
                             for c in param:
                                 for k in c[0].keys():
                                     no_par_compress_reacs.add(k)
-                        if p in ['inner_objective','outer_objective','prod_id']:
+                        if p in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                             for k in param.keys():
                                     no_par_compress_reacs.add(k)
             # Remove conservation relations.
@@ -516,18 +514,18 @@ class StrainDesigner(StrainDesignMILP):
                     if odd:
                         for new_reac, old_reac_val in reac_map_exp.items():
                             for i,m in enumerate(sd_modules):
-                                for p in ['constraints','inner_objective','outer_objective','prod_id']:
-                                    if hasattr(m,p) and getattr(m,p) is not None:
-                                        param = getattr(m,p)
-                                        if p == 'constraints':
-                                            for c in param:
+                                for p in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+                                    if p in m and m[p] is not None:
+                                        param = m[p]
+                                        if p == CONSTRAINTS:
+                                            for j,c in enumerate(m[p]):
                                                 if np.any([k in old_reac_val for k in c[0].keys()]):
                                                     lumped_reacs = [k for k in c[0].keys() if k in old_reac_val]
                                                     c[0][new_reac] = np.sum([c[0].pop(k)*old_reac_val[k] for k in lumped_reacs])
-                                        if p in ['inner_objective','outer_objective','prod_id']:
+                                        if p in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                                             if np.any([k in old_reac_val for k in param.keys()]):
                                                 lumped_reacs = [k for k in param.keys() if k in old_reac_val]
-                                                param[new_reac] = np.sum([param.pop(k)*old_reac_val[k] for k in lumped_reacs if k in old_reac_val])
+                                                m[p][new_reac] = np.sum([param.pop(k)*old_reac_val[k] for k in lumped_reacs if k in old_reac_val])
                     # compress ko_cost and ki_cost
                     # ko_cost of lumped reactions: when reacs sequential: lowest of ko costs, when parallel: sum of ko costs
                     # ki_cost of lumped reactions: when reacs sequential: sum of ki costs, when parallel: lowest of ki costs

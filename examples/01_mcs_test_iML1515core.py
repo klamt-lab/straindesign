@@ -4,6 +4,7 @@ from importlib import reload
 import mcs
 import os
 from scipy import sparse
+from mcs.names import *
 #import traceback
 #import warnings
 import sys
