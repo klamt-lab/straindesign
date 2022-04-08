@@ -14,3 +14,4 @@ from .strainDesignMILP import *
 from .strainDesigner import *
 from .fba import *
 from .fva import *
+from .compute_strain_designs import *

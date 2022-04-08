@@ -52,7 +52,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
             self.b_ineq += b_ineq
             self.milp.add_ineq_constraints(A_ineq,[b_ineq])
 
-    def sd2dict(self,sol) -> Dict:
+    def sd2dict(self,sol,*args) -> Dict:
         output = {}
         reacID = self.model.reactions.list_attr("id")
         for i in self.idx_z:
@@ -61,6 +61,8 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                     output[reacID[i]] =  sol[0,i]
                 else:
                     output[reacID[i]] = -sol[0,i]
+            elif args and args[0] and (sol[0,i] == 0) and self.z_inverted[i]:
+                output[reacID[i]] = 0.0
         return output
 
     def solveZ(self) -> Tuple[List,int]:
@@ -133,7 +135,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
 
     # Find iteratively smallest solutions
     def compute_optimal(self, **kwargs):
-        keys = {'max_solutions','time_limit','output_format'}
+        keys = {'max_solutions','time_limit','show_no_ki'}
         # set keys passed in kwargs
         for key,value in dict(kwargs).items():
             if key in keys:
@@ -208,19 +210,16 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                 print(' No solutions exist.')
         else:
             print('Time limit reached.')
-        # Translate solutions into dict if not stated otherwise
-        if self.output_format is None or self.output_format=='dict':
-            m=sd_dict = []
-            for sol in sols:
-                sd_dict += [self.sd2dict(sol)]
-            return sd_dict, status
-        else:
-            return sols, status
+        # Translate solutions into dict
+        m=sd_dict = []
+        for sol in sols:
+            sd_dict += [self.sd2dict(sol,self.show_no_ki)]
+        return sd_dict, status
 
     # Find iteratively intervention sets of arbitrary size or quality
     # output format: list of 'dict' (default) or 'sparse'
     def compute(self, **kwargs):
-        keys = {'max_solutions','time_limit','output_format'}
+        keys = {'max_solutions','time_limit','show_no_ki'}
         # set keys passed in kwargs
         for key,value in kwargs.items():
             if key in keys:
@@ -309,18 +308,15 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         else:
             print('Time limit reached.')
         # Translate solutions into dict if not stated otherwise
-        if self.output_format is None or self.output_format=='dict':
-            sd_dict = []
-            for sol in sols:
-                sd_dict += [self.sd2dict(sol)]
-            return sd_dict, status
-        else:
-            return sols, status
+        sd_dict = []
+        for sol in sols:
+            sd_dict += [self.sd2dict(sol,self.show_no_ki)]
+        return sd_dict, status
 
     # Enumerate iteratively optimal strain designs using the populate function
     # output format: list of 'dict' (default) or 'sparse'
     def enumerate(self, **kwargs):
-        keys = {'max_solutions','time_limit','output_format'}
+        keys = {'max_solutions','time_limit','show_no_ki'}
         # set keys passed in kwargs
         for key,value in dict(kwargs).items():
             if key in keys:
@@ -390,10 +386,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         else:
             print('Time limit reached.')
         # Translate solutions into dict if not stated otherwise
-        if self.output_format is None or self.output_format=='dict':
-            sd_dict = []
-            for sol in sols:
-                sd_dict += [self.sd2dict(sol)]
-            return sd_dict, status
-        else:
-            return sols, status
+        sd_dict = []
+        for sol in sols:
+            sd_dict += [self.sd2dict(sol,self.show_no_ki)]
+        return sd_dict, status

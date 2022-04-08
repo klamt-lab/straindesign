@@ -128,6 +128,117 @@ def extend_model_gpr(model,gkos,gkis):
             reac.add_metabolites({model.metabolites.get_by_id(protein_pool_pseudomets[r]): -1.0})
     return gkos, gkis, reac_map
 
+
+    # def extend_model_gpr(model,gkos,gkis):
+    #     gene_pseudomets = {g.id: 'gene_'+g.id for g in model.genes}
+    #     # All reaction rules are provided in dnf. Make dict of dicts to look up
+    #     # (1) how many disjuct terms there are (2) how many unique conjuncted terms are inside
+    #     # (3) to remove a maximum of reduncancies, ensure that reaction and protein pseudometabolites
+    #     # are lumped
+    #     oligomer_proteins = set()
+    #     gpr_associations = {}
+    #     for r in model.reactions:
+    #         if r.gene_reaction_rule: # if reaction has a gpr rule
+    #             for i,p in enumerate(r.gene_reaction_rule.split('or')):
+    #                 conj_genes = set()
+    #                 for g in p.replace('(','').replace(')','').split('and'):
+    #                     conj_genes.add(gene_pseudomets[g.strip()])
+    #                 conj_genes = frozenset(conj_genes)
+    #                 oligomer_proteins.add(conj_genes)
+    #                 if r.id in gpr_associations:
+    #                     gpr_associations.update({r.id:gpr_associations[r.id]+[conj_genes]})
+    #                 else:
+    #                     gpr_associations.update({r.id:[conj_genes]})
+    #     gpr_associations = {k:frozenset(v) for k,v in gpr_associations.items()}
+
+    #     # Split reactions when necessary
+    #     reac_map = {}
+    #     rev_reac = set()
+    #     del_reac = set()
+    #     for r in model.reactions:
+    #         reac_map.update({r.id:{}})
+    #         if not r.gene_reaction_rule:
+    #             reac_map[r.id].update({r.id: 1.0})
+    #             continue
+    #         if r.gene_reaction_rule and r.bounds[0] < 0:
+    #             r_rev = (r*-1)
+    #             if r.gene_reaction_rule and r.bounds[1] > 0:
+    #                 r_rev.id = r.id+'_reverse_'+hex(hash(r))[8:]
+    #             r_rev.lower_bound = np.max([0,r_rev.lower_bound])
+    #             reac_map[r.id].update({r_rev.id: -1.0})
+    #             rev_reac.add(r_rev)
+    #         if r.gene_reaction_rule and r.bounds[1] > 0:
+    #             reac_map[r.id].update({r.id: 1.0})
+    #             r._lower_bound = np.max([0,r._lower_bound])
+    #         else:
+    #             del_reac.add(r)
+    #     model.remove_reactions(del_reac)
+    #     model.add_reactions(rev_reac)
+        
+    #     for k in list(gpr_associations.keys()):
+    #         for l in reac_map[k].keys():
+    #             gpr_associations.update({l:gpr_associations[k]})
+        
+    #     # add gene reactions and use gene names instead of ids if available
+    #     [model.add_metabolites(Metabolite(m)) for m in gene_pseudomets.values()]
+    #     gene_ids = {g.id for g in model.genes}
+    #     gene_names = set(g.name for g in model.genes)
+    #     gene_names_exist = np.all([len(g.name) for g in model.genes])
+    #     use_name_not_id = gene_names_exist and (gene_names.intersection(gkos) or gene_names.intersection(gkis))
+    #     for g in model.genes:
+    #         r = Reaction(g.id)
+    #         if use_name_not_id: # if gene name is available and used in gki_cost and gko_cost
+    #             r.id = g.name
+    #         model.add_reaction(r)
+    #         r.reaction = '--> '+gene_pseudomets[g.id]
+    #         r._upper_bound = np.inf
+
+    #     # now get oligomer pseudometabolites and add them to model
+    #     ct2gn = {}
+    #     for op in oligomer_proteins:
+    #         if len(op) > 1:
+    #             prot_name = "OP_"+"_and_".join(op)
+    #             model.add_metabolites(Metabolite(prot_name))
+    #             ct2gn.update({op:{"reactants": op, "product": prot_name, "obsolete": False}})
+    #         else:
+    #             ct2gn.update({op:{"reactants": list(op)[0], "product": list(op)[0], "obsolete": True}})
+    #     reaction_pseudometabolites = set(gpr_associations.values())
+    #     rp2dt = {} # map reaction pseudometabolites to disjuncted terms
+    #     for rp in reaction_pseudometabolites:
+    #         reacs = [k for k,v in gpr_associations.items() if v==rp]
+    #         if len(reacs) > 1:
+    #             reac_met_name = "RP_"+"_and_".join(reacs)
+    #             model.add_metabolites(Metabolite(reac_met_name))
+    #             rp2dt.update({rp:{"reactants": rp, "product": reac_met_name, "obsolete": False}})
+    #         else:
+    #             rp2dt.update({rp:{"reaction":reacs, "obsolete": True}})
+    #     dt2ct = {} # map disjuncted terms to conjuncted terms
+    #     for rp in reaction_pseudometabolites:
+    #         if len(dt) > 1:
+    #             for k,v in rp2dt.items():
+    #                 dt = v["disjunct_terms"]
+    #                 if len(dt) > 1:
+    #                     dt_met_name = "DT_"+"_or_".join([y['product'] for x,y in ct2gn.items() if x in dt])
+    #                     model.add_metabolites(Metabolite(dt_met_name))
+    #                     dt2ct.update({k:{"reactant": k, "product":dt, "obsolete": False}})
+    #                 else:
+    #                     dt2ct.update({k:{"reactant": ct2gn["product"], "product":dt, "obsolete": True}})
+        
+    #     print('hi')
+    #     # for r in 
+    #     # rp2dt -> dt2ct -> ct2gn
+                
+
+    #             # r = Reaction("gp_"+prot_name)
+    #             # model.add_reaction(r)
+    #             # r.reaction = ' + '.join(conj_genes)+' --> '+prot_name
+    #             # r._upper_bound = np.inf
+    #             # for k,v in gpr_associations.items():
+    #             #     for s in v:
+    #             #         if s == op:
+    #             #             pass
+                    
+
 def remove_blocked_reactions(model) -> List:
     blocked_reactions = [reac for reac in model.reactions if reac.bounds == (0, 0)]
     model.remove_reactions(blocked_reactions)
@@ -342,7 +453,7 @@ def compress_model_parallel(model, protected_rxns=[]):
 
 class StrainDesigner(StrainDesignMILP):
     def __init__(self, model: Model, sd_modules: List[SD_Module], *args, **kwargs):
-        allowed_keys = {'solver', 'max_cost', 'M','threads', 'mem', 'compress','ko_cost','ki_cost','gko_cost','gki_cost'}
+        allowed_keys = {'solver', 'max_cost', 'M', 'compress','ko_cost','ki_cost','gko_cost','gki_cost'}
         # set all keys that are not in kwargs to None
         for key in allowed_keys:
             if key not in dict(kwargs).keys() and key not in {'gko_cost','gki_cost'}:
@@ -509,7 +620,10 @@ class StrainDesigner(StrainDesignMILP):
                     # store the information for decompression in a Tuple
                     # (0) compression matrix, (1) reac_id dictornary {cmp_rid: {orig_rid1: factor1, orig_rid2: factor2}}, 
                     # (2) linear (True) or parallel (False) compression (3,4) ko and ki costs of expanded network
-                    self.cmp_mapReac += [(reac_map_exp,odd,self.cmp_ko_cost,self.cmp_ki_cost)]
+                    self.cmp_mapReac += [{"reac_map_exp":reac_map_exp,
+                                          "odd":odd,
+                                          "ko_cost":self.cmp_ko_cost,
+                                          "ki_cost":self.cmp_ki_cost}]
                     # compress information in strain design modules
                     if odd:
                         for new_reac, old_reac_val in reac_map_exp.items():
@@ -580,10 +694,10 @@ class StrainDesigner(StrainDesignMILP):
         # expand mcs by applying the compression steps in the reverse order
         cmp_map = self.cmp_mapReac[::-1]
         for exp in cmp_map:
-            reac_map_exp = exp[0]
-            par_reac_cmp = not exp[1] # if parallel or sequential reactions were lumped
-            ko_cost = exp[2] 
-            ki_cost = exp[3] 
+            reac_map_exp = exp["reac_map_exp"] # expansion map
+            ko_cost      = exp["ko_cost"]
+            ki_cost      = exp["ki_cost"]
+            par_reac_cmp = not exp["odd"] # if parallel or sequential reactions were lumped
             for r_cmp,r_orig in reac_map_exp.items():
                 if len(r_orig) > 1:
                     for m in rmcs.copy():
@@ -606,7 +720,7 @@ class StrainDesigner(StrainDesignMILP):
                             elif val > 0: # case: KI
                                 if par_reac_cmp:
                                     for d in r_orig:
-                                        if d in ko_cost:
+                                        if d in ki_cost:
                                             new_m = m.copy()
                                             new_m[d] = val
                                             rmcs += [new_m]
@@ -616,11 +730,17 @@ class StrainDesigner(StrainDesignMILP):
                                         if d in ki_cost:
                                             new_m[d] = val
                                     rmcs += [new_m]
+                            elif val == 0: # case: KI that was not introduced
+                                new_m = m.copy() # assume that none of the expanded
+                                for d in r_orig: # reactions are inserted, neither
+                                    if d in ki_cost: # parallel, nor sequential
+                                        new_m[d] = val
+                                rmcs += [new_m]
                             rmcs.remove(m)
         # eliminate mcs that are too expensive
         if self.max_cost:
             costs = [np.sum([self.uncmp_ko_cost[k] if v<0 else self.uncmp_ki_cost[k] for k,v in m.items()]) for m in rmcs]
-            self.rmcs = [rmcs[i] for i in range(len(rmcs)) if costs[i] <= self.max_cost]
+            self.rmcs = [rmcs[i] for i in range(len(rmcs)) if costs[i] <= self.max_cost+1e-8]
         else:
             self.rmcs = rmcs
 
