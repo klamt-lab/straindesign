@@ -64,20 +64,72 @@ def remove_irrelevant_genes(model,essential_reacs,gkis,gkos):
             model.genes.remove(g)
     return gkos
 
+# def extend_model_gpr(model,gkos,gkis):
+#     protein_pool_pseudomets = {r.id: 'protpool_'+r.id for r in model.reactions if r.gene_reaction_rule}
+#     gene_pseudomets = {g.id: 'gene_'+g.id for g in model.genes}
+#     # All reaction rules are provided in dnf. Make dict of dicts to look up
+#     # (1) how many disjuct terms there are (2) how the conjuncted terms look like inside
+#     gpr_associations = {}
+#     for r in model.reactions:
+#         if r.gene_reaction_rule: # if reaction has a gpr rule
+#             for i,p in enumerate(r.gene_reaction_rule.split('or')):
+#                 conj_genes = set()
+#                 for g in p.replace('(','').replace(')','').split('and'):
+#                     conj_genes.add(gene_pseudomets[g.strip()])
+#                 gpr_associations.update({r.id+'_gpr_'+str(i) : ' + '.join(conj_genes)+' --> '+protein_pool_pseudomets[r.id]})
+#     # Find reactions that need to be split
+#     reac_map = {}
+#     rev_reac = set()
+#     del_reac = set()
+#     for r in model.reactions:
+#         reac_map.update({r.id:{}})
+#         if not r.gene_reaction_rule:
+#             reac_map[r.id].update({r.id: 1.0})
+#             continue
+#         if r.gene_reaction_rule and r.bounds[0] < 0:
+#             r_rev = (r*-1)
+#             if r.gene_reaction_rule and r.bounds[1] > 0:
+#                 r_rev.id = r.id+'_reverse_'+hex(hash(r))[8:]
+#             r_rev.lower_bound = np.max([0,r_rev.lower_bound])
+#             reac_map[r.id].update({r_rev.id: -1.0})
+#             rev_reac.add(r_rev)
+#         if r.gene_reaction_rule and r.bounds[1] > 0:
+#             reac_map[r.id].update({r.id: 1.0})
+#             r._lower_bound = np.max([0,r._lower_bound])
+#         else:
+#             del_reac.add(r)
+#     model.remove_reactions(del_reac)
+#     model.add_reactions(rev_reac)
+#     # add all pseudo metabolites
+#     [model.add_metabolites(Metabolite(m)) for m in gene_pseudomets.values()]
+#     [model.add_metabolites(Metabolite(m)) for m in protein_pool_pseudomets.values()]
+#     # add gene reactions and use gene names instead of ids if available
+#     gene_ids = {g.id for g in model.genes}
+#     gene_names = set(g.name for g in model.genes)
+#     gene_names_exist = np.all([len(g.name) for g in model.genes])
+#     use_name_not_id = gene_names_exist and (gene_names.intersection(gkos) or gene_names.intersection(gkis))
+#     for g in model.genes:
+#         r = Reaction(g.id)
+#         if use_name_not_id: # if gene name is available and used in gki_cost and gko_cost
+#             r.id = g.name
+#         model.add_reaction(r)
+#         r.reaction = '--> '+gene_pseudomets[g.id]
+#         r._upper_bound = np.inf
+#     # add gpr reactions
+#     for gpr in gpr_associations.keys():
+#         r = Reaction(gpr)
+#         model.add_reaction(r)
+#         r.reaction = gpr_associations[gpr]
+#         r._upper_bound = np.inf
+#     # add pseudometabolites to forward and reverse reactions
+#     for r in protein_pool_pseudomets.keys():
+#         for s in reac_map[r]:
+#             reac = model.reactions.get_by_id(s)
+#             reac.add_metabolites({model.metabolites.get_by_id(protein_pool_pseudomets[r]): -1.0})
+#     return gkos, gkis, reac_map
+
 def extend_model_gpr(model,gkos,gkis):
-    protein_pool_pseudomets = {r.id: 'protpool_'+r.id for r in model.reactions if r.gene_reaction_rule}
-    gene_pseudomets = {g.id: 'gene_'+g.id for g in model.genes}
-    # All reaction rules are provided in dnf. Make dict of dicts to look up
-    # (1) how many disjuct terms there are (2) how the conjuncted terms look like inside
-    gpr_associations = {}
-    for r in model.reactions:
-        if r.gene_reaction_rule: # if reaction has a gpr rule
-            for i,p in enumerate(r.gene_reaction_rule.split('or')):
-                conj_genes = set()
-                for g in p.replace('(','').replace(')','').split('and'):
-                    conj_genes.add(gene_pseudomets[g.strip()])
-                gpr_associations.update({r.id+'_gpr_'+str(i) : ' + '.join(conj_genes)+' --> '+protein_pool_pseudomets[r.id]})
-    # Find reactions that need to be split
+    # Split reactions when necessary
     reac_map = {}
     rev_reac = set()
     del_reac = set()
@@ -100,144 +152,55 @@ def extend_model_gpr(model,gkos,gkis):
             del_reac.add(r)
     model.remove_reactions(del_reac)
     model.add_reactions(rev_reac)
-    # add all pseudo metabolites
-    [model.add_metabolites(Metabolite(m)) for m in gene_pseudomets.values()]
-    [model.add_metabolites(Metabolite(m)) for m in protein_pool_pseudomets.values()]
-    # add gene reactions and use gene names instead of ids if available
-    gene_ids = {g.id for g in model.genes}
+    
     gene_names = set(g.name for g in model.genes)
     gene_names_exist = np.all([len(g.name) for g in model.genes])
     use_name_not_id = gene_names_exist and (gene_names.intersection(gkos) or gene_names.intersection(gkis))
-    for g in model.genes:
-        r = Reaction(g.id)
-        if use_name_not_id: # if gene name is available and used in gki_cost and gko_cost
-            r.id = g.name
-        model.add_reaction(r)
-        r.reaction = '--> '+gene_pseudomets[g.id]
-        r._upper_bound = np.inf
-    # add gpr reactions
-    for gpr in gpr_associations.keys():
-        r = Reaction(gpr)
-        model.add_reaction(r)
-        r.reaction = gpr_associations[gpr]
-        r._upper_bound = np.inf
-    # add pseudometabolites to forward and reverse reactions
-    for r in protein_pool_pseudomets.keys():
-        for s in reac_map[r]:
-            reac = model.reactions.get_by_id(s)
-            reac.add_metabolites({model.metabolites.get_by_id(protein_pool_pseudomets[r]): -1.0})
-    return gkos, gkis, reac_map
-
-
-    # def extend_model_gpr(model,gkos,gkis):
-    #     gene_pseudomets = {g.id: 'gene_'+g.id for g in model.genes}
-    #     # All reaction rules are provided in dnf. Make dict of dicts to look up
-    #     # (1) how many disjuct terms there are (2) how many unique conjuncted terms are inside
-    #     # (3) to remove a maximum of reduncancies, ensure that reaction and protein pseudometabolites
-    #     # are lumped
-    #     oligomer_proteins = set()
-    #     gpr_associations = {}
-    #     for r in model.reactions:
-    #         if r.gene_reaction_rule: # if reaction has a gpr rule
-    #             for i,p in enumerate(r.gene_reaction_rule.split('or')):
-    #                 conj_genes = set()
-    #                 for g in p.replace('(','').replace(')','').split('and'):
-    #                     conj_genes.add(gene_pseudomets[g.strip()])
-    #                 conj_genes = frozenset(conj_genes)
-    #                 oligomer_proteins.add(conj_genes)
-    #                 if r.id in gpr_associations:
-    #                     gpr_associations.update({r.id:gpr_associations[r.id]+[conj_genes]})
-    #                 else:
-    #                     gpr_associations.update({r.id:[conj_genes]})
-    #     gpr_associations = {k:frozenset(v) for k,v in gpr_associations.items()}
-
-    #     # Split reactions when necessary
-    #     reac_map = {}
-    #     rev_reac = set()
-    #     del_reac = set()
-    #     for r in model.reactions:
-    #         reac_map.update({r.id:{}})
-    #         if not r.gene_reaction_rule:
-    #             reac_map[r.id].update({r.id: 1.0})
-    #             continue
-    #         if r.gene_reaction_rule and r.bounds[0] < 0:
-    #             r_rev = (r*-1)
-    #             if r.gene_reaction_rule and r.bounds[1] > 0:
-    #                 r_rev.id = r.id+'_reverse_'+hex(hash(r))[8:]
-    #             r_rev.lower_bound = np.max([0,r_rev.lower_bound])
-    #             reac_map[r.id].update({r_rev.id: -1.0})
-    #             rev_reac.add(r_rev)
-    #         if r.gene_reaction_rule and r.bounds[1] > 0:
-    #             reac_map[r.id].update({r.id: 1.0})
-    #             r._lower_bound = np.max([0,r._lower_bound])
-    #         else:
-    #             del_reac.add(r)
-    #     model.remove_reactions(del_reac)
-    #     model.add_reactions(rev_reac)
-        
-    #     for k in list(gpr_associations.keys()):
-    #         for l in reac_map[k].keys():
-    #             gpr_associations.update({l:gpr_associations[k]})
-        
-    #     # add gene reactions and use gene names instead of ids if available
-    #     [model.add_metabolites(Metabolite(m)) for m in gene_pseudomets.values()]
-    #     gene_ids = {g.id for g in model.genes}
-    #     gene_names = set(g.name for g in model.genes)
-    #     gene_names_exist = np.all([len(g.name) for g in model.genes])
-    #     use_name_not_id = gene_names_exist and (gene_names.intersection(gkos) or gene_names.intersection(gkis))
-    #     for g in model.genes:
-    #         r = Reaction(g.id)
-    #         if use_name_not_id: # if gene name is available and used in gki_cost and gko_cost
-    #             r.id = g.name
-    #         model.add_reaction(r)
-    #         r.reaction = '--> '+gene_pseudomets[g.id]
-    #         r._upper_bound = np.inf
-
-    #     # now get oligomer pseudometabolites and add them to model
-    #     ct2gn = {}
-    #     for op in oligomer_proteins:
-    #         if len(op) > 1:
-    #             prot_name = "OP_"+"_and_".join(op)
-    #             model.add_metabolites(Metabolite(prot_name))
-    #             ct2gn.update({op:{"reactants": op, "product": prot_name, "obsolete": False}})
-    #         else:
-    #             ct2gn.update({op:{"reactants": list(op)[0], "product": list(op)[0], "obsolete": True}})
-    #     reaction_pseudometabolites = set(gpr_associations.values())
-    #     rp2dt = {} # map reaction pseudometabolites to disjuncted terms
-    #     for rp in reaction_pseudometabolites:
-    #         reacs = [k for k,v in gpr_associations.items() if v==rp]
-    #         if len(reacs) > 1:
-    #             reac_met_name = "RP_"+"_and_".join(reacs)
-    #             model.add_metabolites(Metabolite(reac_met_name))
-    #             rp2dt.update({rp:{"reactants": rp, "product": reac_met_name, "obsolete": False}})
-    #         else:
-    #             rp2dt.update({rp:{"reaction":reacs, "obsolete": True}})
-    #     dt2ct = {} # map disjuncted terms to conjuncted terms
-    #     for rp in reaction_pseudometabolites:
-    #         if len(dt) > 1:
-    #             for k,v in rp2dt.items():
-    #                 dt = v["disjunct_terms"]
-    #                 if len(dt) > 1:
-    #                     dt_met_name = "DT_"+"_or_".join([y['product'] for x,y in ct2gn.items() if x in dt])
-    #                     model.add_metabolites(Metabolite(dt_met_name))
-    #                     dt2ct.update({k:{"reactant": k, "product":dt, "obsolete": False}})
-    #                 else:
-    #                     dt2ct.update({k:{"reactant": ct2gn["product"], "product":dt, "obsolete": True}})
-        
-    #     print('hi')
-    #     # for r in 
-    #     # rp2dt -> dt2ct -> ct2gn
-                
-
-    #             # r = Reaction("gp_"+prot_name)
-    #             # model.add_reaction(r)
-    #             # r.reaction = ' + '.join(conj_genes)+' --> '+prot_name
-    #             # r._upper_bound = np.inf
-    #             # for k,v in gpr_associations.items():
-    #             #     for s in v:
-    #             #         if s == op:
-    #             #             pass
-                    
+   
+    # All reaction rules are provided in dnf.
+    for r in model.reactions:
+        if r.gene_reaction_rule: # if reaction has a gpr rule
+            dt = [s.strip() for s in r.gene_reaction_rule.split('or')]
+            for i,p in enumerate(dt.copy()):
+                ct = [s.strip() for s in p.replace('(','').replace(')','').split('and')]
+                for j,g in enumerate(ct.copy()):
+                    gene_met_id = 'g_'+g
+                    # if gene is not in model, add gene pseudoreaction and metabolite
+                    if gene_met_id not in model.metabolites.list_attr('id'):
+                        model.add_metabolites(Metabolite(gene_met_id))
+                        gene = model.genes.get_by_id(g)
+                        w = Reaction(gene.id)
+                        if use_name_not_id: # if gene name is available and used in gki_cost and gko_cost
+                            w.id = gene.name
+                        model.add_reaction(w)
+                        w.reaction = '--> '+gene_met_id
+                        w._upper_bound = np.inf
+                    ct[j] = gene_met_id
+                if len(ct) > 1:
+                    ct_met_id = "_and_".join(ct)
+                    if ct_met_id not in model.metabolites.list_attr('id'):
+                        # if conjunct term is not in model, add pseudoreaction and metabolite
+                        model.add_metabolites(Metabolite(ct_met_id))
+                        w = Reaction("R_"+ct_met_id)
+                        model.add_reaction(w)
+                        w.reaction = ' + '.join(ct)+'--> '+ct_met_id
+                        w._upper_bound = np.inf
+                    dt[i] = ct_met_id
+                else:
+                    dt[i] = gene_met_id
+            if len(dt) > 1:
+                dt_met_id = "_or_".join(dt)
+                if dt_met_id not in model.metabolites.list_attr('id'):
+                    model.add_metabolites(Metabolite(dt_met_id))
+                    for k,d in enumerate(dt):
+                        w = Reaction("R"+str(k)+"_"+dt_met_id)
+                        model.add_reaction(w)
+                        w.reaction = d+' --> '+dt_met_id
+                        w._upper_bound = np.inf
+            else:
+                dt_met_id = dt[0]
+            r.add_metabolites({model.metabolites.get_by_id(dt_met_id): -1.0})
+    return reac_map
 
 def remove_blocked_reactions(model) -> List:
     blocked_reactions = [reac for reac in model.reactions if reac.bounds == (0, 0)]
@@ -549,7 +512,7 @@ class StrainDesigner(StrainDesignMILP):
                     print('  Simplifyied to '+str(num_genes)+' genes and '+\
                         str(num_gpr)+' gpr rules.')
             print('  Extending metabolic network with gpr associations.')
-            self.uncmp_gko_cost, self.uncmp_gki_cost, reac_map = extend_model_gpr(uncmp_model,self.uncmp_gko_cost, self.uncmp_gki_cost)
+            reac_map = extend_model_gpr(uncmp_model,self.uncmp_gko_cost, self.uncmp_gki_cost)
             for i,m in enumerate(sd_modules):
                 for p in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                     if p in m and m[p] is not None:
@@ -673,6 +636,18 @@ class StrainDesigner(StrainDesignMILP):
                     stoichmat_coeff2float(cmp_model)
                     sd_modules = modules_coeff2float(sd_modules)
                     break
+            # # Another FVA to identify essentials before building and launching MILP (not sure if this has an effect)
+            # print('  FVA(s) in compressed model to identify essential reactions.')
+            # essential_reacs = set()
+            # for m in sd_modules:
+            #     if m[MODULE_SENSE] != UNDESIRED: # Essential reactions can only be determined from desired
+            #                                     # or opt-/robustknock modules
+            #         flux_limits = fva(cmp_model,solver=kwargs['solver'],constraints=m[CONSTRAINTS])
+            #         for (reac_id, limits) in flux_limits.iterrows():
+            #             if np.min(abs(limits)) > tol and np.prod(np.sign(limits)) > 0: # find essential
+            #                 essential_reacs.add(reac_id)
+            # # remove ko-costs (and thus knockability) of essential reactions
+            # [self.cmp_ko_cost.pop(er) for er in essential_reacs if er in self.cmp_ko_cost]
             for m in sd_modules:
                 m.model = cmp_model
         # Build MILP
