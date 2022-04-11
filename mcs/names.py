@@ -1,4 +1,4 @@
-MODEL = 'model'
+MODEL_ID = 'model_id'
 MCS = 'mcs'
 MCS_LIN = 'mcs_lin'
 MCS_BILVL = 'mcs_bilvl'

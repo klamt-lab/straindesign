@@ -11,7 +11,7 @@ from typing import Dict
 #   A_ineq, b_ineq: Additional constraints in matrix form
 #   obj:            Alternative objective in text form
 def fba(model,**kwargs):
-    # allowed_keys = {'obj','constraints','obj','solver'}
+    # allowed_keys = {'obj','constraints','solver'}
     # # set all keys passed in kwargs
     # for key,value in kwargs.items():
     #     if key in allowed_keys:

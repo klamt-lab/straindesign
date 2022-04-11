@@ -1,4 +1,5 @@
 from mcs import StrainDesigner, SD_Module
+from mcs.names import *
 from cobra import Model, Metabolite, Reaction
 from typing import Dict, List, Tuple
 
@@ -13,10 +14,12 @@ def compute_strain_designs(model: Model, sd_modules: List[SD_Module], *args, **k
     # reac: for gene-based computations, all interventions translated into reaction interventions
     # reac_kos: same as 'reac', but non-introduced additions are flagged with 0 ({reac_id: 0})
     # auto_kos: same as 'auto' but non-introduced additions are flagged with 0 ({reac_id: 0})
-    if 'output_format' in kwargs:
+    if 'output_format' in kwargs and kwargs['output_format'] != 'auto':
         output_format = kwargs.pop('output_format')
+        kwargs_computation.update({'show_no_ki' : True})
     else:
         output_format = 'auto'
+        kwargs_computation.update({'show_no_ki' : False})
         
     # solution approach
     if 'solution_approach' in kwargs:
@@ -29,9 +32,7 @@ def compute_strain_designs(model: Model, sd_modules: List[SD_Module], *args, **k
         kwargs_computation.update(kwargs.pop('max_solutions'))
     if 'time_limit' in kwargs:
         kwargs_computation.update(output_format = kwargs.pop('time_limit'))
-    if output_format != 'auto':
-        kwargs_computation.update({'show_no_ki' : True})
-
+        
     # construct Strain Desing MILP
     mcsEnum = StrainDesigner( model, sd_modules, **kwargs)
 

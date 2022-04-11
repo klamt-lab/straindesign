@@ -648,8 +648,6 @@ class StrainDesigner(StrainDesignMILP):
             #                 essential_reacs.add(reac_id)
             # # remove ko-costs (and thus knockability) of essential reactions
             # [self.cmp_ko_cost.pop(er) for er in essential_reacs if er in self.cmp_ko_cost]
-            for m in sd_modules:
-                m.model = cmp_model
         # Build MILP
         kwargs1 = kwargs
         kwargs1['ko_cost'] = self.cmp_ko_cost

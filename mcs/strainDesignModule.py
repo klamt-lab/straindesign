@@ -58,7 +58,7 @@ class SD_Module(Dict):
         ...
     """
     def __init__(self, model, module_type, *args, **kwargs):
-        self[MODEL] = model
+        self[MODEL_ID] = model.id
         self[MODULE_TYPE] = module_type
         allowed_keys = {MODULE_SENSE, CONSTRAINTS, INNER_OBJECTIVE, INNER_OPT_SENSE, OUTER_OBJECTIVE,
                         OUTER_OPT_SENSE, PROD_ID, 'skip_checks', MIN_GCP}
@@ -71,39 +71,43 @@ class SD_Module(Dict):
         # set all undefined keys to None
         for key in allowed_keys:
             if key not in kwargs.keys():
-                self[key] = None     
+                self[key] = None
+        
+        if not model.reactions:
+            raise Exception('Strain design module cannot be constructed for models without reactions. ' \
+                             'Make sure to provide a valid module.')
         
         # module sense must be desired or undesired when using mcs or else remain undefined/None.
         if MCS in self[MODULE_TYPE] and self[MODULE_SENSE] not in [DESIRED, UNDESIRED]:
-            raise ValueError('"'+MODULE_SENSE+'" must be "'+UNDESIRED+'" or "'+DESIRED+'".')
+            raise Exception('"'+MODULE_SENSE+'" must be "'+UNDESIRED+'" or "'+DESIRED+'".')
         elif self[MODULE_SENSE] and (MCS not in self[MODULE_TYPE]):
             print('module_sense is ignored unless '+MODULE_TYPE+' is '+MCS_LIN+', '+MCS_BILVL+' or '+MCS_YIELD+'.')
             
         # check if there is sufficient information for each module type
         if self[MODULE_TYPE] not in  [MCS_LIN, MCS_BILVL, MCS_YIELD, OPTKNOCK, ROBUSTKNOCK,OPTCOUPLE]:
-            raise ValueError('"'+MODULE_TYPE+'" must be "'+MCS_LIN+'", "'+MCS_BILVL+'", "'+MCS_YIELD+'", "'+OPTKNOCK+'", "'+ROBUSTKNOCK+'", "'+OPTCOUPLE+'".')
+            raise Exception('"'+MODULE_TYPE+'" must be "'+MCS_LIN+'", "'+MCS_BILVL+'", "'+MCS_YIELD+'", "'+OPTKNOCK+'", "'+ROBUSTKNOCK+'", "'+OPTCOUPLE+'".')
         if (self[MODULE_TYPE] == MCS_BILVL) & (self[INNER_OBJECTIVE] == None):
-            raise ValueError('When module type is "'+MCS_BILVL+'", an objective function must be provided.')
+            raise Exception('When module type is "'+MCS_BILVL+'", an objective function must be provided.')
         elif (self[MODULE_TYPE] == MCS_YIELD) & (self[CONSTRAINTS]==None):
-            raise ValueError('When module type is "'+MCS_YIELD+'", a numerator and denominator must be provided.')
+            raise Exception('When module type is "'+MCS_YIELD+'", a numerator and denominator must be provided.')
         elif (self[MODULE_TYPE] in [OPTKNOCK,ROBUSTKNOCK]):
             if self[INNER_OPT_SENSE] is None:
                 self[INNER_OPT_SENSE] = MAXIMIZE
             if self[OUTER_OPT_SENSE] is None:
                 self[OUTER_OPT_SENSE] = MAXIMIZE
             elif self[INNER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE] or self[OUTER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE]:
-                raise ValueError('Inner and outer optimization sense must be "'+MINIMIZE+'" or "'+MAXIMIZE+'" (default).')
+                raise Exception('Inner and outer optimization sense must be "'+MINIMIZE+'" or "'+MAXIMIZE+'" (default).')
             if ((self[INNER_OBJECTIVE] == None) or (self[OUTER_OBJECTIVE] == None)):
-                raise ValueError('When module type is "'+OPTKNOCK+'" or "'+ROBUSTKNOCK+'", an inner and outer objective function must be provided.')
+                raise Exception('When module type is "'+OPTKNOCK+'" or "'+ROBUSTKNOCK+'", an inner and outer objective function must be provided.')
         elif (self[MODULE_TYPE] == OPTCOUPLE):
             if self[INNER_OPT_SENSE] is None:
                 self[INNER_OPT_SENSE] = MAXIMIZE
             if self[INNER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE]:
-                raise ValueError('Inner optimization sense must be "'+MINIMIZE+'" or "'+MAXIMIZE+'" (default).')
+                raise Exception('Inner optimization sense must be "'+MINIMIZE+'" or "'+MAXIMIZE+'" (default).')
             if self[INNER_OBJECTIVE] == None:
-                raise ValueError('When module type is "'+OPTCOUPLE+'", an inner objective function must be provided.')
+                raise Exception('When module type is "'+OPTCOUPLE+'", an inner objective function must be provided.')
             if self[PROD_ID] == None:
-                raise ValueError('When module type is "'+OPTCOUPLE+'", the production reaction id must be provided.')
+                raise Exception('When module type is "'+OPTCOUPLE+'", the production reaction id must be provided.')
 
         reac_id = model.reactions.list_attr('id')
 
@@ -135,6 +139,12 @@ class SD_Module(Dict):
             from mcs import fba
             if fba(model,constraints=self[CONSTRAINTS]).status == INFEASIBLE:
                 raise Exception("There is no feasible solution of the model under the given constraints.")
+            
+            if MCS in self[MODULE_TYPE] and self[MODULE_SENSE] == UNDESIRED:
+                constr = [[{k:1},'=',0] for k in model.reactions.list_attr('id')]
+                if fba(model,constraints=self[CONSTRAINTS]+constr).status != INFEASIBLE:
+                    raise Exception('When '+MODULE_TYPE+' is "'+MCS_LIN+'" or "'+MCS_BILVL+\
+                        '", and '+MODULE_SENSE+' is "'+UNDESIRED+'", the zero vector must not be a contained in the described flux space.')
             
             if (self[INNER_OBJECTIVE] is not None) and (not all([True if r in reac_id else False for r in self[INNER_OBJECTIVE].keys()])):
                 raise Exception("Inner objective invalid.")
