@@ -7,12 +7,13 @@ from cobra.core import Configuration
 from typing import List, Tuple
 from mcs import SD_Module, Indicator_constraints, lineqlist2mat, linexprdict2mat, MILP_LP
 from mcs.strainDesignModule import *
+from mcs.names import *
 
 class StrainDesignMILPBuilder:
     """Class for computing Strain Designs (SD)"""
 
     def __init__(self, model: Model, sd_modules: List[SD_Module], *args, **kwargs):
-        allowed_keys = {'ko_cost', 'ki_cost', 'solver', 'max_cost', 'M'}
+        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M'}
         # set all keys passed in kwargs
         for key, value in dict(kwargs).items():
             if key in allowed_keys:
@@ -30,16 +31,16 @@ class StrainDesignMILPBuilder:
         avail_solvers = list(solvers.keys())
         try:
             import pyscipopt
-            avail_solvers += ['scip']
+            avail_solvers += [SCIP]
         except:
             pass
         if self.solver is None:
-            if 'cplex' in avail_solvers:
-                self.solver = 'cplex'
-            elif 'gurobi' in avail_solvers:
-                self.solver = 'gurobi'
-            elif 'scip' in avail_solvers:
-                self.solver = 'scip'
+            if CPLEX in avail_solvers:
+                self.solver = CPLEX
+            elif GUROBI in avail_solvers:
+                self.solver = GUROBI
+            elif SCIP in avail_solvers:
+                self.solver = SCIP
             else:
                 self.solver = 'glpk'
         elif self.solver not in avail_solvers:
@@ -101,7 +102,7 @@ class StrainDesignMILPBuilder:
             if model.reactions[i].upper_bound >=  bound_thres:
                 model.reactions[i].upper_bound =  np.inf
                 
-        print('Constructing strain design MILP for solver: '+kwargs['solver']+'.')
+        print('Constructing strain design MILP for solver: '+kwargs[SOLVER]+'.')
         for i in range(len(sd_modules)):
             self.addModule(sd_modules[i])
 
@@ -820,14 +821,14 @@ def worker_init(A,A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver):
     lp_glob = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
                                     lb=lb, ub=ub, solver=solver)
     avail_solvers = list(solvers.keys())
-    if lp_glob == 'cplex':
+    if lp_glob == CPLEX:
         lp_glob.backend.parameters.lpmethod.set(1)
         if Configuration().processes > 1:
             lp_glob.backend.parameters.threads.set(2)
-    # elif lp_glob.solver == 'scip':
+    # elif lp_glob.solver == SCIP:
     #     lp_glob.backend.enableReoptimization()
-    # elif lp_glob == 'gurobi':
-    # elif lp_glob == 'scip':
+    # elif lp_glob == GUROBI:
+    # elif lp_glob == SCIP:
     # else:
     lp_glob.solver = solver
     lp_glob.A = A

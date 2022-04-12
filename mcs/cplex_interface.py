@@ -3,6 +3,7 @@ from numpy import nan, inf, isinf
 from cplex import Cplex, infinity
 from cplex.exceptions import CplexError
 from typing import Tuple, List
+import io
 from mcs import indicator_constraints, solver_interface
 
 # Collection of CPLEX-related functions that facilitate the creation
@@ -56,10 +57,17 @@ class Cplex_MILP_LP(Cplex):
             self.indicator_constraints.add_batch(lin_expr=A, sense=sense,rhs=b,
                                                 indvar=indvar,complemented=complem)
         # set parameters
-        self.set_log_stream(None)
-        self.set_error_stream(None)
-        self.set_warning_stream(None)
-        self.set_results_stream(None)
+        try:
+            self.set_log_stream(io.StringIO())
+            self.set_error_stream(io.StringIO())
+            self.set_warning_stream(io.StringIO())
+            self.set_results_stream(io.StringIO())
+        except Exception as e:
+            pass
+            # uncomment for debugging
+            # import traceback
+            # tb_str = ''.join(traceback.format_exception(None, e, e.__traceback__))
+            # print(tb_str)
         self.parameters.mip.pool.absgap.set(0.0)
         self.parameters.mip.pool.relgap.set(0.0)
         self.parameters.mip.pool.intensity.set(4)
