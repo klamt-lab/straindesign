@@ -1,5 +1,6 @@
 from scipy import sparse
 from mcs import MILP_LP, parse_constraints, lineqlist2mat, Pool
+from mcs.names import *
 from typing import Tuple
 from pandas import DataFrame
 from numpy import floor, sign, mod, nan, unique
@@ -47,12 +48,12 @@ def fva(model,**kwargs):
     reaction_ids = model.reactions.list_attr("id")
     numr = len(model.reactions)
         
-    if 'constraints' in kwargs: 
-        kwargs['constraints'] = parse_constraints(kwargs['constraints'],reaction_ids)
-        A_ineq, b_ineq, A_eq, b_eq = lineqlist2mat(kwargs['constraints'], reaction_ids) 
+    if CONSTRAINTS in kwargs: 
+        kwargs[CONSTRAINTS] = parse_constraints(kwargs[CONSTRAINTS],reaction_ids)
+        A_ineq, b_ineq, A_eq, b_eq = lineqlist2mat(kwargs[CONSTRAINTS], reaction_ids) 
 
-    if 'solver' in kwargs:
-        solver = kwargs['solver']
+    if SOLVER in kwargs:
+        solver = kwargs[SOLVER]
     else:
         solver = None
     
@@ -80,7 +81,7 @@ def fva(model,**kwargs):
                     ub=ub,
                     solver=solver)
     _, _, status = lp.solve()
-    if status not in [0,4]: # if problem not feasible or unbounded
+    if status not in [OPTIMAL,UNBOUNDED]: # if problem not feasible or unbounded
         raise Exception('FVA problem not feasible.')
 
     processes = cpu_count()-1

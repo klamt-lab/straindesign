@@ -76,7 +76,6 @@ gko_cost = {'pfkA'      : 0.7,
             'sucD'      : 0.77,
             'talA'      : 1.5}
 gki_cost = {'adhE'      : 0.5,
-            'mhpF'      : 0.5,
             'kgtP'      : 0.4,
             'gpmA'      : 0.6,
             'gpmM'      : 0.7,

@@ -1,3 +1,5 @@
+from optlang.interface import OPTIMAL, INFEASIBLE, TIME_LIMIT, UNBOUNDED
+
 MODEL_ID = 'model_id'
 MCS = 'mcs'
 MCS_LIN = 'mcs_lin'
@@ -7,11 +9,15 @@ OPTKNOCK = 'optknock'
 ROBUSTKNOCK = 'robustknock'
 OPTCOUPLE = 'optcouple'
 
+TIME_LIMIT_W_SOL   = TIME_LIMIT+'_w_sols'
+ERROR = 'error'
+
 KOCOST = 'ko_cost'
 KICOST = 'ki_cost'
 GKOCOST = 'gko_cost'
 GKICOST = 'gki_cost'
 
+MODULES = 'sd_modules'
 MODULE_TYPE = 'module_type'
 MODULE_SENSE = 'module_sense'
 CONSTRAINTS = 'constraints'
@@ -31,6 +37,7 @@ GUROBI = 'gurobi'
 SCIP = 'scip'
 GLPK = 'glpk'
 
+SETUP = 'sd_setup'
 MAX_SOLUTIONS = 'max_solutions'
 MAX_COST = 'max_cost'
 TIME_LIMIT = 'time_limit'

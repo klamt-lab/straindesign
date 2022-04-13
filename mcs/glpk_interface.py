@@ -2,6 +2,7 @@ from scipy import sparse
 from numpy import nan, isnan, inf, isinf, sum, array
 import cobra
 from mcs import indicator_constraints
+from mcs.names import *
 from typing import Tuple, List
 from swiglpk import *
 from sympy import unbranched_argument
@@ -135,23 +136,23 @@ class GLPK_MILP_LP():
         try:
             min_cx, status, bool_tlim = self.solve_MILP_LP()
             if status in [GLP_OPT,GLP_FEAS]: # solution
-                status = 0
+                status = OPTIMAL
             elif bool_tlim and status == GLP_UNDEF: # timeout without solution
                 x = [nan]*glp_get_num_cols(self.glpk)
                 min_cx = nan
-                status = 1
+                status = TIME_LIMIT
                 return x, min_cx, status
             elif status in [GLP_INFEAS,GLP_NOFEAS]: # infeasible
                 x = [nan]*glp_get_num_cols(self.glpk)
                 min_cx = nan
-                status = 2
+                status = INFEASIBLE
                 return x, min_cx, status
             elif bool_tlim and status == GLP_FEAS: # timeout with solution
                 min_cx = self.ObjVal
-                status = 3
+                status = TIME_LIMIT_W_SOL
             elif status in [GLP_UNBND,GLP_UNDEF]: # solution unbounded
                 min_cx = -inf
-                status = 4
+                status = UNBOUNDED
             else:
                 raise Exception('Status code '+str(status)+" not yet handeld.")
             x = self.getSolution()
@@ -192,7 +193,7 @@ class GLPK_MILP_LP():
                 # 1. find optimal solution
                 self.set_time_limit(glp_difftime(stoptime,glp_time()))
                 x, min_cx, status = self.solve()
-                if status not in [0,4]:
+                if status not in [OPTIMAL,UNBOUNDED]:
                     return sols, min_cx, status
                 sols = [x]
                 # 2. constrain problem to optimality
@@ -201,17 +202,17 @@ class GLPK_MILP_LP():
                 # 3. exclude first solution pool
                 self.addExclusionConstraintsIneq(x)
                 # 4. loop solve and exclude until problem becomes infeasible
-                while status in [0,4] and not isnan(x[0]) \
+                while status in [OPTIMAL,UNBOUNDED] and not isnan(x[0]) \
                   and glp_difftime(stoptime,glp_time()) > 0 and pool_limit > len(sols):
                     self.set_time_limit(glp_difftime(stoptime,glp_time()))
                     x, _, status = self.solve()
-                    if status in [0,4]:
+                    if status in [OPTIMAL,UNBOUNDED]:
                         self.addExclusionConstraintsIneq(x)
                         sols += [x]
                 if glp_difftime(stoptime,glp_time()) < 0:
-                    status = 3
-                elif status == 2:
-                    status = 0
+                    status = TIME_LIMIT_W_SOL
+                elif status == INFEASIBLE:
+                    status = OPTIMAL
                 # 5. remove auxiliary constraints
                 # Here, we only free the upper bound of the constraints
                 totrows = glp_get_num_rows(self.glpk)
@@ -227,7 +228,7 @@ class GLPK_MILP_LP():
             print('Error while running GLPK.')
             x = []
             min_cx = nan
-            return x, min_cx, -1
+            return x, min_cx, ERROR
 
     def set_objective(self,c):
         for i,c_i in enumerate(c):

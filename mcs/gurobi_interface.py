@@ -2,8 +2,7 @@ from scipy import sparse
 from numpy import nan, inf, isinf, sum, array
 import gurobipy as gp
 from gurobipy import GRB as grb
-import cobra
-from mcs import indicator_constraints
+from mcs.names import *
 from typing import Tuple, List
 
 # Collection of Gurobi-related functions that facilitate the creation
@@ -62,20 +61,20 @@ class Gurobi_MILP_LP(gp.Model):
             status = self.Status
             if status in [2,10,13,15]: # solution
                 min_cx = self.ObjVal
-                status = 0
+                status = OPTIMAL
             elif status == 9 and not hasattr(self._Model__vars[0],'X'): # timeout without solution
                 x = [nan]*self.NumVars
                 min_cx = nan
-                status = 1
+                status = TIME_LIMIT
                 return x, min_cx, status
             elif status in [3,4] and not hasattr(self._Model__vars[0],'X'): # infeasible
                 x = [nan]*self.NumVars
                 min_cx = nan
-                status = 2
+                status = INFEASIBLE
                 return x, min_cx, status
             elif status == 9 and hasattr(self._Model__vars[0],'X'): # timeout with solution
                 min_cx = self.ObjVal
-                status = 3
+                status = TIME_LIMIT_W_SOL
             elif status in [4,5] and hasattr(self._Model__vars[0],'X'): # solution unbounded
                 min_cx = -inf
                 status = 4
@@ -88,7 +87,7 @@ class Gurobi_MILP_LP(gp.Model):
             print('Error code ' + str(e.errno) + ": " + str(e))
             min_cx = nan
             x = [nan] * self.NumVars
-            return x, min_cx, -1
+            return x, min_cx, ERROR
 
     def slim_solve(self) -> float:
         try:
@@ -119,23 +118,23 @@ class Gurobi_MILP_LP(gp.Model):
             status = self.Status
             if status in [2,10,13,15]: # solution integer optimal
                 min_cx = self.ObjVal
-                status = 0
+                status = OPTIMAL
             elif status == 9 and not hasattr(self._Model__vars[0],'X'): # timeout without solution
                 x = []
                 min_cx = nan
-                status = 1
+                status = TIME_LIMIT
                 return x, min_cx, status
             elif status == 3: # infeasible
                 x = []
                 min_cx = nan
-                status = 2
+                status = INFEASIBLE
                 return x, min_cx, status
             elif status == 9 and hasattr(self._Model__vars[0],'X'): # timeout with solution
                 min_cx = self.ObjVal
-                status = 3
+                status = TIME_LIMIT_W_SOL
             elif status in [4,5]: # solution unbounded
                 min_cx = -inf
-                status = 4
+                status = UNBOUNDED
             else:
                 raise Exception('Status code '+str(status)+" not yet handeld.")
             nSols = self.SolCount
@@ -150,7 +149,7 @@ class Gurobi_MILP_LP(gp.Model):
             print('Error code ' + str(e.errno) + ": " + str(e))
             min_cx = nan
             x = []
-            return x, min_cx, -1
+            return x, min_cx, ERROR
 
     def set_objective(self,c):
         for i in range(len(self._Model__vars)):

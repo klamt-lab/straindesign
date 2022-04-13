@@ -4,7 +4,7 @@ from cplex import Cplex, infinity
 from cplex.exceptions import CplexError
 from typing import Tuple, List
 import io
-from mcs import indicator_constraints, solver_interface
+from mcs.names import *
 
 # Collection of CPLEX-related functions that facilitate the creation
 # of CPLEX-object and the solutions of LPs/MILPs with CPLEX from
@@ -63,11 +63,10 @@ class Cplex_MILP_LP(Cplex):
             self.set_warning_stream(io.StringIO())
             self.set_results_stream(io.StringIO())
         except Exception as e:
-            pass
             # uncomment for debugging
-            # import traceback
-            # tb_str = ''.join(traceback.format_exception(None, e, e.__traceback__))
-            # print(tb_str)
+            import traceback
+            tb_str = ''.join(traceback.format_exception(None, e, e.__traceback__))
+            print(tb_str)
         self.parameters.mip.pool.absgap.set(0.0)
         self.parameters.mip.pool.relgap.set(0.0)
         self.parameters.mip.pool.intensity.set(4)
@@ -83,23 +82,23 @@ class Cplex_MILP_LP(Cplex):
             status = self.solution.get_status()
             if status in [101,102,115,128,129,130]: # solution integer optimal
                 min_cx = self.solution.get_objective_value()
-                status = 0
+                status = OPTIMAL
             elif status == 108: # timeout without solution
                 x = [nan]*self.variables.get_num()
                 min_cx = nan
-                status = 1
+                status = TIME_LIMIT
                 return x, min_cx, status
             elif status == 103: # infeasible
                 x = [nan]*self.variables.get_num()
                 min_cx = nan
-                status = 2
+                status = INFEASIBLE
                 return x, min_cx, status
             elif status == 107: # timeout with solution
                 min_cx = self.solution.get_objective_value()
-                status = 3
+                status = TIME_LIMIT_W_SOL
             elif status in [118,119]: # solution unbounded
                 min_cx = -inf
-                status = 4
+                status = UNBOUNDED
             else:
                 print(status)
                 print(self.solution.get_status_string())
@@ -112,7 +111,7 @@ class Cplex_MILP_LP(Cplex):
                 print(exc)
             min_cx = nan
             x = [nan] * self.variables.get_num()
-            return x, min_cx, -1
+            return x, min_cx, ERROR
 
     def slim_solve(self) -> float:
         try:
@@ -142,23 +141,23 @@ class Cplex_MILP_LP(Cplex):
             status = self.solution.get_status()
             if status in [101,102,115,128,129,130]: # solution integer optimal
                 min_cx = self.solution.get_objective_value()
-                status = 0
+                status = OPTIMAL
             elif status == 108: # timeout without solution
                 x = []
                 min_cx = nan
-                status = 1
+                status = TIME_LIMIT
                 return x, min_cx, status
             elif status == 103: # infeasible
                 x = []
                 min_cx = nan
-                status = 2
+                status = INFEASIBLE
                 return x, min_cx, status
             elif status == 107: # timeout with solution
                 min_cx = self.solution.get_objective_value()
-                status = 3
+                status = TIME_LIMIT_W_SOL
             elif status in [118,119]: # solution unbounded
                 min_cx = -inf
-                status = 4
+                status = UNBOUNDED
             else:
                 print(status)
                 print(self.solution.get_status_string())
@@ -171,7 +170,7 @@ class Cplex_MILP_LP(Cplex):
                 print(exc)
             min_cx = nan
             x = []
-            return x, min_cx, -1
+            return x, min_cx, ERROR
 
     def set_objective(self,c):
         self.objective.set_linear([[i,c[i]] for i in range(len(c))])

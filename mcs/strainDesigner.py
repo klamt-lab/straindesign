@@ -6,7 +6,7 @@ from contextlib import redirect_stdout, redirect_stderr
 from typing import Dict, List, Tuple
 from cobra import Model, Metabolite, Reaction
 from cobra.util.array import create_stoichiometric_matrix
-from mcs import StrainDesignMILP, StrainDesignMILPBuilder, MILP_LP, SD_Module, get_rids
+from mcs import StrainDesignMILP, SD_Module, SD_Solution
 from mcs.strainDesignModule import *
 from mcs.fva import *
 from mcs.names import *
@@ -374,7 +374,7 @@ class StrainDesigner(StrainDesignMILP):
             if key == GKICOST:
                 self.uncmp_gki_cost = value
         if (GKOCOST in kwargs or GKICOST in kwargs) and hasattr(model,'genes') and model.genes:
-            gene_sd = True
+            self.gene_sd = True
             if GKOCOST not in kwargs or not kwargs[GKOCOST]:
                 if np.any([len(g.name) for g in model.genes]): # if gene names are defined, use them instead of ids
                     self.uncmp_gko_cost = {k:1.0 for k in model.genes.list_attr('name')}
@@ -383,8 +383,8 @@ class StrainDesigner(StrainDesignMILP):
             if GKICOST not in kwargs or not kwargs[GKICOST]:
                 self.uncmp_gki_cost = {}
         else:
-            gene_sd = False
-        if not kwargs[KOCOST] and not gene_sd:
+            self.gene_sd = False
+        if not kwargs[KOCOST] and not self.gene_sd:
             self.uncmp_ko_cost = {k:1.0 for k in model.reactions.list_attr('id')}
         elif not kwargs[KOCOST]:
             self.uncmp_ko_cost = {}
@@ -393,6 +393,15 @@ class StrainDesigner(StrainDesignMILP):
         # put module in list if only one module was provided
         if "SD_Module" in str(type(sd_modules)):
             sd_modules = [sd_modules]
+        self.orig_sd_modules = sd_modules
+        self.orig_model      = model
+        self.orig_ko_cost   = self.uncmp_ko_cost
+        self.orig_ki_cost   = self.uncmp_ki_cost
+        self.compress        = kwargs['compress']
+        self.M               = kwargs['M']
+        if self.gene_sd:
+            self.orig_gko_cost   = self.uncmp_gko_cost
+            self.orig_gki_cost   = self.uncmp_gki_cost
         # 1) Preprocess Model
         print('Preparing strain design computation.')
         print('  Using '+kwargs[SOLVER]+' for solving LPs during preprocessing.')
@@ -437,7 +446,7 @@ class StrainDesigner(StrainDesignMILP):
         # remove ko-costs (and thus knockability) of essential reactions
         [self.uncmp_ko_cost.pop(er) for er in essential_reacs if er in self.uncmp_ko_cost]
         # If computation of gene-gased intervention strategies, (optionally) compress gpr are rules and extend stoichimetric network with genes
-        if gene_sd:
+        if self.gene_sd:
             if kwargs['compress'] is True or kwargs['compress'] is None:
                 num_genes = len(uncmp_model.genes)
                 num_gpr   = len([True for r in model.reactions if r.gene_reaction_rule])
@@ -600,8 +609,7 @@ class StrainDesigner(StrainDesignMILP):
         print("  "+str(len(self.cmp_ko_cost)+len(self.cmp_ki_cost))+" targetable reactions")
         super().__init__(cmp_model,sd_modules, *args, **kwargs1)
 
-    def expand_mcs(self):
-        rmcs = self.cmp_rmcs.copy()
+    def expand_mcs(self,sd):
         # expand mcs by applying the compression steps in the reverse order
         cmp_map = self.cmp_mapReac[::-1]
         for exp in cmp_map:
@@ -611,7 +619,7 @@ class StrainDesigner(StrainDesignMILP):
             par_reac_cmp = not exp["odd"] # if parallel or sequential reactions were lumped
             for r_cmp,r_orig in reac_map_exp.items():
                 if len(r_orig) > 1:
-                    for m in rmcs.copy():
+                    for m in sd.copy():
                         if r_cmp in m:
                             val = m[r_cmp]
                             del m[r_cmp]
@@ -621,64 +629,79 @@ class StrainDesigner(StrainDesignMILP):
                                     for d in r_orig:
                                         if d in ko_cost:
                                             new_m[d] = val
-                                    rmcs += [new_m]
+                                    sd += [new_m]
                                 else:
                                     for d in r_orig:
                                         if d in ko_cost:
                                             new_m = m.copy()
                                             new_m[d] = val
-                                            rmcs += [new_m]
+                                            sd += [new_m]
                             elif val > 0: # case: KI
                                 if par_reac_cmp:
                                     for d in r_orig:
                                         if d in ki_cost:
                                             new_m = m.copy()
                                             new_m[d] = val
-                                            rmcs += [new_m]
+                                            sd += [new_m]
                                 else:
                                     new_m = m.copy()
                                     for d in r_orig:
                                         if d in ki_cost:
                                             new_m[d] = val
-                                    rmcs += [new_m]
+                                    sd += [new_m]
                             elif val == 0: # case: KI that was not introduced
                                 new_m = m.copy() # assume that none of the expanded
                                 for d in r_orig: # reactions are inserted, neither
                                     if d in ki_cost: # parallel, nor sequential
                                         new_m[d] = val
-                                rmcs += [new_m]
-                            rmcs.remove(m)
+                                sd += [new_m]
+                            sd.remove(m)
         # eliminate mcs that are too expensive
         if self.max_cost:
-            costs = [np.sum([self.uncmp_ko_cost[k] if v<0 else self.uncmp_ki_cost[k] for k,v in m.items()]) for m in rmcs]
-            self.rmcs = [rmcs[i] for i in range(len(rmcs)) if costs[i] <= self.max_cost+1e-8]
-        else:
-            self.rmcs = rmcs
+            costs = [np.sum([self.uncmp_ko_cost[k] if v<0 else self.uncmp_ki_cost[k] for k,v in m.items()]) for m in sd]
+            sd = [sd[i] for i in range(len(sd)) if costs[i] <= self.max_cost+1e-8]
+        return sd
 
     # function wrappers for compute, compute_optimal and enumerate
     def enumerate(self, *args, **kwargs):
-        self.cmp_rmcs, status = super().enumerate(*args, **kwargs)
-        if status in [0,3]:
-            self.expand_mcs()
+        cmp_sd_solution = super().enumerate(*args, **kwargs)
+        if cmp_sd_solution.status in [OPTIMAL,TIME_LIMIT_W_SOL]:
+            sd = self.expand_mcs(cmp_sd_solution.get_rsd())
         else:
-            self.rmcs = []
-        print(str(len(self.rmcs)) +' solutions found.')
-        return self.rmcs, status
+            sd = []
+        print(str(len(sd)) +' solutions found.')
+        return self.build_full_sd_solution(sd, cmp_sd_solution)
     
     def compute_optimal(self, *args, **kwargs):
-        self.cmp_rmcs, status = super().compute_optimal(*args, **kwargs)
-        if status in [0,3]:
-            self.expand_mcs()
+        cmp_sd_solution = super().compute_optimal(*args, **kwargs)
+        if cmp_sd_solution.status in [OPTIMAL,TIME_LIMIT_W_SOL]:
+            sd = self.expand_mcs(cmp_sd_solution.get_rsd())
         else:
-            self.rmcs = []
-        print(str(len(self.rmcs)) +' solutions found.')
-        return self.rmcs, status
+            sd = []
+        print(str(len(sd)) +' solutions found.')
+        return self.build_full_sd_solution(sd, cmp_sd_solution)
     
     def compute(self, *args, **kwargs):
-        self.cmp_rmcs, status = super().compute(*args, **kwargs)
-        if status in [0,3]:
-            self.expand_mcs()
+        cmp_sd_solution = super().compute(*args, **kwargs)
+        if cmp_sd_solution.status in [OPTIMAL,TIME_LIMIT_W_SOL]:
+            sd = self.expand_mcs(cmp_sd_solution.get_rsd())
         else:
-            self.rmcs = []
-        print(str(len(self.rmcs)) +' solutions found.')
-        return self.rmcs, status
+            sd = []
+        print(str(len(sd)) +' solutions found.')
+        return self.build_full_sd_solution(sd, cmp_sd_solution)
+    
+    def build_full_sd_solution(self, sd, sd_solution_cmp):
+        sd_setup = {}
+        sd_setup[MODEL_ID]          = sd_solution_cmp.sd_setup.pop(MODEL_ID)
+        sd_setup[MAX_SOLUTIONS]     = sd_solution_cmp.sd_setup.pop(MAX_SOLUTIONS)
+        sd_setup[MAX_COST]          = sd_solution_cmp.sd_setup.pop(MAX_COST)
+        sd_setup[TIME_LIMIT]        = sd_solution_cmp.sd_setup.pop(TIME_LIMIT)
+        sd_setup[SOLVER]            = sd_solution_cmp.sd_setup.pop(SOLVER)
+        sd_setup[SOLUTION_APPROACH] = sd_solution_cmp.sd_setup.pop(SOLUTION_APPROACH)
+        sd_setup[MODULES] = self.orig_sd_modules
+        sd_setup[KOCOST]  = self.orig_ko_cost
+        sd_setup[KICOST]  = self.orig_ki_cost
+        if self.gene_sd:
+            sd_setup[GKOCOST] = self.orig_gko_cost
+            sd_setup[GKICOST] = self.orig_gki_cost
+        return SD_Solution(self.model,sd,sd_solution_cmp.status,sd_setup)

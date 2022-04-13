@@ -5,6 +5,7 @@
 # from mcs.solver_interface import solver_interface
 from .names import *
 from .strainDesignModule import *
+from .strainDesignSolution import *
 from .indicator_constraints import *
 from .solver_interface import *
 from .pool import Pool

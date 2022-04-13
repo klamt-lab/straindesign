@@ -1,19 +1,23 @@
+from os import openpty
+from mcs.strainDesignSolution import SD_Solution
 import numpy as np
 from scipy import sparse
 import time
+from cobra import Model
 from typing import Dict, List, Tuple
-from mcs import StrainDesignMILPBuilder, MILP_LP
+from mcs import StrainDesignMILPBuilder, MILP_LP, SD_Module
+from mcs.names import *
 from warnings import warn
 
 class StrainDesignMILP(StrainDesignMILPBuilder):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, model: Model, sd_modules: List[SD_Module], **kwargs):
         keys = {'options'}
         # remove keys that are irrelevant for MILP construction
         kwargs1 = kwargs.copy()
         for k in keys:
             if k in kwargs1:
                 del kwargs1[k]
-        super().__init__(*args, **kwargs1)  
+        super().__init__(model, sd_modules, **kwargs1)  
         # set keys passed in kwargs
         for key,value in dict(kwargs).items():
             if key in keys:
@@ -22,6 +26,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         for key in keys:
             if key not in dict(kwargs).keys():
                 setattr(self,key,None)
+        self.sd_modules = sd_modules
         self.milp = MILP_LP(c           =self.c,
                             A_ineq      =self.A_ineq,
                             b_ineq      =self.b_ineq,
@@ -148,12 +153,18 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
             self.max_solutions = np.inf
         if self.time_limit is None:
             self.time_limit = np.inf
+        # first check if strain doesn't already fulfill the strain design setup
+        if self.verify_sd(sparse.csr_matrix((1,self.num_z)))[0]:
+            print('The strain already meets the requirements defined in the strain design setup. ' \
+                  'No interventions are needed.')
+            return self.build_sd_solution([{}], OPTIMAL, SMALLEST)
+        # otherwise continue
         endtime = time.time() + self.time_limit
-        status = 0
+        status = OPTIMAL
         sols = sparse.csr_matrix((0,self.num_z))
         print('Finding optimal strain designs ...')
         while sols.shape[0] < self.max_solutions and \
-          status == 0 and \
+          status == OPTIMAL and \
           endtime-time.time() > 0:
             self.milp.set_time_limit(endtime-time.time())
             self.resetTargetableZ()
@@ -165,14 +176,14 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                 break
             output = self.sd2dict(z)
             if self.is_mcs_computation:
-                if status in [0,3] and all(self.verify_sd(z)):
+                if status in [OPTIMAL,TIME_LIMIT_W_SOL] and all(self.verify_sd(z)):
                     print('Strain design with cost '+str(round((z*self.cost)[0],6))+': '+str(output))
                     self.add_exclusion_constraints(z)
                     sols = sparse.vstack((sols,z))
-                elif status in [0,3]:
+                elif status in [OPTIMAL,TIME_LIMIT_W_SOL]:
                     print('Invalid (minimal) solution found: '+ str(output))
                     self.add_exclusion_constraints(z)
-                if status != 0:
+                if status != OPTIMAL:
                     break
             else:
                 # Verify solution and explore subspace to get minimal intervention sets
@@ -182,24 +193,24 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                 self.setMinIntvCostObjective()
                 self.setTargetableZ(z)
                 while sols.shape[0] < self.max_solutions and \
-                        status == 0 and \
+                        status == OPTIMAL and \
                         endtime-time.time() > 0:    
                     self.milp.set_time_limit(endtime-time.time())
                     z1, status1 = self.solveZ()
                     output = self.sd2dict(z1)
-                    if status1 in [0,3] and all(self.verify_sd(z1)):
+                    if status1 in [OPTIMAL,TIME_LIMIT_W_SOL] and all(self.verify_sd(z1)):
                         print('Strain design with cost '+str(round((z1*self.cost)[0],6))+': '+str(output))
                         self.add_exclusion_constraints(z1)
                         sols = sparse.vstack((sols,z1))
-                    elif status1 in [0,3]:
+                    elif status1 in [OPTIMAL,TIME_LIMIT_W_SOL]:
                         print('Invalid minimal solution found: '+ str(output))
                         self.add_exclusion_constraints(z)
                     else: # return to outside loop
                         break
-        if status == 2 and sols.shape[0] > 0: # all solutions found
-            status = 0
-        if status == 1 and sols.shape[0] > 0: # some solutions found, timelimit reached
-            status = 3
+        if status == INFEASIBLE and sols.shape[0] > 0: # all solutions found
+            status = OPTIMAL
+        if status == TIME_LIMIT and sols.shape[0] > 0: # some solutions found, timelimit reached
+            status = TIME_LIMIT_W_SOL
         if endtime-time.time() > 0 and sols.shape[0] > 0:
             print('Finished. ')
             if 'strainDesignMILP' in self.__module__:
@@ -214,7 +225,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         m=sd_dict = []
         for sol in sols:
             sd_dict += [self.sd2dict(sol,self.show_no_ki)]
-        return sd_dict, status
+        return self.build_sd_solution(sd_dict, status, SMALLEST)
 
     # Find iteratively intervention sets of arbitrary size or quality
     # output format: list of 'dict' (default) or 'sparse'
@@ -232,12 +243,18 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
             self.max_solutions = np.inf
         if self.time_limit is None:
             self.time_limit = np.inf
+        # first check if strain doesn't already fulfill the strain design setup
+        if self.verify_sd(sparse.csr_matrix((1,self.num_z)))[0]:
+            print('The strain already meets the requirements defined in the strain design setup. ' \
+                  'No interventions are needed.')
+            return self.build_sd_solution([{}], OPTIMAL, ANY)
+        # otherwise continue
         endtime = time.time() + self.time_limit
-        status = 0
+        status = OPTIMAL
         sols = sparse.csr_matrix((0,self.num_z))
         print('Finding (also non-optimal) strain designs ...')
         while sols.shape[0] < self.max_solutions and \
-          status == 0 and \
+          status == OPTIMAL and \
           endtime-time.time() > 0:
             print('Searching in full search space.')
             self.milp.set_time_limit(endtime-time.time())
@@ -254,12 +271,12 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                 self.setTargetableZ(z)
                 self.fixObjective(self.c_bu,np.sum([c*x for c,x in zip(self.c_bu,x)]))
                 z1, status1 = self.solveZ()
-                if status1 == 0 and not self.verify_sd(z1):
+                if status1 == OPTIMAL and not self.verify_sd(z1):
                     self.add_exclusion_constraints(z1)
                     output = self.sd2dict(z1)
                     print('Invalid minimal solution found: '+ str(output))
                     continue
-                if status1 != 0 and not self.verify_sd(z1):
+                if status1 != OPTIMAL and not self.verify_sd(z1):
                     self.addExclusionConstraintsIneq(z);
                     output = self.sd2dict(z)
                     print('Invalid minimal solution found: '+ str(output))
@@ -278,25 +295,25 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
             self.setTargetableZ(z)
             self.fixObjective(self.c_bu,cx)
             while sols.shape[0] < self.max_solutions and \
-                    status == 0 and \
+                    status == OPTIMAL and \
                     endtime-time.time() > 0:    
                 self.milp.set_time_limit(endtime-time.time())
                 x1, min_cx , status1 = self.milp.solve()
                 z1 = sparse.csr_matrix([x1[i] for i in self.idx_z])
                 output = self.sd2dict(z1)
-                if status1 in [0,3] and all(self.verify_sd(z1)):
+                if status1 in [OPTIMAL,TIME_LIMIT_W_SOL] and all(self.verify_sd(z1)):
                     print('Strain design with cost '+str(round((z1*self.cost)[0],6))+': '+str(output))
                     self.add_exclusion_constraints(z1)
                     sols = sparse.vstack((sols,z1))
-                elif status1 in [0,3]:
+                elif status1 in [OPTIMAL,TIME_LIMIT_W_SOL]:
                     print('Invalid minimal solution found: '+ str(output))
                     self.add_exclusion_constraints(z)
                 else: # return to outside loop
                     break
-        if status == 2 and sols.shape[0] > 0: # all solutions found
-            status = 0
-        if status == 1 and sols.shape[0] > 0: # some solutions found, timelimit reached
-            status = 3
+        if status == INFEASIBLE and sols.shape[0] > 0: # all solutions found
+            status = OPTIMAL
+        if status == TIME_LIMIT and sols.shape[0] > 0: # some solutions found, timelimit reached
+            status = TIME_LIMIT_W_SOL
         if endtime-time.time() > 0 and sols.shape[0] > 0:
             print('Finished. ')
             if 'strainDesignMILP' in self.__module__:
@@ -311,7 +328,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         sd_dict = []
         for sol in sols:
             sd_dict += [self.sd2dict(sol,self.show_no_ki)]
-        return sd_dict, status
+        return self.build_sd_solution(sd_dict, status, ANY)
 
     # Enumerate iteratively optimal strain designs using the populate function
     # output format: list of 'dict' (default) or 'sparse'
@@ -329,6 +346,12 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
             self.max_solutions = np.inf
         if self.time_limit is None:
             self.time_limit = np.inf
+        # first check if strain doesn't already fulfill the strain design setup
+        if self.verify_sd(sparse.csr_matrix((1,self.num_z)))[0]:
+            print('The strain already meets the requirements defined in the strain design setup. ' \
+                  'No interventions are needed.')
+            return self.build_sd_solution([{}], status, CARDINALITY)
+        # otherwise continue
         if self.solver == 'scip':
             warn("SCIP does not natively support solution pool generation. "+ \
                 "An high-level implementation of populate is used. " + \
@@ -340,11 +363,11 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
             "Consider using compute_optimal instead of enumerate, as " + \
             "it returns the same results but faster." )
         endtime = time.time() + self.time_limit
-        status = 0
+        status = OPTIMAL
         sols = sparse.csr_matrix((0,self.num_z))
         print('Enumerating strain designs ...')
         while sols.shape[0] < self.max_solutions and \
-          status == 0 and \
+          status == OPTIMAL and \
           endtime-time.time() > 0:
             self.milp.set_time_limit(endtime-time.time())
             if not self.is_mcs_computation:
@@ -359,7 +382,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                 self.setMinIntvCostObjective()
                 self.fixObjective(self.c_bu,min_cx)
             z, status = self.populateZ(self.max_solutions - sols.shape[0])
-            if status in [0,3]:
+            if status in [OPTIMAL,TIME_LIMIT_W_SOL]:
                 for i in range(z.shape[0]):
                     output = [self.sd2dict(z[i])]
                     if all(self.verify_sd(z[i])):
@@ -369,12 +392,12 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                     else:
                         print('Invalid (minimal) solution found: '+ str(output))
                         self.add_exclusion_constraints(z)
-            if (status != 0): # or (z[i]*self.cost == self.max_cost):
+            if (status != OPTIMAL): # or (z[i]*self.cost == self.max_cost):
                 break
-        if status == 2 and sols.shape[0] > 0: # all solutions found or solution limit reached
-            status = 0
-        if status == 1 and sols.shape[0] > 0: # some solutions found, timelimit reached
-            status = 3
+        if status == INFEASIBLE and sols.shape[0] > 0: # all solutions found or solution limit reached
+            status = OPTIMAL
+        if status == TIME_LIMIT and sols.shape[0] > 0: # some solutions found, timelimit reached
+            status = TIME_LIMIT_W_SOL
         if endtime-time.time() > 0 and sols.shape[0] > 0:
             print('Finished. ')
             if 'strainDesignMILP' in self.__module__:
@@ -389,4 +412,20 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         sd_dict = []
         for sol in sols:
             sd_dict += [self.sd2dict(sol,self.show_no_ki)]
-        return sd_dict, status
+        sd_solution = self.build_sd_solution(sd_dict, status, CARDINALITY)
+        return sd_solution
+
+    def build_sd_solution(self, sd_dict, status, solution_approach):
+        sd_setup = {}
+        sd_setup[MODEL_ID] = self.model.id
+        sd_setup[MAX_SOLUTIONS] = self.max_solutions
+        sd_setup[MAX_COST] = self.max_cost
+        sd_setup[TIME_LIMIT] = self.time_limit
+        sd_setup[SOLVER] = self.solver
+        sd_setup[SOLUTION_APPROACH] = solution_approach
+        sd_setup[KOCOST] = {k:float(v) for k,v in \
+            zip(self.model.reactions.list_attr('id'),self.ko_cost) if not np.isnan(v)}
+        sd_setup[KICOST] = {k:float(v) for k,v in \
+            zip(self.model.reactions.list_attr('id'),self.ki_cost) if not np.isnan(v)}
+        sd_setup[MODULES] = self.sd_modules
+        return SD_Solution(self.model,sd_dict,status,sd_setup)

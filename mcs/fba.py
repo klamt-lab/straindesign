@@ -1,8 +1,6 @@
 import cobra
-from mcs.parse_constr import lineqlist2mat, linexprdict2mat
-from optlang.interface import OPTIMAL, INFEASIBLE, UNBOUNDED
 from scipy import sparse
-from mcs import MILP_LP, parse_constraints, lineqlist2mat
+from mcs import MILP_LP, parse_constraints, lineqlist2mat, linexpr2dict, linexprdict2mat
 from mcs.names import *
 from typing import Dict
 # FBA for cobra model with CPLEX
@@ -71,11 +69,7 @@ def fba(model,**kwargs):
                         solver=solver)
 
     x, opt_cx, status = my_prob.solve()
-    if status == 0:
-        status = OPTIMAL
-    elif status == 4:
-        status = UNBOUNDED
-    else:
+    if status not in [OPTIMAL, UNBOUNDED]:
         status = INFEASIBLE
     fluxes = {reaction_ids[i] : x[i] for i in range(len(x))}
     sol = cobra.core.Solution(objective_value=-opt_cx,status=status,fluxes=fluxes)
