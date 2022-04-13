@@ -350,7 +350,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         if self.verify_sd(sparse.csr_matrix((1,self.num_z)))[0]:
             print('The strain already meets the requirements defined in the strain design setup. ' \
                   'No interventions are needed.')
-            return self.build_sd_solution([{}], status, CARDINALITY)
+            return self.build_sd_solution([{}], OPTIMAL, CARDINALITY)
         # otherwise continue
         if self.solver == 'scip':
             warn("SCIP does not natively support solution pool generation. "+ \
