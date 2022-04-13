@@ -119,7 +119,7 @@ def linexpr2mat(expr, reaction_ids) -> sparse.csr_matrix:
         raise Exception("Reaction identifiers may only occur once in each linear expression.")
     # iterate through reaction identifiers and retrieve coefficients from linear expression
     for rid in ridx:
-        coeff = re.search('(\s|^)(\s|\d|-|\+|\.)*?(?=' + rid + '(\s|$))', expr)[0]
+        coeff = re.search('(\s|^)(\s|\d|-|\+|\.)*?(?=' + re.escape(rid) + '(\s|$))', expr)[0]
         coeff = re.sub('\s', '', coeff)
         if coeff in ['', '+']:
             coeff = 1.0
@@ -163,11 +163,11 @@ def linexpr2dict(expr, reaction_ids) -> dict:
     D = {}
     # iterate through reaction identifiers and retrieve coefficients from linear expression
     for rid in ridx:
-        coeff = re.search('(\s|^)(\s|\d|-|\+|\.)*?(?=' + rid + '(\s|$))', expr)[0]
+        coeff = re.search('(\s|^)(\s|\d|-|\+|\.)*?(?=' + re.escape(rid) + '(\s|$))', expr)[0]
         coeff = re.sub('\s', '', coeff)
         if coeff in ['', '+']:
             coeff = 1.0
-        if coeff == '-':
+        elif coeff == '-':
             coeff = -1.0
         else:
             coeff = float(coeff)

@@ -18,21 +18,21 @@ modules += [mcs.SD_Module(network,"mcs_lin",module_sense="undesired",constraints
 
 # specify MCS setup
 maxSolutions = np.inf
-maxCost = 5
+maxCost = 9
 solver = 'cplex'
 
-# ko_cost = {'EX_o2_e'	: 0.4}
+ko_cost = {'EX_o2_e'	: 1.0}
 # ki_cost = None
-gko_cost = None
+gko_cost = {k:1.0 for k in network.genes.list_attr('id') if k != 'spontanous'}
 
 M=None
 # construct MCS MILP
-mcsEnum = mcs.StrainDesigner(network,modules, gko_cost = gko_cost, max_cost=maxCost, solver=solver,M=M)
+mcsEnum = mcs.StrainDesigner(network,modules,compress=True, gko_cost = gko_cost, max_cost=maxCost, solver=solver,M=M)
 # mcsEnum = mcs.StrainDesignMILP(network,modules, max_cost=maxCost, solver=solver,M=M)
 
 # solve MILP
 rmcs = mcsEnum.enumerate(max_solutions=maxSolutions)
 # mcsEnum.compute_optimal(max_solutions=maxSolutions)
-# rmcs = mcsEnum.compute(max_solutions=maxSolutions,time_limit=15)
+# rmcs = mcsEnum.compute(max_solutions=3)
 print(len(rmcs.get_sd()))
 pass

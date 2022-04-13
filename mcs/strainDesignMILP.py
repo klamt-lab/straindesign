@@ -1,4 +1,3 @@
-from os import openpty
 from mcs.strainDesignSolution import SD_Solution
 import numpy as np
 from scipy import sparse

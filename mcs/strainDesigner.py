@@ -98,9 +98,9 @@ def extend_model_gpr(model,gkos,gkis):
     # All reaction rules are provided in dnf.
     for r in model.reactions:
         if r.gene_reaction_rule: # if reaction has a gpr rule
-            dt = [s.strip() for s in r.gene_reaction_rule.split('or')]
+            dt = [s.strip() for s in r.gene_reaction_rule.split(' or ')]
             for i,p in enumerate(dt.copy()):
-                ct = [s.strip() for s in p.replace('(','').replace(')','').split('and')]
+                ct = [s.strip() for s in p.replace('(','').replace(')','').split(' and ')]
                 for j,g in enumerate(ct.copy()):
                     gene_met_id = 'g_'+g
                     # if gene is not in model, add gene pseudoreaction and metabolite
@@ -258,10 +258,13 @@ def compress_model(model):
             if model.reactions[r].upper_bound not in (0, float('inf')):
                 model.reactions[r].upper_bound/= abs(subset_matrix[r, j]) #factor
             model.reactions[r0].subset_rxns.append(r)
-            model.reactions[r0].subset_stoich.append(factor)
+            if r in flipped:
+                model.reactions[r0].subset_stoich.append(-factor)
+            else:
+                model.reactions[r0].subset_stoich.append(factor)
         for r in rxn_idx[1:]: # merge reactions
             # rename main reaction
-            if len(model.reactions[r0].id)+len(model.reactions[r].id) < 220:
+            if len(model.reactions[r0].id)+len(model.reactions[r].id) < 220 and model.reactions[r0].id[-3:] != '...':
                 model.reactions[r0].id += '*'+model.reactions[r].id # combine names
             elif not model.reactions[r0].id[-3:] == '...':
                 model.reactions[r0].id += '...'
@@ -282,9 +285,8 @@ def compress_model(model):
         subT[model.reactions[j].subset_rxns, j] = [float(v) for v in model.reactions[j].subset_stoich]
         # rational_map is a dictionary that associates the new reaction with a dict of its original reactions and its scaling factors
         rational_map.update({model.reactions[j].id: {old_reac_ids[i]: v for i,v in zip(model.reactions[j].subset_rxns,model.reactions[j].subset_stoich)}})
-    for i in flipped: # adapt so that it matches the reaction direction before flipping
-            subT[i, :] *= -1
-    # adapt compressed_model name
+    # for i in flipped: # adapt so that it matches the reaction direction before flipping
+    #         subT[i, :] *= -1
     return sparse.csc_matrix(subT), rational_map
 
 def compress_model_parallel(model, protected_rxns=[]):
@@ -329,7 +331,7 @@ def compress_model_parallel(model, protected_rxns=[]):
     del_rxns = [False]*len(model.reactions)
     for rxn_idx in subset_list:
         for i in range(1, len(rxn_idx)):
-            if len(model.reactions[rxn_idx[0]].id)+len(model.reactions[rxn_idx[i]].id) < 220:
+            if len(model.reactions[rxn_idx[0]].id)+len(model.reactions[rxn_idx[i]].id) < 220  and model.reactions[rxn_idx[0]].id[-3:] != '...':
                 model.reactions[rxn_idx[0]].id += '*'+model.reactions[rxn_idx[i]].id # combine names
             elif not model.reactions[rxn_idx[0]].id[-3:] == '...':
                 model.reactions[rxn_idx[0]].id += '...'
@@ -583,22 +585,25 @@ class StrainDesigner(StrainDesignMILP):
                     stoichmat_coeff2float(cmp_model)
                     sd_modules = modules_coeff2float(sd_modules)
                     break
-            # # Another FVA to identify essentials before building and launching MILP (not sure if this has an effect)
-            # print('  FVA(s) in compressed model to identify essential reactions.')
-            # essential_reacs = set()
-            # for m in sd_modules:
-            #     if m[MODULE_SENSE] != UNDESIRED: # Essential reactions can only be determined from desired
-            #                                     # or opt-/robustknock modules
-            #         flux_limits = fva(cmp_model,solver=kwargs[SOLVER],constraints=m[CONSTRAINTS])
-            #         for (reac_id, limits) in flux_limits.iterrows():
-            #             if np.min(abs(limits)) > tol and np.prod(np.sign(limits)) > 0: # find essential
-            #                 essential_reacs.add(reac_id)
-            # # remove ko-costs (and thus knockability) of essential reactions
-            # [self.cmp_ko_cost.pop(er) for er in essential_reacs if er in self.cmp_ko_cost]
+
+        # An FVA to identify essentials before building and launching MILP (not sure if this has an effect)
+        print('  FVA(s) in compressed model to identify essential reactions.')
+        essential_reacs = set()
+        for m in sd_modules:
+            if m[MODULE_SENSE] != UNDESIRED: # Essential reactions can only be determined from desired
+                                            # or opt-/robustknock modules
+                flux_limits = fva(cmp_model,solver=kwargs[SOLVER],constraints=m[CONSTRAINTS])
+                for (reac_id, limits) in flux_limits.iterrows():
+                    if np.min(abs(limits)) > tol and np.prod(np.sign(limits)) > 0: # find essential
+                        essential_reacs.add(reac_id)
+        # remove ko-costs (and thus knockability) of essential reactions
+        [self.cmp_ko_cost.pop(er) for er in essential_reacs if er in self.cmp_ko_cost]
+        essential_kis = set(self.cmp_ki_cost[er] for er in essential_reacs if er in self.cmp_ki_cost)
         # Build MILP
         kwargs1 = kwargs
         kwargs1[KOCOST] = self.cmp_ko_cost
         kwargs1[KICOST] = self.cmp_ki_cost
+        kwargs1['essential_kis'] = essential_kis
         kwargs1.pop('compress')
         if GKOCOST in kwargs1:
             kwargs1.pop(GKOCOST)

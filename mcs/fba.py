@@ -58,6 +58,8 @@ def fba(model,**kwargs):
         c  = [i.objective_coefficient for i in model.reactions]
         if model.objective_direction == 'max':
             c = [ -i for i in c]
+    else:
+        c = [ -i for i in c]
     # build LP
     my_prob = MILP_LP(  c=c,
                         A_ineq=A_ineq,

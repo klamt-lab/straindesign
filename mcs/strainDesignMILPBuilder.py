@@ -13,7 +13,7 @@ class StrainDesignMILPBuilder:
     """Class for computing Strain Designs (SD)"""
 
     def __init__(self, model: Model, sd_modules: List[SD_Module], *args, **kwargs):
-        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M'}
+        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis'}
         # set all keys passed in kwargs
         for key, value in dict(kwargs).items():
             if key in allowed_keys:
@@ -63,6 +63,8 @@ class StrainDesignMILPBuilder:
             self.ko_cost = {rid: 1.0 for rid in reac_ids}
         if self.ki_cost is None:
             self.ki_cost = {}
+        if self.essential_kis is None:
+            self.essential_kis = set()
         self.ko_cost = [float(self.ko_cost.get(key)) if (key in self.ko_cost.keys()) else np.nan for key in reac_ids]
         self.ki_cost = [float(self.ki_cost.get(key)) if (key in self.ki_cost.keys()) else np.nan for key in reac_ids]
         self.ko_cost = [self.ko_cost[i] if np.isnan(self.ki_cost[i]) else np.nan for i in range(numr)]
@@ -81,7 +83,7 @@ class StrainDesignMILPBuilder:
         else:
             self.b_ineq = [0.0, float(self.max_cost), np.inf]
         self.z_map_constr_ineq = sparse.csc_matrix((numr, 3))
-        self.lb = [0.0] * numr
+        self.lb = [1.0 if r in self.essential_kis else 0.0 for r in model.reactions]
         self.ub = [1.0 - float(i) for i in self.z_non_targetable]
         self.idx_z = [i for i in range(0, numr)]
         self.c = [0.0] * numr

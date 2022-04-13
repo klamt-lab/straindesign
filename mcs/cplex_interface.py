@@ -67,8 +67,8 @@ class Cplex_MILP_LP(Cplex):
             import traceback
             tb_str = ''.join(traceback.format_exception(None, e, e.__traceback__))
             print(tb_str)
-        self.parameters.mip.pool.absgap.set(0.0)
-        self.parameters.mip.pool.relgap.set(0.0)
+        self.parameters.mip.pool.absgap.set(1e-9)
+        self.parameters.mip.pool.relgap.set(1e-9)
         self.parameters.mip.pool.intensity.set(4)
         # no integrality tolerance
         self.parameters.mip.tolerances.integrality.set(0.0)
