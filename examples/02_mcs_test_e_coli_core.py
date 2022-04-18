@@ -107,10 +107,9 @@ ki_cost = { 'O2t'       : 0.2,
 # gko_cost = None
 M=None
 output_format = 'auto'
-sd, status = mcs.compute_strain_designs(network,modules, max_cost=maxCost,ko_cost=ko_cost, \
+sd, status = mcs.compute_strain_designs(network,sd_modules=modules, max_cost=maxCost,ko_cost=ko_cost, \
                                         ki_cost=ki_cost, gko_cost=gko_cost, gki_cost=gki_cost, \
-                                        solver=solver,M=None ,output_format=output_format, \
-                                        compress=True)
+                                        solver=solver, M=None , compress=True)
 # sd, status = mcs.compute_strain_designs(network,modules, max_cost=maxCost,ko_cost=ko_cost, \
 #                                         ki_cost=ki_cost, solver=solver,M=None ,output_format=output_format)
 [print(r) for r in sd]

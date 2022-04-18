@@ -44,16 +44,16 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
             A_ineq.resize((1,self.milp.A_ineq.shape[1]))
             b_ineq = np.sum(z[i])-1
             self.A_ineq = sparse.vstack((self.A_ineq,A_ineq))
-            self.b_ineq += b_ineq
+            self.b_ineq += [b_ineq]
             self.milp.add_ineq_constraints(A_ineq,[b_ineq])
 
-    def addExclusionConstraintsIneq(self,z):
+    def add_exclusion_constraints_ineq(self,z):
         for j in range(z.shape[0]):
             A_ineq = [1.0 if z[j,i] else -1.0 for i in self.idx_z]
             A_ineq.resize((1,self.milp.A_ineq.shape[1]))
             b_ineq = np.sum(z[j])-1
             self.A_ineq = sparse.vstack((self.A_ineq,A_ineq))
-            self.b_ineq += b_ineq
+            self.b_ineq += [b_ineq]
             self.milp.add_ineq_constraints(A_ineq,[b_ineq])
 
     def sd2dict(self,sol,*args) -> Dict:
@@ -89,7 +89,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         self.A_ineq = self.A_ineq.tolil()
         self.A_ineq[2] = sparse.lil_matrix(c)
         self.A_ineq = self.A_ineq.tocsr()
-        self.b_ineq = cx
+        self.b_ineq[2] = cx
 
     def resetObjective(self):
         for i,v in enumerate(self.c_bu):
@@ -276,7 +276,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                     print('Invalid minimal solution found: '+ str(output))
                     continue
                 if status1 != OPTIMAL and not self.verify_sd(z1):
-                    self.addExclusionConstraintsIneq(z);
+                    self.add_exclusion_constraints_ineq(z);
                     output = self.sd2dict(z)
                     print('Invalid minimal solution found: '+ str(output))
                     continue
@@ -377,9 +377,9 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                 z = sparse.csr_matrix([x[i] for i in self.idx_z])
                 if np.isnan(z[0,0]):
                     break
-                print('Enumerating all solutions with the objective value '+str(min_cx))
-                self.setMinIntvCostObjective()
+                print('Enumerating all solutions with the objective value: '+str(min_cx))
                 self.fixObjective(self.c_bu,min_cx)
+                self.setMinIntvCostObjective()
             z, status = self.populateZ(self.max_solutions - sols.shape[0])
             if status in [OPTIMAL,TIME_LIMIT_W_SOL]:
                 for i in range(z.shape[0]):
@@ -390,7 +390,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                         sols = sparse.vstack((sols,z[i]))
                     else:
                         print('Invalid (minimal) solution found: '+ str(output))
-                        self.add_exclusion_constraints(z)
+                        self.add_exclusion_constraints(z[i])
             if (status != OPTIMAL): # or (z[i]*self.cost == self.max_cost):
                 break
         if status == INFEASIBLE and sols.shape[0] > 0: # all solutions found or solution limit reached

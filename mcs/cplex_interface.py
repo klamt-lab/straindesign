@@ -4,6 +4,7 @@ from cplex import Cplex, infinity
 from cplex.exceptions import CplexError
 from typing import Tuple, List
 import io
+from os import cpu_count
 from mcs.names import *
 
 # Collection of CPLEX-related functions that facilitate the creation
@@ -67,14 +68,18 @@ class Cplex_MILP_LP(Cplex):
             import traceback
             tb_str = ''.join(traceback.format_exception(None, e, e.__traceback__))
             print(tb_str)
-        self.parameters.mip.pool.absgap.set(1e-9)
-        self.parameters.mip.pool.relgap.set(1e-9)
-        self.parameters.mip.pool.intensity.set(4)
-        # no integrality tolerance
-        self.parameters.mip.tolerances.integrality.set(0.0)
-        # yield only optimal solutions in pool
+            
         self.parameters.simplex.tolerances.optimality.set(1e-9)
         self.parameters.simplex.tolerances.feasibility.set(1e-9)
+        
+        if 'B' in vtype or 'I' in vtype:
+            # self.parameters.threads.set(cpu_count())
+            # yield only optimal solutions in pool
+            self.parameters.mip.pool.absgap.set(0.0)
+            self.parameters.mip.pool.relgap.set(0.0)
+            self.parameters.mip.pool.intensity.set(4)
+            # no integrality tolerance
+            self.parameters.mip.tolerances.integrality.set(0.0)
 
     def solve(self) -> Tuple[List,float,float]:
         try:
@@ -191,6 +196,9 @@ class Cplex_MILP_LP(Cplex):
         numconst = self.linear_constraints.get_num()
         numnewconst = A_ineq.shape[0]
         newconst_idx = [numconst+i for i in range(numnewconst)]
+        for i,v in enumerate(b_ineq):
+            if isinf(v):
+                b_ineq[i] = infinity
         self.linear_constraints.add(rhs=b_ineq, senses='L'*numnewconst)
         # retrieve row and column indices from sparse matrix and convert them to int
         A_ineq = A_ineq.tocoo()
@@ -198,9 +206,6 @@ class Cplex_MILP_LP(Cplex):
         cols_A = [int(a) for a in A_ineq.col]
         # convert matrix coefficients to float
         data_A = [float(a) for a in A_ineq.data]
-        for i,v in enumerate(b_ineq):
-            if isinf(v):
-                b_ineq[i] = infinity
         self.linear_constraints.set_coefficients(zip(rows_A, cols_A, data_A))
 
     def add_eq_constraints(self,A_eq,b_eq):

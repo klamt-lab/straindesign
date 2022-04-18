@@ -4,7 +4,7 @@ import numpy as np
 from importlib import reload
 import mcs
 import os
-from scipy import sparse
+from scipy import sparse, io
 #import traceback
 #import warnings
 import sys
@@ -27,12 +27,14 @@ gko_cost = {k:1.0 for k in network.genes.list_attr('id') if k != 'spontanous'}
 
 M=None
 # construct MCS MILP
-mcsEnum = mcs.StrainDesigner(network,modules,compress=True, gko_cost = gko_cost, max_cost=maxCost, solver=solver,M=M)
+mcsEnum = mcs.StrainDesigner(network,modules,compress=True, gko_cost = gko_cost, ko_cost=ko_cost, max_cost=maxCost, solver=solver,M=M)
 # mcsEnum = mcs.StrainDesignMILP(network,modules, max_cost=maxCost, solver=solver,M=M)
 
 # solve MILP
-rmcs = mcsEnum.enumerate(max_solutions=maxSolutions)
-# mcsEnum.compute_optimal(max_solutions=maxSolutions)
+# rmcs = mcsEnum.enumerate(max_solutions=maxSolutions)
+rmcs = mcsEnum.compute_optimal(max_solutions=maxSolutions)
 # rmcs = mcsEnum.compute(max_solutions=3)
 print(len(rmcs.get_sd()))
+io.savemat('mcs_python.mat', mdict={'whatever_data': \
+    [','.join(a) for a in [[k for k,v in m.items()] for m in rmcs.get_sd()]]})
 pass

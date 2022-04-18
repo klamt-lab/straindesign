@@ -404,6 +404,15 @@ class StrainDesigner(StrainDesignMILP):
         if self.gene_sd:
             self.orig_gko_cost   = self.uncmp_gko_cost
             self.orig_gki_cost   = self.uncmp_gki_cost
+            # ensure that gene and reaction kos/kis do not overlap
+            g_itv = {g for g in list(self.uncmp_gko_cost.keys())+list(self.uncmp_gki_cost.keys())}
+            r_itv = {r for r in list(self.uncmp_ko_cost.keys())+list(self.uncmp_ki_cost.keys())}
+            if np.any([np.any([True for g in model.reactions.get_by_id(r).genes if g in g_itv]) for r in r_itv]) or \
+                np.any(set(self.uncmp_gko_cost.keys()).intersection(set(self.uncmp_gki_cost.keys()))) or \
+                np.any(set(self.uncmp_ko_cost.keys()).intersection(set(self.uncmp_ki_cost.keys()))):
+                raise Exception('Specified gene and reaction knock-out/-in costs contain overlap. '\
+                                'Make sure that metabolic interventions are enabled either through reaction or '\
+                                'through gene interventions and are defined either as knock-ins or as knock-outs.')
         # 1) Preprocess Model
         print('Preparing strain design computation.')
         print('  Using '+kwargs[SOLVER]+' for solving LPs during preprocessing.')
