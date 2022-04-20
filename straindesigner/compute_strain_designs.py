@@ -1,5 +1,5 @@
-from mcs import StrainDesigner, SD_Module
-from mcs.names import *
+from straindesigner import StrainDesigner, SD_Module
+from straindesigner.names import *
 from cobra import Model, Metabolite, Reaction
 from typing import Dict, List, Tuple
 import json

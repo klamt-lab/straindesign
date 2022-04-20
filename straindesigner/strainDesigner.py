@@ -6,10 +6,10 @@ from contextlib import redirect_stdout, redirect_stderr
 from typing import Dict, List, Tuple
 from cobra import Model, Metabolite, Reaction
 from cobra.util.array import create_stoichiometric_matrix
-from mcs import StrainDesignMILP, SD_Module, SD_Solution
-from mcs.strainDesignModule import *
-from mcs.fva import *
-from mcs.names import *
+from straindesigner import StrainDesignMILP, SD_Module, SD_Solution
+from straindesigner.strainDesignModule import *
+from straindesigner.fva import *
+from straindesigner.names import *
 from warnings import warn, catch_warnings
 import jpype
 from sympy import Rational, nsimplify, parse_expr, to_dnf
@@ -632,7 +632,7 @@ class StrainDesigner(StrainDesignMILP):
         print("  "+str(len(self.cmp_ko_cost)+len(self.cmp_ki_cost)-len(essential_kis))+" targetable reactions")
         super().__init__(cmp_model,sd_modules, *args, **kwargs1)
 
-    def expand_mcs(self,sd):
+    def expand_sd(self,sd):
         # expand mcs by applying the compression steps in the reverse order
         cmp_map = self.cmp_mapReac[::-1]
         for exp in cmp_map:
@@ -692,7 +692,7 @@ class StrainDesigner(StrainDesignMILP):
     def enumerate(self, *args, **kwargs):
         cmp_sd_solution = super().enumerate(*args, **kwargs)
         if cmp_sd_solution.status in [OPTIMAL,TIME_LIMIT_W_SOL]:
-            sd = self.expand_mcs(cmp_sd_solution.get_reaction_sd_mark_no_ki())
+            sd = self.expand_sd(cmp_sd_solution.get_reaction_sd_mark_no_ki())
         else:
             sd = []
         solutions = self.build_full_sd_solution(sd, cmp_sd_solution)
@@ -702,7 +702,7 @@ class StrainDesigner(StrainDesignMILP):
     def compute_optimal(self, *args, **kwargs):
         cmp_sd_solution = super().compute_optimal(*args, **kwargs)
         if cmp_sd_solution.status in [OPTIMAL,TIME_LIMIT_W_SOL]:
-            sd = self.expand_mcs(cmp_sd_solution.get_reaction_sd_mark_no_ki())
+            sd = self.expand_sd(cmp_sd_solution.get_reaction_sd_mark_no_ki())
         else:
             sd = []
         solutions = self.build_full_sd_solution(sd, cmp_sd_solution)
@@ -712,7 +712,7 @@ class StrainDesigner(StrainDesignMILP):
     def compute(self, *args, **kwargs):
         cmp_sd_solution = super().compute(*args, **kwargs)
         if cmp_sd_solution.status in [OPTIMAL,TIME_LIMIT_W_SOL]:
-            sd = self.expand_mcs(cmp_sd_solution.get_reaction_sd_mark_no_ki())
+            sd = self.expand_sd(cmp_sd_solution.get_reaction_sd_mark_no_ki())
         else:
             sd = []
         solutions = self.build_full_sd_solution(sd, cmp_sd_solution)

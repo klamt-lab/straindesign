@@ -1,6 +1,6 @@
 from scipy import sparse
-from mcs import MILP_LP, parse_constraints, lineqlist2mat, Pool
-from mcs.names import *
+from straindesigner import MILP_LP, parse_constraints, lineqlist2mat, Pool
+from straindesigner.names import *
 from typing import Tuple
 from pandas import DataFrame
 from numpy import floor, sign, mod, nan, unique

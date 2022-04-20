@@ -1,7 +1,7 @@
 import cobra
 from scipy import sparse
-from mcs import MILP_LP, parse_constraints, lineqlist2mat, linexpr2dict, linexprdict2mat
-from mcs.names import *
+from straindesigner import MILP_LP, parse_constraints, lineqlist2mat, linexpr2dict, linexprdict2mat
+from straindesigner.names import *
 from typing import Dict
 # FBA for cobra model with CPLEX
 # the user may provide the optional arguments

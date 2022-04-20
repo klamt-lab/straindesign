@@ -2,7 +2,7 @@ from scipy import sparse
 from numpy import isnan, nan, inf, isinf, sum, array, nonzero
 import pyscipopt as pso
 import cobra
-from mcs.names import *
+from straindesigner.names import *
 from typing import Tuple, List
 import time as t
 

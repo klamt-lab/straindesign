@@ -1,11 +1,11 @@
-from mcs.strainDesignSolution import SD_Solution
+from straindesigner.strainDesignSolution import SD_Solution
 import numpy as np
 from scipy import sparse
 import time
 from cobra import Model
 from typing import Dict, List, Tuple
-from mcs import StrainDesignMILPBuilder, MILP_LP, SD_Module
-from mcs.names import *
+from straindesigner import StrainDesignMILPBuilder, MILP_LP, SD_Module
+from straindesigner.names import *
 from warnings import warn
 
 class StrainDesignMILP(StrainDesignMILPBuilder):

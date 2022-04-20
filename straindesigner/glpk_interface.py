@@ -1,8 +1,8 @@
 from scipy import sparse
 from numpy import nan, isnan, inf, isinf, sum, array
 import cobra
-from mcs import indicator_constraints
-from mcs.names import *
+from straindesigner import indicator_constraints
+from straindesigner.names import *
 from typing import Tuple, List
 from swiglpk import *
 from sympy import unbranched_argument

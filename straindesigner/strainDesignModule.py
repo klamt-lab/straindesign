@@ -14,8 +14,8 @@
 from numpy import all
 from typing import List, Dict, Tuple, Union, Set, FrozenSet
 import re
-from mcs.parse_constr import *
-from mcs.names import *
+from straindesigner.parse_constr import *
+from straindesigner.names import *
 from optlang.interface import OPTIMAL, INFEASIBLE, UNBOUNDED
 
 """

@@ -14,8 +14,8 @@
 from numpy import all, any, nan, isnan
 from sympy import Rational, nsimplify, parse_expr, to_dnf
 from typing import List, Dict, Tuple, Union, Set, FrozenSet
-from mcs.parse_constr import *
-from mcs.names import *
+from straindesigner.parse_constr import *
+from straindesigner.names import *
 from optlang.interface import OPTIMAL, INFEASIBLE, UNBOUNDED
 import re
 import json
