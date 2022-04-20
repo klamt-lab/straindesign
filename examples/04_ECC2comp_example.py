@@ -1,15 +1,15 @@
 #%%
 import cobra
 import optlang
-import mcs.mcs_computation as mcs_computation
+import straindesigner.mcs_computation as mcs_computation
 import numpy
 import scipy
 
 #%% 
 from importlib import reload
-import mcs
-reload(mcs)
-import mcs.mcs_computation as mcs_computation
+import straindesigner
+reload(straindesigner)
+import straindesigner.mcs_computation as mcs_computation
 
 #%%
 ecc2 = cobra.io.read_sbml_model("ECC2comp.sbml")
@@ -49,7 +49,7 @@ print(set(ecc2_mcs) == set(ecc2_mcsF))
 
 # %%
 import pickle
-with open("ecc2_mcs.pkl","rb") as f:
+with open("ecc2_straindesigner.pkl","rb") as f:
     ref = pickle.load(f)
 set(ecc2_mcs) - ref
 

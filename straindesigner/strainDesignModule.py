@@ -136,7 +136,7 @@ class SD_Module(Dict):
 
         # verify self[CONSTRAINTS]
         if self['skip_checks'] is None:
-            from mcs import fba
+            from straindesigner import fba
             if fba(model,constraints=self[CONSTRAINTS]).status == INFEASIBLE:
                 raise Exception("There is no feasible solution of the model under the given constraints.")
             
