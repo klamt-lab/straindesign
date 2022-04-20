@@ -53,14 +53,14 @@ def compute_strain_designs(model: Model, **kwargs):
     kwargs_computation.update({'show_no_ki' : True})
         
     # construct Strain Desing MILP
-    mcsEnum = StrainDesigner( model, sd_modules, **kwargs)
+    strain_design_MILP = StrainDesigner( model, sd_modules, **kwargs)
 
     # solve MILP
     if solution_approach == ANY:
-        sd_solutions = mcsEnum.compute(**kwargs_computation)
+        sd_solutions = strain_design_MILP.compute(**kwargs_computation)
     elif solution_approach == SMALLEST:
-        sd_solutions = mcsEnum.compute_optimal(**kwargs_computation)
+        sd_solutions = strain_design_MILP.compute_optimal(**kwargs_computation)
     elif solution_approach == CARDINALITY:
-        sd_solutions = mcsEnum.enumerate(**kwargs_computation)
+        sd_solutions = strain_design_MILP.enumerate(**kwargs_computation)
 
     return sd_solutions

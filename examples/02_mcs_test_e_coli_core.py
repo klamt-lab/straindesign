@@ -20,7 +20,7 @@ sol = mcs.fba(network,constraints=["EX_o2_e=0"])
 # specify MCS setup
 maxSolutions = np.inf
 maxCost = 25
-solver = 'cplex'
+solver = 'scip'
 # ko_cost = { 'PFK'       : 1,
 #             'PFL'       : 2,
 #             'PGI'       : 1.4,
@@ -66,7 +66,7 @@ gko_cost = {'pfkA'      : 0.7,
             'pgl'       : 2.6,
             'sucA'      : 1.3,
             'sucB'      : 1.38,
-            'lpd'       : 1.3,
+            # 'lpd'       : 1.3,
             'atpA'      : 0.7,
             'pta'       : 0.9,
             'eutD'      : 0.9,
@@ -107,12 +107,13 @@ ki_cost = { 'O2t'       : 0.2,
 # gko_cost = None
 M=None
 output_format = 'auto'
-sd, status = mcs.compute_strain_designs(network,sd_modules=modules, max_cost=maxCost,ko_cost=ko_cost, \
+solution = mcs.compute_strain_designs(network,sd_modules=modules, max_cost=maxCost,ko_cost=ko_cost, \
                                         ki_cost=ki_cost, gko_cost=gko_cost, gki_cost=gki_cost, \
                                         solver=solver, M=None , compress=True)
 # sd, status = mcs.compute_strain_designs(network,modules, max_cost=maxCost,ko_cost=ko_cost, \
 #                                         ki_cost=ki_cost, solver=solver,M=None ,output_format=output_format)
-[print(r) for r in sd]
+[print(r) for r in solution.get_strain_designs()]
+rsd, assoc, gsd = solution.get_gene_reac_sd_assoc()
 exit()
 # conrtruct MCS MILP
 # mcsEnum = mcs.StrainDesigner(network,modules, max_cost=maxCost,gko_cost=gko_cost,ko_cost=ko_cost, ki_cost=ki_cost, solver=solver,M=M)

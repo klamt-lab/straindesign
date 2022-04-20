@@ -211,11 +211,11 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         if status == TIME_LIMIT and sols.shape[0] > 0: # some solutions found, timelimit reached
             status = TIME_LIMIT_W_SOL
         if endtime-time.time() > 0 and sols.shape[0] > 0:
-            print('Finished. ')
+            print('Finished solving strain design MILP. ')
             if 'strainDesignMILP' in self.__module__:
                 print(str(sols.shape[0]) +' solutions found.')
         elif endtime-time.time() > 0:
-            print('Finished.')
+            print('Finished solving strain design MILP.')
             if 'strainDesignMILP' in self.__module__:
                 print(' No solutions exist.')
         else:
@@ -314,11 +314,11 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         if status == TIME_LIMIT and sols.shape[0] > 0: # some solutions found, timelimit reached
             status = TIME_LIMIT_W_SOL
         if endtime-time.time() > 0 and sols.shape[0] > 0:
-            print('Finished. ')
+            print('Finished solving strain design MILP. ')
             if 'strainDesignMILP' in self.__module__:
                 print(str(sols.shape[0]) +' solutions found.')
         elif endtime-time.time() > 0:
-            print('Finished.')
+            print('Finished solving strain design MILP.')
             if 'strainDesignMILP' in self.__module__:
                 print(' No solutions exist.')
         else:
@@ -398,11 +398,11 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         if status == TIME_LIMIT and sols.shape[0] > 0: # some solutions found, timelimit reached
             status = TIME_LIMIT_W_SOL
         if endtime-time.time() > 0 and sols.shape[0] > 0:
-            print('Finished. ')
+            print('Finished solving strain design MILP. ')
             if 'strainDesignMILP' in self.__module__:
                 print(str(sols.shape[0]) +' solutions found.')
         elif endtime-time.time() > 0:
-            print('Finished.')
+            print('Finished solving strain design MILP.')
             if 'strainDesignMILP' in self.__module__:
                 print(' No solutions exist.')
         else:

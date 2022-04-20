@@ -396,7 +396,14 @@ class StrainDesigner(StrainDesignMILP):
         if "SD_Module" in str(type(sd_modules)):
             sd_modules = [sd_modules]
         self.orig_sd_modules = sd_modules
-        self.orig_model      = model
+        # check that at most one bilevel module is provided
+        bilvl_modules = [i for i,m in enumerate(sd_modules) \
+                    if m[MODULE_TYPE] in [OPTKNOCK,ROBUSTKNOCK,OPTCOUPLE]]
+        if len(bilvl_modules) > 1:
+            raise Exception("Only one of the module types 'OptKnock', 'RobustKnock' and 'OptCouple' can be defined per "\
+                                "strain design setup.")
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()): # suppress standard output from copying model
+            self.orig_model = model.copy()
         self.orig_ko_cost   = self.uncmp_ko_cost
         self.orig_ki_cost   = self.uncmp_ki_cost
         self.compress        = kwargs['compress']
@@ -469,6 +476,8 @@ class StrainDesigner(StrainDesignMILP):
                     num_gpr   = len([True for r in uncmp_model.reactions if r.gene_reaction_rule])
                     print('  Simplifyied to '+str(num_genes)+' genes and '+\
                         str(num_gpr)+' gpr rules.')
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()): # suppress standard output from copying model
+                    self.orig_model = uncmp_model.copy()
             print('  Extending metabolic network with gpr associations.')
             reac_map = extend_model_gpr(uncmp_model,self.uncmp_gko_cost, self.uncmp_gki_cost)
             for i,m in enumerate(sd_modules):
@@ -620,7 +629,7 @@ class StrainDesigner(StrainDesignMILP):
             kwargs1.pop(GKICOST)
         print("Finished preprocessing:")
         print("  Model size: "+str(len(cmp_model.reactions))+" reactions, "+str(len(cmp_model.metabolites))+" metabolites")
-        print("  "+str(len(self.cmp_ko_cost)+len(self.cmp_ki_cost))+" targetable reactions")
+        print("  "+str(len(self.cmp_ko_cost)+len(self.cmp_ki_cost)-len(essential_kis))+" targetable reactions")
         super().__init__(cmp_model,sd_modules, *args, **kwargs1)
 
     def expand_mcs(self,sd):
@@ -656,6 +665,9 @@ class StrainDesigner(StrainDesignMILP):
                                         if d in ki_cost:
                                             new_m = m.copy()
                                             new_m[d] = val
+                                            # other reactions do not need to be knocked in
+                                            for f in [e for e in r_orig if (e in ki_cost) and e != d]:
+                                                new_m[f] = 0.0
                                             sd += [new_m]
                                 else:
                                     new_m = m.copy()
@@ -680,29 +692,32 @@ class StrainDesigner(StrainDesignMILP):
     def enumerate(self, *args, **kwargs):
         cmp_sd_solution = super().enumerate(*args, **kwargs)
         if cmp_sd_solution.status in [OPTIMAL,TIME_LIMIT_W_SOL]:
-            sd = self.expand_mcs(cmp_sd_solution.get_rsd())
+            sd = self.expand_mcs(cmp_sd_solution.get_reaction_sd_mark_no_ki())
         else:
             sd = []
+        solutions = self.build_full_sd_solution(sd, cmp_sd_solution)
         print(str(len(sd)) +' solutions found.')
-        return self.build_full_sd_solution(sd, cmp_sd_solution)
+        return solutions
     
     def compute_optimal(self, *args, **kwargs):
         cmp_sd_solution = super().compute_optimal(*args, **kwargs)
         if cmp_sd_solution.status in [OPTIMAL,TIME_LIMIT_W_SOL]:
-            sd = self.expand_mcs(cmp_sd_solution.get_rsd())
+            sd = self.expand_mcs(cmp_sd_solution.get_reaction_sd_mark_no_ki())
         else:
             sd = []
+        solutions = self.build_full_sd_solution(sd, cmp_sd_solution)
         print(str(len(sd)) +' solutions found.')
-        return self.build_full_sd_solution(sd, cmp_sd_solution)
+        return solutions
     
     def compute(self, *args, **kwargs):
         cmp_sd_solution = super().compute(*args, **kwargs)
         if cmp_sd_solution.status in [OPTIMAL,TIME_LIMIT_W_SOL]:
-            sd = self.expand_mcs(cmp_sd_solution.get_rsd())
+            sd = self.expand_mcs(cmp_sd_solution.get_reaction_sd_mark_no_ki())
         else:
             sd = []
+        solutions = self.build_full_sd_solution(sd, cmp_sd_solution)
         print(str(len(sd)) +' solutions found.')
-        return self.build_full_sd_solution(sd, cmp_sd_solution)
+        return solutions
     
     def build_full_sd_solution(self, sd, sd_solution_cmp):
         sd_setup = {}
@@ -718,4 +733,4 @@ class StrainDesigner(StrainDesignMILP):
         if self.gene_sd:
             sd_setup[GKOCOST] = self.orig_gko_cost
             sd_setup[GKICOST] = self.orig_gki_cost
-        return SD_Solution(self.model,sd,sd_solution_cmp.status,sd_setup)
+        return SD_Solution(self.orig_model,sd,sd_solution_cmp.status,sd_setup)

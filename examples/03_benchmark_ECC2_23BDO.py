@@ -31,10 +31,10 @@ mcsEnum = mcs.StrainDesigner(network,modules,compress=True, gko_cost = gko_cost,
 # mcsEnum = mcs.StrainDesignMILP(network,modules, max_cost=maxCost, solver=solver,M=M)
 
 # solve MILP
-# rmcs = mcsEnum.enumerate(max_solutions=maxSolutions)
-rmcs = mcsEnum.compute_optimal(max_solutions=maxSolutions)
-# rmcs = mcsEnum.compute(max_solutions=3)
-print(len(rmcs.get_sd()))
+solutions = mcsEnum.enumerate(max_solutions=maxSolutions)
+# solutions = mcsEnum.compute_optimal(max_solutions=maxSolutions)
+# solutions = mcsEnum.compute(max_solutions=3)
+print(len(solutions.get_strain_designs()))
 io.savemat('mcs_python.mat', mdict={'whatever_data': \
-    [','.join(a) for a in [[k for k,v in m.items()] for m in rmcs.get_sd()]]})
+    [','.join(a) for a in [[k for k,v in m.items()] for m in solutions.get_strain_designs()]]})
 pass
