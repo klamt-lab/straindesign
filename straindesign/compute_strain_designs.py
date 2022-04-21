@@ -1,5 +1,5 @@
-from straindesigner import StrainDesigner, SD_Module
-from straindesigner.names import *
+from straindesign import StrainDesigner, SD_Module
+from straindesign.names import *
 from cobra import Model, Metabolite, Reaction
 from typing import Dict, List, Tuple
 import json
@@ -14,13 +14,15 @@ def compute_strain_designs(model: Model, **kwargs):
     # 1. Provide model, strain design module and optional computation parameters
     # 2. Provide a full strain design setup in dict form (either as a dict from 
     #    previous MCS computations or a JSON ".sd"-file)
-    if MODULES in kwargs:
-        sd_modules = kwargs.pop(MODULES)
-    elif SETUP in kwargs:
+    if SETUP in kwargs:
         if type(kwargs[SETUP]) is str:
-            kwargs = json.load(kwargs[SETUP])
+            with open(kwargs[SETUP],'r') as fs:
+                kwargs = json.load(fs)
         else:
             kwargs = kwargs[SETUP]
+            
+    if MODULES in kwargs:
+        sd_modules = kwargs.pop(MODULES)
         
     if MAX_COST in kwargs:
         kwargs.update({MAX_COST : float(kwargs.pop(MAX_COST))})

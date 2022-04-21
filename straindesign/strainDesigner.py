@@ -6,10 +6,10 @@ from contextlib import redirect_stdout, redirect_stderr
 from typing import Dict, List, Tuple
 from cobra import Model, Metabolite, Reaction
 from cobra.util.array import create_stoichiometric_matrix
-from straindesigner import StrainDesignMILP, SD_Module, SD_Solution
-from straindesigner.strainDesignModule import *
-from straindesigner.fva import *
-from straindesigner.names import *
+from straindesign import StrainDesignMILP, SD_Module, SD_Solution
+from straindesign.strainDesignModule import *
+from straindesign.fva import *
+from straindesign.names import *
 from warnings import warn, catch_warnings
 import jpype
 from sympy import Rational, nsimplify, parse_expr, to_dnf

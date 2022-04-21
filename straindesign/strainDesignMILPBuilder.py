@@ -1,13 +1,13 @@
-from straindesigner.strainDesignModule import MINIMIZE
+from straindesign.strainDesignModule import MINIMIZE
 import numpy as np
 from scipy import sparse
 from cobra.util import ProcessPool, solvers, create_stoichiometric_matrix
 from cobra import Model
 from cobra.core import Configuration
 from typing import List, Tuple
-from straindesigner import SD_Module, Indicator_constraints, lineqlist2mat, linexprdict2mat, MILP_LP
-from straindesigner.strainDesignModule import *
-from straindesigner.names import *
+from straindesign import SD_Module, Indicator_constraints, lineqlist2mat, linexprdict2mat, MILP_LP
+from straindesign.strainDesignModule import *
+from straindesign.names import *
 
 class StrainDesignMILPBuilder:
     """Class for computing Strain Designs (SD)"""

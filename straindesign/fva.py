@@ -1,6 +1,6 @@
 from scipy import sparse
-from straindesigner import MILP_LP, parse_constraints, lineqlist2mat, Pool
-from straindesigner.names import *
+from straindesign import MILP_LP, parse_constraints, lineqlist2mat, Pool
+from straindesign.names import *
 from typing import Tuple
 from pandas import DataFrame
 from numpy import floor, sign, mod, nan, unique
@@ -18,7 +18,7 @@ def idx2c(i,prev):
     col = int(floor(i/2))
     sig = sign(mod(i,2)-0.5)
     C = [[col,sig],[prev,0.0]]
-    C_idx = [C[i][0] for i in range (len(C))]
+    C_idx = [C[i][0] for i in range(len(C))]
     C_idx = unique([C_idx.index(C_idx[i]) for i in range(len(C_idx))])
     C = [C[i] for i in C_idx]
     return C
@@ -42,6 +42,30 @@ def worker_compute(i) -> Tuple[int,float]:
         lp_glob.set_objective_idx(C)
         min_cx = lp_glob.slim_solve()
     lp_glob.prev = C[0][0]
+    return i, min_cx
+
+# GLPK needs a workaround, because problems cannot be solved in a different thread
+# which apparently happens with the multiprocess
+
+def worker_init_glpk(A_ineq,b_ineq,A_eq,b_eq,lb,ub):
+    global lp_glob
+    lp_glob = {}
+    lp_glob['A_ineq'] = A_ineq
+    lp_glob['b_ineq'] = b_ineq
+    lp_glob['A_eq'] = A_eq
+    lp_glob['b_eq'] = b_eq
+    lp_glob['lb'] = lb
+    lp_glob['ub'] = ub
+
+def worker_compute_glpk(i) -> Tuple[int,float]:
+    global lp_glob
+    lp_i = MILP_LP(A_ineq=lp_glob['A_ineq'], b_ineq=lp_glob['b_ineq'], 
+                 A_eq=lp_glob['A_eq'], b_eq=lp_glob['b_eq'], lb=lp_glob['lb'], 
+                 ub=lp_glob['ub'], solver=GLPK)
+    col = int(floor(i/2))
+    sig = sign(mod(i,2)-0.5)
+    lp_i.set_objective_idx([[col,sig]])
+    min_cx = lp_i.slim_solve()
     return i, min_cx
 
 def fva(model,**kwargs):
@@ -96,12 +120,26 @@ def fva(model,**kwargs):
     # Dummy to check if optimization runs
     # worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver)
     # worker_compute(1)
-    if processes > 1 & numr > 300:
-        pool = Pool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver))
-        chunk_size = len(reaction_ids) // processes
-        # x = pool.imap_unordered(worker_compute, range(2*numr), chunksize=chunk_size)
-        for i, value in pool.imap_unordered( worker_compute, range(2*numr), chunksize=chunk_size):
-            x[i] = value
+    if processes > 1 and numr > 300 and solver != GLPK:
+        # with Pool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver)) as pool:
+        with Pool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver)) as pool:
+            chunk_size = len(reaction_ids) // processes
+            # x = pool.imap_unordered(worker_compute, range(2*numr), chunksize=chunk_size)
+            for i, value in pool.imap_unordered( worker_compute, range(2*numr), chunksize=chunk_size):
+                x[i] = value
+            pool.close()
+            pool.join()
+    elif processes > 1 and numr > 300 and solver == GLPK:
+        # worker_init_glpk(A_ineq,b_ineq,A_eq,b_eq,lb,ub)
+        # for i in range(2*numr):
+        #     _, x[i] = worker_compute_glpk(i)
+        with Pool(processes,initializer=worker_init_glpk,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub)) as pool:
+            chunk_size = len(reaction_ids) // processes
+            # # x = pool.imap_unordered(worker_compute, range(2*numr), chunksize=chunk_size)
+            for i, value in pool.imap_unordered( worker_compute_glpk, range(2*numr), chunksize=chunk_size):
+                x[i] = value
+            pool.close()
+            pool.join()
     else:
         worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver)
         for i in range(2*numr):

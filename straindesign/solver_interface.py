@@ -98,15 +98,15 @@ class MILP_LP(object):
             print('Provided big M value is ignored unless glpk is used.') 
         # Create backend
         if self.solver == 'cplex':
-            from straindesigner.cplex_interface import Cplex_MILP_LP
+            from straindesign.cplex_interface import Cplex_MILP_LP
             self.backend = Cplex_MILP_LP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
                                             self.indic_constr)
         elif self.solver == 'gurobi':
-            from straindesigner.gurobi_interface import Gurobi_MILP_LP
+            from straindesign.gurobi_interface import Gurobi_MILP_LP
             self.backend = Gurobi_MILP_LP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
                                             self.indic_constr)
         elif self.solver == 'scip':
-            from straindesigner.scip_interface import SCIP_MILP, SCIP_LP
+            from straindesign.scip_interface import SCIP_MILP, SCIP_LP
             self.isLP = all(v=='C' for v in self.vtype)
             if self.isLP:
                 self.backend = SCIP_LP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub)
@@ -115,7 +115,7 @@ class MILP_LP(object):
                 self.backend = SCIP_MILP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
                                 self.indic_constr)
         elif self.solver == 'glpk':
-            from straindesigner.glpk_interface import GLPK_MILP_LP
+            from straindesign.glpk_interface import GLPK_MILP_LP
             self.backend = GLPK_MILP_LP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
                                             self.indic_constr,self.M)
         if self.tlim is None:

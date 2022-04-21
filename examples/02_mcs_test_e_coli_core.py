@@ -1,7 +1,7 @@
 import cobra
 import numpy as np
 from importlib import reload
-import straindesigner
+import straindesign
 import os
 from scipy import sparse
 #import traceback
@@ -12,10 +12,10 @@ import sys
 network = cobra.io.read_sbml_model(os.path.dirname(os.path.abspath(__file__))+"/e_coli_core.sbml")
 
 # specify modules
-modules = straindesigner.SD_Module(network,"mcs_bilvl",module_sense="desired",constraints=["2 BIOMASS_Ecoli_core_w_GAM >= 0.1","EX_etoh_e >= 1"],inner_objective="BIOMASS_Ecoli_core_w_GAM")
+modules = straindesign.SD_Module(network,"mcs_bilvl",module_sense="desired",constraints=["2 BIOMASS_Ecoli_core_w_GAM >= 0.1","EX_etoh_e >= 1"],inner_objective="BIOMASS_Ecoli_core_w_GAM")
 
-straindesigner.fba(network,obj=modules['inner_objective'])
-sol = straindesigner.fba(network,constraints=["EX_o2_e=0"])
+straindesign.fba(network,obj=modules['inner_objective'])
+sol = straindesign.fba(network,constraints=["EX_o2_e=0"])
 
 # specify MCS setup
 maxSolutions = np.inf
@@ -107,18 +107,18 @@ ki_cost = { 'O2t'       : 0.2,
 # gko_cost = None
 M=None
 output_format = 'auto'
-solution = straindesigner.compute_strain_designs(network,sd_modules=modules, max_cost=maxCost,ko_cost=ko_cost, \
+solution = straindesign.compute_strain_designs(network,sd_modules=modules, max_cost=maxCost,ko_cost=ko_cost, \
                                         ki_cost=ki_cost, gko_cost=gko_cost, gki_cost=gki_cost, \
                                         solver=solver, M=None , compress=True)
-# sd, status = straindesigner.compute_strain_designs(network,modules, max_cost=maxCost,ko_cost=ko_cost, \
+# sd, status = straindesign.compute_strain_designs(network,modules, max_cost=maxCost,ko_cost=ko_cost, \
 #                                         ki_cost=ki_cost, solver=solver,M=None ,output_format=output_format)
 [print(r) for r in solution.get_strain_designs()]
 rsd, assoc, gsd = solution.get_gene_reac_sd_assoc()
 exit()
 # conrtruct MCS MILP
-# mcsEnum = straindesigner.StrainDesigner(network,modules, max_cost=maxCost,gko_cost=gko_cost,ko_cost=ko_cost, ki_cost=ki_cost, solver=solver,M=M)
-mcsEnum = straindesigner.StrainDesigner(network,modules, max_cost=maxCost,ko_cost=ko_cost, ki_cost=ki_cost, solver=solver,M=M)
-# mcsEnum = straindesigner.StrainDesignMILP(network,modules,ko_cost=ko_cost, ki_cost=ki_cost, max_cost=maxCost,solver=solver,M=None)
+# mcsEnum = straindesign.StrainDesigner(network,modules, max_cost=maxCost,gko_cost=gko_cost,ko_cost=ko_cost, ki_cost=ki_cost, solver=solver,M=M)
+mcsEnum = straindesign.StrainDesigner(network,modules, max_cost=maxCost,ko_cost=ko_cost, ki_cost=ki_cost, solver=solver,M=M)
+# mcsEnum = straindesign.StrainDesignMILP(network,modules,ko_cost=ko_cost, ki_cost=ki_cost, max_cost=maxCost,solver=solver,M=None)
 
 # solve MILP
 rmcs,status = mcsEnum.enumerate(max_solutions=maxSolutions,show_no_ki=True)

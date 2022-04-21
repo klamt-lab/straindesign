@@ -5,7 +5,7 @@ from cplex.exceptions import CplexError
 from typing import Tuple, List
 import io
 from os import cpu_count
-from straindesigner.names import *
+from straindesign.names import *
 
 # Collection of CPLEX-related functions that facilitate the creation
 # of CPLEX-object and the solutions of LPs/MILPs with CPLEX from

@@ -14,11 +14,12 @@
 from numpy import all, any, nan, isnan
 from sympy import Rational, nsimplify, parse_expr, to_dnf
 from typing import List, Dict, Tuple, Union, Set, FrozenSet
-from straindesigner.parse_constr import *
-from straindesigner.names import *
+from straindesign.parse_constr import *
+from straindesign.names import *
 from optlang.interface import OPTIMAL, INFEASIBLE, UNBOUNDED
 import re
 import json
+import pickle
 
 class SD_Solution(object):
     def __init__(self, model, sd, status, sd_setup):
@@ -175,6 +176,16 @@ class SD_Solution(object):
                 reacs_sd.append(s)
             assoc.append(reacs_sd_hash.index(hs))
         return reacs_sd, assoc, gene_sd
+    
+    def save(self,filename):
+        with open(filename,'wb') as f:
+            pickle.dump(self,f)
+    
+    @classmethod
+    def load(cls,filename):
+        with open(filename,'rb') as f:
+            cls = pickle.load(f)
+        return cls
         
 def strip_non_ki(sd):
     return {k:v for k,v in sd.items() if v != 0.0}

@@ -10,8 +10,11 @@ from tempfile import mkstemp
 from types import TracebackType
 from typing import Any, Callable, Optional, Tuple, Type
 
-__all__ = ("Pool",)
+RUN = 0
+CLOSE = 1
+TERMINATE = 2
 
+# __all__ = ("Pool",)
 
 def _init_win_worker(filename: str) -> None:
     """Retrieve worker initialization code from a pickle file and call it."""
@@ -61,16 +64,6 @@ class Pool(Pool):
             context=context,
         )
 
-
-    def __getattr__(self, name: str, **kwargs) -> Any:
-        """Defer attribute access to the pool instance."""
-        return getattr(self._pool, name, **kwargs)
-
-    def __enter__(self) -> "ProcessPool1":
-        """Enable context management."""
-        self._pool.__enter__()
-        return self
-
     def __exit__(
         self,
         exc_type: Optional[Type[BaseException]],
@@ -78,7 +71,7 @@ class Pool(Pool):
         exc_tb: Optional[TracebackType],
     ) -> Optional[bool]:
         """Clean up resources when leaving a context."""
-        result = self._pool.__exit__(exc_type, exc_val, exc_tb)
+        result = super().__exit__(exc_type, exc_val, exc_tb)
         self._clean_up()
         return result
 
@@ -91,7 +84,7 @@ class Pool(Pool):
 
         """
         try:
-            self._pool.close()
+            super().close()
         finally:
             self._clean_up()
 

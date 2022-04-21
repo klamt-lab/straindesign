@@ -14,8 +14,8 @@
 from numpy import all
 from typing import List, Dict, Tuple, Union, Set, FrozenSet
 import re
-from straindesigner.parse_constr import *
-from straindesigner.names import *
+from straindesign.parse_constr import *
+from straindesign.names import *
 from optlang.interface import OPTIMAL, INFEASIBLE, UNBOUNDED
 
 """
@@ -136,7 +136,7 @@ class SD_Module(Dict):
 
         # verify self[CONSTRAINTS]
         if self['skip_checks'] is None:
-            from straindesigner import fba
+            from straindesign import fba
             if fba(model,constraints=self[CONSTRAINTS]).status == INFEASIBLE:
                 raise Exception("There is no feasible solution of the model under the given constraints.")
             

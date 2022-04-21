@@ -2,7 +2,7 @@ from scipy import sparse
 from numpy import nan, inf, isinf, sum, array
 import gurobipy as gp
 from gurobipy import GRB as grb
-from straindesigner.names import *
+from straindesign.names import *
 from typing import Tuple, List
 
 # Collection of Gurobi-related functions that facilitate the creation
