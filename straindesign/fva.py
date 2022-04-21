@@ -6,6 +6,8 @@ from pandas import DataFrame
 from numpy import floor, sign, mod, nan, unique
 from os import cpu_count
 from cobra.util import create_stoichiometric_matrix
+from contextlib import redirect_stdout, redirect_stderr
+from io import StringIO
 # from cobra.util import ProcessPool, create_stoichiometric_matrix
 
 # FBA for cobra model with CPLEX
@@ -25,24 +27,27 @@ def idx2c(i,prev):
 
 def worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver):
     global lp_glob
-    lp_glob = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
-                                    lb=lb, ub=ub, solver=solver)
-    if lp_glob.solver == 'cplex':
-        lp_glob.backend.parameters.threads.set(1)
-        #lp_glob.backend.parameters.lpmethod.set(1)
-    lp_glob.prev = 0
+    # redirect output to empty stream. Perhaps avoids some multithreading issues
+    with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+        lp_glob = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
+                                        lb=lb, ub=ub, solver=solver)
+        if lp_glob.solver == 'cplex':
+            lp_glob.backend.parameters.threads.set(1)
+            #lp_glob.backend.parameters.lpmethod.set(1)
+        lp_glob.prev = 0
 
 def worker_compute(i) -> Tuple[int,float]:
     global lp_glob
-    C = idx2c(i,lp_glob.prev)
-    if lp_glob.solver in ['cplex','gurobi']:
-        lp_glob.backend.set_objective_idx(C)
-        min_cx = lp_glob.backend.slim_solve()
-    else:
-        lp_glob.set_objective_idx(C)
-        min_cx = lp_glob.slim_solve()
-    lp_glob.prev = C[0][0]
-    return i, min_cx
+    with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+        C = idx2c(i,lp_glob.prev)
+        if lp_glob.solver in ['cplex','gurobi']:
+            lp_glob.backend.set_objective_idx(C)
+            min_cx = lp_glob.backend.slim_solve()
+        else:
+            lp_glob.set_objective_idx(C)
+            min_cx = lp_glob.slim_solve()
+        lp_glob.prev = C[0][0]
+        return i, min_cx
 
 # GLPK needs a workaround, because problems cannot be solved in a different thread
 # which apparently happens with the multiprocess
@@ -59,13 +64,14 @@ def worker_init_glpk(A_ineq,b_ineq,A_eq,b_eq,lb,ub):
 
 def worker_compute_glpk(i) -> Tuple[int,float]:
     global lp_glob
-    lp_i = MILP_LP(A_ineq=lp_glob['A_ineq'], b_ineq=lp_glob['b_ineq'], 
-                 A_eq=lp_glob['A_eq'], b_eq=lp_glob['b_eq'], lb=lp_glob['lb'], 
-                 ub=lp_glob['ub'], solver=GLPK)
-    col = int(floor(i/2))
-    sig = sign(mod(i,2)-0.5)
-    lp_i.set_objective_idx([[col,sig]])
-    min_cx = lp_i.slim_solve()
+    with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+        lp_i = MILP_LP(A_ineq=lp_glob['A_ineq'], b_ineq=lp_glob['b_ineq'], 
+                    A_eq=lp_glob['A_eq'], b_eq=lp_glob['b_eq'], lb=lp_glob['lb'], 
+                    ub=lp_glob['ub'], solver=GLPK)
+        col = int(floor(i/2))
+        sig = sign(mod(i,2)-0.5)
+        lp_i.set_objective_idx([[col,sig]])
+        min_cx = lp_i.slim_solve()
     return i, min_cx
 
 def fva(model,**kwargs):
