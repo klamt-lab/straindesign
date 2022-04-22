@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from numpy import all, any, nan, isnan
+from numpy import all, any, nan, isnan, inf
 from sympy import Rational, nsimplify, parse_expr, to_dnf
 from typing import List, Dict, Tuple, Union, Set, FrozenSet
 from straindesign.parse_constr import *
@@ -42,7 +42,8 @@ class SD_Solution(object):
                 interventions.add(g_id)
             # get potential gene- and reaction interventions and potentially affected reactions
             reac_itv = set(v for v in interventions if model.reactions.has_id(v))
-            gene_itv = set(v for v in interventions if not model.reactions.has_id(v))
+            gene_itv = set(v for v in interventions if v in model.genes.list_attr('name')+model.genes.list_attr('id'))
+            regl_itv = set(v for v in interventions if v not in reac_itv and v not in gene_itv)
             affected_reacs = set()
             [[affected_reacs.add(r.id) for r in g.reactions] for g in model.genes]
             gpr = {}
@@ -64,6 +65,8 @@ class SD_Solution(object):
                 reac_ko    = set(k for k,v in s.items() if v <  0 and (k in reac_itv))
                 reac_ki    = set(k for k,v in s.items() if v >  0 and (k in reac_itv))
                 reac_no_ki = set(k for k,v in s.items() if v == 0 and (k in reac_itv))
+                reg_itv    = set(k for k,v in s.items() if     v and (k in regl_itv))
+                reg_no_itv = set(k for k,v in s.items() if not v and (k in regl_itv))
                 gene_ko    = {k:False for k,v in s.items() if v <  0 and (k in gene_itv)}
                 gene_ki    = {k:True  for k,v in s.items() if v >  0 and (k in gene_itv)}
                 gene_no_ki = {k:False for k,v in s.items() if v == 0 and (k in gene_itv)}
@@ -88,9 +91,49 @@ class SD_Solution(object):
                 self.reaction_sd[i].update({k:-1.0 for k in reac_ko})
                 self.reaction_sd[i].update({k: 1.0 for k in reac_ki})
                 self.reaction_sd[i].update({k: 0.0 for k in reac_no_ki})
+                self.reaction_sd[i].update({k: True for k in reg_itv})
+                self.reaction_sd[i].update({k: False for k in reg_no_itv})
         else:
             self.reaction_sd = sd
             self.is_gene_sd = False
+        
+        self.has_complex_regul_itv = False
+        self.itv_bounds = [{} for _ in range(len(self.reaction_sd))]
+        for i,s in enumerate(self.reaction_sd):
+            for k,v in s.items():
+                if type(v) in [int, float]:
+                    if v == -1: # reaction was knocked out
+                        self.itv_bounds[i].update({k:(0.0,0.0)})
+                    elif v == 1: # reaction was added
+                        self.itv_bounds[i].update({k:model.reactions.get_by_id(k).bounds})
+                    elif v == 0: # reaction was not added
+                        self.itv_bounds[i].update({k:(nan,nan)})
+            for k,v in s.items():
+                if type(v) == bool and v:
+                    try:
+                        lineq = lineq2list([k],model.reactions.list_attr('id'))[0]
+                    except:
+                        self.has_complex_regul_itv = True
+                        continue
+                    lhs = lineq[0]
+                    if len(lhs) != 1:
+                        self.has_complex_regul_itv = True
+                    else:
+                        eqsign = lineq[1]
+                        rhs = lineq[2]
+                        reac = list(lhs.keys())[0]
+                        coeff = list(lhs.values())[0]
+                        if reac in self.itv_bounds[i]:
+                            bnds = self.itv_bounds[i].pop(reac)
+                        else:
+                            bnds = model.reactions.get_by_id(reac).bounds
+                        if eqsign == '=':
+                            bnds = (rhs/coeff,rhs/coeff)
+                        elif eqsign == '<=':
+                            bnds = (bnds[0],rhs/coeff)
+                        elif eqsign == '>=':
+                            bnds = (rhs/coeff,bnds[1])
+                        self.itv_bounds[i].update({reac:bnds})
             
     def get_num_sols(self):
         return len(self.reaction_sd)
@@ -108,6 +151,14 @@ class SD_Solution(object):
             if type(i) == int:
                 i = [i]
             return [strip_non_ki(s) for j,s in enumerate(self.reaction_sd) if j in i]
+        
+    def get_reaction_sd_bnds(self,i=None):
+        if i is None:
+            return self.itv_bounds
+        else:
+            if type(i) == int:
+                i = [i]
+            return [self.itv_bounds for j,s in enumerate(self.itv_bounds) if j in i]
     
     def get_gene_sd(self,i=None):
         if not self.is_gene_sd:
@@ -188,7 +239,7 @@ class SD_Solution(object):
         return cls
         
 def strip_non_ki(sd):
-    return {k:v for k,v in sd.items() if v != 0.0}
+    return {k:v for k,v in sd.items() if v not in (0.0, False)}
 
 def get_subset(sd,i):
     return [s for j,s in enumerate(sd) if j in i]

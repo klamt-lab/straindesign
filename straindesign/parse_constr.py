@@ -43,7 +43,6 @@ def lineq2mat(equations, reaction_ids) -> Tuple[sparse.csr_matrix, Tuple, sparse
     return A_ineq, b_ineq, A_eq, b_eq
 
 def lineq2list(equations, reaction_ids) -> List:
-    numr = len(reaction_ids)
     D = []
     for equation in equations:
         if not equation:
@@ -54,7 +53,6 @@ def lineq2list(equations, reaction_ids) -> List:
             rhs = float(rhs)
         except:
             raise Exception("Equations must contain exactly one (in)equality sign: <=,=,>=. Right hand side must be a float number.")
-        expr = linexpr2dict(lhs,reaction_ids)
         D.append((linexpr2dict(lhs,reaction_ids),eq_sign,rhs))
     return D
 

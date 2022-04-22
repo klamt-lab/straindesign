@@ -1,11 +1,11 @@
 from straindesign.strainDesignModule import MINIMIZE
 import numpy as np
 from scipy import sparse
-from cobra.util import ProcessPool, solvers, create_stoichiometric_matrix
+from cobra.util import solvers, create_stoichiometric_matrix
 from cobra import Model
 from cobra.core import Configuration
 from typing import List, Tuple
-from straindesign import SD_Module, Indicator_constraints, lineqlist2mat, linexprdict2mat, MILP_LP
+from straindesign import SD_Module, Indicator_constraints, lineqlist2mat, linexprdict2mat, MILP_LP, SDPool
 from straindesign.strainDesignModule import *
 from straindesign.names import *
 
@@ -608,7 +608,7 @@ class StrainDesignMILPBuilder:
 
         print('Bounding MILP.')
         if processes > 1 and num_Ms > 1000:
-            with ProcessPool(processes,initializer=worker_init,initargs=(M_A,M_A_ineq,M_b_ineq,M_A_eq,M_b_eq,M_lb,M_ub,
+            with SDPool(processes,initializer=worker_init,initargs=(M_A,M_A_ineq,M_b_ineq,M_A_eq,M_b_eq,M_lb,M_ub,
                             self.solver)) as pool:
                 chunk_size = num_Ms // processes
                 for i, value in pool.imap_unordered( worker_compute, range(num_Ms), chunksize=chunk_size):

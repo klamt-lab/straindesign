@@ -2,12 +2,12 @@
 Copied and slightly changed from cobra."""
 
 from multiprocessing.pool import Pool
+from multiprocessing import get_context
 import os
 import pickle
 from os.path import isfile
 from platform import system
 from tempfile import mkstemp
-from types import TracebackType
 from typing import Any, Callable, Optional, Tuple, Type
 
 RUN = 0
@@ -23,7 +23,7 @@ def _init_win_worker(filename: str) -> None:
     func(*args)
 
 
-class Pool(Pool):
+class SDPool(Pool):
     """Define a process pool that handles the Windows platform specially."""
 
     def __init__(
@@ -32,7 +32,7 @@ class Pool(Pool):
         initializer: Optional[Callable] = None,
         initargs: Tuple = (),
         maxtasksperchild: Optional[int] = None,
-        context=None):
+        context=get_context('spawn')):
         """
         Initialize a process pool.
 
@@ -64,31 +64,16 @@ class Pool(Pool):
             context=context,
         )
 
-    def __exit__(
-        self,
-        exc_type: Optional[Type[BaseException]],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[TracebackType],
-    ) -> Optional[bool]:
+    def __exit__(self, *args, **kwargs):
         """Clean up resources when leaving a context."""
-        result = super().__exit__(exc_type, exc_val, exc_tb)
         self._clean_up()
-        return result
+        super().__exit__(*args, **kwargs)
 
-    def close(self) -> None:
-        """
-        Close the process pool.
-
-        Prevent any more tasks from being submitted to the pool. Once all the tasks have
-        been completed, the worker processes will exit.
-
-        """
-        try:
-            super().close()
-        finally:
-            self._clean_up()
-
-    def _clean_up(self) -> None:
+    def close(self):
+        self._clean_up()
+        super().close()
+            
+    def _clean_up(self):
         """Remove the dump file if it exists."""
         if self._filename is not None and isfile(self._filename):
             os.remove(self._filename)

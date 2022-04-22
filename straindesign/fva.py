@@ -1,5 +1,5 @@
 from scipy import sparse
-from straindesign import MILP_LP, parse_constraints, lineqlist2mat, Pool
+from straindesign import MILP_LP, parse_constraints, lineqlist2mat, SDPool
 from straindesign.names import *
 from typing import Tuple
 from pandas import DataFrame
@@ -128,24 +128,20 @@ def fva(model,**kwargs):
     # worker_compute(1)
     if processes > 1 and numr > 300 and solver != GLPK:
         # with Pool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver)) as pool:
-        with Pool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver)) as pool:
+        with SDPool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver)) as pool:
             chunk_size = len(reaction_ids) // processes
             # x = pool.imap_unordered(worker_compute, range(2*numr), chunksize=chunk_size)
             for i, value in pool.imap_unordered( worker_compute, range(2*numr), chunksize=chunk_size):
                 x[i] = value
-            pool.close()
-            pool.join()
     elif processes > 1 and numr > 300 and solver == GLPK:
         # worker_init_glpk(A_ineq,b_ineq,A_eq,b_eq,lb,ub)
         # for i in range(2*numr):
         #     _, x[i] = worker_compute_glpk(i)
-        with Pool(processes,initializer=worker_init_glpk,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub)) as pool:
+        with SDPool(processes,initializer=worker_init_glpk,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub)) as pool:
             chunk_size = len(reaction_ids) // processes
             # # x = pool.imap_unordered(worker_compute, range(2*numr), chunksize=chunk_size)
             for i, value in pool.imap_unordered( worker_compute_glpk, range(2*numr), chunksize=chunk_size):
                 x[i] = value
-            pool.close()
-            pool.join()
     else:
         worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver)
         for i in range(2*numr):

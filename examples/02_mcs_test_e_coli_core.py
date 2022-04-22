@@ -103,7 +103,8 @@ ko_cost = { 'SUCCt2_2'  : 0.6,
             'D_LACt2'   : 0.7}
 ki_cost = { 'O2t'       : 0.2,
             'SUCCt3'    : 1.2}
-reg_cost = {'ENO >= 3' : 2}
+reg_cost = {'EX_etoh_e >= 3' : 2,
+            'EX_etoh_e <= 2' : 1}
 # ko_cost = None
 # gko_cost = None
 M=None

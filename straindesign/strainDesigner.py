@@ -141,32 +141,19 @@ def extend_model_gpr(model,gkos,gkis):
     return reac_map
 
 def extend_model_regulatory(model, regcost, kocost):
-    for k,v in regcost.items():
-        reacs_dict = k[0]
-        eqsign = k[1]
-        rhs = k[2]
-        # generate name for pseudometabolite
-        reg_name = []
-        for l,w in reacs_dict.items():
-            if w<0:
-                reg_name += 'n'+str(w)+'_'+l
-            else:
-                reg_name += 'p'+str(w)+'_'+l
-            reg_name += '_'
-        if eqsign == '=':
-            reg_name += 'eq_'
-        elif eqsign == '<=':
-            reg_name += 'le_'
-        elif eqsign == '>=':
-            reg_name += 'ge_'
-        reg_name += str(rhs)
+    for reg_name, vals in regcost.items():
+        lhs = vals['lhs']
+        eqsign = vals['eqsign'] 
+        rhs = vals['rhs']
+        cost = vals['cost']
         reg_pseudomet_name = 'met_'+reg_name
         # add pseudometabolite
-        model.add_metabolites(Metabolite(reg_pseudomet_name))
+        m = Metabolite(reg_pseudomet_name)
+        model.add_metabolites(m)
         # add pseudometabolite to stoichiometries
-        for l,w in reacs_dict.items():
+        for l,w in lhs.items():
             r = model.reactions.get_by_id(l)
-            r.add_metabolites({model.metabolites.get_by_id(reg_pseudomet_name): w})
+            r.add_metabolites({m: w})
         # add pseudoreaction that defines the bound
         s = Reaction("bnd_"+reg_name)
         model.add_reaction(s)
@@ -185,10 +172,46 @@ def extend_model_regulatory(model, regcost, kocost):
         t = Reaction(reg_name)
         model.add_reaction(t)
         t.reaction = '--> '+reg_pseudomet_name
-        t._upper_bound = max([s._upper_bound,0])
-        t._lower_bound = min([s._lower_bound,0])
-        kocost.update({reg_name:v})
+        t._upper_bound =  np.inf
+        t._lower_bound = -np.inf
+        kocost.update({reg_name:cost})
     return kocost
+
+def preprocess_regulatory(model,reg_cost,has_gene_names):
+    keywords = set(model.reactions.list_attr('id')+model.genes.list_attr('name')+model.genes.list_attr('id'))
+    if '' in keywords:
+        keywords.remove('')
+    if has_gene_names:
+        g_id_name_dict = {k:v for k,v in zip(model.genes.list_attr('id'),model.genes.list_attr('name'))}
+    for k,v in reg_cost.copy().items():
+    # generate name for regulatory pseudoreaction
+        try:
+            constr = parse_constraints(k,keywords)[0]
+        except:
+            raise Exception('Regulatory constraints could not be parsed. Please revise.')
+        reacs_dict = constr[0]
+        if has_gene_names:
+            [reacs_dict.update({g_id_name_dict[l]:reacs_dict.pop(l)}) \
+                for l in reacs_dict.copy().keys() if l in g_id_name_dict]
+        eqsign = constr[1]
+        rhs = constr[2]
+        reg_name = ''
+        for l,w in reacs_dict.items():
+            if w<0:
+                reg_name += 'n'+str(w)+'_'+l
+            else:
+                reg_name += 'p'+str(w)+'_'+l
+            reg_name += '_'
+        if eqsign == '=':
+            reg_name += 'eq_'
+        elif eqsign == '<=':
+            reg_name += 'le_'
+        elif eqsign == '>=':
+            reg_name += 'ge_'
+        reg_name += str(rhs)
+        reg_cost.pop(k)
+        reg_cost.update({reg_name:{'str' : k,'lhs' : reacs_dict, 'eqsign' : eqsign, 'rhs' : rhs, 'cost': v}})
+    return reg_cost
 
 def remove_blocked_reactions(model) -> List:
     blocked_reactions = [reac for reac in model.reactions if reac.bounds == (0, 0)]
@@ -429,8 +452,12 @@ class StrainDesigner(StrainDesignMILP):
                 self.uncmp_reg_cost = value
         if (GKOCOST in kwargs or GKICOST in kwargs) and hasattr(model,'genes') and model.genes:
             self.gene_sd = True
+            if np.any([len(g.name) for g in model.genes]):
+                self.has_gene_names = True
+            else:
+                self.has_gene_names = False
             if GKOCOST not in kwargs or not kwargs[GKOCOST]:
-                if np.any([len(g.name) for g in model.genes]): # if gene names are defined, use them instead of ids
+                if self.has_gene_names: # if gene names are defined, use them instead of ids
                     self.uncmp_gko_cost = {k:1.0 for k in model.genes.list_attr('name')}
                 else:
                     self.uncmp_gko_cost = {k:1.0 for k in model.genes.list_attr('id')}
@@ -446,12 +473,6 @@ class StrainDesigner(StrainDesignMILP):
             self.uncmp_ki_cost = {}
         if not kwargs[REGCOST]:
             self.uncmp_reg_cost = {}
-        else: # if regulatory cuts are defined, translate constraints
-            if np.any([len(g.name) for g in model.genes]):  # if gene names are defined, use them instead of ids
-                keywords = model.reactions.list_attr('id')+model.reactions.list_attr('name')
-            else:
-                keywords = model.reactions.list_attr('id')+model.reactions.list_attr('id')
-            self.uncmp_reg_cost = {tuple(parse_constraints(k,keywords)):v for k,v in self.uncmp_reg_cost.items()}
         # put module in list if only one module was provided
         if "SD_Module" in str(type(sd_modules)):
             sd_modules = [sd_modules]
@@ -466,8 +487,10 @@ class StrainDesigner(StrainDesignMILP):
             self.orig_model = model.copy()
         self.orig_ko_cost   = self.uncmp_ko_cost
         self.orig_ki_cost   = self.uncmp_ki_cost
+        self.orig_reg_cost  = self.uncmp_reg_cost
         self.compress        = kwargs['compress']
         self.M               = kwargs['M']
+        self.uncmp_reg_cost = preprocess_regulatory(model,self.uncmp_reg_cost,self.has_gene_names)
         if self.gene_sd:
             self.orig_gko_cost   = self.uncmp_gko_cost
             self.orig_gki_cost   = self.uncmp_gki_cost
@@ -556,7 +579,7 @@ class StrainDesigner(StrainDesignMILP):
                                     m[p][n] = v*w
             self.uncmp_ko_cost.update(self.uncmp_gko_cost)
             self.uncmp_ki_cost.update(self.uncmp_gki_cost)
-        self.uncmp_ko_cost = extend_model_regulatory(cmp_model,self.uncmp_regcost,self.uncmp_ko_cost)
+        self.uncmp_ko_cost = extend_model_regulatory(cmp_model,self.uncmp_reg_cost,self.uncmp_ko_cost)
         self.cmp_ko_cost = self.uncmp_ko_cost
         self.cmp_ki_cost = self.uncmp_ki_cost
         # Compress model
@@ -686,6 +709,8 @@ class StrainDesigner(StrainDesignMILP):
             kwargs1.pop(GKOCOST)
         if GKICOST in kwargs1:
             kwargs1.pop(GKICOST)
+        if REGCOST in kwargs1:
+            kwargs1.pop(REGCOST)
         print("Finished preprocessing:")
         print("  Model size: "+str(len(cmp_model.reactions))+" reactions, "+str(len(cmp_model.metabolites))+" metabolites")
         print("  "+str(len(self.cmp_ko_cost)+len(self.cmp_ki_cost)-len(essential_kis))+" targetable reactions")
@@ -745,6 +770,14 @@ class StrainDesigner(StrainDesignMILP):
         if self.max_cost:
             costs = [np.sum([self.uncmp_ko_cost[k] if v<0 else self.uncmp_ki_cost[k] for k,v in m.items()]) for m in sd]
             sd = [sd[i] for i in range(len(sd)) if costs[i] <= self.max_cost+1e-8]
+        # mark regulatory interventions with true or false
+        for i,s in enumerate(sd):
+            for k,v in self.uncmp_reg_cost.items():
+                if k in s:
+                    s.pop(k)
+                    s.update({v['str']:True})
+                else:
+                    s.update({v['str']:False})
         return sd
 
     # function wrappers for compute, compute_optimal and enumerate
@@ -789,6 +822,7 @@ class StrainDesigner(StrainDesignMILP):
         sd_setup[MODULES] = self.orig_sd_modules
         sd_setup[KOCOST]  = self.orig_ko_cost
         sd_setup[KICOST]  = self.orig_ki_cost
+        sd_setup[REGCOST] = self.orig_reg_cost
         if self.gene_sd:
             sd_setup[GKOCOST] = self.orig_gko_cost
             sd_setup[GKICOST] = self.orig_gki_cost

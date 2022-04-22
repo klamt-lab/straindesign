@@ -3,7 +3,7 @@ from .strainDesignModule import *
 from .strainDesignSolution import *
 from .indicator_constraints import *
 from .solver_interface import *
-from .pool import Pool
+from .pool import *
 from .parse_constr import *
 from .strainDesignMILPBuilder import *
 from .strainDesignMILP import *
