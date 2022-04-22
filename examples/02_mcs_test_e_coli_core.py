@@ -103,13 +103,14 @@ ko_cost = { 'SUCCt2_2'  : 0.6,
             'D_LACt2'   : 0.7}
 ki_cost = { 'O2t'       : 0.2,
             'SUCCt3'    : 1.2}
+reg_cost = {'ENO >= 3' : 2}
 # ko_cost = None
 # gko_cost = None
 M=None
 output_format = 'auto'
 solution = straindesign.compute_strain_designs(network,sd_modules=modules, max_cost=maxCost,ko_cost=ko_cost, \
                                         ki_cost=ki_cost, gko_cost=gko_cost, gki_cost=gki_cost, \
-                                        solver=solver, M=None , compress=True)
+                                        reg_cost=reg_cost,solver=solver, M=None , compress=True)
 # sd, status = straindesign.compute_strain_designs(network,modules, max_cost=maxCost,ko_cost=ko_cost, \
 #                                         ki_cost=ki_cost, solver=solver,M=None ,output_format=output_format)
 [print(r) for r in solution.get_strain_designs()]

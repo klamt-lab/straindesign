@@ -2,7 +2,7 @@ from typing import Dict, List, Tuple
 from scipy import sparse
 import re
 
-def parse_constraints(constr,reaction_ids) -> dict:
+def parse_constraints(constr,reaction_ids) -> List:
     if not constr:
         return []
     if type(constr) is str:

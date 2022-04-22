@@ -140,6 +140,56 @@ def extend_model_gpr(model,gkos,gkis):
             r.add_metabolites({model.metabolites.get_by_id(dt_met_id): -1.0})
     return reac_map
 
+def extend_model_regulatory(model, regcost, kocost):
+    for k,v in regcost.items():
+        reacs_dict = k[0]
+        eqsign = k[1]
+        rhs = k[2]
+        # generate name for pseudometabolite
+        reg_name = []
+        for l,w in reacs_dict.items():
+            if w<0:
+                reg_name += 'n'+str(w)+'_'+l
+            else:
+                reg_name += 'p'+str(w)+'_'+l
+            reg_name += '_'
+        if eqsign == '=':
+            reg_name += 'eq_'
+        elif eqsign == '<=':
+            reg_name += 'le_'
+        elif eqsign == '>=':
+            reg_name += 'ge_'
+        reg_name += str(rhs)
+        reg_pseudomet_name = 'met_'+reg_name
+        # add pseudometabolite
+        model.add_metabolites(Metabolite(reg_pseudomet_name))
+        # add pseudometabolite to stoichiometries
+        for l,w in reacs_dict.items():
+            r = model.reactions.get_by_id(l)
+            r.add_metabolites({model.metabolites.get_by_id(reg_pseudomet_name): w})
+        # add pseudoreaction that defines the bound
+        s = Reaction("bnd_"+reg_name)
+        model.add_reaction(s)
+        s.reaction = reg_pseudomet_name + ' --> '
+        if eqsign == '=':
+            s._lower_bound = -np.inf
+            s._upper_bound = rhs
+            s._lower_bound = rhs
+        elif eqsign == '<=':
+            s._lower_bound = -np.inf
+            s._upper_bound = rhs
+        elif eqsign == '>=':
+            s._upper_bound = np.inf
+            s._lower_bound = rhs
+        # add knockable pseudoreaction and add it to the kocost list
+        t = Reaction(reg_name)
+        model.add_reaction(t)
+        t.reaction = '--> '+reg_pseudomet_name
+        t._upper_bound = max([s._upper_bound,0])
+        t._lower_bound = min([s._lower_bound,0])
+        kocost.update({reg_name:v})
+    return kocost
+
 def remove_blocked_reactions(model) -> List:
     blocked_reactions = [reac for reac in model.reactions if reac.bounds == (0, 0)]
     model.remove_reactions(blocked_reactions)
@@ -356,7 +406,7 @@ def compress_model_parallel(model, protected_rxns=[]):
 
 class StrainDesigner(StrainDesignMILP):
     def __init__(self, model: Model, sd_modules: List[SD_Module], *args, **kwargs):
-        allowed_keys = {SOLVER, MAX_COST, 'M', 'compress',KOCOST,KICOST,GKOCOST,GKICOST}
+        allowed_keys = {SOLVER, MAX_COST, 'M', 'compress',KOCOST,KICOST,GKOCOST,GKICOST,REGCOST}
         # set all keys that are not in kwargs to None
         for key in allowed_keys:
             if key not in dict(kwargs).keys() and key not in {GKOCOST,GKICOST}:
@@ -375,6 +425,8 @@ class StrainDesigner(StrainDesignMILP):
                 self.uncmp_gko_cost = value
             if key == GKICOST:
                 self.uncmp_gki_cost = value
+            if key == REGCOST:
+                self.uncmp_reg_cost = value
         if (GKOCOST in kwargs or GKICOST in kwargs) and hasattr(model,'genes') and model.genes:
             self.gene_sd = True
             if GKOCOST not in kwargs or not kwargs[GKOCOST]:
@@ -392,6 +444,14 @@ class StrainDesigner(StrainDesignMILP):
             self.uncmp_ko_cost = {}
         if not kwargs[KICOST]:
             self.uncmp_ki_cost = {}
+        if not kwargs[REGCOST]:
+            self.uncmp_reg_cost = {}
+        else: # if regulatory cuts are defined, translate constraints
+            if np.any([len(g.name) for g in model.genes]):  # if gene names are defined, use them instead of ids
+                keywords = model.reactions.list_attr('id')+model.reactions.list_attr('name')
+            else:
+                keywords = model.reactions.list_attr('id')+model.reactions.list_attr('id')
+            self.uncmp_reg_cost = {tuple(parse_constraints(k,keywords)):v for k,v in self.uncmp_reg_cost.items()}
         # put module in list if only one module was provided
         if "SD_Module" in str(type(sd_modules)):
             sd_modules = [sd_modules]
@@ -424,25 +484,25 @@ class StrainDesigner(StrainDesignMILP):
         print('Preparing strain design computation.')
         print('  Using '+kwargs[SOLVER]+' for solving LPs during preprocessing.')
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()): # suppress standard output from copying model
-            uncmp_model = model.copy()
+            cmp_model = model.copy()
         # remove external metabolites
-        remove_ext_mets(uncmp_model)
+        remove_ext_mets(cmp_model)
         # replace model bounds with +/- inf if above a certain threshold
         bound_thres = 1000
-        for i in range(len(uncmp_model.reactions)):
-            if uncmp_model.reactions[i].lower_bound <= -bound_thres:
-                uncmp_model.reactions[i].lower_bound = -np.inf
-            if uncmp_model.reactions[i].upper_bound >=  bound_thres:
-                uncmp_model.reactions[i].upper_bound =  np.inf
+        for i in range(len(cmp_model.reactions)):
+            if cmp_model.reactions[i].lower_bound <= -bound_thres:
+                cmp_model.reactions[i].lower_bound = -np.inf
+            if cmp_model.reactions[i].upper_bound >=  bound_thres:
+                cmp_model.reactions[i].upper_bound =  np.inf
         # FVAs to identify blocked, irreversible and essential reactions, as well as non-bounding bounds
         print('  FVA to identify blocked reactions and irreversibilities.')
-        flux_limits = fva(uncmp_model,solver=kwargs[SOLVER])
+        flux_limits = fva(cmp_model,solver=kwargs[SOLVER])
         if kwargs[SOLVER] in ['scip','glpk']:
             tol = 1e-10 # use tolerance for tightening problem bounds
         else:
             tol = 0.0
         for (reac_id, limits) in flux_limits.iterrows():
-            r = uncmp_model.reactions.get_by_id(reac_id)
+            r = cmp_model.reactions.get_by_id(reac_id)
             # modify _lower_bound and _upper_bound to make changes permanent
             if r.lower_bound < 0.0 and limits.minimum - tol > r.lower_bound:
                 r._lower_bound = -np.inf
@@ -457,7 +517,7 @@ class StrainDesigner(StrainDesignMILP):
         for m in sd_modules:
             if m[MODULE_SENSE] != UNDESIRED: # Essential reactions can only be determined from desired
                                             # or opt-/robustknock modules
-                flux_limits = fva(uncmp_model,solver=kwargs[SOLVER],constraints=m[CONSTRAINTS])
+                flux_limits = fva(cmp_model,solver=kwargs[SOLVER],constraints=m[CONSTRAINTS])
                 for (reac_id, limits) in flux_limits.iterrows():
                     if np.min(abs(limits)) > tol and np.prod(np.sign(limits)) > 0: # find essential
                         essential_reacs.add(reac_id)
@@ -466,20 +526,20 @@ class StrainDesigner(StrainDesignMILP):
         # If computation of gene-gased intervention strategies, (optionally) compress gpr are rules and extend stoichimetric network with genes
         if self.gene_sd:
             if kwargs['compress'] is True or kwargs['compress'] is None:
-                num_genes = len(uncmp_model.genes)
+                num_genes = len(cmp_model.genes)
                 num_gpr   = len([True for r in model.reactions if r.gene_reaction_rule])
                 print('Preprocessing GPR rules ('+str(num_genes)+' genes, '+str(num_gpr)+' gpr rules).')
                 # removing irrelevant genes will also remove essential reactions from the list of knockable genes
-                self.uncmp_gko_cost = remove_irrelevant_genes(uncmp_model, essential_reacs, self.uncmp_gki_cost, self.uncmp_gko_cost)
-                if len(uncmp_model.genes) < num_genes or len([True for r in model.reactions if r.gene_reaction_rule]) < num_gpr:
-                    num_genes = len(uncmp_model.genes)
-                    num_gpr   = len([True for r in uncmp_model.reactions if r.gene_reaction_rule])
+                self.uncmp_gko_cost = remove_irrelevant_genes(cmp_model, essential_reacs, self.uncmp_gki_cost, self.uncmp_gko_cost)
+                if len(cmp_model.genes) < num_genes or len([True for r in model.reactions if r.gene_reaction_rule]) < num_gpr:
+                    num_genes = len(cmp_model.genes)
+                    num_gpr   = len([True for r in cmp_model.reactions if r.gene_reaction_rule])
                     print('  Simplifyied to '+str(num_genes)+' genes and '+\
                         str(num_gpr)+' gpr rules.')
                 with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()): # suppress standard output from copying model
-                    self.orig_model = uncmp_model.copy()
+                    self.orig_model = cmp_model.copy()
             print('  Extending metabolic network with gpr associations.')
-            reac_map = extend_model_gpr(uncmp_model,self.uncmp_gko_cost, self.uncmp_gki_cost)
+            reac_map = extend_model_gpr(cmp_model,self.uncmp_gko_cost, self.uncmp_gki_cost)
             for i,m in enumerate(sd_modules):
                 for p in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                     if p in m and m[p] is not None:
@@ -496,8 +556,7 @@ class StrainDesigner(StrainDesignMILP):
                                     m[p][n] = v*w
             self.uncmp_ko_cost.update(self.uncmp_gko_cost)
             self.uncmp_ki_cost.update(self.uncmp_gki_cost)
-        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()): # suppress standard output from copying model
-            cmp_model = uncmp_model.copy()
+        self.uncmp_ko_cost = extend_model_regulatory(cmp_model,self.uncmp_regcost,self.uncmp_ko_cost)
         self.cmp_ko_cost = self.uncmp_ko_cost
         self.cmp_ki_cost = self.uncmp_ki_cost
         # Compress model

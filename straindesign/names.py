@@ -16,6 +16,7 @@ KOCOST = 'ko_cost'
 KICOST = 'ki_cost'
 GKOCOST = 'gko_cost'
 GKICOST = 'gki_cost'
+REGCOST = 'reg_cost'
 
 MODULES = 'sd_modules'
 MODULE_TYPE = 'module_type'
