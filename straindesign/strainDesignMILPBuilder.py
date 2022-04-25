@@ -305,10 +305,10 @@ class StrainDesignMILPBuilder:
         if sd_module[MODULE_TYPE] == OPTCOUPLE:
             c_p = c_v + [0]*len(c_inner_dual)
             # (continued from optknock)
-            Prod_eq = linexprdict2mat(sd_module.prod_id,self.model.reactions.list_attr('id'))
+            prod_eq = linexprdict2mat(sd_module[PROD_ID],self.model.reactions.list_attr('id'))
             # 6.  build primal system with no production - also store variable c
             A_ineq_r, b_ineq_r, A_eq_r, b_eq_r, c_r, lb_r, ub_r, z_map_constr_ineq_r, z_map_constr_eq_r, z_map_vars_r \
-                = self.build_primal([], [], Prod_eq, [0], c_in, lb, ub)
+                = self.build_primal([], [], prod_eq, [0], c_in, lb, ub)
             # 7. Dualize no-production system.
             A_ineq_r_dl, b_ineq_dl_r_dl, A_eq_dl_r_dl, b_eq_r_dl, c_r_dl, lb_r_dl, ub_r_dl, z_map_constr_ineq_r_dl, z_map_constr_eq_r_dl, z_map_vars_r_dl \
                 = self.dualize(A_ineq_r, b_ineq_r, A_eq_r, b_eq_r, c_r, lb_r, ub_r, z_map_constr_ineq_r, z_map_constr_eq_r, z_map_vars_r)
@@ -319,7 +319,7 @@ class StrainDesignMILPBuilder:
             b_eq_b = b_eq_r + b_eq_r_dl + [0.0]
             lb_b = lb_r + lb_r_dl
             ub_b = ub_r + ub_r_dl
-            c_b = c_r + [0]*len(c_r_dl)
+            c_b = c_r + [0.0]*len(c_r_dl)
             z_map_vars_b = sparse.hstack((z_map_vars_r,z_map_vars_r_dl))
             z_map_constr_ineq_b = sparse.hstack((z_map_constr_ineq_r,z_map_constr_ineq_r_dl))
             z_map_constr_eq_b = sparse.hstack((z_map_constr_eq_r,z_map_constr_eq_r_dl,sparse.csc_matrix((self.num_z,1))))
@@ -335,8 +335,8 @@ class StrainDesignMILPBuilder:
             z_map_constr_eq_q = sparse.hstack((z_map_constr_eq_p,z_map_constr_eq_b))
             # if minimum growth-coupling potential is specified, enforce it through inequality
             if MIN_GCP in sd_module:
-                A_ineq_q = sparse.vstack((A_ineq_q,sparse.hstack((c_p,[-c for c in c_b]))),format='csr')
-                b_ineq_q = b_ineq_q + [-sd_module.min_gcp]
+                A_ineq_q = sparse.vstack((A_ineq_q,sparse.lil_matrix(c_p+[-c for c in c_b])),format='csr')
+                b_ineq_q = b_ineq_q + [-sd_module[MIN_GCP]]
                 z_map_constr_ineq_q = sparse.hstack((z_map_constr_ineq_q,sparse.csc_matrix((self.num_z,1))))
             # 10. reassign lb, ub where possible
             A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.reassign_lb_ub_from_ineq(

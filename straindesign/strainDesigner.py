@@ -465,6 +465,7 @@ class StrainDesigner(StrainDesignMILP):
                 self.uncmp_gki_cost = {}
         else:
             self.gene_sd = False
+            self.has_gene_names = False
         if not kwargs[KOCOST] and not self.gene_sd:
             self.uncmp_ko_cost = {k:1.0 for k in model.reactions.list_attr('id')}
         elif not kwargs[KOCOST]:
@@ -512,11 +513,13 @@ class StrainDesigner(StrainDesignMILP):
         remove_ext_mets(cmp_model)
         # replace model bounds with +/- inf if above a certain threshold
         bound_thres = 1000
-        for i in range(len(cmp_model.reactions)):
-            if cmp_model.reactions[i].lower_bound <= -bound_thres:
-                cmp_model.reactions[i].lower_bound = -np.inf
-            if cmp_model.reactions[i].upper_bound >=  bound_thres:
-                cmp_model.reactions[i].upper_bound =  np.inf
+        if any([any([abs(b)>=bound_thres for b in r.bounds]) for r in cmp_model.reactions]):
+            print('  Removing reaction bounds when larger than the threshold of '+str(bound_thres)+'.')
+            for i in range(len(cmp_model.reactions)):
+                if cmp_model.reactions[i].lower_bound <= -bound_thres:
+                    cmp_model.reactions[i].lower_bound = -np.inf
+                if cmp_model.reactions[i].upper_bound >=  bound_thres:
+                    cmp_model.reactions[i].upper_bound =  np.inf
         # FVAs to identify blocked, irreversible and essential reactions, as well as non-bounding bounds
         print('  FVA to identify blocked reactions and irreversibilities.')
         flux_limits = fva(cmp_model,solver=kwargs[SOLVER])
@@ -559,8 +562,6 @@ class StrainDesigner(StrainDesignMILP):
                     num_gpr   = len([True for r in cmp_model.reactions if r.gene_reaction_rule])
                     print('  Simplifyied to '+str(num_genes)+' genes and '+\
                         str(num_gpr)+' gpr rules.')
-                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()): # suppress standard output from copying model
-                    self.orig_model = cmp_model.copy()
             print('  Extending metabolic network with gpr associations.')
             reac_map = extend_model_gpr(cmp_model,self.uncmp_gko_cost, self.uncmp_gki_cost)
             for i,m in enumerate(sd_modules):
@@ -640,7 +641,7 @@ class StrainDesigner(StrainDesignMILP):
                     if odd:
                         for new_reac, old_reac_val in reac_map_exp.items():
                             for i,m in enumerate(sd_modules):
-                                for p in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+                                for p in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID,MIN_GCP]:
                                     if p in m and m[p] is not None:
                                         param = m[p]
                                         if p == CONSTRAINTS:
@@ -652,6 +653,9 @@ class StrainDesigner(StrainDesignMILP):
                                             if np.any([k in old_reac_val for k in param.keys()]):
                                                 lumped_reacs = [k for k in param.keys() if k in old_reac_val]
                                                 m[p][new_reac] = np.sum([param.pop(k)*old_reac_val[k] for k in lumped_reacs if k in old_reac_val])
+                                        # if p == MIN_GCP:
+                                        #     m[p] = m[p]
+                                        #     print('lol')
                     # compress ko_cost and ki_cost
                     # ko_cost of lumped reactions: when reacs sequential: lowest of ko costs, when parallel: sum of ko costs
                     # ki_cost of lumped reactions: when reacs sequential: sum of ki costs, when parallel: lowest of ki costs
@@ -771,7 +775,7 @@ class StrainDesigner(StrainDesignMILP):
             costs = [np.sum([self.uncmp_ko_cost[k] if v<0 else self.uncmp_ki_cost[k] for k,v in m.items()]) for m in sd]
             sd = [sd[i] for i in range(len(sd)) if costs[i] <= self.max_cost+1e-8]
         # mark regulatory interventions with true or false
-        for i,s in enumerate(sd):
+        for s in sd:
             for k,v in self.uncmp_reg_cost.items():
                 if k in s:
                     s.pop(k)

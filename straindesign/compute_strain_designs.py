@@ -36,6 +36,8 @@ def compute_strain_designs(model: Model, **kwargs):
     
     if 'gene_kos' in kwargs:
         model_id = kwargs.pop('gene_kos')
+        if not GKOCOST in kwargs and not GKICOST in kwargs:
+            kwargs[GKOCOST] = None
     if 'advanced' in kwargs:
         model_id = kwargs.pop('advanced')
     if 'use_scenario' in kwargs:

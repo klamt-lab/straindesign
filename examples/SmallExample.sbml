@@ -27,41 +27,41 @@
       <parameter sboTerm="SBO:0000626" id="cobra_0_bound" value="0" constant="true"/>
       <parameter sboTerm="SBO:0000626" id="minus_inf" value="-INF" constant="true"/>
       <parameter sboTerm="SBO:0000626" id="plus_inf" value="INF" constant="true"/>
-      <parameter sboTerm="SBO:0000625" id="R_R01_upper_bound" value="100" units="mmol_per_gDW_per_hr" constant="true"/>
-      <parameter sboTerm="SBO:0000625" id="R_R02_lower_bound" value="-100" units="mmol_per_gDW_per_hr" constant="true"/>
-      <parameter sboTerm="SBO:0000625" id="R_R02_upper_bound" value="100" units="mmol_per_gDW_per_hr" constant="true"/>
-      <parameter sboTerm="SBO:0000625" id="R_R03_upper_bound" value="100" units="mmol_per_gDW_per_hr" constant="true"/>
-      <parameter sboTerm="SBO:0000625" id="R_R04_upper_bound" value="100" units="mmol_per_gDW_per_hr" constant="true"/>
-      <parameter sboTerm="SBO:0000625" id="R_R05_upper_bound" value="100" units="mmol_per_gDW_per_hr" constant="true"/>
-      <parameter sboTerm="SBO:0000625" id="R_R06_upper_bound" value="100" units="mmol_per_gDW_per_hr" constant="true"/>
-      <parameter sboTerm="SBO:0000625" id="R_R07_upper_bound" value="100" units="mmol_per_gDW_per_hr" constant="true"/>
-      <parameter sboTerm="SBO:0000625" id="R_R08_lower_bound" value="-100" units="mmol_per_gDW_per_hr" constant="true"/>
-      <parameter sboTerm="SBO:0000625" id="R_R08_upper_bound" value="100" units="mmol_per_gDW_per_hr" constant="true"/>
-      <parameter sboTerm="SBO:0000625" id="R_R09_upper_bound" value="100" units="mmol_per_gDW_per_hr" constant="true"/>
+      <parameter sboTerm="SBO:0000625" id="R_R1_upper_bound" value="100" units="mmol_per_gDW_per_hr" constant="true"/>
+      <parameter sboTerm="SBO:0000625" id="R_R2_lower_bound" value="-100" units="mmol_per_gDW_per_hr" constant="true"/>
+      <parameter sboTerm="SBO:0000625" id="R_R2_upper_bound" value="100" units="mmol_per_gDW_per_hr" constant="true"/>
+      <parameter sboTerm="SBO:0000625" id="R_R3_upper_bound" value="100" units="mmol_per_gDW_per_hr" constant="true"/>
+      <parameter sboTerm="SBO:0000625" id="R_R4_upper_bound" value="100" units="mmol_per_gDW_per_hr" constant="true"/>
+      <parameter sboTerm="SBO:0000625" id="R_R5_upper_bound" value="100" units="mmol_per_gDW_per_hr" constant="true"/>
+      <parameter sboTerm="SBO:0000625" id="R_R6_upper_bound" value="100" units="mmol_per_gDW_per_hr" constant="true"/>
+      <parameter sboTerm="SBO:0000625" id="R_R7_upper_bound" value="100" units="mmol_per_gDW_per_hr" constant="true"/>
+      <parameter sboTerm="SBO:0000625" id="R_R8_lower_bound" value="-100" units="mmol_per_gDW_per_hr" constant="true"/>
+      <parameter sboTerm="SBO:0000625" id="R_R8_upper_bound" value="100" units="mmol_per_gDW_per_hr" constant="true"/>
+      <parameter sboTerm="SBO:0000625" id="R_R9_upper_bound" value="100" units="mmol_per_gDW_per_hr" constant="true"/>
       <parameter sboTerm="SBO:0000625" id="R_R10_upper_bound" value="100" units="mmol_per_gDW_per_hr" constant="true"/>
     </listOfParameters>
     <listOfReactions>
-      <reaction id="R_R01" name="R01" reversible="false" fast="false" fbc:lowerFluxBound="cobra_0_bound" fbc:upperFluxBound="R_R01_upper_bound">
+      <reaction id="R_R1" name="R1" reversible="false" fast="false" fbc:lowerFluxBound="cobra_0_bound" fbc:upperFluxBound="R_R1_upper_bound">
         <listOfProducts>
           <speciesReference species="M_A" stoichiometry="1" constant="true"/>
         </listOfProducts>
       </reaction>
-      <reaction id="R_R02" name="R02" reversible="true" fast="false" fbc:lowerFluxBound="R_R02_lower_bound" fbc:upperFluxBound="R_R02_upper_bound">
+      <reaction id="R_R2" name="R2" reversible="true" fast="false" fbc:lowerFluxBound="R_R2_lower_bound" fbc:upperFluxBound="R_R2_upper_bound">
         <listOfProducts>
           <speciesReference species="M_B" stoichiometry="1" constant="true"/>
         </listOfProducts>
       </reaction>
-      <reaction id="R_R03" name="R03" reversible="false" fast="false" fbc:lowerFluxBound="cobra_0_bound" fbc:upperFluxBound="R_R03_upper_bound">
+      <reaction id="R_R3" name="R3" reversible="false" fast="false" fbc:lowerFluxBound="cobra_0_bound" fbc:upperFluxBound="R_R3_upper_bound">
         <listOfReactants>
           <speciesReference species="M_P" stoichiometry="1" constant="true"/>
         </listOfReactants>
       </reaction>
-      <reaction id="R_R04" name="R04" reversible="false" fast="false" fbc:lowerFluxBound="cobra_0_bound" fbc:upperFluxBound="R_R04_upper_bound">
+      <reaction id="R_R4" name="R4" reversible="false" fast="false" fbc:lowerFluxBound="cobra_0_bound" fbc:upperFluxBound="R_R4_upper_bound">
         <listOfReactants>
           <speciesReference species="M_E" stoichiometry="1" constant="true"/>
         </listOfReactants>
       </reaction>
-      <reaction id="R_R05" name="R05" reversible="false" fast="false" fbc:lowerFluxBound="cobra_0_bound" fbc:upperFluxBound="R_R05_upper_bound">
+      <reaction id="R_R5" name="R5" reversible="false" fast="false" fbc:lowerFluxBound="cobra_0_bound" fbc:upperFluxBound="R_R5_upper_bound">
         <listOfReactants>
           <speciesReference species="M_A" stoichiometry="1" constant="true"/>
         </listOfReactants>
@@ -69,7 +69,7 @@
           <speciesReference species="M_B" stoichiometry="1" constant="true"/>
         </listOfProducts>
       </reaction>
-      <reaction id="R_R06" name="R06" reversible="false" fast="false" fbc:lowerFluxBound="cobra_0_bound" fbc:upperFluxBound="R_R06_upper_bound">
+      <reaction id="R_R6" name="R6" reversible="false" fast="false" fbc:lowerFluxBound="cobra_0_bound" fbc:upperFluxBound="R_R6_upper_bound">
         <listOfReactants>
           <speciesReference species="M_A" stoichiometry="1" constant="true"/>
         </listOfReactants>
@@ -77,7 +77,7 @@
           <speciesReference species="M_C" stoichiometry="1" constant="true"/>
         </listOfProducts>
       </reaction>
-      <reaction id="R_R07" name="R07" reversible="false" fast="false" fbc:lowerFluxBound="cobra_0_bound" fbc:upperFluxBound="R_R07_upper_bound">
+      <reaction id="R_R7" name="R7" reversible="false" fast="false" fbc:lowerFluxBound="cobra_0_bound" fbc:upperFluxBound="R_R7_upper_bound">
         <listOfReactants>
           <speciesReference species="M_A" stoichiometry="1" constant="true"/>
         </listOfReactants>
@@ -85,7 +85,7 @@
           <speciesReference species="M_D" stoichiometry="1" constant="true"/>
         </listOfProducts>
       </reaction>
-      <reaction id="R_R08" name="R08" reversible="true" fast="false" fbc:lowerFluxBound="R_R08_lower_bound" fbc:upperFluxBound="R_R08_upper_bound">
+      <reaction id="R_R8" name="R8" reversible="true" fast="false" fbc:lowerFluxBound="R_R8_lower_bound" fbc:upperFluxBound="R_R8_upper_bound">
         <listOfReactants>
           <speciesReference species="M_B" stoichiometry="1" constant="true"/>
         </listOfReactants>
@@ -93,7 +93,7 @@
           <speciesReference species="M_C" stoichiometry="1" constant="true"/>
         </listOfProducts>
       </reaction>
-      <reaction id="R_R09" name="R09" reversible="false" fast="false" fbc:lowerFluxBound="cobra_0_bound" fbc:upperFluxBound="R_R09_upper_bound">
+      <reaction id="R_R9" name="R9" reversible="false" fast="false" fbc:lowerFluxBound="cobra_0_bound" fbc:upperFluxBound="R_R9_upper_bound">
         <listOfReactants>
           <speciesReference species="M_B" stoichiometry="1" constant="true"/>
         </listOfReactants>
@@ -115,7 +115,7 @@
     <fbc:listOfObjectives fbc:activeObjective="obj">
       <fbc:objective fbc:id="obj" fbc:type="maximize">
         <fbc:listOfFluxObjectives>
-          <fbc:fluxObjective fbc:reaction="R_R03" fbc:coefficient="1"/>
+          <fbc:fluxObjective fbc:reaction="R_R3" fbc:coefficient="1"/>
         </fbc:listOfFluxObjectives>
       </fbc:objective>
     </fbc:listOfObjectives>

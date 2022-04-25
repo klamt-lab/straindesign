@@ -96,12 +96,41 @@ class SD_Solution(object):
         else:
             self.reaction_sd = sd
             self.is_gene_sd = False
+            
+        # compute intervention costs
+        self.sd_cost = [0 for _ in range(len(sd))]
+        if KOCOST in sd_setup:
+            for k,v in sd_setup[KOCOST].items():
+                for i,s in enumerate(sd):
+                    if k in s and s[k] != 0:
+                        self.sd_cost[i] += float(v)
+        if KICOST in sd_setup:
+            for k,v in sd_setup[KICOST].items():
+                for i,s in enumerate(sd):
+                    if k in s and s[k] != 0:
+                        self.sd_cost[i] += float(v)
+        if GKOCOST in sd_setup:
+            for k,v in sd_setup[GKOCOST].items():
+                for i,s in enumerate(sd):
+                    if k in s and s[k] != 0:
+                        self.sd_cost[i] += float(v)
+        if GKICOST in sd_setup:
+            for k,v in sd_setup[GKICOST].items():
+                for i,s in enumerate(sd):
+                    if k in s and s[k] != 0:
+                        self.sd_cost[i] += float(v)
+        if REGCOST in sd_setup:
+            for k,v in sd_setup[REGCOST].items():
+                for i,s in enumerate(sd):
+                    if k in s and s[k] != 0:
+                        self.sd_cost[i] += float(v)
+            
         
         self.has_complex_regul_itv = False
         self.itv_bounds = [{} for _ in range(len(self.reaction_sd))]
         for i,s in enumerate(self.reaction_sd):
             for k,v in s.items():
-                if type(v) in [int, float]:
+                if type(v) is not bool:
                     if v == -1: # reaction was knocked out
                         self.itv_bounds[i].update({k:(0.0,0.0)})
                     elif v == 1: # reaction was added
@@ -137,6 +166,12 @@ class SD_Solution(object):
             
     def get_num_sols(self):
         return len(self.reaction_sd)
+    
+    def get_strain_design_costs(self,i=None):
+        if i is None:
+            return self.sd_cost
+        else:
+            return get_subset(self.sd_cost,i)
 
     def get_strain_designs(self,i=None):
         if self.is_gene_sd:

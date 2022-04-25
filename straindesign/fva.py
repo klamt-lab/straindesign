@@ -126,22 +126,26 @@ def fva(model,**kwargs):
     # Dummy to check if optimization runs
     # worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver)
     # worker_compute(1)
-    if processes > 1 and numr > 300 and solver != GLPK:
+    if processes > 1 and numr > 300 and solver : #!= GLPK:
         # with Pool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver)) as pool:
         with SDPool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver)) as pool:
             chunk_size = len(reaction_ids) // processes
             # x = pool.imap_unordered(worker_compute, range(2*numr), chunksize=chunk_size)
             for i, value in pool.imap_unordered( worker_compute, range(2*numr), chunksize=chunk_size):
                 x[i] = value
-    elif processes > 1 and numr > 300 and solver == GLPK:
-        # worker_init_glpk(A_ineq,b_ineq,A_eq,b_eq,lb,ub)
-        # for i in range(2*numr):
-        #     _, x[i] = worker_compute_glpk(i)
-        with SDPool(processes,initializer=worker_init_glpk,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub)) as pool:
-            chunk_size = len(reaction_ids) // processes
-            # # x = pool.imap_unordered(worker_compute, range(2*numr), chunksize=chunk_size)
-            for i, value in pool.imap_unordered( worker_compute_glpk, range(2*numr), chunksize=chunk_size):
-                x[i] = value
+    # # In case new threads are forked instead of spawned GLPK needs a reinitialization
+    # # of the LP in every iteration. I keep this here in case spawning new threads is a
+    # # problem with some linux or multiprocessing version. In that case, change
+    # # initialization of pool and uncomment this and the != GLPK in the if statement above.
+    # elif processes > 1 and numr > 300 and solver == GLPK:
+    #     # worker_init_glpk(A_ineq,b_ineq,A_eq,b_eq,lb,ub)
+    #     # for i in range(2*numr):
+    #     #     _, x[i] = worker_compute_glpk(i)
+    #     with SDPool(processes,initializer=worker_init_glpk,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub)) as pool:
+    #         chunk_size = len(reaction_ids) // processes
+    #         # # x = pool.imap_unordered(worker_compute, range(2*numr), chunksize=chunk_size)
+    #         for i, value in pool.imap_unordered( worker_compute_glpk, range(2*numr), chunksize=chunk_size):
+    #             x[i] = value
     else:
         worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver)
         for i in range(2*numr):

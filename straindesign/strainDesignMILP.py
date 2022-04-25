@@ -153,7 +153,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         if self.time_limit is None:
             self.time_limit = np.inf
         # first check if strain doesn't already fulfill the strain design setup
-        if self.verify_sd(sparse.csr_matrix((1,self.num_z)))[0]:
+        if self.is_mcs_computation and self.verify_sd(sparse.csr_matrix((1,self.num_z)))[0]:
             print('The strain already meets the requirements defined in the strain design setup. ' \
                   'No interventions are needed.')
             return self.build_sd_solution([{}], OPTIMAL, SMALLEST)
@@ -346,7 +346,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         if self.time_limit is None:
             self.time_limit = np.inf
         # first check if strain doesn't already fulfill the strain design setup
-        if self.verify_sd(sparse.csr_matrix((1,self.num_z)))[0]:
+        if self.is_mcs_computation and self.verify_sd(sparse.csr_matrix((1,self.num_z)))[0]:
             print('The strain already meets the requirements defined in the strain design setup. ' \
                   'No interventions are needed.')
             return self.build_sd_solution([{}], OPTIMAL, CARDINALITY)
