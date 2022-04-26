@@ -1,11 +1,11 @@
 {% set version = '0.1' %}
 
 package:
-  name: mcs
+  name: straindesign
   version: {{ version }}
 
 source:
-  git_url: https://github.com/VonAlphaBisZulu/mcs
+  git_url: https://github.com/klamt-lab/straindesign
   git_rev: v{{ version }}
 
 requirements:
@@ -18,6 +18,8 @@ requirements:
     - scipy
     - optlang
     - cobra
+    - pickle
+    - json
     - efmtool_link
 
 
@@ -29,13 +31,13 @@ build:
 
 test:
   imports:
-    - mcs
+    - straindesign
 
 about:
-  home:  https://github.com/VonAlphaBisZulu/mcs
+  home:  https://github.com/klamt-lab/straindesign
   license: Apache 2
   license_family: MIT
   license_file: LICENSE
-  summary: Enumeration of multiple solutions to a MILP with the optlang framework.
-  doc_url: https://github.com/VonAlphaBisZulu/mcs
-  dev_url: https://github.com/VonAlphaBisZulu/mcs
+  summary: Computational strain design package for the COBRApy framework.
+  doc_url: https://github.com/klamt-lab/straindesign
+  dev_url: https://github.com/klamt-lab/straindesign
