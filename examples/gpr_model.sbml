@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1" fbc:required="false" xmlns:fbc="http://www.sbml.org/sbml/level3/version1/fbc/version2">
+   <model id="CNA_stoichiometric_model" name="CNA_stoichiometric_model" fbc:strict="true">
+      <listOfCompartments>
+         <compartment id="External_Species" constant="true"/>
+         <compartment id="Internal_Species" constant="true"/>
+      </listOfCompartments>
+      <listOfSpecies>
+         <species id="S" name="Species1" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="A" name="Species2" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="C" name="Species3" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="F" name="Species4" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="H" name="Species5" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="D" name="Species6" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="P" name="Species7" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="Z" name="Species8" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+         <species id="BM" name="Species9" constant="false" hasOnlySubstanceUnits="false" compartment="Internal_Species" boundaryCondition="false"/>
+      </listOfSpecies>
+      <listOfReactions>
+         <reaction id="rs_up" name="rs_up" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par2" reversible="false">
+            <listOfProducts>
+               <speciesReference species="S" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="rd_ex" name="rd_ex" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par3" reversible="false">
+            <listOfReactants>
+               <speciesReference species="D" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+         </reaction>
+         <reaction id="rp_ex" name="rp_ex" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par3" reversible="false">
+            <listOfReactants>
+               <speciesReference species="P" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+         </reaction>
+         <reaction id="r_bm" name="r_bm" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par3" reversible="false">
+            <listOfReactants>
+               <speciesReference species="BM" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+         </reaction>
+         <reaction id="r1" name="r1" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par3" reversible="false">
+            <fbc:geneProductAssociation xmlns:fbc="http://www.sbml.org/sbml/level3/version1/fbc/version2">
+<fbc:or sboTerm="SBO:0000174">
+<fbc:and sboTerm="SBO:0000173">
+<fbc:geneProductRef fbc:geneProduct="G_g2"/>
+<fbc:geneProductRef fbc:geneProduct="G_g1"/>
+</fbc:and>
+<fbc:and sboTerm="SBO:0000173">
+<fbc:geneProductRef fbc:geneProduct="G_g3"/>
+<fbc:geneProductRef fbc:geneProduct="G_g1"/>
+</fbc:and>
+</fbc:or>
+            </fbc:geneProductAssociation>
+            <listOfReactants>
+               <speciesReference species="S" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="A" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="r2" name="r2" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par3" reversible="false">
+            <fbc:geneProductAssociation xmlns:fbc="http://www.sbml.org/sbml/level3/version1/fbc/version2">
+<fbc:or sboTerm="SBO:0000174">
+<fbc:geneProductRef fbc:geneProduct="G_g4"/>
+<fbc:geneProductRef fbc:geneProduct="G_g2"/>
+</fbc:or>
+            </fbc:geneProductAssociation>
+            <listOfReactants>
+               <speciesReference species="A" stoichiometry="1" constant="true"/>
+               <speciesReference species="Z" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="BM" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="r3" name="r3" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par3" reversible="false">
+            <fbc:geneProductAssociation xmlns:fbc="http://www.sbml.org/sbml/level3/version1/fbc/version2">
+<fbc:or sboTerm="SBO:0000174">
+<fbc:geneProductRef fbc:geneProduct="G_g8"/>
+<fbc:and sboTerm="SBO:0000173">
+<fbc:geneProductRef fbc:geneProduct="G_g6"/>
+<fbc:geneProductRef fbc:geneProduct="G_g3"/>
+</fbc:and>
+</fbc:or>
+            </fbc:geneProductAssociation>
+            <listOfReactants>
+               <speciesReference species="S" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="P" stoichiometry="1" constant="true"/>
+               <speciesReference species="Z" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="r4" name="r4" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par3" reversible="false">
+            <fbc:geneProductAssociation xmlns:fbc="http://www.sbml.org/sbml/level3/version1/fbc/version2">
+<fbc:or sboTerm="SBO:0000174">
+<fbc:and sboTerm="SBO:0000173">
+<fbc:geneProductRef fbc:geneProduct="G_g8"/>
+<fbc:geneProductRef fbc:geneProduct="G_g1"/>
+</fbc:and>
+<fbc:and sboTerm="SBO:0000173">
+<fbc:geneProductRef fbc:geneProduct="G_g8"/>
+<fbc:geneProductRef fbc:geneProduct="G_g4"/>
+</fbc:and>
+</fbc:or>
+            </fbc:geneProductAssociation>
+            <listOfReactants>
+               <speciesReference species="S" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="C" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="r5" name="r5" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par3" reversible="false">
+            <fbc:geneProductAssociation xmlns:fbc="http://www.sbml.org/sbml/level3/version1/fbc/version2">
+<fbc:or sboTerm="SBO:0000174">
+<fbc:and sboTerm="SBO:0000173">
+<fbc:geneProductRef fbc:geneProduct="G_g7"/>
+<fbc:geneProductRef fbc:geneProduct="G_g1"/>
+</fbc:and>
+<fbc:and sboTerm="SBO:0000173">
+<fbc:geneProductRef fbc:geneProduct="G_g9"/>
+<fbc:geneProductRef fbc:geneProduct="G_g5"/>
+<fbc:geneProductRef fbc:geneProduct="G_g1"/>
+</fbc:and>
+</fbc:or>
+            </fbc:geneProductAssociation>
+            <listOfReactants>
+               <speciesReference species="C" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="H" stoichiometry="1" constant="true"/>
+               <speciesReference species="Z" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="r6" name="r6" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par3" reversible="false">
+            <fbc:geneProductAssociation xmlns:fbc="http://www.sbml.org/sbml/level3/version1/fbc/version2">
+<fbc:and sboTerm="SBO:0000173">
+<fbc:geneProductRef fbc:geneProduct="G_g1"/>
+<fbc:geneProductRef fbc:geneProduct="G_g4"/>
+</fbc:and>
+            </fbc:geneProductAssociation>
+            <listOfReactants>
+               <speciesReference species="H" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="D" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+         <reaction id="r7" name="r7" fast="false" fbc:lowerFluxBound="par1" fbc:upperFluxBound="par3" reversible="false">
+            <fbc:geneProductAssociation xmlns:fbc="http://www.sbml.org/sbml/level3/version1/fbc/version2">
+<fbc:or sboTerm="SBO:0000174">
+<fbc:geneProductRef fbc:geneProduct="G_g7"/>
+<fbc:geneProductRef fbc:geneProduct="G_g6"/>
+</fbc:or>
+            </fbc:geneProductAssociation>
+            <listOfReactants>
+               <speciesReference species="A" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+               <speciesReference species="F" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+         </reaction>
+      </listOfReactions>
+      <listOfParameters>
+         <parameter id="par1" constant="true" value="0" />
+         <parameter id="par2" constant="true" value="10" />
+         <parameter id="par3" constant="true" value="100" />
+      </listOfParameters>
+      <fbc:listOfObjectives fbc:activeObjective="objective1">
+         <fbc:objective fbc:id="objective1" fbc:type="maximize">
+            <fbc:listOfFluxObjectives>
+               <fbc:fluxObjective fbc:reaction="r_bm" fbc:coefficient="1"/>
+            </fbc:listOfFluxObjectives>
+         </fbc:objective>
+      </fbc:listOfObjectives>
+      <fbc:listOfGeneProducts xmlns:fbc="http://www.sbml.org/sbml/level3/version1/fbc/version2">
+         <fbc:geneProduct fbc:id="G_g1" fbc:label="g1" metaid="G_g1"></fbc:geneProduct>
+         <fbc:geneProduct fbc:id="G_g2" fbc:label="g2" metaid="G_g2"></fbc:geneProduct>
+         <fbc:geneProduct fbc:id="G_g3" fbc:label="g3" metaid="G_g3"></fbc:geneProduct>
+         <fbc:geneProduct fbc:id="G_g4" fbc:label="g4" metaid="G_g4"></fbc:geneProduct>
+         <fbc:geneProduct fbc:id="G_g5" fbc:label="g5" metaid="G_g5"></fbc:geneProduct>
+         <fbc:geneProduct fbc:id="G_g6" fbc:label="g6" metaid="G_g6"></fbc:geneProduct>
+         <fbc:geneProduct fbc:id="G_g7" fbc:label="g7" metaid="G_g7"></fbc:geneProduct>
+         <fbc:geneProduct fbc:id="G_g8" fbc:label="g8" metaid="G_g8"></fbc:geneProduct>
+         <fbc:geneProduct fbc:id="G_g9" fbc:label="g9" metaid="G_g9"></fbc:geneProduct>
+      </fbc:listOfGeneProducts>
+   </model>
+</sbml>
