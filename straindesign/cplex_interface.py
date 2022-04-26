@@ -4,7 +4,6 @@ from cplex import Cplex, infinity
 from cplex.exceptions import CplexError
 from typing import Tuple, List
 import io
-from os import cpu_count
 from straindesign.names import *
 
 # Collection of CPLEX-related functions that facilitate the creation

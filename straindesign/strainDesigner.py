@@ -1,5 +1,3 @@
-from ipaddress import v4_int_to_packed, v6_int_to_packed
-from re import sub
 import numpy as np
 from scipy import sparse
 from contextlib import redirect_stdout, redirect_stderr
@@ -10,7 +8,6 @@ from straindesign import StrainDesignMILP, SDModule, SDSolution
 from straindesign.strainDesignModule import *
 from straindesign.fva import *
 from straindesign.names import *
-from warnings import warn, catch_warnings
 import jpype
 from sympy import Rational, nsimplify, parse_expr, to_dnf
 from sympy.core.numbers import One
@@ -18,7 +15,6 @@ import io
 
 import efmtool_link.efmtool4cobra as efm
 import efmtool_link.efmtool_intern as efmi
-from zmq import EVENT_CLOSE_FAILED
 import java.util.HashSet
 
 def remove_irrelevant_genes(model,essential_reacs,gkis,gkos):

@@ -1,11 +1,8 @@
 from scipy import sparse
-from numpy import nan, isnan, inf, isinf, sum, array
-import cobra
-from straindesign import indicator_constraints
+from numpy import nan, isnan, inf, isinf, sum
 from straindesign.names import *
 from typing import Tuple, List
 from swiglpk import *
-from sympy import unbranched_argument
 
 # Collection of GLPK-related functions that facilitate the creation
 # of GLPK-object and the solutions of LPs/MILPs with GLPK from

@@ -8,5 +8,5 @@ setup(name='straindesign',
     author_email='zgddtgt@gmail.com',
     license='Apache License 2.0',
     packages=['straindesign'],
-    install_requires=['numpy', 'scipy', 'cobra', 'optlang', 'efmtool_link', 'sympy', 'swiglpk','pickle','json','re'],
+    install_requires=['numpy', 'scipy', 'sympy', 'cobra', 'optlang', 'efmtool_link', 'swiglpk','pickle','json','re'],
     zip_safe=False)

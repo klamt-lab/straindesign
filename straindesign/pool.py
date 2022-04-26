@@ -8,7 +8,7 @@ import pickle
 from os.path import isfile
 from platform import system
 from tempfile import mkstemp
-from typing import Any, Callable, Optional, Tuple, Type
+from typing import Callable, Optional, Tuple, Type
 
 RUN = 0
 CLOSE = 1

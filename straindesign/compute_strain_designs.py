@@ -1,6 +1,6 @@
-from straindesign import StrainDesigner, SDModule
+from straindesign import StrainDesigner
 from straindesign.names import *
-from cobra import Model, Metabolite, Reaction
+from cobra import Model
 from typing import Dict, List, Tuple
 import json
 
