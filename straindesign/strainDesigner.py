@@ -6,7 +6,7 @@ from contextlib import redirect_stdout, redirect_stderr
 from typing import Dict, List, Tuple
 from cobra import Model, Metabolite, Reaction
 from cobra.util.array import create_stoichiometric_matrix
-from straindesign import StrainDesignMILP, SD_Module, SD_Solution
+from straindesign import StrainDesignMILP, SDModule, SDSolution
 from straindesign.strainDesignModule import *
 from straindesign.fva import *
 from straindesign.names import *
@@ -428,7 +428,7 @@ def compress_model_parallel(model, protected_rxns=[]):
 
 
 class StrainDesigner(StrainDesignMILP):
-    def __init__(self, model: Model, sd_modules: List[SD_Module], *args, **kwargs):
+    def __init__(self, model: Model, sd_modules: List[SDModule], *args, **kwargs):
         allowed_keys = {SOLVER, MAX_COST, 'M', 'compress',KOCOST,KICOST,GKOCOST,GKICOST,REGCOST}
         # set all keys that are not in kwargs to None
         for key in allowed_keys:
@@ -830,4 +830,4 @@ class StrainDesigner(StrainDesignMILP):
         if self.gene_sd:
             sd_setup[GKOCOST] = self.orig_gko_cost
             sd_setup[GKICOST] = self.orig_gki_cost
-        return SD_Solution(self.orig_model,sd,sd_solution_cmp.status,sd_setup)
+        return SDSolution(self.orig_model,sd,sd_solution_cmp.status,sd_setup)

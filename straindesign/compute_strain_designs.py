@@ -1,4 +1,4 @@
-from straindesign import StrainDesigner, SD_Module
+from straindesign import StrainDesigner, SDModule
 from straindesign.names import *
 from cobra import Model, Metabolite, Reaction
 from typing import Dict, List, Tuple

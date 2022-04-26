@@ -27,7 +27,7 @@ network.remove_reactions(obsolete_reacs)
 
 sol = straindesign.fba(network,constraints=["EX_o2_e=0"])
 # specify modules
-modules = straindesign.SD_Module(network,"mcs_bilvl",module_sense="desired",constraints=["2 BIOMASS_Ec_iML1515_core_75p37M >= 0.1","EX_etoh_e >= 1"],inner_objective="BIOMASS_Ec_iML1515_core_75p37M")
+modules = straindesign.SDModule(network,"mcs_bilvl",module_sense="desired",constraints=["2 BIOMASS_Ec_iML1515_core_75p37M >= 0.1","EX_etoh_e >= 1"],inner_objective="BIOMASS_Ec_iML1515_core_75p37M")
 
 network.metabolites.list_attr("compartment")
 # specify MCS setup

@@ -21,7 +21,7 @@ import re
 import json
 import pickle
 
-class SD_Solution(object):
+class SDSolution(object):
     def __init__(self, model, sd, status, sd_setup):
         self.status = status
         self.sd_setup = sd_setup

@@ -1,15 +1,15 @@
-from straindesign.strainDesignSolution import SD_Solution
+from straindesign.strainDesignSolution import SDSolution
 import numpy as np
 from scipy import sparse
 import time
 from cobra import Model
 from typing import Dict, List, Tuple
-from straindesign import StrainDesignMILPBuilder, MILP_LP, SD_Module
+from straindesign import StrainDesignMILPBuilder, MILP_LP, SDModule
 from straindesign.names import *
 from warnings import warn
 
 class StrainDesignMILP(StrainDesignMILPBuilder):
-    def __init__(self, model: Model, sd_modules: List[SD_Module], **kwargs):
+    def __init__(self, model: Model, sd_modules: List[SDModule], **kwargs):
         keys = {'options'}
         # remove keys that are irrelevant for MILP construction
         kwargs1 = kwargs.copy()
@@ -427,4 +427,4 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         sd_setup[KICOST] = {k:float(v) for k,v in \
             zip(self.model.reactions.list_attr('id'),self.ki_cost) if not np.isnan(v)}
         sd_setup[MODULES] = self.sd_modules
-        return SD_Solution(self.model,sd_dict,status,sd_setup)
+        return SDSolution(self.model,sd_dict,status,sd_setup)

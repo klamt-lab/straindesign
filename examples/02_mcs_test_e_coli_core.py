@@ -12,7 +12,7 @@ import sys
 network = cobra.io.read_sbml_model(os.path.dirname(os.path.abspath(__file__))+"/e_coli_core.sbml")
 
 # specify modules
-modules = straindesign.SD_Module(network,"mcs_bilvl",module_sense="desired",constraints=["2 BIOMASS_Ecoli_core_w_GAM >= 0.1","EX_etoh_e >= 1"],inner_objective="BIOMASS_Ecoli_core_w_GAM")
+modules = straindesign.SDModule(network,"mcs_bilvl",module_sense="desired",constraints=["2 BIOMASS_Ecoli_core_w_GAM >= 0.1","EX_etoh_e >= 1"],inner_objective="BIOMASS_Ecoli_core_w_GAM")
 
 straindesign.fba(network,obj=modules['inner_objective'])
 sol = straindesign.fba(network,constraints=["EX_o2_e=0"])

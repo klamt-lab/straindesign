@@ -5,14 +5,14 @@ from cobra.util import solvers, create_stoichiometric_matrix
 from cobra import Model
 from cobra.core import Configuration
 from typing import List, Tuple
-from straindesign import SD_Module, Indicator_constraints, lineqlist2mat, linexprdict2mat, MILP_LP, SDPool
+from straindesign import SDModule, Indicator_constraints, lineqlist2mat, linexprdict2mat, MILP_LP, SDPool
 from straindesign.strainDesignModule import *
 from straindesign.names import *
 
 class StrainDesignMILPBuilder:
     """Class for computing Strain Designs (SD)"""
 
-    def __init__(self, model: Model, sd_modules: List[SD_Module], *args, **kwargs):
+    def __init__(self, model: Model, sd_modules: List[SDModule], *args, **kwargs):
         allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis'}
         # set all keys passed in kwargs
         for key, value in dict(kwargs).items():
