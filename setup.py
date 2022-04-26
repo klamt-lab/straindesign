@@ -2,7 +2,6 @@ from setuptools import setup,find_packages
 
 setup(name='straindesign',
     version='0.1',
-    description='Computation of Strain Designs.',
     url='https://github.com/klamt-lab/straindesign.git',
     description="Computational strain design package for the COBRApy framework",
     author='Philipp Schneider',
@@ -10,5 +9,5 @@ setup(name='straindesign',
     license='Apache License 2.0',
     python_requires='>=3.7',
     packages=find_packages(),
-    install_requires=['numpy', 'scipy', 'sympy', 'cobra', 'optlang', 'efmtool_link', 'swiglpk','pickle','json','re'],
+    install_requires=['numpy', 'scipy', 'sympy', 'cobra', 'optlang', 'efmtool_link', 'swiglpk'],
     zip_safe=False)
