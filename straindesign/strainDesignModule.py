@@ -13,10 +13,8 @@
 # limitations under the License.
 from numpy import all
 from typing import List, Dict, Tuple, Union, Set, FrozenSet
-import re
 from straindesign.parse_constr import *
 from straindesign.names import *
-from optlang.interface import OPTIMAL, INFEASIBLE, UNBOUNDED
 
 """
 Strain design module (:class:`SD_Module`)

@@ -3,7 +3,7 @@ from setuptools import setup
 setup(name='straindesign',
     version='0.1',
     description='Computation of Strain Designs.',
-    url='https://github.com/VonAlphaBisZulu/straindesign.git',
+    url='https://github.com/klamt-lab/straindesign.git',
     author='Philipp Schneider',
     author_email='zgddtgt@gmail.com',
     license='Apache License 2.0',
