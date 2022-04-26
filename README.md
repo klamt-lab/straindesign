@@ -1,5 +1,5 @@
 # Strain design package for COBRApy
-Comprehensive package for computing strain design designs with the COBRApy toolbox. Supports MCS, MCS with nested optimization, OptKnock, RobustKnock and Optcouple and uses GPR-rule and network compression.
+Comprehensive package for computing strain design designs with the COBRApy toolbox. Supports MCS, MCS with nested optimization, OptKnock, RobustKnock and Optcouple, uses GPR-rule and network compression and allows for reaction and/or gene addition/removal/regulation.
 
 Installation:
 
