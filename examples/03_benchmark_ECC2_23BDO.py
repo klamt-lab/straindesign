@@ -11,13 +11,13 @@ from scipy import sparse, io
 network = cobra.io.read_sbml_model(os.path.dirname(os.path.abspath(__file__))+"/ECC2_23BDO.sbml")
 
 # specify modules
-modules  = [straindesign.SDModule(network,"mcs_lin",module_sense="desired",constraints=["BIOMASS_Ec_iJO1366_core_53p95M >= 0.05"])]
-modules += [straindesign.SDModule(network,"mcs_lin",module_sense="undesired",constraints=["EX_23bdo_e + 0.3 EX_glc__D_e <= 0"])]
+modules  = [straindesign.SDModule(network,PROTECT,constraints=["BIOMASS_Ec_iJO1366_core_53p95M >= 0.05"])]
+modules += [straindesign.SDModule(network,SUPPRESS,constraints=["EX_23bdo_e + 0.3 EX_glc__D_e <= 0"])]
 
 # specify MCS setup
 maxSolutions = np.inf
 maxCost = 9
-solver = 'glpk'
+solver = 'cplex'
 
 ko_cost = {'EX_o2_e'	: 1.0}
 # ki_cost = None
