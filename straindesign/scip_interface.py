@@ -1,5 +1,5 @@
 from scipy import sparse
-from numpy import isnan, nan, inf, isinf, sum, array, nonzero
+from numpy import isnan, nan, inf, isinf, sum, nonzero, random
 import pyscipopt as pso
 from straindesign.names import *
 from typing import Tuple, List
@@ -92,16 +92,13 @@ class SCIP_MILP(pso.Model):
         # set parameters
         self.max_tlim = self.getParam('limits/time')
         self.setParam('display/verblevel',0)
+        if 'B' in vtype or 'I' in vtype:
+            seed = seed = random.random_integers(2**31-1)
+            print('  MILP Seed: '+str(seed))
+            self.setParam('randomization/randomseedshift',seed)
         # self.enableReoptimization()
         # self.setParam('display/lpinfo',False)
         # self.setParam('reoptimization/enable',True)
-        # self.params.OutputFlag = 0
-        # self.params.OptimalityTol = 1e-9
-        # self.params.FeasibilityTol = 1e-9
-        # self.params.IntFeasTol = 1e-9 # (0 is not allowed by Gurobi)
-        # # yield only optimal solutions in pool
-        # self.params.PoolGap = 0.0
-        # self.params.PoolGapAbs = 0.0
 
     def solve(self) -> Tuple[List,float,float]:
         try:
@@ -156,7 +153,6 @@ class SCIP_MILP(pso.Model):
             return nan
 
     def populate(self,pool_limit) -> Tuple[List,float,float]:
-        numvars = len(self.vars)
         numrows = len(self.constr)
         
         try:

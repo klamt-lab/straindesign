@@ -1,5 +1,5 @@
 from scipy import sparse
-from numpy import nan, isnan, inf, isinf, sum
+from numpy import nan, isnan, inf, isinf, sum, random
 from straindesign.names import *
 from typing import Tuple, List
 from swiglpk import *
@@ -122,9 +122,9 @@ class GLPK_MILP_LP():
         self.lp_params.tol_bnd = 1e-9
         self.lp_params.msg_lev = 0
         self.milp_params.msg_lev = 0
+        # ideally, one would generate random seeds here, but glpk does not seem to
+        # offer this function
         
-        
-
     def __del__(self):
         glp_delete_prob(self.glpk)
         # glp_free(self.glpk)

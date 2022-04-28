@@ -606,7 +606,7 @@ class StrainDesignMILPBuilder:
         # worker_init(M_A,M_A_ineq,M_b_ineq,M_A_eq,M_b_eq,M_lb,M_ub,list(solvers.keys())[0])
         # worker_compute(1)
 
-        print('Bounding MILP.')
+        print('  Bounding MILP.')
         if processes > 1 and num_Ms > 1000:
             with SDPool(processes,initializer=worker_init,initargs=(M_A,M_A_ineq,M_b_ineq,M_A_eq,M_b_eq,M_lb,M_ub,
                             self.solver)) as pool:

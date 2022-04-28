@@ -1,6 +1,6 @@
 from scipy import sparse
-from numpy import nan, inf, isinf
-from cplex import Cplex, infinity
+from numpy import nan, inf, isinf, random
+from cplex import Cplex, infinity, _const
 from cplex.exceptions import CplexError
 from typing import Tuple, List
 import io
@@ -74,6 +74,9 @@ class Cplex_MILP_LP(Cplex):
         if 'B' in vtype or 'I' in vtype:
             # self.parameters.threads.set(cpu_count())
             # yield only optimal solutions in pool
+            seed = random.random_integers(_const.CPX_BIGINT)
+            print('  MILP Seed: '+str(seed))
+            self.parameters.randomseed = seed
             self.parameters.mip.pool.absgap.set(0.0)
             self.parameters.mip.pool.relgap.set(0.0)
             self.parameters.mip.pool.intensity.set(4)

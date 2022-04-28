@@ -20,7 +20,7 @@ sol = straindesign.fba(network,constraints=["EX_o2_e=0"])
 # specify MCS setup
 maxSolutions = np.inf
 maxCost = 25
-solver = 'scip'
+solver = 'glpk'
 # ko_cost = { 'PFK'       : 1,
 #             'PFL'       : 2,
 #             'PGI'       : 1.4,

@@ -1,5 +1,5 @@
 from scipy import sparse
-from numpy import nan, inf, isinf, sum, array
+from numpy import nan, inf, isinf, sum, array, random
 import gurobipy as gp
 from gurobipy import GRB as grb
 from straindesign.names import *
@@ -50,10 +50,14 @@ class Gurobi_MILP_LP(gp.Model):
         self.params.OutputFlag = 0
         self.params.OptimalityTol = 1e-9
         self.params.FeasibilityTol = 1e-9
-        self.params.IntFeasTol = 1e-9 # (0 is not allowed by Gurobi)
-        # yield only optimal solutions in pool
-        self.params.PoolGap = 0.0
-        self.params.PoolGapAbs = 0.0
+        if 'B' in vtype or 'I' in vtype:
+            seed = random.random_integers(grb.MAXINT)
+            print('  MILP Seed: '+str(seed))
+            self.params.Seed = seed
+            self.params.IntFeasTol = 1e-9 # (0 is not allowed by Gurobi)
+            # yield only optimal solutions in pool
+            self.params.PoolGap = 0.0
+            self.params.PoolGapAbs = 0.0
 
     def solve(self) -> Tuple[List,float,float]:
         try:

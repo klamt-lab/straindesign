@@ -471,7 +471,7 @@ class StrainDesigner(StrainDesignMILP):
         if not kwargs[REGCOST]:
             self.uncmp_reg_cost = {}
         # put module in list if only one module was provided
-        if "SD_Module" in str(type(sd_modules)):
+        if "SDModule" in str(type(sd_modules)):
             sd_modules = [sd_modules]
         self.orig_sd_modules = sd_modules
         # check that at most one bilevel module is provided
