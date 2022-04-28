@@ -12,11 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from numpy import all, any, nan, isnan, inf
-from sympy import Rational, nsimplify, parse_expr, to_dnf
 from typing import List, Dict, Tuple, Union, Set, FrozenSet
 from straindesign.parse_constr import *
 from straindesign.names import *
-from optlang.interface import OPTIMAL, INFEASIBLE, UNBOUNDED
 import re
 import json
 import pickle

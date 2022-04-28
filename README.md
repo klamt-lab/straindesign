@@ -1,16 +1,22 @@
-# strain designer
-Module for enumerating multiple solutions to a MILP problem using the optlang framework.
-Currently only the enumeration of constrained minimal cut sets is implemented.
+# Strain design package for COBRApy
+Comprehensive package for computing strain design designs with the COBRApy toolbox. Supports MCS, MCS with nested optimization, OptKnock, RobustKnock and Optcouple, uses GPR-rule and network compression and allows for reaction and/or gene addition/removal/regulation.
 
-Installation:
+This package uses the efmtool compression routine for reducing the network size during preprocessing (https://csb.ethz.ch/tools/software/efmtool.html).
 
-First you need to install the efmtool_link package (also available at https://github.com/cnapy-org).
-Clone the repository, go into the top mcs directory and install into your current Python environment with:
+## Installation:
 
+The straindesign package is available on pip and conda. To install the latest release, run
+
+```pip install straindesign```
+
+First you need to install cobra and the efmtool_link package (also available at https://github.com/cnapy-org).
+Clone the repository, go into the top straindesign directory and install into your current Python environment with:
+
+### Developer Installation:
 pip install .
 
 Tip: If you use the -e option during installation then updates from a 'git pull' are at once available in your Python envrionment without the need for a reinstallation.
 
-Example:
+Examples:
 
-The ECC2comp.ipynb Jupyter notebook in the examples directory shows how to perform a basic MCS calculation.
+Will be added soon...

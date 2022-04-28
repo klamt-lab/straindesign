@@ -5,7 +5,7 @@ from cobra.util import solvers, create_stoichiometric_matrix
 from cobra import Model
 from cobra.core import Configuration
 from typing import List, Tuple
-from straindesign import SDModule, Indicator_constraints, lineqlist2mat, linexprdict2mat, MILP_LP, SDPool
+from straindesign import SDModule, IndicatorConstraints, lineqlist2mat, linexprdict2mat, MILP_LP, SDPool
 from straindesign.strainDesignModule import *
 from straindesign.names import *
 
@@ -707,7 +707,7 @@ class StrainDesignMILPBuilder:
         ic_indicval = [0 if i == 1 else 1 for i in ic_indicval]
         # in z-maps: -1 => z=1 -> A_ineq*x <= b_ineq
         #             1 => z=0 -> A_ineq*x <= b_ineq
-        self.indic_constr = Indicator_constraints(ic_binv, ic_A, ic_b, ic_sense, ic_indicval)
+        self.indic_constr = IndicatorConstraints(ic_binv, ic_A, ic_b, ic_sense, ic_indicval)
 
         # 7. Remove knockable (in)equalities from static problem, as they are now indicator constraints
         keep_ineq = [False if i in knockable_constr_ineq_ic else True for i in range(self.A_ineq.shape[0])]
