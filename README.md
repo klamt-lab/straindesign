@@ -17,6 +17,6 @@ pip install .
 
 Tip: If you use the -e option during installation then updates from a 'git pull' are at once available in your Python envrionment without the need for a reinstallation.
 
-Examples:
+## Examples:
 
 Will be added soon...
