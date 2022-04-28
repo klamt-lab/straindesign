@@ -14,6 +14,7 @@ from .names import *
 from .solver_interface import *
 from .indicatorConstraints import *
 from .pool import *
+from .efmtool import *
 from .parse_constr import *
 from .lptools import *
 from .efmtool import *
