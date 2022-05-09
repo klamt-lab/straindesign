@@ -36,7 +36,7 @@ class SDModule(Dict):
     Attributes
     ----------
         module_sense: 'desired' or 'undesired'
-        module_type: 'mcs_lin', 'mcs_bilvl', 'mcs_yield', 'optknock'
+        module_type: 'mcs_lin', 'mcs_bilvl', 'optknock'
         constraints: Linear constraints: A v <= b, A v >= b, A v = b
                     (e.g. T v <= t with 'undesired' or D v <= d with 'desired')
     ----------
@@ -58,7 +58,7 @@ class SDModule(Dict):
     def __init__(self, model, module_type, *args, **kwargs):
         self[MODEL_ID] = model.id
         self[MODULE_TYPE] = module_type
-        allowed_keys = {MODULE_SENSE, CONSTRAINTS, INNER_OBJECTIVE, INNER_OPT_SENSE, OUTER_OBJECTIVE,
+        allowed_keys = {CONSTRAINTS, INNER_OBJECTIVE, INNER_OPT_SENSE, OUTER_OBJECTIVE,
                         OUTER_OPT_SENSE, PROD_ID, 'skip_checks', MIN_GCP}
         # set all keys passed in kwargs as properties of the SD_Module object
         for key,value in kwargs.items():
@@ -75,20 +75,10 @@ class SDModule(Dict):
             raise Exception('Strain design module cannot be constructed for models without reactions. ' \
                              'Make sure to provide a valid module.')
         
-        # module sense must be desired or undesired when using mcs or else remain undefined/None.
-        if MCS in self[MODULE_TYPE] and self[MODULE_SENSE] not in [DESIRED, UNDESIRED]:
-            raise Exception('"'+MODULE_SENSE+'" must be "'+UNDESIRED+'" or "'+DESIRED+'".')
-        elif self[MODULE_SENSE] and (MCS not in self[MODULE_TYPE]):
-            print('module_sense is ignored unless '+MODULE_TYPE+' is '+MCS_LIN+', '+MCS_BILVL+' or '+MCS_YIELD+'.')
-            
         # check if there is sufficient information for each module type
-        if self[MODULE_TYPE] not in  [MCS_LIN, MCS_BILVL, MCS_YIELD, OPTKNOCK, ROBUSTKNOCK,OPTCOUPLE]:
-            raise Exception('"'+MODULE_TYPE+'" must be "'+MCS_LIN+'", "'+MCS_BILVL+'", "'+MCS_YIELD+'", "'+OPTKNOCK+'", "'+ROBUSTKNOCK+'", "'+OPTCOUPLE+'".')
-        if (self[MODULE_TYPE] == MCS_BILVL) & (self[INNER_OBJECTIVE] == None):
-            raise Exception('When module type is "'+MCS_BILVL+'", an objective function must be provided.')
-        elif (self[MODULE_TYPE] == MCS_YIELD) & (self[CONSTRAINTS]==None):
-            raise Exception('When module type is "'+MCS_YIELD+'", a numerator and denominator must be provided.')
-        elif (self[MODULE_TYPE] in [OPTKNOCK,ROBUSTKNOCK]):
+        if self[MODULE_TYPE] not in  [PROTECT, SUPPRESS, OPTKNOCK, ROBUSTKNOCK,OPTCOUPLE]:
+            raise Exception('"'+MODULE_TYPE+'" must be "'+PROTECT+'", "'+SUPPRESS+'", "'+OPTKNOCK+'", "'+ROBUSTKNOCK+'", "'+OPTCOUPLE+'".')
+        if (self[MODULE_TYPE] in [OPTKNOCK,ROBUSTKNOCK]):
             if self[INNER_OPT_SENSE] is None:
                 self[INNER_OPT_SENSE] = MAXIMIZE
             if self[OUTER_OPT_SENSE] is None:
@@ -138,11 +128,11 @@ class SDModule(Dict):
             if fba(model,constraints=self[CONSTRAINTS]).status == INFEASIBLE:
                 raise Exception("There is no feasible solution of the model under the given constraints.")
             
-            if MCS in self[MODULE_TYPE] and self[MODULE_SENSE] == UNDESIRED:
+            if self[MODULE_TYPE] == SUPPRESS and self[INNER_OBJECTIVE] is not None:
                 constr = [[{k:1},'=',0] for k in model.reactions.list_attr('id')]
                 if fba(model,constraints=self[CONSTRAINTS]+constr).status != INFEASIBLE:
-                    raise Exception('When '+MODULE_TYPE+' is "'+MCS_LIN+'" or "'+MCS_BILVL+\
-                        '", and '+MODULE_SENSE+' is "'+UNDESIRED+'", the zero vector must not be a contained in the described flux space.')
+                    raise Exception('When '+MODULE_TYPE+' is "'+SUPPRESS+\
+                        '", the zero vector must not be a contained in the described flux space.')
             
             if (self[INNER_OBJECTIVE] is not None) and (not all([True if r in reac_id else False for r in self[INNER_OBJECTIVE].keys()])):
                 raise Exception("Inner objective invalid.")

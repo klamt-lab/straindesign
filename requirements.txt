@@ -1,0 +1,3 @@
+cobra
+jpype1
+scipy

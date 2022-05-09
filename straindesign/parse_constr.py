@@ -6,8 +6,8 @@ def parse_constraints(constr,reaction_ids) -> List:
     if not constr:
         return []
     if type(constr) is str:
-        if "\n" in constr:
-            constr = re.split(r"\n",constr)
+        if "\n" in constr or "," in constr:
+            constr = re.split(r"\n|,",constr)
     if bool(constr) and (type(constr) is not list or type(constr[0]) is dict):
         constr = [constr]
     for i,c in enumerate(constr):
@@ -16,6 +16,16 @@ def parse_constraints(constr,reaction_ids) -> List:
     if type(constr[0]) is not list:
         constr = lineq2list(constr, reaction_ids)
     return constr
+
+def parse_expr(expr,reaction_ids) -> List:
+    if not expr:
+        return []
+    if type(expr) is str:
+        if "\n" in expr or "," in expr:
+            expr = re.split(r"\n|,",expr)
+    if bool(expr) and (type(expr) is not list):
+        expr = [expr]
+    return [linexpr2dict(e,reaction_ids) if type(e) is str else e for e in expr]
 
 def lineq2mat(equations, reaction_ids) -> Tuple[sparse.csr_matrix, Tuple, sparse.csr_matrix, Tuple]:
     numr = len(reaction_ids)

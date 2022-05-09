@@ -4,18 +4,13 @@ from contextlib import redirect_stdout, redirect_stderr
 from typing import Dict, List, Tuple
 from cobra import Model, Metabolite, Reaction
 from cobra.util.array import create_stoichiometric_matrix
-from straindesign import StrainDesignMILP, SDModule, SDSolution
-from straindesign.strainDesignModule import *
-from straindesign.fva import *
+from straindesign import StrainDesignMILP, SDModule, SDSolution, avail_solvers, fva, parse_constraints
+import straindesign.efmtool as efm
 from straindesign.names import *
 import jpype
 from sympy import Rational, nsimplify, parse_expr, to_dnf
 from sympy.core.numbers import One
 import io
-
-import efmtool_link.efmtool4cobra as efm
-import efmtool_link.efmtool_intern as efmi
-import java.util.HashSet
 
 def remove_irrelevant_genes(model,essential_reacs,gkis,gkos):
     # 1) Remove gpr rules from blocked reactions
@@ -223,7 +218,7 @@ def remove_ext_mets(model):
 
 def remove_conservation_relations(model):
     stoich_mat = create_stoichiometric_matrix(model, array_type='lil')
-    basic_metabolites = efmi.basic_columns_rat(stoich_mat.transpose().toarray(), tolerance=0)
+    basic_metabolites = efm.basic_columns_rat(stoich_mat.transpose().toarray(), tolerance=0)
     dependent_metabolites = [model.metabolites[i].id for i in set(range(len(model.metabolites))) - set(basic_metabolites)]
     # print("The following metabolites have been removed from the model:")
     # print(dependent_metabolites)
@@ -306,10 +301,10 @@ def compress_model(model):
             n, d = efm.sympyRat2jBigIntegerPair(v)
             stoich_mat.setValueAt(model.metabolites.index(k.id), i, efm.BigFraction(n, d))
     # compress
-    smc = efm.StoichMatrixCompressor(efmi.subset_compression)
+    smc = efm.StoichMatrixCompressor(efm.subset_compression)
     reacNames = jpype.JString[:](model.reactions.list_attr('id'))
     comprec = smc.compress(stoich_mat, reversible, jpype.JString[num_met], reacNames,None)
-    subset_matrix= efmi.jpypeArrayOfArrays2numpy_mat(comprec.post.getDoubleRows())
+    subset_matrix= efm.jpypeArrayOfArrays2numpy_mat(comprec.post.getDoubleRows())
     del_rxns = np.logical_not(np.any(subset_matrix, axis=1)) # blocked reactions
     for j in range(subset_matrix.shape[1]):
         rxn_idx = subset_matrix[:, j].nonzero()[0]
@@ -502,7 +497,15 @@ class StrainDesigner(StrainDesignMILP):
                                 'through gene interventions and are defined either as knock-ins or as knock-outs.')
         # 1) Preprocess Model
         print('Preparing strain design computation.')
-        print('  Using '+kwargs[SOLVER]+' for solving LPs during preprocessing.')
+        if self.solver is None:
+            if len(avail_solvers) > 0:
+                self.solver = avail_solvers[0]
+            else:
+                raise Exception('No solver available. Please ensure that one of the following '\
+                    'solvers is avaialable in your Python environment: CPLEX, Gurobi, SCIP, GLPK')
+        elif self.solver not in avail_solvers:
+            raise Exception("Selected solver '" + self.solver +"' is not installed / set up correctly.")
+        print('  Using '+self.solver+' for solving LPs during preprocessing.')
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()): # suppress standard output from copying model
             cmp_model = model.copy()
         # remove external metabolites
@@ -537,7 +540,7 @@ class StrainDesigner(StrainDesignMILP):
         print('  FVA(s) to identify essential reactions.')
         essential_reacs = set()
         for m in sd_modules:
-            if m[MODULE_SENSE] != UNDESIRED: # Essential reactions can only be determined from desired
+            if m[MODULE_TYPE] != SUPPRESS:  # Essential reactions can only be determined from desired
                                             # or opt-/robustknock modules
                 flux_limits = fva(cmp_model,solver=kwargs[SOLVER],constraints=m[CONSTRAINTS])
                 for (reac_id, limits) in flux_limits.iterrows():
@@ -690,7 +693,7 @@ class StrainDesigner(StrainDesignMILP):
         print('  FVA(s) in compressed model to identify essential reactions.')
         essential_reacs = set()
         for m in sd_modules:
-            if m[MODULE_SENSE] != UNDESIRED: # Essential reactions can only be determined from desired
+            if m[MODULE_TYPE] != SUPPRESS:  # Essential reactions can only be determined from desired
                                             # or opt-/robustknock modules
                 flux_limits = fva(cmp_model,solver=kwargs[SOLVER],constraints=m[CONSTRAINTS])
                 for (reac_id, limits) in flux_limits.iterrows():

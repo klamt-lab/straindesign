@@ -43,7 +43,8 @@ class Cplex_MILP_LP(Cplex):
         # construct CPLEX problem. Add variables and linear constraints
         self.variables.add(obj=c, lb=lb, ub=ub, types=vtype)
         self.linear_constraints.add(rhs=b, senses=sense)
-        self.linear_constraints.set_coefficients(zip(A.row.tolist(), A.col.tolist(), A.data.tolist()))
+        if A.nnz:
+            self.linear_constraints.set_coefficients(zip(A.row.tolist(), A.col.tolist(), A.data.tolist()))
 
         # add indicator constraints
         if not indic_constr==None:
@@ -124,7 +125,7 @@ class Cplex_MILP_LP(Cplex):
         try:
             super().solve() # call parent solve function (that was overwritten in this class)
             status = self.solution.get_status()
-            if status in [101,102,107,115,128,129,130]: # solution integer optimal (tolerance)
+            if status in [1,101,102,107,115,128,129,130]: # solution integer optimal (tolerance)
                 opt = self.solution.get_objective_value()
             elif status in [118,119]: # solution unbounded (or inf or unbdd)
                 opt = -inf

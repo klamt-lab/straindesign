@@ -62,9 +62,9 @@ def compute_strain_designs(model: Model, **kwargs):
     # solve MILP
     if solution_approach == ANY:
         sd_solutions = strain_design_MILP.compute(**kwargs_computation)
-    elif solution_approach == SMALLEST:
+    elif solution_approach == BEST:
         sd_solutions = strain_design_MILP.compute_optimal(**kwargs_computation)
-    elif solution_approach == CARDINALITY:
+    elif solution_approach == POPULATE:
         sd_solutions = strain_design_MILP.enumerate(**kwargs_computation)
 
     return sd_solutions

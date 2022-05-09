@@ -2,8 +2,9 @@
 Copied and slightly changed from cobra."""
 
 from multiprocessing.pool import Pool
-from multiprocessing import get_context
+from multiprocessing import set_start_method, get_context
 import os
+import sys
 import pickle
 from os.path import isfile
 from platform import system
@@ -22,7 +23,6 @@ def _init_win_worker(filename: str) -> None:
         func, *args = pickle.load(handle)
     func(*args)
 
-
 class SDPool(Pool):
     """Define a process pool that handles the Windows platform specially."""
 
@@ -32,7 +32,7 @@ class SDPool(Pool):
         initializer: Optional[Callable] = None,
         initargs: Tuple = (),
         maxtasksperchild: Optional[int] = None,
-        context=get_context('spawn')):
+        context=None):
         """
         Initialize a process pool.
 
@@ -56,6 +56,21 @@ class SDPool(Pool):
                 pickle.dump((initializer,) + initargs, handle)
             initializer = _init_win_worker
             initargs = (self._filename,)
+        # Store and remove main.spec and main.file. Multiprocessing reads
+        # these parameters to identify a python file for initialization.
+        # The idea is to avoid that the workers call the main file.
+        spec = None
+        file = None
+        if context is None:
+            context = get_context('spawn') # If not declared otherwise, 
+                                           # 'spawn' new threads. Experience has shown
+                                           # that forking is unreliable.
+            if sys.modules['__main__'].__spec__ is not None:
+                spec = sys.modules['__main__'].__spec__
+                sys.modules['__main__'].__spec__ = None
+            if sys.modules['__main__'].__file__ is not None:
+                file = sys.modules['__main__'].__file__
+                sys.modules['__main__'].__file__ = None
         super().__init__(
             processes=processes,
             initializer=initializer,
@@ -63,6 +78,11 @@ class SDPool(Pool):
             maxtasksperchild=maxtasksperchild,
             context=context,
         )
+        # Restore backups
+        if spec:
+            sys.modules['__main__'].__spec__ = spec
+        if file:
+            sys.modules['__main__'].__file__ = file
 
     def __exit__(self, *args, **kwargs):
         """Clean up resources when leaving a context."""

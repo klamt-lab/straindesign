@@ -32,7 +32,8 @@ class GLPK_MILP_LP():
             self.ismilp = True
 
         # add and set variables, types and bounds
-        glp_add_cols(self.glpk, numvars)
+        if numvars > 0:
+            glp_add_cols(self.glpk, numvars)
         for i,v in enumerate(vtype):
             if v=='C':
                 glp_set_col_kind(self.glpk,i+1 ,GLP_CV)
@@ -92,22 +93,24 @@ class GLPK_MILP_LP():
                 b_indic = b_indic+b
 
         # stack all problem rows and add constraints
-        glp_add_rows(self.glpk, A_ineq.shape[0]+A_eq.shape[0]+A_indic.shape[0])
-        b_ineq = [float(b) for b in b_ineq]
-        b_eq   = [float(b) for b in b_eq]
-        eq_type = [GLP_UP]*len(b_ineq)+[GLP_FX]*len(b_eq)+[GLP_UP]*len(b_indic)
-        for i,t,b in zip(range(len(b_ineq+b_eq+b_indic)),eq_type,b_ineq+b_eq+b_indic):
-            glp_set_row_bnds(self.glpk,i+1,t,b,b)
+        if A_ineq.shape[0]+A_eq.shape[0]+A_indic.shape[0] > 0:
+            glp_add_rows(self.glpk, A_ineq.shape[0]+A_eq.shape[0]+A_indic.shape[0])
+            b_ineq = [float(b) for b in b_ineq]
+            b_eq   = [float(b) for b in b_eq]
+            eq_type = [GLP_UP]*len(b_ineq)+[GLP_FX]*len(b_eq)+[GLP_UP]*len(b_indic)
+            for i,t,b in zip(range(len(b_ineq+b_eq+b_indic)),eq_type,b_ineq+b_eq+b_indic):
+                glp_set_row_bnds(self.glpk,i+1,t,b,b)
 
-        A = sparse.vstack((A_ineq,A_eq,A_indic),'coo')
-        ia = intArray(A.nnz+1)
-        ja = intArray(A.nnz+1)
-        ar = doubleArray(A.nnz+1)
-        for i,row,col,data in zip(range(A.nnz),A.row,A.col,A.data):
-            ia[i+1] = int(row)+1
-            ja[i+1] = int(col)+1
-            ar[i+1] = float(data)
-        glp_load_matrix(self.glpk, A.nnz, ia, ja, ar)
+            A = sparse.vstack((A_ineq,A_eq,A_indic),'coo')
+            ia = intArray(A.nnz+1)
+            ja = intArray(A.nnz+1)
+            ar = doubleArray(A.nnz+1)
+            for i,row,col,data in zip(range(A.nnz),A.row,A.col,A.data):
+                ia[i+1] = int(row)+1
+                ja[i+1] = int(col)+1
+                ar[i+1] = float(data)
+            if A.nnz:
+                glp_load_matrix(self.glpk, A.nnz, ia, ja, ar)
 
         # not sure if the parameter setup is okay
         self.milp_params = glp_iocp()

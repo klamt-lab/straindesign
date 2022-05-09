@@ -5,7 +5,7 @@ from cobra.util import solvers, create_stoichiometric_matrix
 from cobra import Model
 from cobra.core import Configuration
 from typing import List, Tuple
-from straindesign import SDModule, IndicatorConstraints, lineqlist2mat, linexprdict2mat, MILP_LP, SDPool
+from straindesign import SDModule, IndicatorConstraints, lineqlist2mat, linexprdict2mat, MILP_LP, SDPool, avail_solvers
 from straindesign.strainDesignModule import *
 from straindesign.names import *
 
@@ -28,25 +28,14 @@ class StrainDesignMILPBuilder:
         if "SD_Module" in str(type(sd_modules)):
             sd_modules = [sd_modules]
             
-        avail_solvers = list(solvers.keys())
-        try:
-            import pyscipopt
-            avail_solvers += [SCIP]
-        except:
-            pass
         if self.solver is None:
-            if CPLEX in avail_solvers:
-                self.solver = CPLEX
-            elif GUROBI in avail_solvers:
-                self.solver = GUROBI
-            elif SCIP in avail_solvers:
-                self.solver = SCIP
+            if len(avail_solvers) > 0:
+                self.solver = avail_solvers[0]
             else:
-                self.solver = 'glpk'
+                raise Exception('No solver available. Please ensure that one of the following '\
+                    'solvers is avaialable in your Python environment: CPLEX, Gurobi, SCIP, GLPK')
         elif self.solver not in avail_solvers:
-            raise Exception("Selected solver is not installed / set up correctly.")
-        else:
-            self.solver = self.solver
+            raise Exception("Selected solver '" + self.solver +"' is not installed / set up correctly.")
         if self.M is None and self.solver == 'glpk':
             print('GLPK only supports strain design computation with the bigM method. Default: M=1000')
             self.M = 1000.0
@@ -104,7 +93,7 @@ class StrainDesignMILPBuilder:
             if model.reactions[i].upper_bound >=  bound_thres:
                 model.reactions[i].upper_bound =  np.inf
                 
-        print('Constructing strain design MILP for solver: '+kwargs[SOLVER]+'.')
+        print('Constructing strain design MILP for solver: '+self.solver+'.')
         for i in range(len(sd_modules)):
             self.addModule(sd_modules[i])
 
@@ -138,7 +127,7 @@ class StrainDesignMILPBuilder:
 
         # if there are only mcs modules, minimize the knockout costs, 
         # otherwise use objective function(s) from modules
-        if all([MCS in mod[MODULE_TYPE] for mod in sd_modules]):
+        if all([mod[MODULE_TYPE] in [PROTECT,SUPPRESS] for mod in sd_modules]):
             for i in self.idx_z:
                 self.c[i] = self.cost[i]
             self.is_mcs_computation = True
@@ -181,8 +170,7 @@ class StrainDesignMILPBuilder:
         #
         # Attributes
         # ----------
-        #     module_sense: 'desired' or 'undesired'
-        #     module_type: 'mcs_lin', 'mcs_bilvl', 'mcs_yield'
+        #     module_type: 'protect', 'suppress', 'optknock', 'robustknock', 'optcouple'
         #     equation: String to specify linear constraints: A v <= b, A v >= b, A v = b
         #         (e.g. T v <= t with 'undesired' or D v <= d with 'desired')
         # ----------
@@ -211,11 +199,11 @@ class StrainDesignMILPBuilder:
         V_ineq, v_ineq, V_eq, v_eq = lineqlist2mat(sd_module[CONSTRAINTS], self.model.reactions.list_attr('id'))
 
         # 2. Construct LP for module
-        if sd_module[MODULE_TYPE] == MCS_LIN:
+        if sd_module[MODULE_TYPE] in [PROTECT, SUPPRESS] and sd_module[INNER_OBJECTIVE] is None:
             # Classical MCS
             A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p \
                 = self.build_primal(V_ineq, v_ineq, V_eq, v_eq, [], lb, ub)
-        elif sd_module[MODULE_TYPE] in [MCS_BILVL,OPTKNOCK,OPTCOUPLE]:
+        elif sd_module[MODULE_TYPE] in [PROTECT,SUPPRESS,OPTKNOCK,OPTCOUPLE]:
             c_in = linexprdict2mat(sd_module[INNER_OBJECTIVE],self.model.reactions.list_attr('id'))
             # by default, assume maximization of the inner objective
             if not hasattr(sd_module,INNER_OPT_SENSE) or sd_module[INNER_OPT_SENSE] is None or \
@@ -346,12 +334,12 @@ class StrainDesignMILPBuilder:
             c_i = c_p + [-c for c in c_b]
 
         # 3. Prepare module as undesired, desired or other
-        if MCS in sd_module[MODULE_TYPE] and sd_module[MODULE_SENSE] == DESIRED:
+        if sd_module[MODULE_TYPE] == PROTECT:
             A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = self.reassign_lb_ub_from_ineq(
                 A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
             z_map_vars_i = z_map_vars_p
             c_i = [0] * A_ineq_i.shape[1]
-        elif MCS in sd_module[MODULE_TYPE] and sd_module[MODULE_SENSE] == UNDESIRED:
+        elif sd_module[MODULE_TYPE] == SUPPRESS:
             c_p = [0] * A_ineq_p.shape[1]
             A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, c_d, lb_i, ub_i, z_map_constr_ineq_d, z_map_constr_eq_d, z_map_vars_i = self.dualize(
                 A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, c_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p,
@@ -677,7 +665,7 @@ class StrainDesignMILPBuilder:
             z_eq = sparse.hstack((z_eq, self.z_map_constr_ineq[:, ident_rows[j][0]]))
         # Add to global equality problem part
         knockable_constr_eq_ic = [i + len(self.b_eq) for i in range(len(b_eq))]
-        self.A_eq = sparse.vstack((self.A_eq, A_eq))
+        self.A_eq = sparse.vstack((self.A_eq, A_eq),'csr')
         self.b_eq += b_eq
         self.z_map_constr_eq = sparse.hstack((self.z_map_constr_eq, z_eq)).tocsc()
 
@@ -822,7 +810,6 @@ def worker_init(A,A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver):
     global lp_glob
     lp_glob = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
                                     lb=lb, ub=ub, solver=solver)
-    avail_solvers = list(solvers.keys())
     if lp_glob == CPLEX:
         lp_glob.backend.parameters.lpmethod.set(1)
         if Configuration().processes > 1:

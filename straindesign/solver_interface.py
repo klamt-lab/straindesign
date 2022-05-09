@@ -1,7 +1,8 @@
-from importlib import find_loader as module_exists
 from numpy import inf, isinf, sign, nan, isnan, unique
 from scipy import sparse
 from typing import List, Tuple
+from straindesign import avail_solvers
+from straindesign.names import *
 
 class MILP_LP(object):
     def __init__(self, *args, **kwargs):
@@ -18,26 +19,14 @@ class MILP_LP(object):
             if key not in kwargs.keys():
                 setattr(self,key,None)
         # Select solver (either by choice or automatically cplex > gurobi > glpk)
-        avail_solvers = []
-        if module_exists('swiglpk'):
-            avail_solvers += ['glpk']
-        if module_exists('cplex'):
-            avail_solvers += ['cplex']
-        if module_exists('gurobipy'):
-            avail_solvers += ['gurobi']
-        if module_exists('pyscipopt'):
-            avail_solvers += ['scip']
         if self.solver is None:
-            if 'cplex' in avail_solvers:
-                self.solver = 'cplex'
-            elif 'gurobi' in avail_solvers:
-                self.solver = 'gurobi'
-            elif 'scip' in avail_solvers:
-                self.solver = 'scip'
+            if len(avail_solvers) > 0:
+                self.solver = avail_solvers[0]
             else:
-                self.solver = 'glpk'
-        elif not self.solver in avail_solvers:
-            raise Exception("Selected solver is not installed / set up correctly.")
+                raise Exception('No solver available. Please ensure that one of the following '\
+                    'solvers is avaialable in your Python environment: CPLEX, Gurobi, SCIP, GLPK')
+        elif self.solver not in avail_solvers:
+            raise Exception("Selected solver '" + self.solver +"' is not installed / set up correctly.")
         # Copy parameters to object
         if self.A_ineq is not None:
             numvars = self.A_ineq.shape[1]
@@ -60,9 +49,9 @@ class MILP_LP(object):
         if self.b_eq == None:
             self.b_eq = []
         if self.lb == None:
-            self.lb = [-inf()]*numvars
+            self.lb = [-inf]*numvars
         if self.ub == None:
-            self.ub = [ inf()]*numvars
+            self.ub = [ inf]*numvars
         if self.vtype == None:
             self.vtype = 'C'*numvars
         # check dimensions
@@ -74,7 +63,7 @@ class MILP_LP(object):
             if not (self.A_ineq.shape[1]==numvars and self.A_eq.shape[1]==numvars and len(self.c)==numvars and \
                     len(self.lb)==numvars and len(self.ub)==numvars and len(self.vtype)==numvars):
                 raise Exception("A_eq, A_ineq, c, lb, ub, vtype must have the same number of columns/elements")
-            # if (not self.indic_constr==None) and (not self.solver in ['cplex', 'gurobi', 'scip']):
+            # if (not self.indic_constr==None) and (not self.solver in [CPLEX, GUROBI, SCIP]):
             #     raise Exception("In order to use indicator constraints, you need to set up CPLEX, Gurobi or SCIP.")
             elif (not self.indic_constr==None): # check dimensions of indicator constraints
                 num_ic = self.indic_constr.A.shape[0]
@@ -93,19 +82,19 @@ class MILP_LP(object):
         if self.indic_constr:
             self.indic_constr.A = self.indic_constr.A.astype(float)
             self.indic_constr.b = [float(v) for v in self.indic_constr.b]
-        if not self.solver == 'glpk' and self.M and not (isnan(self.M) or isinf(self.M)) and \
+        if not self.solver == GLPK and self.M and not (isnan(self.M) or isinf(self.M)) and \
            self.indic_constr and self.indic_constr.A.shape[0]:
             print('Provided big M value is ignored unless glpk is used.') 
         # Create backend
-        if self.solver == 'cplex':
+        if self.solver == CPLEX:
             from straindesign.cplex_interface import Cplex_MILP_LP
             self.backend = Cplex_MILP_LP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
                                             self.indic_constr)
-        elif self.solver == 'gurobi':
+        elif self.solver == GUROBI:
             from straindesign.gurobi_interface import Gurobi_MILP_LP
             self.backend = Gurobi_MILP_LP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
                                             self.indic_constr)
-        elif self.solver == 'scip':
+        elif self.solver == SCIP:
             from straindesign.scip_interface import SCIP_MILP, SCIP_LP
             self.isLP = all(v=='C' for v in self.vtype)
             if self.isLP:
@@ -114,7 +103,7 @@ class MILP_LP(object):
             else:
                 self.backend = SCIP_MILP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
                                 self.indic_constr)
-        elif self.solver == 'glpk':
+        elif self.solver == GLPK:
             from straindesign.glpk_interface import GLPK_MILP_LP
             self.backend = GLPK_MILP_LP(self.c,self.A_ineq,self.b_ineq,self.A_eq,self.b_eq,self.lb,self.ub,self.vtype,
                                             self.indic_constr,self.M)
@@ -159,7 +148,7 @@ class MILP_LP(object):
         b_eq = [float(b) for b in b_eq]
         self.A_eq = sparse.vstack((self.A_eq,A_eq))
         self.b_eq += b_eq
-        self.backend.add_ineq_constraints(A_eq,b_eq)
+        self.backend.add_eq_constraints(A_eq,b_eq)
 
     def add_ineq_constraints(self,A_ineq,b_ineq):
         A_ineq = sparse.csr_matrix(A_ineq)

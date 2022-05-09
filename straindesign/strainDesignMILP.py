@@ -156,7 +156,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         if self.is_mcs_computation and self.verify_sd(sparse.csr_matrix((1,self.num_z)))[0]:
             print('The strain already meets the requirements defined in the strain design setup. ' \
                   'No interventions are needed.')
-            return self.build_sd_solution([{}], OPTIMAL, SMALLEST)
+            return self.build_sd_solution([{}], OPTIMAL, BEST)
         # otherwise continue
         endtime = time.time() + self.time_limit
         status = OPTIMAL
@@ -224,7 +224,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         m=sd_dict = []
         for sol in sols:
             sd_dict += [self.sd2dict(sol,self.show_no_ki)]
-        return self.build_sd_solution(sd_dict, status, SMALLEST)
+        return self.build_sd_solution(sd_dict, status, BEST)
 
     # Find iteratively intervention sets of arbitrary size or quality
     # output format: list of 'dict' (default) or 'sparse'
@@ -288,7 +288,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
             # Verify solution and explore subspace to get strain designs
             cx = np.sum([c*x for c,x in zip(self.c_bu,x)])
             if not self.is_mcs_computation:
-                print('Found solution with objective value '+str(cx))
+                print('Found preliminary solution.')
             print('Minimizing number of interventions in subspace with '+str(sum(z.toarray()[0]))+' possible targets.')
             self.setMinIntvCostObjective()
             self.setTargetableZ(z)
@@ -349,7 +349,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         if self.is_mcs_computation and self.verify_sd(sparse.csr_matrix((1,self.num_z)))[0]:
             print('The strain already meets the requirements defined in the strain design setup. ' \
                   'No interventions are needed.')
-            return self.build_sd_solution([{}], OPTIMAL, CARDINALITY)
+            return self.build_sd_solution([{}], OPTIMAL, POPULATE)
         # otherwise continue
         if self.solver == 'scip':
             warn("SCIP does not natively support solution pool generation. "+ \
@@ -411,7 +411,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         sd_dict = []
         for sol in sols:
             sd_dict += [self.sd2dict(sol,self.show_no_ki)]
-        sd_solution = self.build_sd_solution(sd_dict, status, CARDINALITY)
+        sd_solution = self.build_sd_solution(sd_dict, status, POPULATE)
         return sd_solution
 
     def build_sd_solution(self, sd_dict, status, solution_approach):
