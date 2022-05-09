@@ -2,6 +2,7 @@ import cobra
 import numpy as np
 from importlib import reload
 import straindesign
+from straindesign.names import *
 import os
 from scipy import sparse
 #import traceback
@@ -12,8 +13,8 @@ import sys
 network = cobra.io.read_sbml_model(os.path.dirname(os.path.abspath(__file__))+"/gpr_model.sbml")
 
 # specify modules
-modules  = [straindesign.SDModule(network,"mcs_lin",module_sense="undesired",constraints=["rd_ex >= 1"])]
-modules += [straindesign.SDModule(network,"mcs_lin",module_sense="desired",constraints=["r_bm >= 1"])]
+modules  = [straindesign.SDModule(network,SUPPRESS,constraints=["rd_ex >= 1"])]
+modules += [straindesign.SDModule(network,PROTECT,constraints=["r_bm >= 1"])]
 
 # specify MCS setup
 maxSolutions = np.inf
