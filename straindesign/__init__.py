@@ -1,4 +1,4 @@
-from importlib import find_loader as module_exists
+from importlib.util import find_spec as module_exists
 
 avail_solvers = []
 if module_exists('swiglpk'):
@@ -14,9 +14,9 @@ from .names import *
 from .solver_interface import *
 from .indicatorConstraints import *
 from .pool import *
+from .efmtool import *
 from .parse_constr import *
 from .lptools import *
-from .efmtool import *
 from .strainDesignModule import *
 from .strainDesignSolution import *
 from .strainDesignMILPBuilder import *

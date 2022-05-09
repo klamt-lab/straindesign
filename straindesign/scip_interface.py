@@ -1,5 +1,6 @@
+from random import randint
 from scipy import sparse
-from numpy import isnan, nan, inf, isinf, sum, nonzero, random
+from numpy import isnan, nan, inf, isinf, sum, nonzero
 import pyscipopt as pso
 from straindesign.names import *
 from typing import Tuple, List
@@ -93,7 +94,7 @@ class SCIP_MILP(pso.Model):
         self.max_tlim = self.getParam('limits/time')
         self.setParam('display/verblevel',0)
         if 'B' in vtype or 'I' in vtype:
-            seed = seed = random.random_integers(2**31-1)
+            seed = seed = randint(0,2**31-1)
             print('  MILP Seed: '+str(seed))
             self.setParam('randomization/randomseedshift',seed)
         # self.enableReoptimization()

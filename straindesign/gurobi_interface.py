@@ -1,5 +1,6 @@
+from random import randint
 from scipy import sparse
-from numpy import nan, inf, isinf, sum, array, random
+from numpy import nan, inf, isinf, sum, array
 import gurobipy as gp
 from gurobipy import GRB as grb
 from straindesign.names import *
@@ -51,7 +52,7 @@ class Gurobi_MILP_LP(gp.Model):
         self.params.OptimalityTol = 1e-9
         self.params.FeasibilityTol = 1e-9
         if 'B' in vtype or 'I' in vtype:
-            seed = random.random_integers(grb.MAXINT)
+            seed = randint(0,grb.MAXINT)
             print('  MILP Seed: '+str(seed))
             self.params.Seed = seed
             self.params.IntFeasTol = 1e-9 # (0 is not allowed by Gurobi)
