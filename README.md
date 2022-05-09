@@ -14,9 +14,11 @@ or
 ```conda install -c cnapy straindesign```
 
 ### Developer Installation:
-pip install .
+Download the repository and run
 
-Tip: If you use the -e option during installation then updates from a 'git pull' are at once available in your Python envrionment without the need for a reinstallation.
+`pip install -e .`
+
+in the main folder. Through the installation with -e, updates from a 'git pull' are at once available in your Python envrionment without the need for a reinstallation.
 
 ## Install additional solvers:
 The cobra package is shipped with the GLPK solver. The more powerful commercial solvers IBM CPLEX and Gurobi may be used by cobra and the straindesign package. This makes sense in particular when using strain design algorithms like MCS, OptKnock etc. As another alternative solver, SCIP may be used. In the following, you will find installation instructions for the individual solvers.
