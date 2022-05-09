@@ -19,4 +19,5 @@
 
 ### Build and upload package
 1. Update version number in `conda-recipe/meta.yaml`. Update dependencies/versions and description if necessary
-2. Navigate to package folder and build and upload package with `conda-build . -c conda-forge`
+2. Create a new tag/release on GitHub with matching version number (e.g. `v0.1`)
+3. Navigate to package folder and build and upload package with `conda-build . -c conda-forge`
