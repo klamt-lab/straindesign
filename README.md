@@ -9,8 +9,9 @@ The straindesign package is available on pip and conda. To install the latest re
 
 ```pip install straindesign```
 
-First you need to install cobra and the efmtool_link package (also available at https://github.com/cnapy-org).
-Clone the repository, go into the top straindesign directory and install into your current Python environment with:
+or
+
+```conda install -c cnapy straindesign```
 
 ### Developer Installation:
 pip install .
