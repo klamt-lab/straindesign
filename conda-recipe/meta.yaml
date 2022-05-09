@@ -12,12 +12,12 @@ requirements:
   build:
     - setuptools
     - pip
-    - python=3.8
+    - python>=3.7
   run:
     - openjdk=8
     - matplotlib
     - pip
-    - python=3.8
+    - python>=3.7
     - scipy
     - conda-forge:cobra
     - jpype1
