@@ -11,13 +11,16 @@ source:
 requirements:
   build:
     - setuptools
-    - python
+    - pip
+    - python=3.8
   run:
-    - scipy
-    - cobra
-    - jpype1
+    - openjdk=8
     - matplotlib
-
+    - pip
+    - python=3.8
+    - scipy
+    - conda-forge:cobra
+    - jpype1
 
 build:
   noarch: python
