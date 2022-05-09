@@ -21,6 +21,7 @@ requirements:
     - scipy
     - conda-forge:cobra
     - jpype1
+    - matplotlib
 
 build:
   noarch: python
