@@ -1,5 +1,5 @@
 # Strain design package for COBRApy
-Comprehensive package for computing strain design designs with the COBRApy toolbox. Supports MCS, MCS with nested optimization, OptKnock, RobustKnock and Optcouple, uses GPR-rule and network compression and allows for reaction and/or gene addition/removal/regulation.
+Comprehensive package for computing strain design designs with the COBRApy toolbox. Supports MCS, MCS with nested optimization, OptKnock, RobustKnock and OptCouple, uses GPR-rule and network compression and allows for reaction and/or gene addition/removal/regulation.
 
 This package uses the efmtool compression routine for reducing the network size during preprocessing (https://csb.ethz.ch/tools/software/efmtool.html).
 
@@ -9,13 +9,16 @@ The straindesign package is available on pip and conda. To install the latest re
 
 ```pip install straindesign```
 
-First you need to install cobra and the efmtool_link package (also available at https://github.com/cnapy-org).
-Clone the repository, go into the top straindesign directory and install into your current Python environment with:
+or
+
+```conda install -c cnapy straindesign```
 
 ### Developer Installation:
-pip install .
+Download the repository and run
 
-Tip: If you use the -e option during installation then updates from a 'git pull' are at once available in your Python envrionment without the need for a reinstallation.
+`pip install -e .`
+
+in the main folder. Through the installation with -e, updates from a 'git pull' are at once available in your Python envrionment without the need for a reinstallation.
 
 ## Install additional solvers:
 The cobra package is shipped with the GLPK solver. The more powerful commercial solvers IBM CPLEX and Gurobi may be used by cobra and the straindesign package. This makes sense in particular when using strain design algorithms like MCS, OptKnock etc. As another alternative solver, SCIP may be used. In the following, you will find installation instructions for the individual solvers.

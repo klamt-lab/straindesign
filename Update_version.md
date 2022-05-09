@@ -24,7 +24,8 @@
 
 ### Build and upload package
 
-1. Navigate to package folder and build and upload package with `conda-build . -c conda-forge --output --croot conda-bld/`
-2. `anaconda login`
-3. `anaconda upload -u straindesign ../conda-bld/noarch/straindesign-0.1-py_0.tar.gz`
-3. Clean up with
+1. Navigate to package folder and build package with `conda-build conda-recipe/. -c conda-forge --croot conda-bld`
+2. Clean up conda-bld folder (remove old version builds)
+3. `anaconda login`
+4. `anaconda upload -u cnapy conda-bld/noarch/straindesign*`
+5. Clean up with conda
