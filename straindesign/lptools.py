@@ -1,5 +1,6 @@
 from cobra.core import Solution
 from cobra.util import create_stoichiometric_matrix
+from cobra import Configuration 
 from scipy import sparse
 from straindesign import MILP_LP, parse_constraints, lineqlist2mat, linexpr2dict, \
                          linexprdict2mat, SDPool, IndicatorConstraints, avail_solvers
@@ -21,6 +22,35 @@ from straindesign.parse_constr import linexpr2mat, linexprdict2str
 #   A_ineq, b_ineq: Additional constraints in matrix form
 #   obj:            Alternative objective in text form
 #   c:              Alternative objective in vector form
+def select_solver(solver=None,model=None):
+    # first try to use selected solver
+    if solver:
+        if solver in avail_solvers:
+            return solver
+        else:
+            print('Selected solver '+solver+' not available. Using '+avail_solvers[0]+" instead.")
+    try:
+        # if no solver was defined, use solver specified in model
+        if hasattr(model,'solver') and hasattr(model.solver,'interface') :
+            solver = search('('+'|'.join(avail_solvers)+')',model.solver.interface.__name__)
+            if solver is not None:
+                return solver[0]
+            else:
+                print('Solver specified in model ('+model.solver.interface.__name__+') unavailable') 
+        # if no solver specified in model, use solver from cobra configuration
+        cobra_conf = Configuration()
+        if hasattr(cobra_conf,'solver'):
+            solver = search('('+'|'.join(avail_solvers)+')',cobra_conf.solver.__name__)
+            if solver is not None:
+                return solver[0]
+            else:
+                print('Solver specified in cobra config ('+cobra_conf.solver.__name__+') unavailable') 
+    except:
+        pass
+    return avail_solvers[0] # if no solver is specified in cobra, fall back to list of available solvers
+            
+    
+
 def idx2c(i,prev):
     col = int(floor(i/2))
     sig = sign(mod(i,2)-0.5)
@@ -87,15 +117,10 @@ def fva(model,**kwargs):
         kwargs[CONSTRAINTS] = parse_constraints(kwargs[CONSTRAINTS],reaction_ids)
         A_ineq, b_ineq, A_eq, b_eq = lineqlist2mat(kwargs[CONSTRAINTS], reaction_ids) 
 
-    if SOLVER in kwargs:
-        solver = kwargs[SOLVER]
-    else:
-        try:
-            solver = search('('+'|'.join(avail_solvers)+')',model.solver.interface.__name__)
-            if solver is not None:
-                solver = solver[0]
-        except:
-            solver = None
+    if SOLVER not in kwargs:
+        kwargs[SOLVER] = None
+    solver = select_solver(kwargs[SOLVER],model)
+        
     
     # prepare vectors and matrices
     A_eq_base = sparse.csr_matrix(create_stoichiometric_matrix(model))
@@ -196,15 +221,9 @@ def fba(model,**kwargs):
     else:
         pfba = False
 
-    if SOLVER in kwargs:
-        solver = kwargs[SOLVER]
-    else:
-        try:
-            solver = search('('+'|'.join(avail_solvers)+')',model.solver.interface.__name__)
-            if solver is not None:
-                solver = solver[0]
-        except:
-            solver = None
+    if SOLVER not in kwargs:
+        kwargs[SOLVER] = None
+    solver = select_solver(kwargs[SOLVER],model)
     
     # prepare vectors and matrices
     A_eq_base = create_stoichiometric_matrix(model)
@@ -335,15 +354,9 @@ def yopt(model,**kwargs):
         kwargs[CONSTRAINTS] = parse_constraints(kwargs[CONSTRAINTS],reaction_ids)
         A_ineq, b_ineq, A_eq, b_eq = lineqlist2mat(kwargs[CONSTRAINTS], reaction_ids)
 
-    if SOLVER in kwargs:
-        solver = kwargs[SOLVER]
-    else:
-        try:
-            solver = search('('+'|'.join(avail_solvers)+')',model.solver.interface.__name__)
-            if solver is not None:
-                solver = solver[0]
-        except:
-            solver = None
+    if SOLVER not in kwargs:
+        kwargs[SOLVER] = None
+    solver = select_solver(kwargs[SOLVER],model)
         
     # prepare vectors and matrices for base problem
     A_eq_base = create_stoichiometric_matrix(model)
@@ -489,15 +502,9 @@ def yied_space(model, axes, **kwargs):
     else:
         kwargs[CONSTRAINTS] = None
 
-    if SOLVER in kwargs:
-        solver = kwargs[SOLVER]
-    else:
-        try:
-            solver = search('('+'|'.join(avail_solvers)+')',model.solver.interface.__name__)
-            if solver is not None:
-                solver = solver[0]
-        except:
-            solver = None
+    if SOLVER not in kwargs:
+        kwargs[SOLVER] = None
+    solver = select_solver(kwargs[SOLVER],model)
         
     if 'points' in kwargs:
         points = kwargs['points']

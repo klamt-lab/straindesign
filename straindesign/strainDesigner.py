@@ -4,7 +4,7 @@ from contextlib import redirect_stdout, redirect_stderr
 from typing import Dict, List, Tuple
 from cobra import Model, Metabolite, Reaction
 from cobra.util.array import create_stoichiometric_matrix
-from straindesign import StrainDesignMILP, SDModule, SDSolution, avail_solvers, fva, parse_constraints
+from straindesign import StrainDesignMILP, SDModule, SDSolution, avail_solvers, select_solver, fva, parse_constraints
 import straindesign.efmtool as efm
 from straindesign.names import *
 import jpype
@@ -497,14 +497,8 @@ class StrainDesigner(StrainDesignMILP):
                                 'through gene interventions and are defined either as knock-ins or as knock-outs.')
         # 1) Preprocess Model
         print('Preparing strain design computation.')
-        if self.solver is None:
-            if len(avail_solvers) > 0:
-                self.solver = avail_solvers[0]
-            else:
-                raise Exception('No solver available. Please ensure that one of the following '\
-                    'solvers is avaialable in your Python environment: CPLEX, Gurobi, SCIP, GLPK')
-        elif self.solver not in avail_solvers:
-            raise Exception("Selected solver '" + self.solver +"' is not installed / set up correctly.")
+        self.solver = select_solver(self.solver,model)
+        kwargs[SOLVER] = self.solver
         print('  Using '+self.solver+' for solving LPs during preprocessing.')
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()): # suppress standard output from copying model
             cmp_model = model.copy()

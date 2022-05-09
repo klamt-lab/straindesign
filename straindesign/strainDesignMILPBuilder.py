@@ -5,7 +5,8 @@ from cobra.util import solvers, create_stoichiometric_matrix
 from cobra import Model
 from cobra.core import Configuration
 from typing import List, Tuple
-from straindesign import SDModule, IndicatorConstraints, lineqlist2mat, linexprdict2mat, MILP_LP, SDPool, avail_solvers
+from straindesign import SDModule, IndicatorConstraints, lineqlist2mat, linexprdict2mat, MILP_LP, SDPool, \
+                         avail_solvers, select_solver
 from straindesign.strainDesignModule import *
 from straindesign.names import *
 
@@ -34,8 +35,7 @@ class StrainDesignMILPBuilder:
             else:
                 raise Exception('No solver available. Please ensure that one of the following '\
                     'solvers is avaialable in your Python environment: CPLEX, Gurobi, SCIP, GLPK')
-        elif self.solver not in avail_solvers:
-            raise Exception("Selected solver '" + self.solver +"' is not installed / set up correctly.")
+        self.solver = select_solver(self.solver,model)
         if self.M is None and self.solver == 'glpk':
             print('GLPK only supports strain design computation with the bigM method. Default: M=1000')
             self.M = 1000.0

@@ -1,4 +1,4 @@
-{% set version = '0.2' %}
+{% set version = '0.32' %}
 
 package:
   name: straindesign
@@ -16,6 +16,7 @@ requirements:
     - scipy
     - cobra
     - jpype1
+    - matplotlib
 
 
 build:
