@@ -17,7 +17,7 @@ def parse_constraints(constr,reaction_ids) -> List:
         constr = lineq2list(constr, reaction_ids)
     return constr
 
-def parse_expr(expr,reaction_ids) -> List:
+def parse_linexpr(expr,reaction_ids) -> List:
     if not expr:
         return []
     if type(expr) is str:
