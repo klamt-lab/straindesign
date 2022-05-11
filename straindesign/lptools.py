@@ -8,13 +8,15 @@ from re import search
 from straindesign.names import *
 from typing import Dict, Tuple
 from pandas import DataFrame
-from numpy import floor, sign, mod, nan, isnan, unique, inf, isinf, zeros, full, linspace, prod
+from numpy import floor, sign, mod, nan, isnan, unique, inf, isinf, full, linspace, prod, where, array, cross
+from numpy.linalg import norm
 from os import cpu_count
 from contextlib import redirect_stdout, redirect_stderr
 from io import StringIO
 import matplotlib.pyplot as plt
 from scipy.spatial import ConvexHull   
 import mpl_toolkits.mplot3d as a3
+from matplotlib.cm import ScalarMappable, get_cmap
 
 from straindesign.parse_constr import linexpr2mat, linexprdict2str
 
@@ -496,7 +498,111 @@ def yopt(model,**kwargs):
     else:
         status = INFEASIBLE
     
-def phase_plane(model, axes, **kwargs):
+# def phase_plane(model, axes, **kwargs):
+#     reaction_ids = model.reactions.list_attr("id")
+    
+#     if CONSTRAINTS in kwargs: 
+#         kwargs[CONSTRAINTS] = parse_constraints(kwargs[CONSTRAINTS],reaction_ids)
+#     else:
+#         kwargs[CONSTRAINTS] = None
+
+#     if SOLVER not in kwargs:
+#         kwargs[SOLVER] = None
+#     solver = select_solver(kwargs[SOLVER],model)
+        
+#     if 'show' in kwargs:
+#             show = kwargs['show']
+#     else:
+#         show = True    
+    
+#     axes = list(axes) # cast to list of lists
+#     num_axes = len(axes)
+#     if num_axes not in [2,3]:
+#         raise Exception('Please define 2 or 3 axes as a list of tuples [ax1, ax2, (optional) ax3] with ax1 = (den,num).\n'+\
+#                         '"den" and "num" being linear expressions.')
+            
+#     if 'points' in kwargs:
+#         points = kwargs['points']
+#     else:
+#         if num_axes == 2:
+#             points = 40
+#         else:
+#             points = 25
+    
+#     ax_name = ["" for _ in range(num_axes)]
+#     ax_limits = [(nan,nan) for _ in range(num_axes)]
+#     for i,ax in enumerate(axes):
+#         ax = parse_linexpr(ax,reaction_ids)[0]
+#         ax_name[i] = linexprdict2str(ax)
+#         sol_min = fba(model,obj=ax,constraints=kwargs[CONSTRAINTS],solver=solver,obj_sense='minimize')
+#         sol_max = fba(model,obj=ax,constraints=kwargs[CONSTRAINTS],solver=solver,obj_sense='maximize')
+#         # abort if any of the fluxes are unbounded or undefined
+#         unbnd = [i+1 for i,v in enumerate([sol_min,sol_max]) if v.status == UNBOUNDED]
+#         if any(unbnd):
+#             raise Exception('One of the specified reactions is unbounded or undefined. Phase plane cannot be generated.')
+#         ax_limits[i] = [min((0,sol_min.objective_value)),max((0,sol_max.objective_value))]
+#         axes[i] = ax
+
+#     # compute points
+#     x_space = linspace(ax_limits[0][0], ax_limits[0][1], num=points)
+#     lb = full(points, nan)
+#     ub = full(points, nan)
+#     for i,x in enumerate(x_space):
+#         constr = kwargs[CONSTRAINTS]+[[axes[0],'=',x]]
+#         sol_vmin = fba(model,constraints=constr,obj=axes[1],obj_sense='minimize')
+#         lb[i] = sol_vmin.objective_value
+#         sol_vmax = fba(model,constraints=constr,obj=axes[1],obj_sense='maximize')
+#         ub[i] = sol_vmax.objective_value
+
+#     if num_axes == 2:
+#         x = [v for v in x_space] + [v for v in reversed(x_space)]
+#         y = [v for v in lb] + [v for v in reversed(ub)]
+#         if lb[0] != ub[0]:
+#             x.extend([x_space[0], x_space[0]])
+#             y.extend([lb[0],      ub[0]])
+#         plot1 = plt.fill(x, y)
+#         plot1[0].axes.set_xlabel(ax_name[0])
+#         plot1[0].axes.set_ylabel(ax_name[1])
+#         plot1[0].axes.set_xlim(ax_limits[0][0]*1.05,ax_limits[0][1]*1.05)
+#         plot1[0].axes.set_ylim(ax_limits[1][0]*1.05,ax_limits[1][1]*1.05)
+#         if show:
+#             plt.show()
+#         return plot1
+    
+#     elif num_axes == 3:
+#         max_diff_y = max([abs(l-u) for l,u in zip(lb,ub)])
+#         datapoints = []
+#         for x,l,u in zip(x_space,lb,ub):
+#             if l-u != 0:
+#                 y_space = linspace(l,u,int(-(-points // (max_diff_y/abs(l-u)))))
+#             else:
+#                 y_space = [0.0]
+#             for y in y_space:
+#                 constr = kwargs[CONSTRAINTS]+[[axes[0],'=',x], [axes[1],'=',y]]
+#                 sol_vmin = fba(model,constraints=constr,obj=axes[2],obj_sense='minimize')
+#                 datapoints += [[x,y,sol_vmin.objective_value]]
+#                 sol_vmax = fba(model,constraints=constr,obj=axes[2],obj_sense='maximize')
+#                 datapoints += [[x,y,sol_vmax.objective_value]]
+#         hull = ConvexHull(datapoints)
+#         x = [d[0] for d in datapoints]
+#         y = [d[1] for d in datapoints]
+#         z = [d[2] for d in datapoints]
+#         ax = a3.Axes3D(plt.figure())
+#         ax.dist=10
+#         ax.azim=30
+#         ax.elev=10
+#         ax.set_xlim(ax_limits[0])
+#         ax.set_ylim(ax_limits[1])
+#         ax.set_zlim(ax_limits[2])
+#         ax.set_xlabel(ax_name[0])
+#         ax.set_ylabel(ax_name[1])
+#         ax.set_zlabel(ax_name[2])
+#         plot1 = ax.plot_trisurf(x,y,z,triangles=hull.simplices,linewidth=0.2, antialiased=True, alpha=0.67)
+#         if show:
+#             plt.show()
+#         return plot1
+    
+def plot_flux_space(model, axes, **kwargs):
     reaction_ids = model.reactions.list_attr("id")
     
     if CONSTRAINTS in kwargs: 
@@ -513,7 +619,7 @@ def phase_plane(model, axes, **kwargs):
     else:
         show = True    
     
-    axes = list(axes) # cast to list of lists
+    axes = [list(ax) if not isinstance(ax,str) else [ax] for ax in axes] # cast to list of lists
     num_axes = len(axes)
     if num_axes not in [2,3]:
         raise Exception('Please define 2 or 3 axes as a list of tuples [ax1, ax2, (optional) ax3] with ax1 = (den,num).\n'+\
@@ -529,28 +635,54 @@ def phase_plane(model, axes, **kwargs):
     
     ax_name = ["" for _ in range(num_axes)]
     ax_limits = [(nan,nan) for _ in range(num_axes)]
+    ax_type = ["" for _ in range(num_axes)]
     for i,ax in enumerate(axes):
-        ax = parse_linexpr(ax,reaction_ids)[0]
-        ax_name[i] = linexprdict2str(ax)
-        sol_min = fba(model,obj=ax,constraints=kwargs[CONSTRAINTS],solver=solver,obj_sense='minimize')
-        sol_max = fba(model,obj=ax,constraints=kwargs[CONSTRAINTS],solver=solver,obj_sense='maximize')
-        # abort if any of the fluxes are unbounded or undefined
-        unbnd = [i+1 for i,v in enumerate([sol_min,sol_max]) if v.status == UNBOUNDED]
-        if any(unbnd):
-            raise Exception('One of the specified reactions is unbounded or undefined. Phase plane cannot be generated.')
-        ax_limits[i] = [min((0,sol_min.objective_value)),max((0,sol_max.objective_value))]
-        axes[i] = ax
+        if len(ax) == 1:
+            ax_type[i] = 'rate'
+        elif len(ax) == 2:
+            ax_type[i] = 'yield'
+        if ax_type[i] == 'rate':
+            ax[0] = parse_linexpr(ax[0],reaction_ids)[0]
+            ax_name[i] = linexprdict2str(ax[0])
+            sol_min = fba(model,obj=ax[0],constraints=kwargs[CONSTRAINTS],solver=solver,obj_sense='minimize')
+            sol_max = fba(model,obj=ax[0],constraints=kwargs[CONSTRAINTS],solver=solver,obj_sense='maximize')
+            # abort if any of the fluxes are unbounded or undefined
+            inval = [i+1 for i,v in enumerate([sol_min,sol_max]) if v.status == UNBOUNDED or v.status == INFEASIBLE]
+            if any(inval):
+                raise Exception('One of the specified reactions is unbounded or problem is infeasible. Plot cannot be generated.')
+            ax_limits[i] = [min((0,sol_min.objective_value)),max((0,sol_max.objective_value))]
+        elif ax_type[i] == 'yield':
+            ax[0] = parse_linexpr(ax[0],reaction_ids)[0]
+            ax[1] = parse_linexpr(ax[1],reaction_ids)[0]
+            ax_name[i] = '('+linexprdict2str(ax[0])+') / ('+linexprdict2str(ax[1])+')'
+            sol_min = yopt(model,obj_num=ax[0],obj_den=ax[1],constraints=kwargs[CONSTRAINTS],solver=solver,obj_sense='minimize')
+            sol_max = yopt(model,obj_num=ax[0],obj_den=ax[1],constraints=kwargs[CONSTRAINTS],solver=solver,obj_sense='maximize')
+            # abort if any of the yields are unbounded or undefined
+            inval = [i+1 for i,v in enumerate([sol_min,sol_max]) if v.status == UNBOUNDED or v.status == INFEASIBLE]
+            if any(inval):
+                raise Exception('One of the specified yields is unbounded or undefined or problem is infeasible. Plot cannot be generated.')
+            ax_limits[i] = [min((0,sol_min.objective_value)),max((0,sol_max.objective_value))]
 
     # compute points
     x_space = linspace(ax_limits[0][0], ax_limits[0][1], num=points)
     lb = full(points, nan)
     ub = full(points, nan)
     for i,x in enumerate(x_space):
-        constr = [axes[0],'=',x]
-        sol_vmin = fba(model,constraints=constr,obj=axes[1],obj_sense='minimize')
-        lb[i] = sol_vmin.objective_value
-        sol_vmax = fba(model,constraints=constr,obj=axes[1],obj_sense='maximize')
-        ub[i] = sol_vmax.objective_value
+        constr = kwargs[CONSTRAINTS].copy()
+        if ax_type[0] == 'rate':
+            constr += [[axes[0][0],'=',x]]
+        elif ax_type[0] == 'yield':
+            constr += [[{**axes[0][0], **{k:-v*x for k,v in axes[0][1].items()}},'=',0]]
+        if ax_type[1] == 'rate':
+            sol_vmin = fba(model,constraints=constr,obj=axes[1][0],obj_sense='minimize')
+            lb[i] = sol_vmin.objective_value
+            sol_vmax = fba(model,constraints=constr,obj=axes[1][0],obj_sense='maximize')
+            ub[i] = sol_vmax.objective_value
+        elif ax_type[1] == 'yield':
+            sol_vmin = yopt(model,constraints=constr,obj_num=axes[1][0],obj_den=axes[1][1],obj_sense='minimize')
+            lb[i] = sol_vmin.objective_value
+            sol_vmax = yopt(model,constraints=constr,obj_num=axes[1][0],obj_den=axes[1][1],obj_sense='maximize')
+            ub[i] = sol_vmax.objective_value
 
     if num_axes == 2:
         x = [v for v in x_space] + [v for v in reversed(x_space)]
@@ -576,16 +708,34 @@ def phase_plane(model, axes, **kwargs):
             else:
                 y_space = [0.0]
             for y in y_space:
-                constr = [[axes[0],'=',x], [axes[1],'=',y]]
-                sol_vmin = fba(model,constraints=constr,obj=axes[2],obj_sense='minimize')
-                datapoints += [[x,y,sol_vmin.objective_value]]
-                sol_vmax = fba(model,constraints=constr,obj=axes[2],obj_sense='maximize')
-                datapoints += [[x,y,sol_vmax.objective_value]]
+                constr = kwargs[CONSTRAINTS].copy()
+                if ax_type[0] == 'rate':
+                    constr += [[axes[0][0],'=',x]]
+                elif ax_type[0] == 'yield':
+                    constr += [[{**axes[0][0], **{k:-v*x for k,v in axes[0][1].items()}},'=',0]]
+                if ax_type[1] == 'rate':
+                    constr += [[axes[1][0],'=',y]]
+                elif ax_type[1] == 'yield':
+                    constr += [[{**axes[1][0], **{k:-v*y for k,v in axes[1][1].items()}},'=',0]]
+                if ax_type[2] == 'rate':
+                    sol_vmin = fba(model,constraints=constr,obj=axes[2][0],obj_sense='minimize')
+                    datapoints += [[x,y,sol_vmin.objective_value]]
+                    sol_vmax = fba(model,constraints=constr,obj=axes[2][0],obj_sense='maximize')
+                    datapoints += [[x,y,sol_vmax.objective_value]]
+                elif ax_type[2] == 'yield':
+                    sol_vmin = yopt(model,constraints=constr,obj_num=axes[2][0],obj_den=axes[2][1],obj_sense='minimize')
+                    datapoints += [[x,y,sol_vmin.objective_value]]
+                    sol_vmax = yopt(model,constraints=constr,obj_num=axes[2][0],obj_den=axes[2][1],obj_sense='maximize')
+                    datapoints += [[x,y,sol_vmax.objective_value]]
+
         hull = ConvexHull(datapoints)
+        datapoints = [d for i,d in enumerate(datapoints) if i in hull.vertices]
         x = [d[0] for d in datapoints]
         y = [d[1] for d in datapoints]
         z = [d[2] for d in datapoints]
-        ax = a3.Axes3D(plt.figure())
+        triang = [[where(hull.vertices == v)[0][0] for v in s] for s in hull.simplices]
+        # ax = a3.Axes3D(plt.figure())
+        ax = plt.figure().add_subplot(projection='3d')
         ax.dist=10
         ax.azim=30
         ax.elev=10
@@ -595,112 +745,18 @@ def phase_plane(model, axes, **kwargs):
         ax.set_xlabel(ax_name[0])
         ax.set_ylabel(ax_name[1])
         ax.set_zlabel(ax_name[2])
-        plot1 = ax.plot_trisurf(x,y,z,triangles=hull.simplices,linewidth=0.2, antialiased=True, alpha=0.67)
-        if show:
-            plt.show()
-        return plot1
-    
-def yield_space(model, axes, **kwargs):
-    reaction_ids = model.reactions.list_attr("id")
-    
-    if CONSTRAINTS in kwargs: 
-        kwargs[CONSTRAINTS] = parse_constraints(kwargs[CONSTRAINTS],reaction_ids)
-    else:
-        kwargs[CONSTRAINTS] = None
-
-    if SOLVER not in kwargs:
-        kwargs[SOLVER] = None
-    solver = select_solver(kwargs[SOLVER],model)
-        
-    if 'show' in kwargs:
-            show = kwargs['show']
-    else:
-        show = True    
-    
-    axes = [list(ax) for ax in axes] # cast to list of lists
-    num_axes = len(axes)
-    if num_axes not in [2,3]:
-        raise Exception('Please define 2 or 3 axes as a list of tuples [ax1, ax2, (optional) ax3] with ax1 = (den,num).\n'+\
-                        '"den" and "num" being linear expressions.')
-            
-    if 'points' in kwargs:
-        points = kwargs['points']
-    else:
-        if num_axes == 2:
-            points = 40
-        else:
-            points = 25
-    
-    ax_name = ["" for _ in range(num_axes)]
-    ax_limits = [(nan,nan) for _ in range(num_axes)]
-    for i,ax in enumerate(axes):
-        ax[0] = parse_linexpr(ax[0],reaction_ids)[0]
-        ax[1] = parse_linexpr(ax[1],reaction_ids)[0]
-        ax_name[i] = '('+linexprdict2str(ax[0])+') / ('+linexprdict2str(ax[1])+')'
-        sol_min = yopt(model,obj_num=ax[0],obj_den=ax[1],constraints=kwargs[CONSTRAINTS],solver=solver,obj_sense='minimize')
-        sol_max = yopt(model,obj_num=ax[0],obj_den=ax[1],constraints=kwargs[CONSTRAINTS],solver=solver,obj_sense='maximize')
-        # abort if any of the yields are unbounded or undefined
-        unbnd = [i+1 for i,v in enumerate([sol_min,sol_max]) if v.status == UNBOUNDED]
-        if any(unbnd):
-            raise Exception('One of the specified yields is unbounded or undefined. Yield space cannot be generated.')
-        ax_limits[i] = [min((0,sol_min.objective_value)),max((0,sol_max.objective_value))]
-
-    # compute points
-    x_space = linspace(ax_limits[0][0], ax_limits[0][1], num=points)
-    lb = full(points, nan)
-    ub = full(points, nan)
-    for i,x in enumerate(x_space):
-        constr = [{**axes[0][0], **{k:-v*x for k,v in axes[0][1].items()}},'=',0]
-        sol_vmin = yopt(model,constraints=constr,obj_num=axes[1][0],obj_den=axes[1][1],obj_sense='minimize')
-        lb[i] = sol_vmin.objective_value
-        sol_vmax = yopt(model,constraints=constr,obj_num=axes[1][0],obj_den=axes[1][1],obj_sense='maximize')
-        ub[i] = sol_vmax.objective_value
-
-    if num_axes == 2:
-        x = [v for v in x_space] + [v for v in reversed(x_space)]
-        y = [v for v in lb] + [v for v in reversed(ub)]
-        if lb[0] != ub[0]:
-            x.extend([x_space[0], x_space[0]])
-            y.extend([lb[0],      ub[0]])
-        plot1 = plt.fill(x, y)
-        plot1[0].axes.set_xlabel(ax_name[0])
-        plot1[0].axes.set_ylabel(ax_name[1])
-        plot1[0].axes.set_xlim(ax_limits[0][0]*1.05,ax_limits[0][1]*1.05)
-        plot1[0].axes.set_ylim(ax_limits[1][0]*1.05,ax_limits[1][1]*1.05)
-        if show:
-            plt.show()
-        return plot1
-    
-    elif num_axes == 3:
-        max_diff_y = max([abs(l-u) for l,u in zip(lb,ub)])
-        datapoints = []
-        for x,l,u in zip(x_space,lb,ub):
-            if l-u != 0:
-                y_space = linspace(l,u,int(-(-points // (max_diff_y/abs(l-u)))))
-            else:
-                y_space = [0.0]
-            for y in y_space:
-                constr = [[{**axes[0][0], **{k:-v*x for k,v in axes[0][1].items()}},'=',0],\
-                          [{**axes[1][0], **{k:-v*y for k,v in axes[1][1].items()}},'=',0]]
-                sol_vmin = yopt(model,constraints=constr,obj_num=axes[2][0],obj_den=axes[2][1],obj_sense='minimize')
-                datapoints += [[x,y,sol_vmin.objective_value]]
-                sol_vmax = yopt(model,constraints=constr,obj_num=axes[2][0],obj_den=axes[2][1],obj_sense='maximize')
-                datapoints += [[x,y,sol_vmax.objective_value]]
-        hull = ConvexHull(datapoints)
-        x = [d[0] for d in datapoints]
-        y = [d[1] for d in datapoints]
-        z = [d[2] for d in datapoints]
-        ax = a3.Axes3D(plt.figure())
-        ax.dist=10
-        ax.azim=30
-        ax.elev=10
-        ax.set_xlim(ax_limits[0])
-        ax.set_ylim(ax_limits[1])
-        ax.set_zlim(ax_limits[2])
-        ax.set_xlabel(ax_name[0])
-        ax.set_ylabel(ax_name[1])
-        ax.set_zlabel(ax_name[2])
-        plot1 = ax.plot_trisurf(x,y,z,triangles=hull.simplices,linewidth=0.2, antialiased=True, alpha=0.67)
+        colors = [0 for _ in triang]
+        for i,t in enumerate(triang):
+            p = [array(datapoints[i]) for i in t]
+            c = cross(p[0]-p[1],p[0]-p[2])
+            nnz = where(c!=0)
+            if nnz and c[nnz[0][0]] < 0:
+                c = -c
+            c = c/norm(c)
+            colors[i] = abs(c[2])
+        plot1 = ax.plot_trisurf(x,y,z,triangles=triang,linewidth=0.2,edgecolors='black', antialiased=True, alpha=0.67, array=colors, cmap=plt.cm.winter)
+        # colors = get_cmap("winter")(colors)
+        # plot1.set_fc(colors)
         if show:
             plt.show()
         return plot1
