@@ -8,7 +8,8 @@ from re import search
 from straindesign.names import *
 from typing import Dict, Tuple
 from pandas import DataFrame
-from numpy import floor, sign, mod, nan, isnan, unique, inf, isinf, full, linspace, prod, where, array, cross, transpose, mean
+from numpy import floor, sign, mod, nan, isnan, unique, inf, isinf, full, linspace, \
+                  prod, where, array, cross, transpose, mean, append
 from numpy.linalg import norm, solve
 from os import cpu_count
 from contextlib import redirect_stdout, redirect_stderr
@@ -782,12 +783,12 @@ def plot_flux_space(model, axes, **kwargs):
             colors[i] = abs(w)
             print(abs(w))
         lw = min([1,6.0/len(triang)])
-        plot1 = ax.plot_trisurf(x,y,z,triangles=triang,linewidth=lw,edgecolors='black', antialiased=True, alpha=0.90) # , array=colors, cmap=plt.cm.winter
+        plot1 = ax.plot_trisurf(x,y,z,triangles=triang,linewidth=lw,edgecolors='black', antialiased=True, alpha=0.90, facecolor='blue') # , array=colors, cmap=plt.cm.winter
         colors = colors + min(colors)
-        colors += [3*max(colors)]
-        colors = colors/3/max(colors)
-        colors = get_cmap("Blues_r")(colors[:-1])
-        plot1.set_fc(colors)
+        colors = append(colors,3*max(colors))
+        colors = 1-(colors/max(colors))
+        colors = get_cmap("winter")(colors)
+        plot1.set_fc(colors[:-1])
         if show:
             plt.show()
         return plot1

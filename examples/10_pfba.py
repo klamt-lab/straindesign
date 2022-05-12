@@ -9,23 +9,8 @@ model = load_model('e_coli_core')
 # sol2 = sd.fba(model,pfba=2)
 # print('none')
 
+y3 = ('-EX_o2_e')
 y1 = ('BIOMASS_Ecoli_core_w_GAM','-EX_glc__D_e')
 y2 = ('EX_etoh_e','-EX_glc__D_e')
-y3 = ('-EX_o2_e')
 # plot2 = sd.plot_flux_space(model,(y1,y2),constraints='EX_o2_e >= -1',points=10)
-plot2 = sd.plot_flux_space(model,(y3,y1,y2),constraints='EX_o2_e >= -8',points=40)
-
-# from tkinter import *
-# from PIL import ImageTk, Image
-# import numpy as np
-# import matplotlib.pyplot as plt
-
-# root = Tk()
-
-# def graph():
-
-
-# b = Button(root, text='Graph', command=graph)
-# b.pack()
-
-# root.mainloop()
+plot2 = sd.plot_flux_space(model,(y3,y1,y2),constraints='EX_o2_e >= -8',points=20)
