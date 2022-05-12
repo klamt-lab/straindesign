@@ -8,14 +8,13 @@ from re import search
 from straindesign.names import *
 from typing import Dict, Tuple
 from pandas import DataFrame
-from numpy import floor, sign, mod, nan, isnan, unique, inf, isinf, full, linspace, prod, where, array, cross
-from numpy.linalg import norm
+from numpy import floor, sign, mod, nan, isnan, unique, inf, isinf, full, linspace, prod, where, array, cross, transpose, mean
+from numpy.linalg import norm, solve
 from os import cpu_count
 from contextlib import redirect_stdout, redirect_stderr
 from io import StringIO
 import matplotlib.pyplot as plt
 from scipy.spatial import ConvexHull   
-import mpl_toolkits.mplot3d as a3
 from matplotlib.cm import ScalarMappable, get_cmap
 
 from straindesign.parse_constr import linexpr2mat, linexprdict2str
@@ -745,18 +744,50 @@ def plot_flux_space(model, axes, **kwargs):
         ax.set_xlabel(ax_name[0])
         ax.set_ylabel(ax_name[1])
         ax.set_zlabel(ax_name[2])
+        # Ensure faces are facing outwards:
+        # 1) Get an interior point of the polyhedron 
+        # 2) Find out what side of the face the point is on 
+        # 3) Change order of points(and thus face orientation) if necessary
+        q = [0 for _ in triang]
+        d = 0
+        for i,t in enumerate(triang):
+            p = [array(datapoints[i]) for i in t]
+            q[i] = norm(cross(p[1]-p[0],p[2]-p[0]))
+            d += q[i] * mean(p, axis=0)
+        interior_point = d / sum(q)
+        # interior_point = mean(datapoints,axis=0)
+        # interior_point = [interior_point[0], interior_point[1], interior_point[2]]
+        print(interior_point)
         colors = [0 for _ in triang]
         for i,t in enumerate(triang):
             p = [array(datapoints[i]) for i in t]
-            c = cross(p[0]-p[1],p[0]-p[2])
-            nnz = where(c!=0)
-            if nnz and c[nnz[0][0]] < 0:
-                c = -c
+            v1 = p[1]-p[0] # take point p[0] as the base and construct two vectors to the other points
+            v2 = p[2]-p[0]
+            c = cross(v1,v2) # generate normal vector for plane
             c = c/norm(c)
-            colors[i] = abs(c[2])
-        plot1 = ax.plot_trisurf(x,y,z,triangles=triang,linewidth=0.2,edgecolors='black', antialiased=True, alpha=0.67, array=colors, cmap=plt.cm.winter)
-        # colors = get_cmap("winter")(colors)
-        # plot1.set_fc(colors)
+            # see on which side of the face the polyhedrons centroid is on, by solving an equality system
+            lhs = transpose([v1,v2,c])
+            b = interior_point-p[0]
+            _,_,w = solve(lhs,b)
+            # If normal vector contibutes positively, face needs to be flipped
+            # by rearranging the points of the triangle counterclockwise.
+            if w > 0:
+                triang[i].reverse()
+                p.reverse()
+                c = -c
+            # nnz = where(c!=0)
+            # if nnz and c[nnz[0][0]] < 0:
+            #     c = -c
+            # c = c/norm(c)
+            colors[i] = abs(w)
+            print(abs(w))
+        lw = min([1,6.0/len(triang)])
+        plot1 = ax.plot_trisurf(x,y,z,triangles=triang,linewidth=lw,edgecolors='black', antialiased=True, alpha=0.90) # , array=colors, cmap=plt.cm.winter
+        colors = colors + min(colors)
+        colors += [3*max(colors)]
+        colors = colors/3/max(colors)
+        colors = get_cmap("Blues_r")(colors[:-1])
+        plot1.set_fc(colors)
         if show:
             plt.show()
         return plot1

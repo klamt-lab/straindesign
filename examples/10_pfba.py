@@ -13,7 +13,7 @@ y1 = ('BIOMASS_Ecoli_core_w_GAM','-EX_glc__D_e')
 y2 = ('EX_etoh_e','-EX_glc__D_e')
 y3 = ('-EX_o2_e')
 # plot2 = sd.plot_flux_space(model,(y1,y2),constraints='EX_o2_e >= -1',points=10)
-plot2 = sd.plot_flux_space(model,(y3,y1,y2),constraints='EX_o2_e >= -8',points=10)
+plot2 = sd.plot_flux_space(model,(y3,y1,y2),constraints='EX_o2_e >= -8',points=40)
 
 # from tkinter import *
 # from PIL import ImageTk, Image
