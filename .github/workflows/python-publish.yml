@@ -40,12 +40,8 @@ jobs:
       run: git add .
     - name: commit changed files
       run: git commit -m "Updated version number"
-    - name: set token
-      run: git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/$GITHUB_REPOSITORY
-    - name: fetch from main
-      run: git fetch origin main
     - name: push code to main
-      run: git push origin HEAD:main
+      run: git push --repo https://VonAlphaBisZulu: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@github.com/klamt-lab/straindesign
     - name: Create Release
       id: create_release
       uses: actions/create-release@v1
