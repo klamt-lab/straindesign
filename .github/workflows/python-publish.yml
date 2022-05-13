@@ -24,7 +24,9 @@ jobs:
     environment: build_and_publish
     steps:
     - uses: actions/checkout@v3
-    - name: Update Version number
+    - name: Print version number
+      run: echo ${{ inputs.version }}
+    - name: Update version number
       run: |
         python ./.github/update_version.py setup.py ${{ inputs.version }}
         python ./.github/update_version.py conda-recipe/meta.yaml ${{ inputs.version }}
