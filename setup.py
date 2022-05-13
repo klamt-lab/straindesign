@@ -1,7 +1,7 @@
 from setuptools import setup,find_packages
 
 setup(name='straindesign',
-    version='0.35',
+    version='0.36',
     url='https://github.com/klamt-lab/straindesign.git',
     description="Computational strain design package for the COBRApy framework",
     long_description="Computational strain design package for the COBRApy framework, offering standard and advanced tools for the analysis and redesign of biological networks",
