@@ -25,6 +25,18 @@ jobs:
       run: conda install anaconda-client
     - name: Insstall anaconda from npm
       run: npm install -g anaconda
+    - name: Check installation
+      run: |
+        cd /usr/share/miniconda/bin
+        ls
+    - name: Check installation
+      run: |
+        cd /usr/share/
+        ls
+    - name: Check installation
+      run: |
+        cd /usr/share/anaconda3/bin
+        ls
     - name: Login to Anaconda
       env:
         ANCONDA_USERNAME: ${{ secrets.ANACONDA_USERNAME }}
