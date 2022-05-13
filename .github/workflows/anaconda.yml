@@ -18,7 +18,9 @@ jobs:
       with:
         python-version: '3.x'
     - name: Install anaconda
-      run: which conda
+      run: conda install anaconda-client
+    - name: Check installation
+      run: which anaconda
     - name: Login to Anaconda
       env:
         ANCONDA_USERNAME: ${{ secrets.ANACONDA_USERNAME }}
