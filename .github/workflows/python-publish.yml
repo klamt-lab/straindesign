@@ -8,9 +8,6 @@ on:
       version:
         description: 'Version number'
         required: true
-      title:
-        description: 'Title'
-        required: true
       description:
         description: 'Description'
         required: false
@@ -52,7 +49,6 @@ jobs:
         prerelease: false
         release_name: v${{ github.event.inputs.version }}
         tag_name: v${{ github.event.inputs.version }}
-        title: ${{ github.event.inputs.title }}
         body: ${{ github.event.inputs.description }}
       env:
         GITHUB_TOKEN: ${{ github.token }}
@@ -60,24 +56,33 @@ jobs:
       uses: actions/setup-python@v3
       with:
         python-version: '3.x'
-    - name: Install dependencies
+    - name: Install PyPi dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install build setuptools wheel twine anaconda-client conda-build
-    - name: Build and publish
+        pip install build setuptools wheel twine
+    - name: Clean PyPi build directories
+      run: rm -rf dist
+    - name: Build and publish on PyPi
       env:
         TWINE_USERNAME: ${{ secrets.PYPI_USERNAME }}
         TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
+      run: |
+        python setup.py sdist bdist_wheel
+        twine upload dist/*
+    - name: Install conda dependencies
+      run: conda install anaconda-client conda-build
+    - name: Clean Anaconda build directories
+      run: rm -rf conda-bld    
+    - name: Build and publish on Anaconda
+      env:
         ANCONDA_USERNAME: ${{ secrets.ANACONDA_USERNAME }}
         ANACONDA_PASSWORD: ${{ secrets.ANACONDA_PASSWORD }}
       run: |
-        rm -rf dist
-        rm -rf conda-bld
-        python setup.py sdist bdist_wheel
-        twine upload dist/*
         mkdir conda-bld
         conda-build conda-recipe/. -c conda-forge --croot conda-bld
         anaconda login --username $ANCONDA_USERNAME --password $ANACONDA_PASSWORD
         anaconda upload -u cnapy conda-bld/noarch/straindesign*
+    - name: Final clean up
+      run: |
         rm -rf dist
         rm -rf conda-bld
