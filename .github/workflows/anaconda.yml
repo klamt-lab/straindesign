@@ -20,7 +20,7 @@ jobs:
     - name: Install anaconda
       run: conda install anaconda-client
     - name: Check installation
-      run: which anaconda
+      run: /usr/bin/anaconda
     - name: Login to Anaconda
       env:
         ANCONDA_USERNAME: ${{ secrets.ANACONDA_USERNAME }}
