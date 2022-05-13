@@ -25,11 +25,11 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     - name: Print version number
-      run: echo $INPUT_VERSION
+      run: echo ${{ github.event.inputs.version }}
     - name: Update version number
       run: |
-        python ./.github/update_version.py setup.py $INPUT_VERSION
-        python ./.github/update_version.py conda-recipe/meta.yaml $INPUT_VERSION
+        python ./.github/update_version.py setup.py ${{ github.event.inputs.version }}
+        python ./.github/update_version.py conda-recipe/meta.yaml ${{ github.event.inputs.version }}
     - name: switching from HTTPS to SSH
       run: git remote set-url origin ${{ secrets.URL_GITHUB }}
     - name: check for changes
