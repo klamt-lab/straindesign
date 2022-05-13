@@ -9,13 +9,13 @@ from straindesign.names import *
 from typing import Dict, Tuple
 from pandas import DataFrame
 from numpy import floor, sign, mod, nan, isnan, unique, inf, isinf, full, linspace, \
-                  prod, where, array, cross, transpose, mean, append
-from numpy.linalg import norm, solve
+                  prod, array, mean, flip, ceil, floor
+from numpy.linalg import matrix_rank
 from os import cpu_count
 from contextlib import redirect_stdout, redirect_stderr
 from io import StringIO
 import matplotlib.pyplot as plt
-from scipy.spatial import ConvexHull   
+from scipy.spatial import ConvexHull, Delaunay
 from matplotlib.cm import ScalarMappable, get_cmap
 
 from straindesign.parse_constr import linexpr2mat, linexprdict2str
@@ -498,117 +498,13 @@ def yopt(model,**kwargs):
     else:
         status = INFEASIBLE
     
-# def phase_plane(model, axes, **kwargs):
-#     reaction_ids = model.reactions.list_attr("id")
-    
-#     if CONSTRAINTS in kwargs: 
-#         kwargs[CONSTRAINTS] = parse_constraints(kwargs[CONSTRAINTS],reaction_ids)
-#     else:
-#         kwargs[CONSTRAINTS] = None
-
-#     if SOLVER not in kwargs:
-#         kwargs[SOLVER] = None
-#     solver = select_solver(kwargs[SOLVER],model)
-        
-#     if 'show' in kwargs:
-#             show = kwargs['show']
-#     else:
-#         show = True    
-    
-#     axes = list(axes) # cast to list of lists
-#     num_axes = len(axes)
-#     if num_axes not in [2,3]:
-#         raise Exception('Please define 2 or 3 axes as a list of tuples [ax1, ax2, (optional) ax3] with ax1 = (den,num).\n'+\
-#                         '"den" and "num" being linear expressions.')
-            
-#     if 'points' in kwargs:
-#         points = kwargs['points']
-#     else:
-#         if num_axes == 2:
-#             points = 40
-#         else:
-#             points = 25
-    
-#     ax_name = ["" for _ in range(num_axes)]
-#     ax_limits = [(nan,nan) for _ in range(num_axes)]
-#     for i,ax in enumerate(axes):
-#         ax = parse_linexpr(ax,reaction_ids)[0]
-#         ax_name[i] = linexprdict2str(ax)
-#         sol_min = fba(model,obj=ax,constraints=kwargs[CONSTRAINTS],solver=solver,obj_sense='minimize')
-#         sol_max = fba(model,obj=ax,constraints=kwargs[CONSTRAINTS],solver=solver,obj_sense='maximize')
-#         # abort if any of the fluxes are unbounded or undefined
-#         unbnd = [i+1 for i,v in enumerate([sol_min,sol_max]) if v.status == UNBOUNDED]
-#         if any(unbnd):
-#             raise Exception('One of the specified reactions is unbounded or undefined. Phase plane cannot be generated.')
-#         ax_limits[i] = [min((0,sol_min.objective_value)),max((0,sol_max.objective_value))]
-#         axes[i] = ax
-
-#     # compute points
-#     x_space = linspace(ax_limits[0][0], ax_limits[0][1], num=points)
-#     lb = full(points, nan)
-#     ub = full(points, nan)
-#     for i,x in enumerate(x_space):
-#         constr = kwargs[CONSTRAINTS]+[[axes[0],'=',x]]
-#         sol_vmin = fba(model,constraints=constr,obj=axes[1],obj_sense='minimize')
-#         lb[i] = sol_vmin.objective_value
-#         sol_vmax = fba(model,constraints=constr,obj=axes[1],obj_sense='maximize')
-#         ub[i] = sol_vmax.objective_value
-
-#     if num_axes == 2:
-#         x = [v for v in x_space] + [v for v in reversed(x_space)]
-#         y = [v for v in lb] + [v for v in reversed(ub)]
-#         if lb[0] != ub[0]:
-#             x.extend([x_space[0], x_space[0]])
-#             y.extend([lb[0],      ub[0]])
-#         plot1 = plt.fill(x, y)
-#         plot1[0].axes.set_xlabel(ax_name[0])
-#         plot1[0].axes.set_ylabel(ax_name[1])
-#         plot1[0].axes.set_xlim(ax_limits[0][0]*1.05,ax_limits[0][1]*1.05)
-#         plot1[0].axes.set_ylim(ax_limits[1][0]*1.05,ax_limits[1][1]*1.05)
-#         if show:
-#             plt.show()
-#         return plot1
-    
-#     elif num_axes == 3:
-#         max_diff_y = max([abs(l-u) for l,u in zip(lb,ub)])
-#         datapoints = []
-#         for x,l,u in zip(x_space,lb,ub):
-#             if l-u != 0:
-#                 y_space = linspace(l,u,int(-(-points // (max_diff_y/abs(l-u)))))
-#             else:
-#                 y_space = [0.0]
-#             for y in y_space:
-#                 constr = kwargs[CONSTRAINTS]+[[axes[0],'=',x], [axes[1],'=',y]]
-#                 sol_vmin = fba(model,constraints=constr,obj=axes[2],obj_sense='minimize')
-#                 datapoints += [[x,y,sol_vmin.objective_value]]
-#                 sol_vmax = fba(model,constraints=constr,obj=axes[2],obj_sense='maximize')
-#                 datapoints += [[x,y,sol_vmax.objective_value]]
-#         hull = ConvexHull(datapoints)
-#         x = [d[0] for d in datapoints]
-#         y = [d[1] for d in datapoints]
-#         z = [d[2] for d in datapoints]
-#         ax = a3.Axes3D(plt.figure())
-#         ax.dist=10
-#         ax.azim=30
-#         ax.elev=10
-#         ax.set_xlim(ax_limits[0])
-#         ax.set_ylim(ax_limits[1])
-#         ax.set_zlim(ax_limits[2])
-#         ax.set_xlabel(ax_name[0])
-#         ax.set_ylabel(ax_name[1])
-#         ax.set_zlabel(ax_name[2])
-#         plot1 = ax.plot_trisurf(x,y,z,triangles=hull.simplices,linewidth=0.2, antialiased=True, alpha=0.67)
-#         if show:
-#             plt.show()
-#         return plot1
-    
 def plot_flux_space(model, axes, **kwargs):
     reaction_ids = model.reactions.list_attr("id")
     
     if CONSTRAINTS in kwargs: 
         kwargs[CONSTRAINTS] = parse_constraints(kwargs[CONSTRAINTS],reaction_ids)
     else:
-        kwargs[CONSTRAINTS] = None
+        kwargs[CONSTRAINTS] = []
 
     if SOLVER not in kwargs:
         kwargs[SOLVER] = None
@@ -661,7 +557,7 @@ def plot_flux_space(model, axes, **kwargs):
             inval = [i+1 for i,v in enumerate([sol_min,sol_max]) if v.status == UNBOUNDED or v.status == INFEASIBLE]
             if any(inval):
                 raise Exception('One of the specified yields is unbounded or undefined or problem is infeasible. Plot cannot be generated.')
-            ax_limits[i] = [min((0,sol_min.objective_value)),max((0,sol_max.objective_value))]
+            ax_limits[i] = [min((0,ceil_dec(sol_min.objective_value,9))),max((0,floor_dec(sol_max.objective_value,9)))]
 
     # compute points
     x_space = linspace(ax_limits[0][0], ax_limits[0][1], num=points)
@@ -675,14 +571,14 @@ def plot_flux_space(model, axes, **kwargs):
             constr += [[{**axes[0][0], **{k:-v*x for k,v in axes[0][1].items()}},'=',0]]
         if ax_type[1] == 'rate':
             sol_vmin = fba(model,constraints=constr,obj=axes[1][0],obj_sense='minimize')
-            lb[i] = sol_vmin.objective_value
+            lb[i] = ceil_dec(sol_vmin.objective_value,9)
             sol_vmax = fba(model,constraints=constr,obj=axes[1][0],obj_sense='maximize')
-            ub[i] = sol_vmax.objective_value
+            ub[i] = floor_dec(sol_vmax.objective_value,9)
         elif ax_type[1] == 'yield':
             sol_vmin = yopt(model,constraints=constr,obj_num=axes[1][0],obj_den=axes[1][1],obj_sense='minimize')
-            lb[i] = sol_vmin.objective_value
+            lb[i] = ceil_dec(sol_vmin.objective_value,9)
             sol_vmax = yopt(model,constraints=constr,obj_num=axes[1][0],obj_den=axes[1][1],obj_sense='maximize')
-            ub[i] = sol_vmax.objective_value
+            ub[i] = floor_dec(sol_vmax.objective_value,9)
 
     if num_axes == 2:
         x = [v for v in x_space] + [v for v in reversed(x_space)]
@@ -691,6 +587,7 @@ def plot_flux_space(model, axes, **kwargs):
             x.extend([x_space[0], x_space[0]])
             y.extend([lb[0],      ub[0]])
         plot1 = plt.fill(x, y)
+        # plot1 = plt.plot(x, y)
         plot1[0].axes.set_xlabel(ax_name[0])
         plot1[0].axes.set_ylabel(ax_name[1])
         plot1[0].axes.set_xlim(ax_limits[0][0]*1.05,ax_limits[0][1]*1.05)
@@ -702,12 +599,16 @@ def plot_flux_space(model, axes, **kwargs):
     elif num_axes == 3:
         max_diff_y = max([abs(l-u) for l,u in zip(lb,ub)])
         datapoints = []
-        for x,l,u in zip(x_space,lb,ub):
+        datapoints_top = []
+        datapoints_bottom = []
+        for i,(x,l,u) in enumerate(zip(x_space,lb,ub)):
             if l-u != 0:
                 y_space = linspace(l,u,int(-(-points // (max_diff_y/abs(l-u)))))
             else:
                 y_space = [0.0]
-            for y in y_space:
+            datapoints_top += [[]]
+            datapoints_bottom += [[]]
+            for j,y in enumerate(y_space):
                 constr = kwargs[CONSTRAINTS].copy()
                 if ax_type[0] == 'rate':
                     constr += [[axes[0][0],'=',x]]
@@ -719,21 +620,64 @@ def plot_flux_space(model, axes, **kwargs):
                     constr += [[{**axes[1][0], **{k:-v*y for k,v in axes[1][1].items()}},'=',0]]
                 if ax_type[2] == 'rate':
                     sol_vmin = fba(model,constraints=constr,obj=axes[2][0],obj_sense='minimize')
-                    datapoints += [[x,y,sol_vmin.objective_value]]
                     sol_vmax = fba(model,constraints=constr,obj=axes[2][0],obj_sense='maximize')
-                    datapoints += [[x,y,sol_vmax.objective_value]]
                 elif ax_type[2] == 'yield':
                     sol_vmin = yopt(model,constraints=constr,obj_num=axes[2][0],obj_den=axes[2][1],obj_sense='minimize')
-                    datapoints += [[x,y,sol_vmin.objective_value]]
                     sol_vmax = yopt(model,constraints=constr,obj_num=axes[2][0],obj_den=axes[2][1],obj_sense='maximize')
-                    datapoints += [[x,y,sol_vmax.objective_value]]
+                datapoints_top[i] += [len(datapoints)]
+                datapoints += [[x,y,floor_dec(sol_vmax.objective_value,9)]]
+                datapoints_bottom[i] += [len(datapoints)]
+                datapoints += [[x,y,ceil_dec(sol_vmin.objective_value,9)]]
+        
+        # Construct Denaunay triangles for plotting from all 6 perspectives
+        triang = []
+        # triangles top
+        for i in range(len(datapoints_top)-1): 
+            temp_points = datapoints_top[i]+datapoints_top[i+1]
+            pts = [[datapoints[idx_p][0],datapoints[idx_p][1]] for idx_p in temp_points]
+            if matrix_rank(pts) > 1:
+                triang_temp = Delaunay(pts).simplices
+                triang += [[temp_points[idx] for idx in p] for p in triang_temp]
+        # triangles bottom
+        for i in range(len(datapoints_bottom)-1): 
+            temp_points = datapoints_bottom[i]+datapoints_bottom[i+1]
+            pts = [[datapoints[idx_p][0],datapoints[idx_p][1]] for idx_p in temp_points]
+            if matrix_rank(pts) > 1:
+                triang_temp = Delaunay(pts).simplices
+                triang += [[temp_points[idx] for idx in flip(p)] for p in triang_temp]
+        # triangles front
+        for i in range(len(x_space)-1): 
+            temp_points = [datapoints_top[i][0],datapoints_top[i+1][0],datapoints_bottom[i][0],datapoints_bottom[i+1][0]]
+            pts = [[datapoints[idx_p][0],datapoints[idx_p][2]] for idx_p in temp_points]
+            if matrix_rank(pts) > 1:
+                triang_temp = Delaunay(pts).simplices
+                triang += [[temp_points[idx] for idx in flip(p)] for p in triang_temp]
+        # triangles back
+        for i in range(len(x_space)-1): 
+            temp_points = [datapoints_top[i][-1],datapoints_top[i+1][-1],datapoints_bottom[i][-1],datapoints_bottom[i+1][-1]]
+            pts = [[datapoints[idx_p][0],datapoints[idx_p][2]] for idx_p in temp_points]
+            if matrix_rank(pts) > 1:
+                triang_temp = Delaunay(pts).simplices
+                triang += [[temp_points[idx] for idx in flip(p)] for p in triang_temp]
+        # triangles left
+        for i in range(len(datapoints_top[0])-1): 
+            temp_points = [datapoints_top[0][i],datapoints_top[0][i+1],datapoints_bottom[0][i],datapoints_bottom[0][i+1]]
+            pts = [[datapoints[idx_p][1],datapoints[idx_p][2]] for idx_p in temp_points]
+            if matrix_rank(pts) > 1:
+                triang_temp = Delaunay(pts).simplices
+                triang += [[temp_points[idx] for idx in p] for p in triang_temp]
+        # triangles right
+        for i in range(len(datapoints_top[-1])-1): 
+            temp_points = [datapoints_top[-1][i],datapoints_top[-1][i+1],datapoints_bottom[-1][i],datapoints_bottom[-1][i+1]]
+            pts = [[datapoints[idx_p][1],datapoints[idx_p][2]] for idx_p in temp_points]
+            if matrix_rank(pts) > 1:
+                triang_temp = Delaunay(pts).simplices
+                triang += [[temp_points[idx] for idx in p] for p in triang_temp]
 
-        hull = ConvexHull(datapoints)
-        datapoints = [d for i,d in enumerate(datapoints) if i in hull.vertices]
+        # hull = ConvexHull(datapoints)
         x = [d[0] for d in datapoints]
         y = [d[1] for d in datapoints]
         z = [d[2] for d in datapoints]
-        triang = [[where(hull.vertices == v)[0][0] for v in s] for s in hull.simplices]
         # ax = a3.Axes3D(plt.figure())
         ax = plt.figure().add_subplot(projection='3d')
         ax.dist=10
@@ -745,50 +689,27 @@ def plot_flux_space(model, axes, **kwargs):
         ax.set_xlabel(ax_name[0])
         ax.set_ylabel(ax_name[1])
         ax.set_zlabel(ax_name[2])
-        # Ensure faces are facing outwards:
-        # 1) Get an interior point of the polyhedron 
-        # 2) Find out what side of the face the point is on 
-        # 3) Change order of points(and thus face orientation) if necessary
-        q = [0 for _ in triang]
-        d = 0
+        # set higher color value for 'larger' values in all dimensions
+        # use middle value of triangles instead of means and then norm 
+        colors = [nan for _ in triang]
         for i,t in enumerate(triang):
-            p = [array(datapoints[i]) for i in t]
-            q[i] = norm(cross(p[1]-p[0],p[2]-p[0]))
-            d += q[i] * mean(p, axis=0)
-        interior_point = d / sum(q)
-        # interior_point = mean(datapoints,axis=0)
-        # interior_point = [interior_point[0], interior_point[1], interior_point[2]]
-        print(interior_point)
-        colors = [0 for _ in triang]
-        for i,t in enumerate(triang):
-            p = [array(datapoints[i]) for i in t]
-            v1 = p[1]-p[0] # take point p[0] as the base and construct two vectors to the other points
-            v2 = p[2]-p[0]
-            c = cross(v1,v2) # generate normal vector for plane
-            c = c/norm(c)
-            # see on which side of the face the polyhedrons centroid is on, by solving an equality system
-            lhs = transpose([v1,v2,c])
-            b = interior_point-p[0]
-            _,_,w = solve(lhs,b)
-            # If normal vector contibutes positively, face needs to be flipped
-            # by rearranging the points of the triangle counterclockwise.
-            if w > 0:
-                triang[i].reverse()
-                p.reverse()
-                c = -c
-            # nnz = where(c!=0)
-            # if nnz and c[nnz[0][0]] < 0:
-            #     c = -c
-            # c = c/norm(c)
-            colors[i] = abs(w)
-            print(abs(w))
+            p = [datapoints[i] for i in t]
+            interior_point = [0.0, 0.0, 0.0]
+            for d in range(3):
+                v = [q[d] for q in p]
+                interior_point[d] = mean([max(v),min(v)])/max(abs(array(ax_limits[d])))
+            colors[i] = sum(interior_point) # norm(interior_point)
         lw = min([1,6.0/len(triang)])
-        plot1 = ax.plot_trisurf(x,y,z,triangles=triang,linewidth=lw,edgecolors='black', antialiased=True, alpha=0.90, facecolor='blue') # , array=colors, cmap=plt.cm.winter
-        colors = colors + min(colors)
-        colors = append(colors,3*max(colors))
-        colors = 1-(colors/max(colors))
-        colors = get_cmap("winter")(colors)
-        plot1.set_fc(colors[:-1])
+        plot1 = ax.plot_trisurf(x,y,z,triangles=triang,linewidth=lw,edgecolors='black', antialiased=True, alpha=0.90) #  array=colors, cmap=plt.cm.winter
+        colors = colors/max(colors)
+        colors = get_cmap("Spectral")(colors)
+        plot1.set_fc(colors)
         if show:
             plt.show()
         return plot1
+
+def ceil_dec(v,n):
+    return ceil(v*(10**n))/(10**n)
+    
+def floor_dec(v,n):
+    return floor(v*(10**n))/(10**n)
