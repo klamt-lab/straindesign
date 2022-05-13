@@ -41,7 +41,7 @@ jobs:
     - name: commit changed files
       run: git commit -m "Updated version number"
     - name: push code to main
-      run: git push --repo https://VonAlphaBisZulu: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@github.com/klamt-lab/straindesign
+      run: git push --repo ${{ secrets.URL_GITHUB }}
     - name: Create Release
       id: create_release
       uses: actions/create-release@v1
