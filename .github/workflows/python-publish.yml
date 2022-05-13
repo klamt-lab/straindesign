@@ -8,6 +8,12 @@ on:
       version:
         description: 'Version number'
         required: true
+      text:
+        description: 'Header'
+        required: true
+      description:
+        description: 'Description'
+        required: true
 
 permissions:
   contents: read
