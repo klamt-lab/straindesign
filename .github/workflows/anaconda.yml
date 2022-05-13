@@ -19,6 +19,8 @@ jobs:
         python-version: '3.x'
     - name: Install anaconda
       run: conda install anaconda-client
+    - name: Insstall anaconda from npm
+      run: npm install -g anaconda
     - name: Check installation
       run: /usr/bin/anaconda
     - name: Login to Anaconda
