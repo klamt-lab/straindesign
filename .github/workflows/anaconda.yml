@@ -1,6 +1,6 @@
 # This workflow will test anaconda login
 
-name: Build and Upload Python Package
+name: Login to Anaconda
 
 on:
   workflow_dispatch:
