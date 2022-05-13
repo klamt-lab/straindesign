@@ -12,6 +12,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: build_and_publish
+    steps:
     - name: Install anaconda
       run: conda install anaconda 
     - name: Build and publish on Anaconda
