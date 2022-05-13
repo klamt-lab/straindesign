@@ -40,6 +40,8 @@ jobs:
       run: git add .
     - name: commit changed files
       run: git commit -m "Updated version number"
+    - name: fetch
+      run: git fetch
     - name: push code to main
       run: git push
     - name: Create Release
