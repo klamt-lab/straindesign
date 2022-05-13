@@ -31,7 +31,10 @@ jobs:
         python ./.github/update_version.py setup.py ${{ github.event.inputs.version }}
         python ./.github/update_version.py conda-recipe/meta.yaml ${{ github.event.inputs.version }}
     - name: switching from HTTPS to SSH
-      run: git remote set-url origin ${{ secrets.URL_GITHUB }}
+      run: |
+        git remote set-url origin ${{ secrets.URL_GITHUB }}
+        git config --global user.email ${{ secrets.NAME_GITHUB }}
+        git config --global user.email ${{ secrets.MAIL_GITHUB }}
     - name: check for changes
       run: git status
     - name: stage changed files
