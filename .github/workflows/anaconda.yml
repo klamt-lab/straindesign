@@ -22,7 +22,7 @@ jobs:
     - name: Insstall anaconda from npm
       run: npm install -g anaconda
     - name: Check installation
-      run: /usr/bin/anaconda
+      run: which anaconda
     - name: Login to Anaconda
       env:
         ANCONDA_USERNAME: ${{ secrets.ANACONDA_USERNAME }}
