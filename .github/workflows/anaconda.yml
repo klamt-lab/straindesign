@@ -22,7 +22,9 @@ jobs:
     - name: Insstall anaconda from npm
       run: npm install -g anaconda
     - name: Check installation
-      run: which anaconda
+      run: |
+        cd /usr/share/miniconda/bin
+        ls
     - name: Login to Anaconda
       env:
         ANCONDA_USERNAME: ${{ secrets.ANACONDA_USERNAME }}
