@@ -3,8 +3,11 @@
 name: Build and Upload Python Package
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number'
+        required: true
 
 permissions:
   contents: read
@@ -12,8 +15,28 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: build_and_publish
     steps:
     - uses: actions/checkout@v3
+    - name: Update Version number
+      run: |
+        python ./.github/update_version.py setup.py ${{ inputs.version }}
+        python ./.github/update_version.py conda-recipe/meta.yaml ${{ inputs.version }}
+    - name: switching from HTTPS to SSH
+      run: git remote set-url origin ${{ secrets.URL_GITHUB }}
+    - name: check for changes
+      run: git status
+    - name: stage changed files
+      run: git add .
+    - name: commit changed files
+      run: git commit -m "Updated version number"
+    - name: fetch from main
+      run: git fetch origin main
+    - name: push code to main
+      run: git push origin HEAD:main
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
     - name: Set up Python
       uses: actions/setup-python@v3
       with:
