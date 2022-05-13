@@ -8,8 +8,8 @@ on:
       version:
         description: 'Version number'
         required: true
-      header:
-        description: 'Header'
+      title:
+        description: 'Title'
         required: true
       description:
         description: 'Description'
@@ -52,7 +52,8 @@ jobs:
         prerelease: false
         release_name: v${{ github.event.inputs.version }}
         tag_name: v${{ github.event.inputs.version }}
-        body: ${{ github.event.inputs.header }}
+        title: ${{ github.event.inputs.title }}
+        body: ${{ github.event.inputs.description }}
       env:
         GITHUB_TOKEN: ${{ github.token }}
     - name: Set up Python
