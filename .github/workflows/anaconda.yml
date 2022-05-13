@@ -19,7 +19,7 @@ jobs:
         python-version: '3.x'
     - name: Install anaconda
       run: conda install anaconda 
-    - name: Build and publish on Anaconda
+    - name: Login to Anaconda
       env:
         ANCONDA_USERNAME: ${{ secrets.ANACONDA_USERNAME }}
         ANACONDA_PASSWORD: ${{ secrets.ANACONDA_PASSWORD }}
