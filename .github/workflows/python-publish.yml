@@ -79,8 +79,8 @@ jobs:
         ANACONDA_PASSWORD: ${{ secrets.ANACONDA_PASSWORD }}
       run: |
         conda build conda-recipe/. -c conda-forge --croot conda-bld
-        anaconda login --username $ANCONDA_USERNAME --password $ANACONDA_PASSWORD
-        anaconda upload -u cnapy conda-bld/noarch/straindesign*
+        /usr/share/miniconda/bin/anaconda login --username $ANCONDA_USERNAME --password $ANACONDA_PASSWORD
+        /usr/share/miniconda/bin/anaconda upload -u cnapy conda-bld/noarch/straindesign*
     - name: Final clean up
       run: |
         rm -rf dist
