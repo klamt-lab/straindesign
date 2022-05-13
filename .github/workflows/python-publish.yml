@@ -8,7 +8,7 @@ on:
       version:
         description: 'Version number'
         required: true
-      text:
+      header:
         description: 'Header'
         required: true
       description:
@@ -41,10 +41,18 @@ jobs:
     - name: commit changed files
       run: git commit -m "Updated version number"
     - name: push code to main
-      run: git push --repo ${{ secrets.URL_GITHUB }}
+      run: git push
     - name: Create Release
-      id: create_release
       uses: actions/create-release@v1
+      id: create_release
+      with:
+        draft: false
+        prerelease: false
+        release_name: ${{ github.event.inputs.version }}
+        tag_name: v${{ github.event.inputs.version }}
+        body_path: CHANGELOG.md
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
     - name: Set up Python
       uses: actions/setup-python@v3
       with:
