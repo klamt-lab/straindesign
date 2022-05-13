@@ -78,7 +78,6 @@ jobs:
         ANCONDA_USERNAME: ${{ secrets.ANACONDA_USERNAME }}
         ANACONDA_PASSWORD: ${{ secrets.ANACONDA_PASSWORD }}
       run: |
-        mkdir conda-bld
         conda-build conda-recipe/. -c conda-forge --croot conda-bld
         anaconda login --username $ANCONDA_USERNAME --password $ANACONDA_PASSWORD
         anaconda upload -u cnapy conda-bld/noarch/straindesign*
