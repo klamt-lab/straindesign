@@ -17,29 +17,11 @@ jobs:
       uses: actions/setup-python@v3
       with:
         python-version: '3.x'
-    - name: Check installation
-      run: |
-        cd /usr/share/miniconda/bin
-        ls
     - name: Install anaconda
       run: conda install anaconda-client
-    - name: Insstall anaconda from npm
-      run: npm install -g anaconda
-    - name: Check installation
-      run: |
-        cd /usr/share/miniconda/bin
-        ls
-    - name: Check installation
-      run: |
-        cd /usr/share/
-        ls
-    - name: Check installation
-      run: |
-        cd /usr/share/anaconda3/bin
-        ls
     - name: Login to Anaconda
       env:
         ANCONDA_USERNAME: ${{ secrets.ANACONDA_USERNAME }}
         ANACONDA_PASSWORD: ${{ secrets.ANACONDA_PASSWORD }}
       run: |
-        anaconda login --username $ANCONDA_USERNAME --password $ANACONDA_PASSWORD
+        /usr/share/miniconda/bin/anaconda login --username $ANCONDA_USERNAME --password $ANACONDA_PASSWORD
