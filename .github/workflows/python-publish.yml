@@ -50,9 +50,9 @@ jobs:
       with:
         draft: false
         prerelease: false
-        release_name: ${{ github.event.inputs.version }}
+        release_name: v${{ github.event.inputs.version }}
         tag_name: v${{ github.event.inputs.version }}
-        body_path: CHANGELOG.md
+        body: ${{ github.event.inputs.header }}
       env:
         GITHUB_TOKEN: ${{ github.token }}
     - name: Set up Python
