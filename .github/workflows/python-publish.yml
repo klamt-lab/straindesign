@@ -27,7 +27,7 @@ jobs:
         TWINE_USERNAME: ${{ secrets.PYPI_USERNAME }}
         TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
         ANCONDA_USERNAME: ${{ secrets.ANACONDA_USERNAME }}
-        ANACONDA_PASSWORD: ${{ secrets.ANACONDA_USERNAME }}
+        ANACONDA_PASSWORD: ${{ secrets.ANACONDA_PASSWORD }}
       run: |
         rm -rf dist
         rm -rf conda-bld
@@ -35,7 +35,7 @@ jobs:
         twine upload dist/*
         mkdir conda-bld
         conda-build conda-recipe/. -c conda-forge --croot conda-bld
-        anaconda login --username ANCONDA_USERNAME --password ANACONDA_PASSWORD
+        anaconda login --username $ANCONDA_USERNAME --password $ANACONDA_PASSWORD
         anaconda upload -u cnapy conda-bld/noarch/straindesign*
         rm -rf dist
         rm -rf conda-bld
