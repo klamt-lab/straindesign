@@ -546,7 +546,6 @@ def plot_flux_space(model, axes, **kwargs):
             inval = [i+1 for i,v in enumerate([sol_min,sol_max]) if v.status == UNBOUNDED or v.status == INFEASIBLE]
             if any(inval):
                 raise Exception('One of the specified reactions is unbounded or problem is infeasible. Plot cannot be generated.')
-            ax_limits[i] = [min((0,sol_min.objective_value)),max((0,sol_max.objective_value))]
         elif ax_type[i] == 'yield':
             ax[0] = parse_linexpr(ax[0],reaction_ids)[0]
             ax[1] = parse_linexpr(ax[1],reaction_ids)[0]
@@ -557,10 +556,10 @@ def plot_flux_space(model, axes, **kwargs):
             inval = [i+1 for i,v in enumerate([sol_min,sol_max]) if v.status == UNBOUNDED or v.status == INFEASIBLE]
             if any(inval):
                 raise Exception('One of the specified yields is unbounded or undefined or problem is infeasible. Plot cannot be generated.')
-            ax_limits[i] = [min((0,ceil_dec(sol_min.objective_value,9))),max((0,floor_dec(sol_max.objective_value,9)))]
+        ax_limits[i] = [min((0,ceil_dec(sol_min.objective_value,9))),max((0,floor_dec(sol_max.objective_value,9)))]
 
     # compute points
-    x_space = linspace(ax_limits[0][0], ax_limits[0][1], num=points)
+    x_space = linspace(ax_limits[0][0], ax_limits[0][1], num=points).tolist()
     lb = full(points, nan)
     ub = full(points, nan)
     for i,x in enumerate(x_space):
@@ -571,14 +570,12 @@ def plot_flux_space(model, axes, **kwargs):
             constr += [[{**axes[0][0], **{k:-v*x for k,v in axes[0][1].items()}},'=',0]]
         if ax_type[1] == 'rate':
             sol_vmin = fba(model,constraints=constr,obj=axes[1][0],obj_sense='minimize')
-            lb[i] = ceil_dec(sol_vmin.objective_value,9)
             sol_vmax = fba(model,constraints=constr,obj=axes[1][0],obj_sense='maximize')
-            ub[i] = floor_dec(sol_vmax.objective_value,9)
         elif ax_type[1] == 'yield':
             sol_vmin = yopt(model,constraints=constr,obj_num=axes[1][0],obj_den=axes[1][1],obj_sense='minimize')
-            lb[i] = ceil_dec(sol_vmin.objective_value,9)
             sol_vmax = yopt(model,constraints=constr,obj_num=axes[1][0],obj_den=axes[1][1],obj_sense='maximize')
-            ub[i] = floor_dec(sol_vmax.objective_value,9)
+        lb[i] = ceil_dec(sol_vmin.objective_value,9)
+        ub[i] = floor_dec(sol_vmax.objective_value,9)
 
     if num_axes == 2:
         x = [v for v in x_space] + [v for v in reversed(x_space)]
@@ -601,11 +598,11 @@ def plot_flux_space(model, axes, **kwargs):
         datapoints = []
         datapoints_top = []
         datapoints_bottom = []
-        for i,(x,l,u) in enumerate(zip(x_space,lb,ub)):
-            if l-u != 0:
+        for i,(x,l,u) in enumerate(zip(x_space.copy(),lb,ub)):
+            if l != u:
                 y_space = linspace(l,u,int(-(-points // (max_diff_y/abs(l-u)))))
             else:
-                y_space = [0.0]
+                y_space = [l]
             datapoints_top += [[]]
             datapoints_bottom += [[]]
             for j,y in enumerate(y_space):
@@ -625,52 +622,58 @@ def plot_flux_space(model, axes, **kwargs):
                     sol_vmin = yopt(model,constraints=constr,obj_num=axes[2][0],obj_den=axes[2][1],obj_sense='minimize')
                     sol_vmax = yopt(model,constraints=constr,obj_num=axes[2][0],obj_den=axes[2][1],obj_sense='maximize')
                 datapoints_top[i] += [len(datapoints)]
-                datapoints += [[x,y,floor_dec(sol_vmax.objective_value,9)]]
+                datapoints += [array([x,y,floor_dec(sol_vmax.objective_value,9)])]
                 datapoints_bottom[i] += [len(datapoints)]
-                datapoints += [[x,y,ceil_dec(sol_vmin.objective_value,9)]]
+                datapoints += [array([x,y,ceil_dec(sol_vmin.objective_value,9)])]
+            if any([isnan(datapoints[d][2]) for d in datapoints_top[i]+datapoints_bottom[i]]):
+                print('warning: An optimization finished infeasible. Some sample points are missing.')
+                datapoints_top = datapoints_top[:-1]
+                datapoints_bottom = datapoints_bottom[:-1]
+                x_space.remove(x)
+                
         
         # Construct Denaunay triangles for plotting from all 6 perspectives
         triang = []
         # triangles top
         for i in range(len(datapoints_top)-1): 
             temp_points = datapoints_top[i]+datapoints_top[i+1]
-            pts = [[datapoints[idx_p][0],datapoints[idx_p][1]] for idx_p in temp_points]
-            if matrix_rank(pts) > 1:
+            pts = [array([datapoints[idx_p][0],datapoints[idx_p][1]]) for idx_p in temp_points]
+            if matrix_rank(pts-pts[0]) > 1:
                 triang_temp = Delaunay(pts).simplices
                 triang += [[temp_points[idx] for idx in p] for p in triang_temp]
         # triangles bottom
         for i in range(len(datapoints_bottom)-1): 
             temp_points = datapoints_bottom[i]+datapoints_bottom[i+1]
-            pts = [[datapoints[idx_p][0],datapoints[idx_p][1]] for idx_p in temp_points]
-            if matrix_rank(pts) > 1:
+            pts = [array([datapoints[idx_p][0],datapoints[idx_p][1]]) for idx_p in temp_points]
+            if matrix_rank(pts-pts[0]) > 1:
                 triang_temp = Delaunay(pts).simplices
                 triang += [[temp_points[idx] for idx in flip(p)] for p in triang_temp]
         # triangles front
         for i in range(len(x_space)-1): 
             temp_points = [datapoints_top[i][0],datapoints_top[i+1][0],datapoints_bottom[i][0],datapoints_bottom[i+1][0]]
-            pts = [[datapoints[idx_p][0],datapoints[idx_p][2]] for idx_p in temp_points]
-            if matrix_rank(pts) > 1:
+            pts = [array([datapoints[idx_p][0],datapoints[idx_p][2]]) for idx_p in temp_points]
+            if matrix_rank(pts-pts[0]) > 1:
                 triang_temp = Delaunay(pts).simplices
                 triang += [[temp_points[idx] for idx in flip(p)] for p in triang_temp]
         # triangles back
         for i in range(len(x_space)-1): 
             temp_points = [datapoints_top[i][-1],datapoints_top[i+1][-1],datapoints_bottom[i][-1],datapoints_bottom[i+1][-1]]
-            pts = [[datapoints[idx_p][0],datapoints[idx_p][2]] for idx_p in temp_points]
-            if matrix_rank(pts) > 1:
+            pts = [array([datapoints[idx_p][0],datapoints[idx_p][2]]) for idx_p in temp_points]
+            if matrix_rank(pts-pts[0]) > 1:
                 triang_temp = Delaunay(pts).simplices
                 triang += [[temp_points[idx] for idx in flip(p)] for p in triang_temp]
         # triangles left
         for i in range(len(datapoints_top[0])-1): 
             temp_points = [datapoints_top[0][i],datapoints_top[0][i+1],datapoints_bottom[0][i],datapoints_bottom[0][i+1]]
-            pts = [[datapoints[idx_p][1],datapoints[idx_p][2]] for idx_p in temp_points]
-            if matrix_rank(pts) > 1:
+            pts = [array([datapoints[idx_p][1],datapoints[idx_p][2]]) for idx_p in temp_points]
+            if matrix_rank(pts-pts[0]) > 1:
                 triang_temp = Delaunay(pts).simplices
                 triang += [[temp_points[idx] for idx in p] for p in triang_temp]
         # triangles right
         for i in range(len(datapoints_top[-1])-1): 
             temp_points = [datapoints_top[-1][i],datapoints_top[-1][i+1],datapoints_bottom[-1][i],datapoints_bottom[-1][i+1]]
-            pts = [[datapoints[idx_p][1],datapoints[idx_p][2]] for idx_p in temp_points]
-            if matrix_rank(pts) > 1:
+            pts = [array([datapoints[idx_p][1],datapoints[idx_p][2]]) for idx_p in temp_points]
+            if matrix_rank(pts-pts[0]) > 1:
                 triang_temp = Delaunay(pts).simplices
                 triang += [[temp_points[idx] for idx in p] for p in triang_temp]
 
