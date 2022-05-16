@@ -2,6 +2,7 @@ from cobra.core import Solution
 from cobra.util import create_stoichiometric_matrix
 from cobra import Configuration 
 from scipy import sparse
+from scipy.spatial import Delaunay #, ConvexHull
 from straindesign import MILP_LP, parse_constraints, parse_linexpr, lineqlist2mat, linexpr2dict, \
                          linexprdict2mat, SDPool, IndicatorConstraints, avail_solvers
 from re import search
@@ -15,8 +16,9 @@ from os import cpu_count
 from contextlib import redirect_stdout, redirect_stderr
 from io import StringIO
 import matplotlib.pyplot as plt
-from scipy.spatial import ConvexHull, Delaunay
-from matplotlib.cm import ScalarMappable, get_cmap
+import matplotlib.tri as tri
+from matplotlib.cm import get_cmap
+from matplotlib import use as set_matplotlib_backend
 
 from straindesign.parse_constr import linexpr2mat, linexprdict2str
 
@@ -510,10 +512,13 @@ def plot_flux_space(model, axes, **kwargs):
         kwargs[SOLVER] = None
     solver = select_solver(kwargs[SOLVER],model)
         
-    if 'show' in kwargs:
-            show = kwargs['show']
+    if 'plt_backend' in kwargs:
+    # interactive backends: GTK3Agg, GTK3Cairo, GTK4Agg, GTK4Cairo, MacOSX, nbAgg, QtAgg, QtCairo, 
+    #                       TkAgg, TkCairo, WebAgg, WX, WXAgg, WXCairo, Qt5Agg, Qt5Cairo
+    # non-interactive backends: agg, cairo, pdf, pgf, ps, svg, template 
+        set_matplotlib_backend(kwargs['plt_backend'])
     else:
-        show = True    
+        set_matplotlib_backend('Qt5Agg')
     
     axes = [list(ax) if not isinstance(ax,str) else [ax] for ax in axes] # cast to list of lists
     num_axes = len(axes)
@@ -578,20 +583,41 @@ def plot_flux_space(model, axes, **kwargs):
         ub[i] = floor_dec(sol_vmax.objective_value,9)
 
     if num_axes == 2:
+        datapoints = [[x,l] for x,l in zip(x_space,lb)] + [[x,u] for x,u in zip(x_space,ub)] 
+        datapoints_bottom = [i for i,_ in enumerate(x_space)]
+        datapoints_top = [len(x_space)+i for i,_ in enumerate(x_space)]
+        # triangles 2D (only for return)
+        triang = []
+        for i in range(len(x_space)-1): 
+            temp_points = [datapoints_bottom[i],datapoints_top[i],datapoints_bottom[i+1],datapoints_top[i+1]]
+            pts = [array(datapoints[idx_p]) for idx_p in temp_points]
+            if matrix_rank(pts-pts[0]) > 1:
+                triang_temp = Delaunay(pts).simplices
+                triang += [[temp_points[idx] for idx in p] for p in triang_temp]
+        # Plot
         x = [v for v in x_space] + [v for v in reversed(x_space)]
         y = [v for v in lb] + [v for v in reversed(ub)]
         if lb[0] != ub[0]:
             x.extend([x_space[0], x_space[0]])
             y.extend([lb[0],      ub[0]])
         plot1 = plt.fill(x, y)
-        # plot1 = plt.plot(x, y)
-        plot1[0].axes.set_xlabel(ax_name[0])
-        plot1[0].axes.set_ylabel(ax_name[1])
-        plot1[0].axes.set_xlim(ax_limits[0][0]*1.05,ax_limits[0][1]*1.05)
-        plot1[0].axes.set_ylim(ax_limits[1][0]*1.05,ax_limits[1][1]*1.05)
-        if show:
-            plt.show()
-        return plot1
+        plot1 = plot1[0]
+        # plot1 = plt.plot(x, y) 
+        
+        # Alternatively, this can be plotted as triangles
+        # One may use this code-snippet to plot the return value of this function
+        # x = [d[0] for d in datapoints]
+        # y = [d[1] for d in datapoints]
+        # trg = tri.Triangulation(x,y,triangles=triang)
+        # colors = [1.0 for _ in trg.triangles]
+        # plot1 = plt.tripcolor(trg,colors,antialiased=True,cmap='Blues_r',shading='flat')
+        
+        plot1.axes.set_xlabel(ax_name[0])
+        plot1.axes.set_ylabel(ax_name[1])
+        plot1.axes.set_xlim(ax_limits[0][0]*1.05,ax_limits[0][1]*1.05)
+        plot1.axes.set_ylim(ax_limits[1][0]*1.05,ax_limits[1][1]*1.05)
+        plt.show()
+        return datapoints, triang
     
     elif num_axes == 3:
         max_diff_y = max([abs(l-u) for l,u in zip(lb,ub)])
@@ -631,7 +657,6 @@ def plot_flux_space(model, axes, **kwargs):
                 datapoints_bottom = datapoints_bottom[:-1]
                 x_space.remove(x)
                 
-        
         # Construct Denaunay triangles for plotting from all 6 perspectives
         triang = []
         # triangles top
@@ -707,9 +732,8 @@ def plot_flux_space(model, axes, **kwargs):
         colors = colors/max(colors)
         colors = get_cmap("Spectral")(colors)
         plot1.set_fc(colors)
-        if show:
-            plt.show()
-        return plot1
+        plt.show()
+        return datapoints, triang
 
 def ceil_dec(v,n):
     return ceil(v*(10**n))/(10**n)
