@@ -1,4 +1,4 @@
-{% set version = '0.33' %}
+{% set version = '1.0' %}
 
 package:
   name: straindesign
