@@ -536,6 +536,7 @@ def plot_flux_space(model, axes, **kwargs):
     
     ax_name = ["" for _ in range(num_axes)]
     ax_limits = [(nan,nan) for _ in range(num_axes)]
+    val_limits = [(nan,nan) for _ in range(num_axes)]
     ax_type = ["" for _ in range(num_axes)]
     for i,ax in enumerate(axes):
         if len(ax) == 1:
@@ -561,10 +562,11 @@ def plot_flux_space(model, axes, **kwargs):
             inval = [i+1 for i,v in enumerate([sol_min,sol_max]) if v.status == UNBOUNDED or v.status == INFEASIBLE]
             if any(inval):
                 raise Exception('One of the specified yields is unbounded or undefined or problem is infeasible. Plot cannot be generated.')
-        ax_limits[i] = [min((0,ceil_dec(sol_min.objective_value,9))),max((0,floor_dec(sol_max.objective_value,9)))]
+        val_limits[i] = [ceil_dec(sol_min.objective_value,9),floor_dec(sol_max.objective_value,9)]
+        ax_limits[i] = [min((0,val_limits[i][0])),max((0,val_limits[i][1]))]
 
     # compute points
-    x_space = linspace(ax_limits[0][0], ax_limits[0][1], num=points).tolist()
+    x_space = linspace(val_limits[0][0], val_limits[0][1], num=points).tolist()
     lb = full(points, nan)
     ub = full(points, nan)
     for i,x in enumerate(x_space):
