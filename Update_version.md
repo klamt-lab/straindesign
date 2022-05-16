@@ -1,3 +1,5 @@
+This is only needed for manual version upgrading. A versioning script is availabe in GitHub actions.
+
 ## In any case:
 1. Update version number in `conda-recipe/meta.yaml`. Update dependencies/versions and description if necessary
 2. Update version number in `setup.py`. Update dependencies/versions and description and `requirements.txt` if necessary.
