@@ -8,8 +8,6 @@ Welcome to StrainDesign's documentation!
 
 .. toctree::
    1_installation
-   api
-   generated/straindesign
    :maxdepth: 2
    :caption: Contents:
    
