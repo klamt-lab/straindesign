@@ -36,6 +36,8 @@ extensions = [
     'sphinx.ext.intersphinx',
     'sphinx.ext.viewcode',
     'autoapi.extension',
+    'nbsphinx',
+    'sphinx.ext.napoleon',
     'myst_parser']
 
 # Add any paths that contain templates here, relative to this directory.
@@ -49,6 +51,8 @@ exclude_patterns = []
 autoapi_type = 'python'
 autoapi_dirs = ['../../straindesign']
 autoapi_generate_api_docs = True
+autoapi_add_toctree_entry = False
+autoapi_options = [ 'members', 'show-inheritance', 'show-module-summary']
 
 intersphinx_mapping = {
     'jinja': ('https://jinja.palletsprojects.com/en/3.0.x/', None),

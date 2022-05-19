@@ -1,9 +1,21 @@
+# -*- coding: utf-8 -*-
+"""This module contains functions for parsing and converting constraints and linear expressions."""
 from typing import Dict, List, Tuple
 from scipy import sparse
 import re
 
 def parse_constraints(constr,reaction_ids) -> List:
-    '''This function parses constraints written as strings'''
+    """Parses constraints written as strings
+    
+    This is a longer description of the parse constraints function.
+    
+    Args:
+        constr (:class:str or :class:List): (List of) constraints in string form.
+        reaction_ids (:class:List): List of reaction identifiers.
+
+    Returns:
+        parsed_constr: List of constraints. Each constraint is a list of three elements. [[dict_v,'=',0.3],[dict_w,'<=',0.5],...]
+    """
     if not constr:
         return []
     if type(constr) is str:
