@@ -15,6 +15,7 @@ python:
       path: .
       extra_requirements:
         - myst-parser
+        - sphinx-autoapi 
 
 formats:
   - pdf
