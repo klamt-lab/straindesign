@@ -11,10 +11,10 @@ efmtool_jar = os.path.join(os.path.dirname(__file__), 'efmtool.jar')
 jpype.addClassPath(efmtool_jar)
 if not jpype.isJVMStarted():
     with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()): # suppress console output 
-        mem_bytes = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')  # e.g. 4015976448
-        mem_mb = round(mem_bytes/(1024.**2)*0.75) # allow 75% of total memory for heap space
-        jpype.startJVM( jpype.getDefaultJVMPath() , f"-Xmx{mem_mb}m" )
-        # jpype.startJVM()
+        # mem_bytes = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')  # e.g. 4015976448
+        # mem_mb = round(mem_bytes/(1024.**2)*0.75) # allow 75% of total memory for heap space
+        # jpype.startJVM( jpype.getDefaultJVMPath() , f"-Xmx{mem_mb}m" )
+        jpype.startJVM()
 import jpype.imports
     
 import ch.javasoft.smx.impl.DefaultBigIntegerRationalMatrix as DefaultBigIntegerRationalMatrix

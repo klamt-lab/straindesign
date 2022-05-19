@@ -1,0 +1,23 @@
+﻿straindesign
+============
+
+.. automodule:: straindesign
+
+   
+   
+   
+
+   
+   
+   
+
+   
+   
+   
+
+   
+   
+   
+
+
+
