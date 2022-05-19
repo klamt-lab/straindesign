@@ -31,13 +31,11 @@ release = '1.1'
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
-    'sphinx.ext.duration',
-    'sphinx.ext.doctest',
     'sphinx.ext.autodoc',
     'sphinx.ext.autosummary',
-    'autoapi.extension',
     'sphinx.ext.intersphinx',
     'sphinx.ext.viewcode',
+    'autoapi.extension',
     'myst_parser']
 
 # Add any paths that contain templates here, relative to this directory.
@@ -48,8 +46,17 @@ templates_path = ['_templates']
 # This pattern also affects html_static_path and html_extra_path.
 exclude_patterns = []
 
+autoapi_type = 'python'
 autoapi_dirs = ['../../straindesign']
+autoapi_generate_api_docs = True
 
+intersphinx_mapping = {
+    'jinja': ('https://jinja.palletsprojects.com/en/3.0.x/', None),
+    'sphinx': ('https://www.sphinx-doc.org/en/master/', None),
+    'python': ('https://docs.python.org/3/', None),
+}
+
+source_suffix = ['.rst', '.md']
 
 # -- Options for HTML output -------------------------------------------------
 
@@ -62,3 +69,86 @@ html_theme = 'default'
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ['_static']
+
+pygments_style = 'sphinx'
+
+# -- Options for LaTeX output ---------------------------------------------
+
+latex_elements = {
+    # The paper size ('letterpaper' or 'a4paper').
+    #'papersize': 'letterpaper',
+
+    # The font size ('10pt', '11pt' or '12pt').
+    #'pointsize': '10pt',
+
+    # Additional stuff for the LaTeX preamble.
+    #'preamble': '',
+
+    # Latex figure (float) alignment
+    #'figure_align': 'htbp',
+}
+
+# Grouping the document tree into LaTeX files. List of tuples
+# (source start file, target name, title,
+#  author, documentclass [howto, manual, or own class]).
+latex_documents = [
+    # (master_doc, 'SphinxAutoAPI.tex', u'Sphinx AutoAPI Documentation',
+    #  u'Read the Docs, Inc', 'manual'),
+]
+
+# The name of an image file (relative to this directory) to place at the top of
+# the title page.
+#latex_logo = None
+
+# For "manual" documents, if this is true, then toplevel headings are parts,
+# not chapters.
+#latex_use_parts = False
+
+# If true, show page references after internal links.
+#latex_show_pagerefs = False
+
+# If true, show URL addresses after external links.
+#latex_show_urls = False
+
+# Documents to append as an appendix to all manuals.
+#latex_appendices = []
+
+# If false, no module index is generated.
+#latex_domain_indices = True
+
+
+# -- Options for manual page output ---------------------------------------
+
+# One entry per manual page. List of tuples
+# (source start file, name, description, authors, manual section).
+man_pages = [
+    # (master_doc, 'sphinxautoapi', u'Sphinx AutoAPI Documentation',
+    #  [author], 1)
+]
+
+# If true, show URL addresses after external links.
+#man_show_urls = False
+
+
+# -- Options for Texinfo output -------------------------------------------
+
+# Grouping the document tree into Texinfo files. List of tuples
+# (source start file, target name, title, author,
+#  dir menu entry, description, category)
+texinfo_documents = [
+    # (master_doc, 'SphinxAutoAPI', u'Sphinx AutoAPI Documentation',
+    #  author, 'SphinxAutoAPI', 'One line description of project.',
+    #  'Miscellaneous'),
+]
+
+# Documents to append as an appendix to all manuals.
+#texinfo_appendices = []
+
+# If false, no module index is generated.
+#texinfo_domain_indices = True
+
+# How to display URL addresses: 'footnote', 'no', or 'inline'.
+#texinfo_show_urls = 'footnote'
+
+# If true, do not generate a @detailmenu in the "Top" node's menu.
+#texinfo_no_detailmenu = False
