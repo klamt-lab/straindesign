@@ -53,7 +53,7 @@ class Gurobi_MILP_LP(gp.Model):
         self.params.FeasibilityTol = 1e-9
         if 'B' in vtype or 'I' in vtype:
             seed = randint(0,grb.MAXINT)
-            print('  MILP Seed: '+str(seed))
+            # print('  MILP Seed: '+str(seed))
             self.params.Seed = seed
             self.params.IntFeasTol = 1e-9 # (0 is not allowed by Gurobi)
             # yield only optimal solutions in pool
