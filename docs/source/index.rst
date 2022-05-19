@@ -8,9 +8,9 @@ Welcome to StrainDesign's documentation!
 
 .. toctree::
    1_installation
-   autoapi/straindesign/index
+   api_reference
    JN_01_flux_and_yield_optimization.ipynb
-   :maxdepth: 2
+   :maxdepth: 4
    :caption: Contents:
    
 

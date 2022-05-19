@@ -1,29 +1,19 @@
-# 2022 Max Planck institute for dynamics of complex technical systems.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+"""Strain design module (:class:`SDModule`)
+
+Strain design modules are used to describe strain design problems, 
+e.g. desired or undesired flux states for MCS strain design.
+"""
+
 from numpy import all
 from typing import List, Dict, Tuple, Union, Set, FrozenSet
 from straindesign.parse_constr import *
 from straindesign.names import *
 
-"""
-Strain design module (:class:`SD_Module`)
-Strain design modules are used to describe strain design problems, 
-e.g. desired or undesired flux states for MCS strain design.
-"""
+
 
 class SDModule(Dict):
     """Modules to describe desired or undesired flux states for MCS strain design.
+    
     There are three kinds of flux states that can be described
           1. The wildtype model, constrainted with additional inequalities:
              e.g.: T v <= t.
@@ -54,6 +44,7 @@ class SDModule(Dict):
         modules = [         mcs_module.MCS_Module(network,"mcs_lin",module_sense="undesired",constraints="R4 >= 1")]
         modules = [modules, mcs_module.MCS_Module(network,"mcs_lin",module_sense="desired",constraints="R3 >= 1")]
         ...
+        
     """
     def __init__(self, model, module_type, *args, **kwargs):
         self[MODEL_ID] = model.id

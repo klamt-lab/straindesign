@@ -7,16 +7,6 @@ from typing import Tuple, List
 import io
 from straindesign.names import *
 
-# Collection of CPLEX-related functions that facilitate the creation
-# of CPLEX-object and the solutions of LPs/MILPs with CPLEX from
-# vector-matrix-based problem setups.
-#
-#
-#   Philipp Schneider (schneiderp@mpi-magdeburg.mpg.de)
-# - February 2021
-#  
-
-# Create a CPLEX-object from a matrix-based problem setup
 class Cplex_MILP_LP(Cplex):
     def __init__(self,c,A_ineq,b_ineq,A_eq,b_eq,lb,ub,vtype,indic_constr):
         super().__init__()
