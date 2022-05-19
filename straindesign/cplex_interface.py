@@ -77,7 +77,7 @@ class Cplex_MILP_LP(Cplex):
             # self.parameters.threads.set(cpu_count())
             # yield only optimal solutions in pool
             seed = randint(0,_const.CPX_BIGINT)
-            print('  MILP Seed: '+str(seed))
+            # print('  MILP Seed: '+str(seed))
             self.parameters.randomseed = seed
             self.parameters.mip.pool.absgap.set(0.0)
             self.parameters.mip.pool.relgap.set(0.0)

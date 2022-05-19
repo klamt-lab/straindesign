@@ -95,7 +95,7 @@ class SCIP_MILP(pso.Model):
         self.setParam('display/verblevel',0)
         if 'B' in vtype or 'I' in vtype:
             seed = seed = randint(0,2**31-1)
-            print('  MILP Seed: '+str(seed))
+            # print('  MILP Seed: '+str(seed))
             self.setParam('randomization/randomseedshift',seed)
         # self.enableReoptimization()
         # self.setParam('display/lpinfo',False)
