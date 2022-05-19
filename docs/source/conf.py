@@ -53,6 +53,7 @@ autoapi_dirs = ['../../straindesign']
 autoapi_generate_api_docs = True
 autoapi_add_toctree_entry = False
 autoapi_options = [ 'members', 'show-inheritance', 'show-module-summary']
+suppress_warnings = ["autoapi.python_import_resolution", "autoapi.not_readable"]
 
 intersphinx_mapping = {
     'jinja': ('https://jinja.palletsprojects.com/en/3.0.x/', None),

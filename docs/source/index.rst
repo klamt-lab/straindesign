@@ -9,7 +9,7 @@ Welcome to StrainDesign's documentation!
 .. toctree::
    1_installation
    autoapi/straindesign/index
-   ../examples/JN_01_flux_and_yield_optimization.ipynb
+   JN_01_flux_and_yield_optimization.ipynb
    :maxdepth: 2
    :caption: Contents:
    
