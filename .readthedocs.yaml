@@ -13,8 +13,8 @@ python:
   install:
     - method: pip
       path: .
-    - method: pip
-      path: myst-parser
+      extra_requirements:
+        - myst-parser
 
 formats:
   - pdf

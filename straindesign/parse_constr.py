@@ -3,6 +3,7 @@ from scipy import sparse
 import re
 
 def parse_constraints(constr,reaction_ids) -> List:
+    '''This function parses constraints written as strings'''
     if not constr:
         return []
     if type(constr) is str:
