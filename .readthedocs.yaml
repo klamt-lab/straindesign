@@ -11,8 +11,9 @@ sphinx:
 python:
   # Install our python package before building the docs
   install:
+    - requirements: docs/doc_requirements.txt
     - method: pip
-      requirements: myst-parser sphinx-autoapi 
+      path: .
 
 formats:
   - pdf
