@@ -7,11 +7,10 @@ Welcome to StrainDesign's documentation!
 ========================================
 
 .. toctree::
+   1_installation
    :maxdepth: 2
    :caption: Contents:
-   1_installation
-
-
+   
 
 Indices and tables
 ==================
