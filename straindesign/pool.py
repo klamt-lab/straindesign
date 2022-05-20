@@ -19,22 +19,23 @@ TERMINATE = 2
 
 # __all__ = ("Pool",)
 
+
 def _init_win_worker(filename: str) -> None:
     """Retrieve worker initialization code from a pickle file and call it."""
     with open(filename, mode="rb") as handle:
         func, *args = pickle.load(handle)
     func(*args)
 
+
 class SDPool(Pool):
     """Define a process pool that handles the Windows platform specially."""
 
-    def __init__(
-        self,
-        processes: Optional[int] = None,
-        initializer: Optional[Callable] = None,
-        initargs: Tuple = (),
-        maxtasksperchild: Optional[int] = None,
-        context=None):
+    def __init__(self,
+                 processes: Optional[int] = None,
+                 initializer: Optional[Callable] = None,
+                 initargs: Tuple = (),
+                 maxtasksperchild: Optional[int] = None,
+                 context=None):
         """
         Initialize a process pool.
 
@@ -64,9 +65,9 @@ class SDPool(Pool):
         spec = None
         file = None
         if context is None:
-            context = get_context('spawn') # If not declared otherwise, 
-                                           # 'spawn' new threads. Experience has shown
-                                           # that forking is unreliable.
+            context = get_context('spawn')  # If not declared otherwise,
+            # 'spawn' new threads. Experience has shown
+            # that forking is unreliable.
             if sys.modules['__main__'].__spec__ is not None:
                 spec = sys.modules['__main__'].__spec__
                 sys.modules['__main__'].__spec__ = None
@@ -94,7 +95,7 @@ class SDPool(Pool):
     def close(self):
         self._clean_up()
         super().close()
-            
+
     def _clean_up(self):
         """Remove the dump file if it exists."""
         if self._filename is not None and isfile(self._filename):

@@ -9,7 +9,7 @@ OPTKNOCK = 'optknock'
 ROBUSTKNOCK = 'robustknock'
 OPTCOUPLE = 'optcouple'
 
-TIME_LIMIT_W_SOL   = TIME_LIMIT+'_w_sols'
+TIME_LIMIT_W_SOL = TIME_LIMIT + '_w_sols'
 ERROR = 'error'
 
 KOCOST = 'ko_cost'

@@ -9,13 +9,19 @@ from scipy import sparse
 import sys
 
 # load network
-network = cobra.io.read_sbml_model(os.path.dirname(os.path.abspath(__file__))+"/e_coli_core.sbml")
+network = cobra.io.read_sbml_model(
+    os.path.dirname(os.path.abspath(__file__)) + "/e_coli_core.sbml")
 
 # specify modules
-modules = straindesign.SDModule(network,"mcs_bilvl",module_sense="desired",constraints=["2 BIOMASS_Ecoli_core_w_GAM >= 0.1","EX_etoh_e >= 1"],inner_objective="BIOMASS_Ecoli_core_w_GAM")
+modules = straindesign.SDModule(
+    network,
+    "mcs_bilvl",
+    module_sense="desired",
+    constraints=["2 BIOMASS_Ecoli_core_w_GAM >= 0.1", "EX_etoh_e >= 1"],
+    inner_objective="BIOMASS_Ecoli_core_w_GAM")
 
-straindesign.fba(network,obj=modules['inner_objective'])
-sol = straindesign.fba(network,constraints=["EX_o2_e=0"])
+straindesign.fba(network, obj=modules['inner_objective'])
+sol = straindesign.fba(network, constraints=["EX_o2_e=0"])
 
 # specify MCS setup
 maxSolutions = np.inf
@@ -46,68 +52,72 @@ solver = 'glpk'
 #             'PPC'       : 0.13,
 #             'CS'        : 0.2,
 #             'RPI'       : 0.1,
-#             'SUCCt2_2'  : 0.6,        
-#             'CYTBD'     : 1.3,        
-#             'D_LACt2'   : 0.7,        
-#             'ENO'       : 1.8,    
-#             'THD2'      : 0.12,    
-#             'TKT1'      : 0.13,    
-#             'O2t'       : 0.2,    
+#             'SUCCt2_2'  : 0.6,
+#             'CYTBD'     : 1.3,
+#             'D_LACt2'   : 0.7,
+#             'ENO'       : 1.8,
+#             'THD2'      : 0.12,
+#             'TKT1'      : 0.13,
+#             'O2t'       : 0.2,
 #             'PDH'       : 0.1}
-gko_cost = {'pfkA'      : 0.7,
-            'pfkB'      : 1,
-            'grcA'      : 2,
-            'tdcE'      : 2.2,
-            'pflC'      : 1.8,
-            'pflA'      : 2,
-            'pflB'      : 2,
-            'pgi'       : 1.4,
-            'pgk'       : 1.2,
-            'pgl'       : 2.6,
-            'sucA'      : 1.3,
-            'sucB'      : 1.38,
-            # 'lpd'       : 1.3,
-            'atpA'      : 0.7,
-            'pta'       : 0.9,
-            'eutD'      : 0.9,
-            'pykA'      : 0.4,
-            'pykF'      : 0.5,
-            'sdhA'      : 0.24,
-            'sucD'      : 0.77,
-            'talA'      : 1.5}
-gki_cost = {'adhE'      : 0.5,
-            'kgtP'      : 0.4,
-            'gpmA'      : 0.6,
-            'gpmM'      : 0.7,
-            'pitA'      : 1.3,
-            'pitB'      : 1.3,
-            'adhP'      : 0.7,
-            'mhpF'      : 1.8,
-            'tdcD'      : 0.12,
-            'purT'      : 0.14,
-            'ackA'      : 0.17,
-            'ppc'       : 0.13,
-            'gltA'      : 0.2,
-            'rpiB'      : 0.1,
-            'rpiA'      : 0.1,
-            'eno'       : 1.8,
-            'tktA'      : 0.13,
-            'tktB'      : 0.13,
-            'lpd'       : 0.13,
-            'aceE'      : 0.13,
-            'aceF'      : 0.1}
-ko_cost = { 'SUCCt2_2'  : 0.6,
-            'ETOHt2r'   : 2.1,
-            'CYTBD'     : 1.3,
-            'THD2'      : 0.12,
-            'D_LACt2'   : 0.7}
-ki_cost = { 'O2t'       : 0.2,
-            'SUCCt3'    : 1.2}
-reg_cost = {'EX_etoh_e >= 3' : 2,
-            'EX_etoh_e <= 2' : 1}
+gko_cost = {
+    'pfkA': 0.7,
+    'pfkB': 1,
+    'grcA': 2,
+    'tdcE': 2.2,
+    'pflC': 1.8,
+    'pflA': 2,
+    'pflB': 2,
+    'pgi': 1.4,
+    'pgk': 1.2,
+    'pgl': 2.6,
+    'sucA': 1.3,
+    'sucB': 1.38,
+    # 'lpd'       : 1.3,
+    'atpA': 0.7,
+    'pta': 0.9,
+    'eutD': 0.9,
+    'pykA': 0.4,
+    'pykF': 0.5,
+    'sdhA': 0.24,
+    'sucD': 0.77,
+    'talA': 1.5
+}
+gki_cost = {
+    'adhE': 0.5,
+    'kgtP': 0.4,
+    'gpmA': 0.6,
+    'gpmM': 0.7,
+    'pitA': 1.3,
+    'pitB': 1.3,
+    'adhP': 0.7,
+    'mhpF': 1.8,
+    'tdcD': 0.12,
+    'purT': 0.14,
+    'ackA': 0.17,
+    'ppc': 0.13,
+    'gltA': 0.2,
+    'rpiB': 0.1,
+    'rpiA': 0.1,
+    'eno': 1.8,
+    'tktA': 0.13,
+    'tktB': 0.13,
+    'lpd': 0.13,
+    'aceE': 0.13,
+    'aceF': 0.1
+}
+ko_cost = {
+    'SUCCt2_2': 0.6,
+    'ETOHt2r': 2.1,
+    'CYTBD': 1.3,
+    'THD2': 0.12,
+    'D_LACt2': 0.7
+}
+ki_cost = {'O2t': 0.2, 'SUCCt3': 1.2}
+reg_cost = {'EX_etoh_e >= 3': 2, 'EX_etoh_e <= 2': 1}
 # ko_cost = None
 # gko_cost = None
-M=None
+M = None
 output_format = 'auto'
 solution = straindesign.compute_strain_designs(network,sd_modules=modules, max_cost=maxCost,ko_cost=ko_cost, \
                                         ki_cost=ki_cost, gko_cost=gko_cost, gki_cost=gki_cost, \
@@ -119,11 +129,17 @@ rsd, assoc, gsd = solution.get_gene_reac_sd_assoc()
 exit()
 # conrtruct MCS MILP
 # mcsEnum = straindesign.StrainDesigner(network,modules, max_cost=maxCost,gko_cost=gko_cost,ko_cost=ko_cost, ki_cost=ki_cost, solver=solver,M=M)
-mcsEnum = straindesign.StrainDesigner(network,modules, max_cost=maxCost,ko_cost=ko_cost, ki_cost=ki_cost, solver=solver,M=M)
+mcsEnum = straindesign.StrainDesigner(network,
+                                      modules,
+                                      max_cost=maxCost,
+                                      ko_cost=ko_cost,
+                                      ki_cost=ki_cost,
+                                      solver=solver,
+                                      M=M)
 # mcsEnum = straindesign.StrainDesignMILP(network,modules,ko_cost=ko_cost, ki_cost=ki_cost, max_cost=maxCost,solver=solver,M=None)
 
 # solve MILP
-rmcs,status = mcsEnum.enumerate(max_solutions=maxSolutions,show_no_ki=True)
+rmcs, status = mcsEnum.enumerate(max_solutions=maxSolutions, show_no_ki=True)
 # rmcs,status = mcsEnum.compute_optimal(max_solutions=maxSolutions)
 # rmcs = mcsEnum.compute(max_solutions=maxSolutions)
 [print(r) for r in rmcs]

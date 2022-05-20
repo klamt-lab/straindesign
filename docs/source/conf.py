@@ -14,7 +14,6 @@
 # import sys
 # sys.path.insert(0, os.path.abspath('.'))
 
-
 # -- Project information -----------------------------------------------------
 
 project = "StrainDesign"
@@ -23,7 +22,6 @@ author = "Philipp Schneider"
 
 # The full version, including alpha/beta/rc tags
 release = "1.1"
-
 
 # -- General configuration ---------------------------------------------------
 
@@ -122,7 +120,6 @@ latex_elements = {
 # If false, no module index is generated.
 # latex_domain_indices = True
 
-
 # -- Options for manual page output ---------------------------------------
 
 # One entry per manual page. List of tuples
@@ -134,7 +131,6 @@ man_pages = [
 
 # If true, show URL addresses after external links.
 # man_show_urls = False
-
 
 # -- Options for Texinfo output -------------------------------------------
 

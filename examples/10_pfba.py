@@ -1,6 +1,7 @@
 from cobra.io import load_model
 from cobra import Configuration
 import straindesign as sd
+
 cobra_conf = Configuration()
 cobra_conf.solver = 'cplex'
 model = load_model('e_coli_core')
@@ -11,10 +12,12 @@ model = load_model('e_coli_core')
 
 r1 = ('-EX_o2_e')
 r2 = ('BIOMASS_Ecoli_core_w_GAM')
-y2 = ('BIOMASS_Ecoli_core_w_GAM','-EX_glc__D_e')
-y3 = ('EX_etoh_e','-EX_glc__D_e')
+y2 = ('BIOMASS_Ecoli_core_w_GAM', '-EX_glc__D_e')
+y3 = ('EX_etoh_e', '-EX_glc__D_e')
 # plot2 = sd.plot_flux_space(model,(y1,y2),constraints='EX_o2_e >= -1',points=10)
 # plot1 = sd.plot_flux_space(model,(r2,y2),constraints='EX_o2_e >= -25',points=15)
 # plot2 = sd.plot_flux_space(model,(r2,y2,r1),constraints='EX_o2_e >= -25',points=15)
 # plot1 = sd.plot_flux_space(model,(r1,y2,y3),constraints='EX_o2_e >= -8',points=120)
-plot2 = sd.plot_flux_space(model,(r1,r2,y2),constraints='EX_o2_e >= -25',points=120)
+plot2 = sd.plot_flux_space(model, (r1, r2, y2),
+                           constraints='EX_o2_e >= -25',
+                           points=120)
