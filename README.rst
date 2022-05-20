@@ -37,7 +37,7 @@ StrainDesign
      :alt: Zenodo DOI
      
 
-A COBRApy[1]_-based package for computational design of metabolic networks
+A COBRApy-based[1] package for computational design of metabolic networks
 ======================================================================
 
 
