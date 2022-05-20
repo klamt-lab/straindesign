@@ -41,11 +41,11 @@ Comprehensive package for computing strain design designs with the COBRApy toolb
 
 |pic1| |pic2|
    
-.. |pic1| image:: docs/plot.png
+.. |pic1| image:: docs/network.svg
   :width: 45%
   :alt: Plot screenshot
   
-.. |pic2| image:: docs/network.svg
+.. |pic2| image:: docs/plot.png
   :width: 45%
   :alt: Plot screenshot2
 
