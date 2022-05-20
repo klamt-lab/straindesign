@@ -4,27 +4,32 @@ StrainDesign
 .. image:: https://img.shields.io/pypi/v/straindesign.svg
    :target: https://pypi.org/project/straindesign/
    :alt: Current PyPI Version
-
+   
+.. image:: https://anaconda.org/cnapy/straindesign/badges/version.svg
+   :target: https://anaconda.org/cnapy/straindesign/
+   :alt: Current Anaconda Version
+   
+.. image:: https://readthedocs.org/projects/straindesign/badge/?version=latest
+   :target: https://straindesign.readthedocs.io/en/latest/
+   :alt: Documentation Status
+   
 .. image:: https://img.shields.io/pypi/pyversions/straindesign.svg
    :target: https://pypi.org/project/straindesign/
    :alt: Supported Python Versions
-
-.. image:: https://img.shields.io/pypi/l/straindesign.svg
-   :target: https://www.gnu.org/licenses/old-licenses/lgpl-2.0.html
-   :alt: Apache 2.0 License
 
 ..
   .. image:: https://github.com/klamt-lab/straindesign/workflows/CI-CD/badge.svg]
     :target: https://github.com/klamt-lab/straindesign/workflows/CI-CD]
     :alt: GitHub Actions CI/CD Status]
-
-.. image:: https://readthedocs.org/projects/straindesign/badge/?version=latest
-   :target: https://straindesign.readthedocs.io/en/straindesign/?badge=latest
-   :alt: Documentation Status
+   
+.. image:: https://img.shields.io/pypi/l/straindesign.svg
+   :target: https://www.gnu.org/licenses/old-licenses/lgpl-2.0.html
+   :alt: Apache 2.0 License
 
 .. image:: https://img.shields.io/badge/code%20style-yapf-blue
    :target: https://github.com/google/yapf
-   :alt: Black
+   :alt: YAPF
+   
 
 ..
   .. image:: https://zenodo.org/badge/6510063.svg
