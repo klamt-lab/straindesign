@@ -1,5 +1,7 @@
 """Provide a process pool with enhanced performance on Windows.
-Copied and slightly changed from cobra."""
+
+Copied and slightly changed from cobra.
+"""
 
 from multiprocessing.pool import Pool
 from multiprocessing import set_start_method, get_context

@@ -1,4 +1,5 @@
-"""Strain design module (:class:`SDModule`)
+"""
+Strain design module (:class:`SDModule`)
 
 Strain design modules are used to describe strain design problems, 
 e.g. desired or undesired flux states for MCS strain design.
@@ -12,25 +13,22 @@ from straindesign.names import *
 
 
 class SDModule(Dict):
-    """Modules to describe desired or undesired flux states for MCS strain design.
+    """
+    Modules to describe desired or undesired flux states for MCS strain design.
     
     There are three kinds of flux states that can be described
-          1. The wildtype model, constrainted with additional inequalities:
-             e.g.: T v <= t.
-           2. The wildtype model at a specific optimum, constrained with additional inequalities
-              e.g.: objective*v = optimal, T v <= t
-           3. A yield range:
-              e.g.: numerator*v/denominator*v <= t (Definition of A and b is not required)
-     fields:
+        1. The wildtype model, constrainted with additional inequalities:
+            e.g.: T v <= t.
+        2. The wildtype model at a specific optimum, constrained with additional inequalities
+            e.g.: objective*v = optimal, T v <= t
+        3. A yield range:
+            e.g.: numerator*v/denominator*v <= t (Definition of A and b is not required)
 
-    Attributes
-    ----------
+    Args:
         module_sense: 'desired' or 'undesired'
         module_type: 'mcs_lin', 'mcs_bilvl', 'optknock'
         constraints: Linear constraints: A v <= b, A v >= b, A v = b
                     (e.g. T v <= t with 'undesired' or D v <= d with 'desired')
-    ----------
-    Module type specific attributes:
         mcs_lin: <none>
         mcs_bilvl: inner_objective: Inner optimization expression
         mcs_yield: numerator: numerator of yield function,
@@ -39,12 +37,12 @@ class SDModule(Dict):
                   outer_objective: Outer optimization expression
         robustknock:
         optcouple:
-    Examples
-    --------
+
+    Returns:
         modules = [         mcs_module.MCS_Module(network,"mcs_lin",module_sense="undesired",constraints="R4 >= 1")]
         modules = [modules, mcs_module.MCS_Module(network,"mcs_lin",module_sense="desired",constraints="R3 >= 1")]
         ...
-        
+
     """
     def __init__(self, model, module_type, *args, **kwargs):
         self[MODEL_ID] = model.id

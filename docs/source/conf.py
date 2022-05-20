@@ -51,8 +51,10 @@ exclude_patterns = []
 autoapi_type = 'python'
 autoapi_dirs = ['../../straindesign']
 autoapi_generate_api_docs = True
-autoapi_add_toctree_entry = True
-autoapi_options = [ 'members', 'show-inheritance', 'show-module-summary']
+autoapi_add_toctree_entry = False
+autoapi_options = [ 'members', 'show-inheritance', 'special-members']
+# show-module-summary, imported-members
+autoapi_python_class_content = 'both'
 suppress_warnings = ["autoapi.python_import_resolution", "autoapi.not_readable"]
 autoapi_member_order = 'alphabetical'
 
@@ -62,7 +64,7 @@ intersphinx_mapping = {
     'python': ('https://docs.python.org/3/', None),
 }
 
-source_suffix = ['.rst', '.md']
+source_suffix = ['.rst', '.md'] # , '.ipynb' (not required for nbsphinx)
 
 # -- Options for HTML output -------------------------------------------------
 
@@ -74,7 +76,7 @@ html_theme = 'default'
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-html_static_path = ['_static']
+# html_static_path = ['_static']
 
 pygments_style = 'sphinx'
 

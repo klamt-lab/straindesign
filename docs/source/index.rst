@@ -7,12 +7,13 @@ Welcome to StrainDesign's documentation!
 ========================================
 
 .. toctree::
-   1_installation
-   api_reference
-   JN_01_flux_and_yield_optimization.ipynb
    :maxdepth: 4
    :caption: Contents:
-   
+
+   1_installation
+   examples/JN_08_mcs_test.ipynb
+   api_reference
+
 
 Indices and tables
 ==================
