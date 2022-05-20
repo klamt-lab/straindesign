@@ -19,7 +19,7 @@ StrainDesign
     :alt: GitHub Actions CI/CD Status]
 
 .. image:: https://readthedocs.org/projects/straindesign/badge/?version=latest
-   :target: https://cobrapy.readthedocs.io/en/straindesign/?badge=latest
+   :target: https://straindesign.readthedocs.io/en/straindesign/?badge=latest
    :alt: Documentation Status
 
 .. image:: https://img.shields.io/badge/code%20style-yapf-blue
