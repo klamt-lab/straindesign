@@ -1,15 +1,15 @@
 from importlib.util import find_spec as module_exists
 
 avail_solvers = []
-if module_exists('swiglpk'):
-    avail_solvers += ['glpk']
-if module_exists('cplex'):
-    avail_solvers += ['cplex']
-if module_exists('gurobipy'):
-    avail_solvers += ['gurobi']
-if module_exists('pyscipopt'):
-    avail_solvers += ['scip']
-    
+if module_exists("swiglpk"):
+    avail_solvers += ["glpk"]
+if module_exists("cplex"):
+    avail_solvers += ["cplex"]
+if module_exists("gurobipy"):
+    avail_solvers += ["gurobi"]
+if module_exists("pyscipopt"):
+    avail_solvers += ["scip"]
+
 from .names import *
 from .solver_interface import *
 from .indicatorConstraints import *
