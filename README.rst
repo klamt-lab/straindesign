@@ -1,7 +1,6 @@
 ====================================================================================
-StrainDesign, a COBRApy-based package for computational design of metabolic networks
+StrainDesign
 ====================================================================================
-
 .. image:: https://img.shields.io/pypi/v/straindesign.svg
    :target: https://pypi.org/project/straindesign/
    :alt: Current PyPI Version
@@ -31,12 +30,24 @@ StrainDesign, a COBRApy-based package for computational design of metabolic netw
   .. image:: https://zenodo.org/badge/6510063.svg
      :target: https://zenodo.org/badge/latestdoi/6510063
      :alt: Zenodo DOI
+     
+
+A COBRApy-based package for computational design of metabolic networks
+======================================================================
+
+
 
 Comprehensive package for computing strain design designs with the COBRApy toolbox. Supports MCS, MCS with nested optimization, OptKnock, RobustKnock and OptCouple, uses GPR-rule and network compression and allows for reaction and/or gene addition/removal/regulation.
 
-.. image:: docs/plot.png
-  :width: 400
+|pic1| |pic2|
+   
+.. |pic1| image:: docs/plot.png
+  :width: 45%
   :alt: Plot screenshot
+  
+.. |pic2| image:: docs/network.png
+  :width: 45%
+  :alt: Plot screenshot2
 
 This package uses the efmtool compression routine for reducing the network size during preprocessing (https://csb.ethz.ch/tools/software/efmtool.html).
 
