@@ -54,7 +54,7 @@ Comprehensive package for computing strain design designs with the COBRApy toolb
   :width: 45%
   :alt: Plot screenshot2
 
-This package uses the efmtool compression routine for reducing the network size during preprocessing (https://csb.ethz.ch/tools/software/efmtool.html).
+This package uses the efmtool compression routine for reducing the network size during preprocessing (https://csb.ethz.ch/tools/software/efmtool.html [1]).
 
 Installation:
 =============
@@ -142,3 +142,7 @@ Examples:
 =========
 
 Will be added soon...
+
+References:
+===========
+[1] `Marco Terzer, Jörg Stelling, Large-scale computation of elementary flux modes with bit pattern trees, Bioinformatics, Volume 24, Issue 19, 1 October 2008, Pages 2229–2235, <https://doi.org/10.1093/bioinformatics/btn401>`_
