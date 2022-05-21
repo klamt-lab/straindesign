@@ -39,17 +39,17 @@ def animate(angle):
     return plot2
 
 plot2.figure.set_figheight(2.4)
-plot2.figure.set_figwidth(2.5)
+plot2.figure.set_figwidth(2.6)
 plot2._axes.tick_params(axis='both', which='major', labelsize=6, pad=0)
 plot2._axes.tick_params(axis='both', which='minor', labelsize=6, pad=0)
 plot2._axes.xaxis.set_tick_params(labelsize=6, pad=-2)
 plot2._axes.yaxis.set_tick_params(labelsize=6, pad=-2)
 plot2._axes.zaxis.set_tick_params(labelsize=6, pad=-2)
-plot2._axes.xaxis.label.set_size(7)
+plot2._axes.xaxis.label.set_size(5)
 plot2._axes.xaxis.labelpad = -7
-plot2._axes.yaxis.label.set_size(7)
+plot2._axes.yaxis.label.set_size(5)
 plot2._axes.yaxis.labelpad = -7
-plot2._axes.zaxis.label.set_size(7)
+plot2._axes.zaxis.label.set_size(5)
 plot2._axes.zaxis.labelpad = -7
 
 # plt.show()
