@@ -1,3 +1,4 @@
+from dis import show_code
 from cobra.core import Solution
 from cobra.util import create_stoichiometric_matrix
 from cobra import Configuration
@@ -598,6 +599,11 @@ def plot_flux_space(model, axes, **kwargs):
         set_matplotlib_backend(kwargs['plt_backend'])
     else:
         set_matplotlib_backend('Qt5Agg')
+        
+    if 'show' not in kwargs:
+        show = True
+    else:
+        show = kwargs['show']
 
     axes = [list(ax) if not isinstance(ax, str) else [ax] for ax in axes
            ]  # cast to list of lists
@@ -753,8 +759,9 @@ def plot_flux_space(model, axes, **kwargs):
         plot1.axes.set_ylabel(ax_name[1])
         plot1.axes.set_xlim(ax_limits[0][0] * 1.05, ax_limits[0][1] * 1.05)
         plot1.axes.set_ylim(ax_limits[1][0] * 1.05, ax_limits[1][1] * 1.05)
-        plt.show()
-        return datapoints, triang
+        if show:
+            plt.show()
+        return datapoints, triang, plot1
 
     elif num_axes == 3:
         max_diff_y = max([abs(l - u) for l, u in zip(lb, ub)])
@@ -943,8 +950,9 @@ def plot_flux_space(model, axes, **kwargs):
         colors = colors / max(colors)
         colors = get_cmap("Spectral")(colors)
         plot1.set_fc(colors)
-        plt.show()
-        return datapoints, triang
+        if show:
+            plt.show()
+        return datapoints, triang, plot1
 
 
 def ceil_dec(v, n):
