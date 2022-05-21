@@ -48,11 +48,11 @@ Comprehensive package for computing strain design designs with the COBRApy toolb
    
 .. |pic1| image:: docs/network.svg
   :width: 45%
-  :alt: Plot screenshot
+  :alt: Network interventions
   
-.. |pic2| image:: docs/plot.png
-  :width: 45%
-  :alt: Plot screenshot2
+.. |pic2| image:: https://github.com/klamt-lab/straindesign/blob/host_gifs/docs/plot.gif
+  :width: 25%
+  :alt: Plot animation
 
 This package uses the efmtool compression routine for reducing the network size during preprocessing (https://csb.ethz.ch/tools/software/efmtool.html [2]).
 
