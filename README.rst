@@ -1,6 +1,10 @@
 ====================================================================================
-StrainDesign
+StrainDesign                               |logo|
 ====================================================================================
+.. |logo| image:: docs/logo.svg
+  :width: 30
+  :alt: Icon
+
 .. image:: https://img.shields.io/github/v/release/klamt-lab/straindesign.svg
    :target: https://github.com/klamt-lab/straindesign/releases
    :alt: Current Release
@@ -49,7 +53,7 @@ Comprehensive package for computing strain design designs with the COBRApy toolb
 |pic1| |pic2| |pic3| 
 
 .. |pic1| image:: docs/puzzle.svg
-  :width: 30%
+  :width: 25%
   :alt: Network interventions
    
 .. |pic2| image:: https://github.com/klamt-lab/straindesign/blob/host_gifs/docs/network.svg
@@ -57,7 +61,7 @@ Comprehensive package for computing strain design designs with the COBRApy toolb
   :alt: Network interventions
   
 .. |pic3| image:: https://github.com/klamt-lab/straindesign/blob/host_gifs/docs/plot.gif
-  :width: 35%
+  :width: 40%
   :alt: Plot animation
 
 This package uses the efmtool compression routine for reducing the network size during preprocessing (https://csb.ethz.ch/tools/software/efmtool.html [2]).
