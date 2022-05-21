@@ -2,6 +2,7 @@
 StrainDesign                     |logo|
 ====================================================================================
 .. |logo| image:: docs/logo.svg
+  :target: https://straindesign.readthedocs.io/en/latest/
   :width: 50
   :alt: Icon
 
