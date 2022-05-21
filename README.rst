@@ -1,8 +1,8 @@
 ====================================================================================
-StrainDesign                               |logo|
+StrainDesign                     |logo|
 ====================================================================================
 .. |logo| image:: docs/logo.svg
-  :width: 30
+  :width: 40
   :alt: Icon
 
 .. image:: https://img.shields.io/github/v/release/klamt-lab/straindesign.svg
