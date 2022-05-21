@@ -1,6 +1,10 @@
 ====================================================================================
 StrainDesign
 ====================================================================================
+.. image:: https://img.shields.io/github/v/release/klamt-lab/straindesign.svg
+   :target: https://github.com/klamt-lab/straindesign/releases
+   :alt: Current Release
+
 .. image:: https://img.shields.io/pypi/v/straindesign.svg
    :target: https://pypi.org/project/straindesign/
    :alt: Current PyPI Version
@@ -40,18 +44,20 @@ StrainDesign
 A COBRApy-based[1] package for computational design of metabolic networks
 ======================================================================
 
-
-
 Comprehensive package for computing strain design designs with the COBRApy toolbox. Supports MCS, MCS with nested optimization, OptKnock, RobustKnock and OptCouple, uses GPR-rule and network compression and allows for reaction and/or gene addition/removal/regulation.
 
-|pic1| |pic2|
+|pic1| |pic2| |pic3| 
+
+.. |pic1| image:: docs/puzzle.svg
+  :width: 30%
+  :alt: Network interventions
    
-.. |pic1| image:: docs/network.svg
-  :width: 45%
+.. |pic2| image:: https://github.com/klamt-lab/straindesign/blob/host_gifs/docs/network.svg
+  :width: 30%
   :alt: Network interventions
   
-.. |pic2| image:: https://github.com/klamt-lab/straindesign/blob/host_gifs/docs/plot.gif
-  :width: 25%
+.. |pic3| image:: https://github.com/klamt-lab/straindesign/blob/host_gifs/docs/plot.gif
+  :width: 35%
   :alt: Plot animation
 
 This package uses the efmtool compression routine for reducing the network size during preprocessing (https://csb.ethz.ch/tools/software/efmtool.html [2]).
@@ -138,6 +144,22 @@ or
 
 Official website: https://github.com/scipopt/PySCIPOpt
 
+CNApy integration:
+=========
+
+.. image:: https://img.shields.io/github/v/release/cnapy-org/cnapy.svg
+   :target: https://github.com/cnapy-org/cnapy
+   :alt: CNApy repository
+
+CNApy, a GUI-featured toolbox for metabolic modeling offers a graphical user interface for the modeling and design of metabolic networks. The software provides a dialog box for specifying strain design problems.
+
+|pic4|
+ 
+.. |pic4| image:: docs/snapshot.png
+  :width: 40%
+  :alt: CNApy screenshot
+  
+
 Examples:
 =========
 
@@ -146,4 +168,5 @@ Will be added soon...
 References:
 ===========
 [1] `Ebrahim, A., Lerman, J.A., Palsson, B.O. et al. COBRApy: COnstraints-Based Reconstruction and Analysis for Python. BMC Syst Biol 7, 74 (2013) <http://dx.doi.org/doi:10.1186/1752-0509-7-74>`_
+
 [2] `Marco Terzer, Jörg Stelling, Large-scale computation of elementary flux modes with bit pattern trees, Bioinformatics, Volume 24, Issue 19, (2008), Pages 2229–2235, <https://doi.org/10.1093/bioinformatics/btn401>`_
