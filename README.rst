@@ -1,8 +1,12 @@
+.. role:: html(raw)
+   :format: html
+
 ====================================================================================
 StrainDesign                     |logo|
 ====================================================================================
 .. |logo| image:: docs/logo.svg
-  :width: 40
+  :target: https://straindesign.readthedocs.io/en/latest/
+  :width: 50
   :alt: Icon
 
 .. image:: https://img.shields.io/github/v/release/klamt-lab/straindesign.svg
@@ -44,11 +48,11 @@ StrainDesign                     |logo|
      :target: https://zenodo.org/badge/latestdoi/6510063
      :alt: Zenodo DOI
      
-
-A COBRApy-based[1] package for computational design of metabolic networks
+A COBRApy\ :html:`<a href="#ref1"><sup>[1]</sup></a>`\ -based package for computational design of metabolic networks
 ======================================================================
 
-Comprehensive package for computing strain design designs with the COBRApy toolbox. Supports MCS, MCS with nested optimization, OptKnock, RobustKnock and OptCouple, uses GPR-rule and network compression and allows for reaction and/or gene addition/removal/regulation.
+The comprehensive StrainDesign package for MILP-based strain design computation with the COBRApy toolbox supports MCS, MCS with nested optimization, OptKnock, RobustKnock and OptCouple, GPR-rule integration, gene and reaction knockouts and additions as well as regulatory interventions. The automatic lossless network and GPR compression allows strain design computations from genome-scale metabolic networks. Supported solvers are GLPK (available from COBRApy), CPLEX, Gurobi and SCIP (manual install, see below). :html:`<br>` 
+`Getting started... <https://straindesign.readthedocs.io/en/latest/>`_
 
 |pic1| |pic2| |pic3| 
 
@@ -64,12 +68,12 @@ Comprehensive package for computing strain design designs with the COBRApy toolb
   :width: 40%
   :alt: Plot animation
 
-This package uses the efmtool compression routine for reducing the network size during preprocessing (https://csb.ethz.ch/tools/software/efmtool.html [2]).
+Parts of the compression routine is done by efmtool's compression function (https://csb.ethz.ch/tools/software/efmtool.html\ :html:`<a href="#ref2"><sup>[2]</sup></a>`).
 
 Installation:
 =============
 
-The straindesign package is available on pip and conda. To install the latest release, run:
+The straindesign package is available on pip and Anaconda. To install the latest release, run:
 
 ``pip install straindesign``
 
@@ -171,6 +175,6 @@ Will be added soon...
 
 References:
 ===========
-[1] `Ebrahim, A., Lerman, J.A., Palsson, B.O. et al. COBRApy: COnstraints-Based Reconstruction and Analysis for Python. BMC Syst Biol 7, 74 (2013) <http://dx.doi.org/doi:10.1186/1752-0509-7-74>`_
+:html:`<a id="ref1">[1]</a>` `Ebrahim, A., Lerman, J.A., Palsson, B.O. et al. COBRApy: COnstraints-Based Reconstruction and Analysis for Python. BMC Syst Biol 7, 74 (2013) <http://dx.doi.org/doi:10.1186/1752-0509-7-74>`_
 
-[2] `Marco Terzer, Jörg Stelling, Large-scale computation of elementary flux modes with bit pattern trees, Bioinformatics, Volume 24, Issue 19, (2008), Pages 2229–2235, <https://doi.org/10.1093/bioinformatics/btn401>`_
+:html:`<a id="ref2">[2]</a>` `Marco Terzer, Jörg Stelling, Large-scale computation of elementary flux modes with bit pattern trees, Bioinformatics, Volume 24, Issue 19, (2008), Pages 2229–2235, <https://doi.org/10.1093/bioinformatics/btn401>`_
