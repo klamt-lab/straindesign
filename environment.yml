@@ -1,0 +1,11 @@
+name: straindesign
+channels:
+  - cnapy
+  - conda-forge
+  - defaults
+dependencies:
+  - cobra
+  - jpype1
+  - scipy
+  - straindesign
+prefix: /home/user/miniconda3/envs/cnapy
