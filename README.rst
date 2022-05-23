@@ -164,7 +164,7 @@ CNApy, a GUI-featured toolbox for metabolic modeling offers a graphical user int
 |pic4|
  
 .. |pic4| image:: docs/snapshot.png
-  :width: 40%
+  :width: 354
   :alt: CNApy screenshot
   
 
