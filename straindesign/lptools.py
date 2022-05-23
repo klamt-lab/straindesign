@@ -597,8 +597,6 @@ def plot_flux_space(model, axes, **kwargs):
         #                       TkAgg, TkCairo, WebAgg, WX, WXAgg, WXCairo, Qt5Agg, Qt5Cairo
         # non-interactive backends: agg, cairo, pdf, pgf, ps, svg, template
         set_matplotlib_backend(kwargs['plt_backend'])
-    else:
-        set_matplotlib_backend('Qt5Agg')
         
     if 'show' not in kwargs:
         show = True

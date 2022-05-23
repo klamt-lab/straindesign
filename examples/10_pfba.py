@@ -25,25 +25,7 @@ y3 = ('EX_etoh_e', '-EX_glc__D_e')
 _,_,plot2 = sd.plot_flux_space(model, (r1, r2, y2),
                            constraints='EX_o2_e >= -25',
                            points=7,
-                           plt_backend='AGG',
                            show=False)
 
-# plt.show()
-
-def animate(angle):
-    plot2._axes.view_init(30, angle)
-    return plot2
-
-plt.rcParams.update({'font.size': 6})
-
-print('plotting animation')
-
-ani = animation.FuncAnimation(
-    plot2.figure, animate, save_count=360)
-
-print('writing to file')
-
-writer = animation.FFMpegWriter(
-    fps=25, bitrate=1800)
-ani.save("movie.gif", writer=writer)
+plt.show()
 
