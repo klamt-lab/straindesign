@@ -29,4 +29,4 @@ jobs:
     - name: stage changed files
       run: git diff
     - name: Check yapf
-      run: yapf -d -r .
+      run: yapf -d -r --style google .
