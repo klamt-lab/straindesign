@@ -19,7 +19,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install yapf 
     - name: Python formatting
-      run: yapf -d -r .
+      run: yapf -i -r .
     - name: Name and E-Mail configuration
       run: |
         git config --global user.name ${{ secrets.NAME_GITHUB }}
@@ -28,3 +28,5 @@ jobs:
       run: git status
     - name: stage changed files
       run: git diff
+    - name: Check yapf
+      run: yapf -d -r .
