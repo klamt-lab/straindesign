@@ -27,7 +27,9 @@ jobs:
           pip install flake8 wheel pytest setuptools
       - name: Install solvers
 #       run: conda install libpython m2w64-toolchain -c msys2
-        run: pip install cplex gurobipy pyscipopt
+        run: |
+          pip install cplex gurobipy
+          conda install --channel conda-forge pyscipopt
       - name: Install straindesign
 #          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
         run: pip install -e .
