@@ -41,13 +41,21 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                             solver=self.solver)
 
     def add_exclusion_constraints(self, z):
-        for i in range(z.shape[0]):
-            A_ineq = z[i].copy()
-            A_ineq.resize((1, self.milp.A_ineq.shape[1]))
-            b_ineq = np.sum(z[i]) - 1
-            self.A_ineq = sparse.vstack((self.A_ineq, A_ineq))
-            self.b_ineq += [b_ineq]
-            self.milp.add_ineq_constraints(A_ineq, [b_ineq])
+        # if only one reaction should be excluded, set ub to 0.0 
+        if z.nnz == 1: 
+            interv_idx = int(z.indices[0])
+            self.z_non_targetable[interv_idx] = True
+            self.ub[interv_idx] = 0.0
+            self.milp.set_ub([[interv_idx, 0.0]])
+        # otherwise, introduce integer cut constraint
+        else:
+            for i in range(z.shape[0]):
+                A_ineq = z[i].copy()
+                A_ineq.resize((1, self.milp.A_ineq.shape[1]))
+                b_ineq = np.sum(z[i]) - 1
+                self.A_ineq = sparse.vstack((self.A_ineq, A_ineq))
+                self.b_ineq += [b_ineq]
+                self.milp.add_ineq_constraints(A_ineq, [b_ineq])
 
     def add_exclusion_constraints_ineq(self, z):
         for j in range(z.shape[0]):
@@ -109,13 +117,14 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         ])
 
     def resetTargetableZ(self):
-        self.ub = [1 - float(i) for i in self.z_non_targetable]
+        for i,b in enumerate(self.z_non_targetable):
+            self.ub[i] = 1.0 - float(b)
         self.milp.set_ub(
-            [[i, 1] for i in self.idx_z if not self.z_non_targetable[i]])
+            [[i, 1.0] for i in self.idx_z if not self.z_non_targetable[i]])
 
     def setTargetableZ(self, sol):
         self.ub = [1.0 if sol[0, i] else 0.0 for i in self.idx_z]
-        self.milp.set_ub([[i, 0] for i in self.idx_z if not sol[0, i]])
+        self.milp.set_ub([[i, 0.0] for i in self.idx_z if not sol[0, i]])
 
     def verify_sd(self, sols) -> List:
         valid = [False] * sols.shape[0]

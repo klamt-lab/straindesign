@@ -367,21 +367,3 @@ class SCIP_LP(pso.LP):
     def set_objective_idx(self, C):
         for i_v in C:
             self.chgObj(i_v[0], i_v[1])
-
-    def set_ub(self, ub):
-        raise Exception('SCIP changing UBs in LP is not yet implemented')
-
-    def set_time_limit(self, t):
-        raise Exception('SCIP LP does not support time limits')
-
-    def add_ineq_constraints(self, A_ineq, b_ineq):
-        raise Exception(
-            'SCIP adding ineq constraints to LPs is not yet implemented')
-
-    def add_eq_constraints(self, A_eq, b_eq):
-        raise Exception(
-            'SCIP adding eq constraints to LPs is not yet implemented')
-
-    def set_ineq_constraint(self, idx, a_ineq, b_ineq):
-        raise Exception(
-            'SCIP changing ineq constraints in LPs is not yet implemented')

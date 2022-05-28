@@ -110,8 +110,10 @@ class Cplex_MILP_LP(Cplex):
                 min_cx = self.solution.get_objective_value()
                 status = TIME_LIMIT_W_SOL
             elif status in [118, 119]:  # solution unbounded
+                x = [nan] * self.variables.get_num()
                 min_cx = -inf
                 status = UNBOUNDED
+                return x, min_cx, status
             else:
                 print(status)
                 print(self.solution.get_status_string())

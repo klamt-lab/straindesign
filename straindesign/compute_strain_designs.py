@@ -4,13 +4,6 @@ from cobra import Model
 from typing import Dict, List, Tuple
 import json
 
-
-def gpr_to_reac_sd(model, strain_designs):
-    pass
-    print('lol')
-    return True
-
-
 def compute_strain_designs(model: Model, **kwargs):
     ## Two computation modes:
     # 1. Provide model, strain design module and optional computation parameters

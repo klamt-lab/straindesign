@@ -20,7 +20,7 @@ modules += [straindesign.SDModule(network, PROTECT, constraints=["r_bm >= 1"])]
 # specify MCS setup
 maxSolutions = np.inf
 maxCost = 7
-solver = 'cplex'
+solver = 'glpk'
 
 ko_cost = None
 ki_cost = None
@@ -37,6 +37,6 @@ mcsEnum = straindesign.StrainDesigner(network,modules, max_cost=maxCost,\
 
 # solve MILP
 # mcsEnum.enumerate(max_solutions=maxSolutions)
-gmcs = mcsEnum.compute_optimal(max_solutions=maxSolutions)
+rmcs = mcsEnum.compute_optimal(max_solutions=maxSolutions)
 # rmcs = mcsEnum.compute(max_solutions=maxSolutions,time_limit=15)
-print(gmcs)
+print(rmcs)

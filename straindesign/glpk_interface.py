@@ -7,8 +7,6 @@ from swiglpk import *
 # Collection of GLPK-related functions that facilitate the creation
 # of GLPK-object and the solutions of LPs/MILPs with GLPK from
 # vector-matrix-based problem setups.
-#
-
 
 # Create a GLPK-object from a matrix-based problem setup
 class GLPK_MILP_LP():
@@ -175,7 +173,7 @@ class GLPK_MILP_LP():
             else:
                 raise Exception('Status code ' + str(status) +
                                 " not yet handeld.")
-            x = self.getSolution()
+            x = self.getSolution(status)
             x = [round(y, 12) for y in x]  # workaround, round to 12 decimals
             min_cx = round(min_cx, 12)
             return x, min_cx, status
@@ -332,8 +330,8 @@ class GLPK_MILP_LP():
         else:
             glp_set_row_bnds(self.glpk, idx + 1, GLP_UP, -inf, b_ineq)
 
-    def getSolution(self) -> list:
-        if self.ismilp:
+    def getSolution(self, status) -> list:
+        if self.ismilp and status in [OPTIMAL,UNBOUNDED,TIME_LIMIT_W_SOL]:
             x = [
                 glp_mip_col_val(self.glpk, i + 1)
                 for i in range(glp_get_num_cols(self.glpk))
@@ -347,18 +345,19 @@ class GLPK_MILP_LP():
 
     def solve_MILP_LP(self) -> Tuple[float, int, bool]:
         starttime = glp_time()
-        if self.ismilp:
+        # MILP solving needs prior solution of the LP-relaxed problem, because occasionally
+        # the MILP solver interface crashes when a problem is infesible, which, in turn,
+        # crashes the python program. This connection-loss to the solver can not be captured.
+        glp_simplex(self.glpk, self.lp_params)
+        status = glp_get_status(self.glpk)
+        if self.ismilp and status not in [GLP_INFEAS, GLP_NOFEAS]:
             glp_intopt(self.glpk, self.milp_params)
             status = glp_mip_status(self.glpk)
             opt = glp_mip_obj_val(self.glpk)
-            timelim_reached = glp_difftime(glp_time(),
-                                           starttime) >= self.milp_params.tm_lim
         else:
-            glp_simplex(self.glpk, self.lp_params)
-            status = glp_get_status(self.glpk)
             opt = glp_get_obj_val(self.glpk)
-            timelim_reached = glp_difftime(glp_time(),
-                                           starttime) >= self.lp_params.tm_lim
+        timelim_reached = glp_difftime(glp_time(),
+                                        starttime) >= self.lp_params.tm_lim
         return opt, status, timelim_reached
 
     def addExclusionConstraintsIneq(self, x):
