@@ -63,7 +63,9 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ github.token }}
     - name: Install setuptools, wheel and twine
-      run: pip install build setuptools wheel twine
+      run: |
+        pip install build setuptools wheel twine
+        pip install Cython --install-option="--no-cython-compile"
     - name: Clean PyPi build directories
       run: rm -rf dist
     - name: Build and publish on PyPi
