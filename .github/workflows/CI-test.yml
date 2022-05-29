@@ -32,8 +32,9 @@ jobs:
           pip install cplex gurobipy
           conda install --channel conda-forge pyscipopt
       - name: Install straindesign
-#          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-        run: pip install -e .
+        run: | 
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install -e .
       - name: Test with pytest
         run: pytest
         
