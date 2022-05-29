@@ -29,7 +29,7 @@ StrainDesign                     |logo|
    :target: https://pypi.org/project/straindesign/
    :alt: Supported Python Versions
 
-.. image:: https://github.com/klamt-lab/straindesign/workflows/CI-test/badge.svg]
+.. image:: https://github.com/klamt-lab/straindesign/workflows/CI-test/badge.svg
     :target: https://github.com/klamt-lab/straindesign/workflows/CI-test]
     :alt: GitHub Actions CI-test Status]
    
