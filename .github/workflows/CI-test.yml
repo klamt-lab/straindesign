@@ -33,14 +33,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install flake8 wheel pytest setuptools
       - name: Install solvers
-#       run: conda install libpython m2w64-toolchain -c msys2
         run: |
           conda install -c conda-forge pyscipopt
           pip install cplex gurobipy
       - name: Install straindesign
         run: | 
           pip install -e .
-#          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
       - name: Test with pytest
         run: pytest tests
         

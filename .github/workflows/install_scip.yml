@@ -1,0 +1,26 @@
+name: Build and Upload Python Package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v3
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: conda-incubator/setup-miniconda@v2
+        with:
+          activate-environment: test
+          environment-file: environment.yml
+          auto-activate-base: false
+      - name: Install pyscipopt
+        run: conda install -c conda-forge pyscipopt
+      - name: Import pyscipopt
+        run: python -c "import pyscipopt"
