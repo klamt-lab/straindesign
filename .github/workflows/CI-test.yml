@@ -35,8 +35,8 @@ jobs:
       - name: Install solvers
 #       run: conda install libpython m2w64-toolchain -c msys2
         run: |
+          conda install -c conda-forge pyscipopt
           pip install cplex gurobipy
-          conda install --channel conda-forge pyscipopt
       - name: Install straindesign
         run: | 
           pip install -e .
