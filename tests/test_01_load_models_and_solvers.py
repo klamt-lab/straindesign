@@ -26,10 +26,21 @@ def model_small_example():
 
 def test_import_sd():
     import straindesign
+    
+def test_solver_availability(curr_solver):
+    """Test solver availability."""
+    assert(curr_solver in sd.avail_solvers)
+    
+def test_solver_loading(curr_solver):
+    """Test that solvers interfaces can be loaded."""
+    milp = sd.MILP_LP(solver=curr_solver)
+    assert(milp.solve() == ([], 0.0, OPTIMAL))
+
 
 def test_load_solvers(model_small_example):
     """Test solver choice."""
-    # with no solver specified
+   
+    # solver selection with no solver specified
     solver1 = sd.select_solver()
     assert(solver1 in [CPLEX,GUROBI,GLPK,SCIP])
     
@@ -50,11 +61,5 @@ def test_load_solvers(model_small_example):
     
     # with solver in model that overwrites the global specification
     model_small_example.solver = 'gurobi'
-    solver3 = sd.select_solver(None, model_small_example)
-    assert(solver3 == GUROBI)
-    
-    # load solvers
-    from straindesign.cplex_interface import Cplex_MILP_LP
-    from straindesign.gurobi_interface import Gurobi_MILP_LP
-    from straindesign.glpk_interface import GLPK_MILP_LP
-    from straindesign.scip_interface import SCIP_MILP, SCIP_LP
+    solver5 = sd.select_solver(None, model_small_example)
+    assert(solver5 == GUROBI)

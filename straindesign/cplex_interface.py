@@ -85,7 +85,7 @@ class Cplex_MILP_LP(Cplex):
             super().solve(
             )  # call parent solve function (that was overwritten in this class)
             status = self.solution.get_status()
-            if status in [101, 102, 115, 128, 129,
+            if status in [1, 101, 102, 115, 128, 129,
                           130]:  # solution integer optimal
                 min_cx = self.solution.get_objective_value()
                 status = OPTIMAL
@@ -94,15 +94,15 @@ class Cplex_MILP_LP(Cplex):
                 min_cx = nan
                 status = TIME_LIMIT
                 return x, min_cx, status
-            elif status == 103:  # infeasible
+            elif status in [3,103]:  # infeasible
                 x = [nan] * self.variables.get_num()
                 min_cx = nan
                 status = INFEASIBLE
                 return x, min_cx, status
-            elif status == 107:  # timeout with solution
+            elif status in [11, 107]:  # timeout with solution
                 min_cx = self.solution.get_objective_value()
                 status = TIME_LIMIT_W_SOL
-            elif status in [118, 119]:  # solution unbounded
+            elif status in [2, 4, 118, 119]:  # solution unbounded
                 x = [nan] * self.variables.get_num()
                 min_cx = -inf
                 status = UNBOUNDED
