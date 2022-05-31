@@ -22,10 +22,9 @@ y3 = ('EX_etoh_e', '-EX_glc__D_e')
 # plot2 = sd.plot_flux_space(model,(r2,y2,r1),constraints='EX_o2_e >= -25',points=15)
 # plot1 = sd.plot_flux_space(model,(r1,y2,y3),constraints='EX_o2_e >= -8',points=120)
 
-_,_,plot2 = sd.plot_flux_space(model, (r1, r2, y2),
-                           constraints='EX_o2_e >= -25',
-                           points=7,
-                           show=False)
+_, _, plot2 = sd.plot_flux_space(model, (r1, r2, y2),
+                                 constraints='EX_o2_e >= -25',
+                                 points=7,
+                                 show=False)
 
 plt.show()
-

@@ -20,7 +20,7 @@ modules += [straindesign.SDModule(network, PROTECT, constraints=["r_bm >= 1"])]
 # specify MCS setup
 maxSolutions = np.inf
 maxCost = 7
-solver = 'glpk'
+solver = 'scip'
 
 ko_cost = None
 ki_cost = None

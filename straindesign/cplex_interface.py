@@ -4,6 +4,7 @@ from numpy import nan, inf, isinf
 from cplex import Cplex, infinity, _const
 from cplex.exceptions import CplexError
 from typing import Tuple, List
+import logging
 import io
 from straindesign.names import *
 
@@ -60,18 +61,10 @@ class Cplex_MILP_LP(Cplex):
                                                  indvar=indvar,
                                                  complemented=complem)
         # set parameters
-        try:
-            self.set_log_stream(io.StringIO())
-            self.set_error_stream(io.StringIO())
-            self.set_warning_stream(io.StringIO())
-            self.set_results_stream(io.StringIO())
-        except Exception as e:
-            # uncomment for debugging
-            import traceback
-            tb_str = ''.join(
-                traceback.format_exception(None, e, e.__traceback__))
-            print(tb_str)
-
+        self.set_log_stream(io.StringIO())  # don't show output stream
+        self.set_error_stream(io.StringIO())
+        self.set_warning_stream(io.StringIO())
+        self.set_results_stream(io.StringIO())
         self.parameters.simplex.tolerances.optimality.set(1e-9)
         self.parameters.simplex.tolerances.feasibility.set(1e-9)
 
@@ -79,7 +72,7 @@ class Cplex_MILP_LP(Cplex):
             # self.parameters.threads.set(cpu_count())
             # yield only optimal solutions in pool
             seed = randint(0, _const.CPX_BIGINT)
-            # print('  MILP Seed: '+str(seed))
+            # logging.info('  MILP Seed: '+str(seed))
             self.parameters.randomseed = seed
             self.parameters.mip.pool.absgap.set(0.0)
             self.parameters.mip.pool.relgap.set(0.0)
@@ -115,15 +108,15 @@ class Cplex_MILP_LP(Cplex):
                 status = UNBOUNDED
                 return x, min_cx, status
             else:
-                print(status)
-                print(self.solution.get_status_string())
+                logging.exception(status)
+                logging.exception(self.solution.get_status_string())
                 raise Exception("Case not yet handeld")
             x = self.solution.get_values()
             return x, min_cx, status
 
         except CplexError as exc:
             if not exc.args[2] == 1217:
-                print(exc)
+                logging.error(exc)
             min_cx = nan
             x = [nan] * self.variables.get_num()
             return x, min_cx, ERROR
@@ -141,8 +134,8 @@ class Cplex_MILP_LP(Cplex):
             elif status in [103, 108]:  # infeasible
                 opt = nan
             else:
-                print(status)
-                print(self.solution.get_status_string())
+                logging.exception(status)
+                logging.exception(self.solution.get_status_string())
                 raise Exception("Case not yet handeld")
             return opt
         except CplexError as exc:
@@ -179,8 +172,8 @@ class Cplex_MILP_LP(Cplex):
                 min_cx = -inf
                 status = UNBOUNDED
             else:
-                print(status)
-                print(self.solution.get_status_string())
+                logging.exception(status)
+                logging.exception(self.solution.get_status_string())
                 raise Exception("Case not yet handeld")
             x = [
                 self.solution.pool.get_values(i)
@@ -190,7 +183,7 @@ class Cplex_MILP_LP(Cplex):
 
         except CplexError as exc:
             if not exc.args[2] == 1217:
-                print(exc)
+                logging.error(exc)
             min_cx = nan
             x = []
             return x, min_cx, ERROR

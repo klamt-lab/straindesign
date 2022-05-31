@@ -2,7 +2,9 @@ from straindesign import StrainDesigner
 from straindesign.names import *
 from cobra import Model
 from typing import Dict, List, Tuple
+import logging
 import json
+
 
 def compute_strain_designs(model: Model, **kwargs):
     ## Two computation modes:
@@ -25,9 +27,9 @@ def compute_strain_designs(model: Model, **kwargs):
     if MODEL_ID in kwargs:
         model_id = kwargs.pop(MODEL_ID)
         if model_id != model.id:
-            print(  "Model IDs of provided model and setup not matching. Apparently, ",\
-                    "the strain design setup was specified for a different model. "+\
-                    "Errors might occur due to non-matching reaction or gene-identifiers.")
+            logging.warning( "Model IDs of provided model and setup not matching. Apparently, ",\
+                          "the strain design setup was specified for a different model. "+\
+                          "Errors might occur due to non-matching reaction or gene-identifiers.")
 
     if 'gene_kos' in kwargs:
         model_id = kwargs.pop('gene_kos')

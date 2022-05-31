@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 import matplotlib.tri as tri
 from matplotlib.cm import get_cmap
 from matplotlib import use as set_matplotlib_backend
+import logging
 
 from straindesign.parse_constr import linexpr2mat, linexprdict2str
 
@@ -36,8 +37,9 @@ def select_solver(solver=None, model=None):
         if solver in avail_solvers:
             return solver
         else:
-            print('Selected solver ' + solver + ' not available. Using ' +
-                  avail_solvers[0] + " instead.")
+            logging.warning('Selected solver ' + solver +
+                         ' not available. Using ' + avail_solvers[0] +
+                         " instead.")
     try:
         # if no solver was defined, use solver specified in model
         if hasattr(model, 'solver') and hasattr(model.solver, 'interface'):
@@ -46,8 +48,8 @@ def select_solver(solver=None, model=None):
             if solver is not None:
                 return solver[0]
             else:
-                print('Solver specified in model (' +
-                      model.solver.interface.__name__ + ') unavailable')
+                logging.warning('Solver specified in model (' +
+                             model.solver.interface.__name__ + ') unavailable')
         # if no solver specified in model, use solver from cobra configuration
         cobra_conf = Configuration()
         if hasattr(cobra_conf, 'solver'):
@@ -56,8 +58,8 @@ def select_solver(solver=None, model=None):
             if solver is not None:
                 return solver[0]
             else:
-                print('Solver specified in cobra config (' +
-                      cobra_conf.solver.__name__ + ') unavailable')
+                logging.warning('Solver specified in cobra config (' +
+                             cobra_conf.solver.__name__ + ') unavailable')
     except:
         pass
     return avail_solvers[
@@ -177,11 +179,19 @@ def fva(model, **kwargs):
     _, _, status = lp.solve()
     if status not in [OPTIMAL,
                       UNBOUNDED]:  # if problem not feasible or unbounded
-        raise Exception('FVA problem not feasible.')
+        logging.error('FVA problem not feasible.')
+        return DataFrame(
+            {
+                "minimum": [nan for i in range(1, 2 * numr, 2)],
+                "maximum": [nan for i in range(0, 2 * numr, 2)],
+            },
+            index=reaction_ids,
+        )
 
     processes = cpu_count() - 1
     if not processes:
-        print("The number of cores could not be detected - assuming one.")
+        logging.info(
+            "The number of cores could not be detected - assuming one.")
         processes = 1
     num_reactions = len(reaction_ids)
     processes = min(processes, num_reactions)
@@ -424,7 +434,7 @@ def yopt(model, **kwargs):
     A_eq_base = sparse.csr_matrix(A_eq_base)
     b_eq_base = [0] * len(model.metabolites)
     if 'A_eq' in locals():
-        A_eq = sparse.vstack((A_eq_base, A_eq))
+        A_eq = sparse.vstack((A_eq_base, A_eq),'csr')
         b_eq = b_eq_base + b_eq
     else:
         A_eq = A_eq_base
@@ -447,7 +457,7 @@ def yopt(model, **kwargs):
     sparse_ub = sparse.coo_matrix(
         ([1] * len(real_ub), (range(len(real_ub)), real_ub)),
         (len(real_ub), A_ineq.shape[1]))
-    A_ineq = sparse.vstack((A_ineq, sparse_lb, sparse_ub))
+    A_ineq = sparse.vstack((A_ineq, sparse_lb, sparse_ub),'csr')
     b_ineq = b_ineq + [-model.reactions[i].lower_bound for i in real_lb] + \
                       [ model.reactions[i].upper_bound for i in real_ub]
     # Analyze maximum and minimum value of denominator function to decide whether to fix it to +1 or -1 or abort computation
@@ -480,10 +490,10 @@ def yopt(model, **kwargs):
     # Create linear fractional problem (LFP)
     # A variable is added here to scale the right hand side of the original problem
     A_ineq_lfp = sparse.hstack(
-        (A_ineq, sparse.csr_matrix([-b for b in b_ineq]).transpose()))
+        (A_ineq, sparse.csr_matrix([-b for b in b_ineq]).transpose()),'csr')
     b_ineq_lfp = [0 for _ in b_ineq]
     A_eq_lfp = sparse.vstack((  sparse.hstack((A_eq,sparse.csr_matrix([-b for b in b_eq]).transpose())),\
-                            sparse.hstack((obj_den,0))))
+                            sparse.hstack((obj_den,0))),'csr')
     opt_cx = inf
     for d in den_sign:
         b_eq_lfp = [0 for _ in b_eq] + [d]
@@ -509,7 +519,7 @@ def yopt(model, **kwargs):
         sol = Solution(objective_value=opt_cx, status=status, fluxes=fluxes)
         if x[-1] == 0:
             sol.scalable = True
-            print(
+            logging.info(
                 'Solution flux vector may be scaled with an arbitrary factor.')
         else:
             sol.scalable = False
@@ -550,7 +560,7 @@ def yopt(model, **kwargs):
                                             [0])
                 x, opt_i, status_i = num_prob.solve()
                 fluxes = {r: x[i] for i, r in enumerate(reaction_ids)}
-                print('Yield is undefined because denominator can become zero. Solution '\
+                logging.warning('Yield is undefined because denominator can become zero. Solution '\
                     'flux vector maximizes the numerator.')
                 sol = Solution(objective_value=opt_cx,
                                status=status,
@@ -558,7 +568,7 @@ def yopt(model, **kwargs):
                 sol.scalable = False
             else:
                 fluxes = {r: x[i] for i, r in enumerate(reaction_ids)}
-                print('Yield is undefined because denominator can become zero. Solution '\
+                logging.warning('Yield is undefined because denominator can become zero. Solution '\
                     'flux vector maximizes the numerator.')
                 sol = Solution(objective_value=opt_cx,
                                status=status,
@@ -571,7 +581,8 @@ def yopt(model, **kwargs):
             else:
                 opt_cx = -inf
             fluxes = {r: x[i] for i, r in enumerate(reaction_ids)}
-            print('Yield is infinite because the numerator is unbounded.')
+            logging.warning(
+                'Yield is infinite because the numerator is unbounded.')
             sol = Solution(objective_value=opt_cx, status=status, fluxes=fluxes)
             sol.scalable = True
             return sol
@@ -597,7 +608,7 @@ def plot_flux_space(model, axes, **kwargs):
         #                       TkAgg, TkCairo, WebAgg, WX, WXAgg, WXCairo, Qt5Agg, Qt5Cairo
         # non-interactive backends: agg, cairo, pdf, pgf, ps, svg, template
         set_matplotlib_backend(kwargs['plt_backend'])
-        
+
     if 'show' not in kwargs:
         show = True
     else:
@@ -822,7 +833,7 @@ def plot_flux_space(model, axes, **kwargs):
                     isnan(datapoints[d][2])
                     for d in datapoints_top[i] + datapoints_bottom[i]
             ]):
-                print(
+                logging.warning(
                     'warning: An optimization finished infeasible. Some sample points are missing.'
                 )
                 datapoints_top = datapoints_top[:-1]

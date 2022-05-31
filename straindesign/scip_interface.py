@@ -5,6 +5,7 @@ import pyscipopt as pso
 from straindesign.names import *
 from typing import Tuple, List
 import time as t
+import logging
 
 # Collection of SCIP-related functions that facilitate the creation
 # of SCIP-object and the solutions of LPs/MILPs with SCIP from
@@ -88,26 +89,12 @@ class SCIP_MILP(pso.Model):
                             self.addConsIndicator(f, binvar=z, initial=False)
                         ]
 
-        # when no objective function exists, minmize a dummy variable
-        # if self.getObjective().terms == {}:
-        #     dummy = self.addVar(lb=-1, ub=1, obj=1, vtype='C')
-
-        # for i in range(len(self.vars)):
-        #     if ub[i] is None:
-        #         self.chgVarUb(self.vars[i],1e4)
-        #     else:
-        #         self.chgVarUb(self.vars[i],ub[i])
-        #     if lb[i] is None:
-        #         self.chgVarLb(self.vars[i],1e4)
-        #     else:
-        #         self.chgVarLb(self.vars[i],lb[i])
-
         # set parameters
         self.max_tlim = self.getParam('limits/time')
         self.setParam('display/verblevel', 0)
         if 'B' in vtype or 'I' in vtype:
             seed = seed = randint(0, 2**31 - 1)
-            # print('  MILP Seed: '+str(seed))
+            # logging.info('  MILP Seed: '+str(seed))
             self.setParam('randomization/randomseedshift', seed)
         # self.enableReoptimization()
         # self.setParam('display/lpinfo',False)
@@ -136,8 +123,10 @@ class SCIP_MILP(pso.Model):
                 min_cx = self.getObjVal()
                 status = TIME_LIMIT_W_SOL
             elif status in ['inforunbd', 'unbounded']:  # solution unbounded
+                x = [nan] * len(self.vars)
                 min_cx = -inf
                 status = UNBOUNDED
+                return x, min_cx, status
             else:
                 raise Exception('Status code ' + str(status) +
                                 " not yet handeld.")
@@ -145,7 +134,7 @@ class SCIP_MILP(pso.Model):
             return x, min_cx, status
 
         except:
-            print('Error while running SCIP.')
+            logging.error('Error while running SCIP.')
             min_cx = nan
             x = [nan] * len(self.vars)
             return x, min_cx, ERROR
@@ -166,7 +155,7 @@ class SCIP_MILP(pso.Model):
             return opt
 
         except:
-            print('Error while running SCIP.')
+            logging.error('Error while running SCIP.')
             return nan
 
     def populate(self, pool_limit) -> Tuple[List, float, float]:
@@ -211,7 +200,7 @@ class SCIP_MILP(pso.Model):
                     self.chgRhs(self.constr[j], None)
                 return sols, min_cx, status
         except:
-            print('Error while running SCIP.')
+            logging.error('Error while running SCIP.')
             min_cx = nan
             x = []
             return x, min_cx, ERROR
@@ -342,7 +331,7 @@ class SCIP_LP(pso.LP):
                 x = [nan] * len(self.getPrimal())
             return x, min_cx, status
         except:
-            print('Error while running SCIP.')
+            logging.error('Error while running SCIP.')
             min_cx = nan
             x = [nan] * len(self.getPrimal())
             return x, min_cx, ERROR
@@ -357,7 +346,7 @@ class SCIP_LP(pso.LP):
                 opt = nan
             return opt
         except:
-            print('Error while running SCIP.')
+            logging.error('Error while running SCIP.')
             return nan
 
     def set_objective(self, c):
@@ -367,3 +356,13 @@ class SCIP_LP(pso.LP):
     def set_objective_idx(self, C):
         for i_v in C:
             self.chgObj(i_v[0], i_v[1])
+            
+    def add_ineq_constraints(self, A_ineq, b_ineq):
+        self.addRows([[(i,v) for i,v in zip(rows.indices,rows.data)] for rows in A_ineq], \
+                        lhss = [-self.infinity()]*A_ineq.shape[0],\
+                        rhss = b_ineq)
+
+    def add_eq_constraints(self, A_eq, b_eq):
+        self.addRows([[(i,v) for i,v in zip(rows.indices,rows.data)] for rows in A_eq], \
+                        lhss = b_eq,\
+                        rhss = b_eq)

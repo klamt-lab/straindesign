@@ -9,6 +9,7 @@ from straindesign import SDModule, IndicatorConstraints, lineqlist2mat, linexprd
                          avail_solvers, select_solver
 from straindesign.strainDesignModule import *
 from straindesign.names import *
+import logging
 
 
 class StrainDesignMILPBuilder:
@@ -39,7 +40,7 @@ class StrainDesignMILPBuilder:
                     'solvers is avaialable in your Python environment: CPLEX, Gurobi, SCIP, GLPK')
         self.solver = select_solver(self.solver, model)
         if self.M is None and self.solver == 'glpk':
-            print(
+            logging.warning(
                 'GLPK only supports strain design computation with the bigM method. Default: M=1000'
             )
             self.M = 1000.0
@@ -110,8 +111,8 @@ class StrainDesignMILPBuilder:
             if model.reactions[i].upper_bound >= bound_thres:
                 model.reactions[i].upper_bound = np.inf
 
-        print('Constructing strain design MILP for solver: ' + self.solver +
-              '.')
+        logging.info('Constructing strain design MILP for solver: ' +
+                     self.solver + '.')
         for i in range(len(sd_modules)):
             self.addModule(sd_modules[i])
 
@@ -717,7 +718,7 @@ class StrainDesignMILPBuilder:
         # worker_init(M_A,M_A_ineq,M_b_ineq,M_A_eq,M_b_eq,M_lb,M_ub,list(solvers.keys())[0])
         # worker_compute(1)
 
-        print('  Bounding MILP.')
+        logging.info('  Bounding MILP.')
         if processes > 1 and num_Ms > 1000:
             with SDPool(processes,
                         initializer=worker_init,
