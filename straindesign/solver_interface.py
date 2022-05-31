@@ -38,17 +38,15 @@ class MILP_LP(object):
             numvars = self.A_ineq.shape[1]
         elif self.A_eq is not None:
             numvars = self.A_eq.shape[1]
-        elif self.ub is not None:
-            numvars = len(self.ub)
         else:
-            raise Exception("Number of variables could not be determined.")
+            logging.warning('Problem has no variables.')
+            numvars = 0
         if self.c is None:
             self.c = [0.0] * numvars
-        if self.A_eq is None:
-            self.A_eq = sparse.csr_matrix((0, numvars))
-        if self.b_eq is None:
-            self.b_eq = []
-        numineq = self.A_ineq.shape[0]
+        if self.A_ineq is None:
+            self.A_ineq = sparse.csr_matrix((0, numvars))
+        if self.b_ineq is None:
+            self.b_ineq = []
         # Remove unbounded constraints
         if self.A_eq == None:
             self.A_eq = sparse.csr_matrix((0, numvars))
@@ -133,7 +131,7 @@ class MILP_LP(object):
 
     def solve(self) -> Tuple[List, float, float]:
         x, min_cx, status = self.backend.solve()
-        if not isnan(x[0]):  # if solution exists (is not nan), round integers
+        if status not in [INFEASIBLE, UNBOUNDED, TIME_LIMIT]:  # if solution exists (is not nan), round integers
             x = [
                 x[i] if self.vtype[i] == 'C' else int(round(x[i]))
                 for i in range(len(x))

@@ -39,8 +39,10 @@ class Gurobi_MILP_LP(gp.Model):
         # construct Gurobi problem. Add variables and linear constraints
         x = self.addMVar(len(c), obj=c, lb=lb, ub=ub, vtype=[k for k in vtype])
         self.setObjective(array(c) @ x, grb.MINIMIZE)
-        self.addConstr(A_ineq @ x <= array(b_ineq))
-        self.addConstr(A_eq @ x == array(b_eq))
+        if A_ineq.shape[0]:
+            self.addConstr(A_ineq @ x <= array(b_ineq))
+        if A_eq.shape[0]:
+            self.addConstr(A_eq @ x == array(b_eq))
 
         # add indicator constraints
         if not indic_constr == None:
