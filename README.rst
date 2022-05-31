@@ -2,12 +2,14 @@
    :format: html
 
 ====================================================================================
-StrainDesign                     |logo|
+StrainDesign
 ====================================================================================
 .. |logo| image:: docs/logo.svg
   :target: https://straindesign.readthedocs.io/en/latest/
   :width: 50
   :alt: Icon
+  
+|logo|
 
 .. image:: https://img.shields.io/github/v/release/klamt-lab/straindesign.svg
    :target: https://github.com/klamt-lab/straindesign/releases
