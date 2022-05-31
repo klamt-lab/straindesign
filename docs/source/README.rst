@@ -4,7 +4,7 @@
 ====================================================================================
 StrainDesign                     |logo|
 ====================================================================================
-.. |logo| image:: https://github.com/klamt-lab/straindesign/blob/host_gifs/docs/docs/logo.svg
+.. |logo| image:: https://github.com/klamt-lab/straindesign/blob/host_gifs/docs/logo.svg
   :target: https://straindesign.readthedocs.io/en/latest/
   :width: 50
   :alt: Icon
@@ -55,7 +55,7 @@ The comprehensive StrainDesign package for MILP-based strain design computation 
 
 |pic1| |pic2| |pic3| 
 
-.. |pic1| image:: https://github.com/klamt-lab/straindesign/blob/host_gifs/docs/docs/puzzle.svg
+.. |pic1| image:: https://github.com/klamt-lab/straindesign/blob/host_gifs/docs/puzzle.svg
   :width: 25%
   :alt: Network interventions
    
