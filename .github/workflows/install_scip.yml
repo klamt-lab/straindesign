@@ -9,6 +9,9 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -l {0}
     steps:
       - uses: actions/checkout@v3
       - name: Set up Python
@@ -24,7 +27,8 @@ jobs:
       - name: List stuff
         run: |
           conda info
+          conda config --show
           conda env list
-          conda list        
+          conda list
       - name: Import pyscipopt
         run: python -c "import pyscipopt"
