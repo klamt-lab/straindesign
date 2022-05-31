@@ -29,10 +29,9 @@ StrainDesign                     |logo|
    :target: https://pypi.org/project/straindesign/
    :alt: Supported Python Versions
 
-..
-  .. image:: https://github.com/klamt-lab/straindesign/workflows/CI-CD/badge.svg]
-    :target: https://github.com/klamt-lab/straindesign/workflows/CI-CD]
-    :alt: GitHub Actions CI/CD Status]
+.. image:: https://github.com/klamt-lab/straindesign/workflows/CI-test/badge.svg
+    :target: https://github.com/klamt-lab/straindesign/workflows/CI-test]
+    :alt: GitHub Actions CI-test Status]
    
 .. image:: https://img.shields.io/pypi/l/straindesign.svg
    :target: https://www.gnu.org/licenses/old-licenses/lgpl-2.0.html
@@ -164,7 +163,7 @@ CNApy, a GUI-featured toolbox for metabolic modeling offers a graphical user int
 |pic4|
  
 .. |pic4| image:: docs/snapshot.png
-  :width: 40%
+  :width: 354
   :alt: CNApy screenshot
   
 

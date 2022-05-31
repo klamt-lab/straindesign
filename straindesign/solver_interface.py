@@ -3,6 +3,7 @@ from scipy import sparse
 from typing import List, Tuple
 from straindesign import avail_solvers
 from straindesign.names import *
+import logging
 
 
 class MILP_LP(object):
@@ -96,7 +97,7 @@ class MILP_LP(object):
             self.indic_constr.b = [float(v) for v in self.indic_constr.b]
         if not self.solver == GLPK and self.M and not (isnan(self.M) or isinf(self.M)) and \
            self.indic_constr and self.indic_constr.A.shape[0]:
-            print('Provided big M value is ignored unless glpk is used.')
+            logging.warning('Provided big M value is ignored unless glpk is used.')
         # Create backend
         if self.solver == CPLEX:
             from straindesign.cplex_interface import Cplex_MILP_LP

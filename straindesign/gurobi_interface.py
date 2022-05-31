@@ -5,12 +5,14 @@ import gurobipy as gp
 from gurobipy import GRB as grb
 from straindesign.names import *
 from typing import Tuple, List
+import logging
 
 # Collection of Gurobi-related functions that facilitate the creation
 # of Gurobi-object and the solutions of LPs/MILPs with Gurobi from
 # vector-matrix-based problem setups.
 #
 
+gstatus = gp.StatusConstClass
 
 # Create a Gurobi-object from a matrix-based problem setup
 class Gurobi_MILP_LP(gp.Model):
@@ -56,7 +58,7 @@ class Gurobi_MILP_LP(gp.Model):
         self.params.FeasibilityTol = 1e-9
         if 'B' in vtype or 'I' in vtype:
             seed = randint(0, grb.MAXINT)
-            # print('  MILP Seed: '+str(seed))
+            # logging.info('  MILP Seed: '+str(seed))
             self.params.Seed = seed
             self.params.IntFeasTol = 1e-9  # (0 is not allowed by Gurobi)
             # yield only optimal solutions in pool
@@ -68,30 +70,34 @@ class Gurobi_MILP_LP(gp.Model):
             self.optimize(
             )  # call parent solve function (that was overwritten in this class)
             status = self.Status
-            if status in [2, 10, 13, 15]:  # solution
+            if status in [gstatus.OPTIMAL, gstatus.SOLUTION_LIMIT, gstatus.SUBOPTIMAL, gstatus.USER_OBJ_LIMIT]:  # solution
                 min_cx = self.ObjVal
                 status = OPTIMAL
-            elif status == 9 and not hasattr(self._Model__vars[0],
+            elif status == gstatus.TIME_LIMIT and not hasattr(self._Model__vars[0],
                                              'X'):  # timeout without solution
                 x = [nan] * self.NumVars
                 min_cx = nan
                 status = TIME_LIMIT
                 return x, min_cx, status
-            elif status in [
-                    3, 4
-            ] and not hasattr(self._Model__vars[0], 'X'):  # infeasible
-                x = [nan] * self.NumVars
-                min_cx = nan
-                status = INFEASIBLE
-                return x, min_cx, status
-            elif status == 9 and hasattr(self._Model__vars[0],
-                                         'X'):  # timeout with solution
+            elif status == gstatus.TIME_LIMIT and hasattr(self._Model__vars[0],
+                                         'X'):
                 min_cx = self.ObjVal
                 status = TIME_LIMIT_W_SOL
-            elif status in [4, 5] and hasattr(self._Model__vars[0],
-                                              'X'):  # solution unbounded
-                min_cx = -inf
-                status = 4
+            elif status in [gstatus.INF_OR_UNBD, gstatus.UNBOUNDED, gstatus.INFEASIBLE]:
+                # solve problem again without objective to verify that problem is feasible
+                self.params.DualReductions = 0
+                self.optimize()
+                self.params.DualReductions = 1
+                if self.Status == gstatus.INFEASIBLE:
+                    x = [nan] * self.NumVars
+                    min_cx = nan
+                    status = INFEASIBLE
+                    return x, min_cx, status
+                else:
+                    x = [nan] * self.NumVars
+                    min_cx = -inf
+                    status = UNBOUNDED
+                    return x, min_cx, status
             else:
                 raise Exception('Status code ' + str(status) +
                                 " not yet handeld.")
@@ -99,7 +105,7 @@ class Gurobi_MILP_LP(gp.Model):
             return x, min_cx, status
 
         except gp.GurobiError as e:
-            print('Error code ' + str(e.errno) + ": " + str(e))
+            logging.error('Error code ' + str(e.errno) + ": " + str(e))
             min_cx = nan
             x = [nan] * self.NumVars
             return x, min_cx, ERROR
@@ -109,19 +115,18 @@ class Gurobi_MILP_LP(gp.Model):
             self.optimize(
             )  # call parent solve function (that was overwritten in this class)
             status = self.Status
-            if status in [2, 10, 13,
-                          15]:  # solution integer optimal (tolerance)
+            if status in [gstatus.OPTIMAL, gstatus.SOLUTION_LIMIT, gstatus.SUBOPTIMAL, gstatus.USER_OBJ_LIMIT]:  # solution integer optimal (tolerance)
                 opt = self.ObjVal
-            elif status in [4, 5]:  # solution unbounded (or inf or unbdd)
+            elif status in [gstatus.INF_OR_UNBD, gstatus.UNBOUNDED]:
                 opt = -inf
-            elif status == 3 or status == 9:  # infeasible or timeout
+            elif status in [gstatus.INFEASIBLE, gstatus.TIME_LIMIT]:
                 opt = nan
             else:
                 raise Exception('Status code ' + str(status) +
                                 " not yet handeld.")
             return opt
         except gp.GurobiError as e:
-            print('Error code ' + str(e.errno) + ": " + str(e))
+            logging.error('Error code ' + str(e.errno) + ": " + str(e))
             return nan
 
     def populate(self, n) -> Tuple[List, float, float]:
@@ -140,12 +145,12 @@ class Gurobi_MILP_LP(gp.Model):
                 status = OPTIMAL
             elif status == 9 and not hasattr(self._Model__vars[0],
                                              'X'):  # timeout without solution
-                x = []
+                x = [nan] * len(self._Model__vars)
                 min_cx = nan
                 status = TIME_LIMIT
                 return x, min_cx, status
             elif status == 3:  # infeasible
-                x = []
+                x = [nan] * len(self._Model__vars)
                 min_cx = nan
                 status = INFEASIBLE
                 return x, min_cx, status
@@ -155,12 +160,14 @@ class Gurobi_MILP_LP(gp.Model):
                 status = TIME_LIMIT_W_SOL
             elif status in [4, 5]:  # solution unbounded
                 min_cx = -inf
+                x = [nan] * len(self._Model__vars)
                 status = UNBOUNDED
+                return x, min_cx, status
             else:
                 raise Exception('Status code ' + str(status) +
                                 " not yet handeld.")
             nSols = self.SolCount
-            x = []
+            x = [nan] * len(self._Model__vars)
             for i in range(nSols):
                 self.setParam(grb.Param.SolutionNumber, i)
                 x += [self.getSolutionN()]
@@ -168,9 +175,9 @@ class Gurobi_MILP_LP(gp.Model):
 
         except gp.GurobiError as e:
             self.params.PoolSearchMode = 0
-            print('Error code ' + str(e.errno) + ": " + str(e))
+            logging.error('Error code ' + str(e.errno) + ": " + str(e))
             min_cx = nan
-            x = []
+            x = [nan] * len(self._Model__vars)
             return x, min_cx, ERROR
 
     def set_objective(self, c):
@@ -206,7 +213,7 @@ class Gurobi_MILP_LP(gp.Model):
                     A_eq[i, j] * vars[j]
                     for j in range(len(vars))
                     if not A_eq[i, j] == 0.0
-                ]) <= b_eq[i])
+                ]) == b_eq[i])
 
     def set_ineq_constraint(self, idx, a_ineq, b_ineq):
         constr = self._Model__constrs[idx]

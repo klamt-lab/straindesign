@@ -7,6 +7,7 @@ import jpype
 from cobra import Model, Metabolite, Reaction
 from cobra.util.array import create_stoichiometric_matrix
 import straindesign.efmtool as efm
+import logging
 
 
 def extend_model_gpr(model, gkos, gkis):
@@ -57,7 +58,7 @@ def extend_model_gpr(model, gkos, gkis):
                         w = Reaction(gene.id)
                         if use_name_not_id:  # if gene name is available and used in gki_cost and gko_cost
                             w.id = gene.name
-                        model.add_reaction(w)
+                        model.add_reactions([w])
                         w.reaction = '--> ' + gene_met_id
                         w._upper_bound = np.inf
                     ct[j] = gene_met_id
@@ -67,7 +68,7 @@ def extend_model_gpr(model, gkos, gkis):
                         # if conjunct term is not in model, add pseudoreaction and metabolite
                         model.add_metabolites(Metabolite(ct_met_id))
                         w = Reaction("R_" + ct_met_id)
-                        model.add_reaction(w)
+                        model.add_reactions([w])
                         w.reaction = ' + '.join(ct) + '--> ' + ct_met_id
                         w._upper_bound = np.inf
                     dt[i] = ct_met_id
@@ -79,7 +80,7 @@ def extend_model_gpr(model, gkos, gkis):
                     model.add_metabolites(Metabolite(dt_met_id))
                     for k, d in enumerate(dt):
                         w = Reaction("R" + str(k) + "_" + dt_met_id)
-                        model.add_reaction(w)
+                        model.add_reactions([w])
                         w.reaction = d + ' --> ' + dt_met_id
                         w._upper_bound = np.inf
             else:
@@ -104,7 +105,7 @@ def compress_model(model):
                 i].upper_bound <= 0:  # can run in backwards direction only (is and stays classified as irreversible)
             model.reactions[i] *= -1
             flipped.append(i)
-            # print("Flipped", model.reactions[i].id)
+            logging.debug("Flipped", model.reactions[i].id)
         # have to use _metabolites because metabolites gives only a copy
         for k, v in model.reactions[i]._metabolites.items():
             n, d = efm.sympyRat2jBigIntegerPair(v)
@@ -157,7 +158,6 @@ def compress_model(model):
             if model.reactions[r].upper_bound < model.reactions[r0].upper_bound:
                 model.reactions[r0].upper_bound = model.reactions[r].upper_bound
             del_rxns[r] = True
-    # print(time.monotonic() - start_time) # 11 seconds in iJO1366
     del_rxns = np.where(del_rxns)[0]
     for i in range(len(del_rxns) - 1, -1,
                    -1):  # delete in reversed index order to keep indices valid
@@ -295,8 +295,6 @@ def remove_conservation_relations(model):
         model.metabolites[i].id
         for i in set(range(len(model.metabolites))) - set(basic_metabolites)
     ]
-    # print("The following metabolites have been removed from the model:")
-    # print(dependent_metabolites)
     for m in dependent_metabolites:
         model.metabolites.get_by_id(m).remove_from_model()
 

@@ -124,5 +124,4 @@ def jBigIntegerPair2sympyRat(numer, denom):
         denom = denom.longValue()
     else:
         denom = str(denom.toString())
-    # print(numer, denom)
     return sympy.Rational(numer, denom)
