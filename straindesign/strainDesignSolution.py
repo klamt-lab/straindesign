@@ -18,6 +18,7 @@ from straindesign.names import *
 import re
 import json
 import pickle
+import logging
 
 
 class SDSolution(object):
@@ -28,7 +29,7 @@ class SDSolution(object):
         if GKOCOST in sd_setup or GKICOST in sd_setup:
             self.gene_sd = [s.copy() for s in sd]
             self.is_gene_sd = True
-            print(
+            logging.info(
                 '  Preparing (reaction-)phenotype prediction of gene intervention strategies.'
             )
             interventions = set()

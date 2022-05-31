@@ -3,10 +3,12 @@ from numpy import nan, isnan, inf, isinf, sum, random
 from straindesign.names import *
 from typing import Tuple, List
 from swiglpk import *
+import logging
 
 # Collection of GLPK-related functions that facilitate the creation
 # of GLPK-object and the solutions of LPs/MILPs with GLPK from
 # vector-matrix-based problem setups.
+
 
 # Create a GLPK-object from a matrix-based problem setup
 class GLPK_MILP_LP():
@@ -77,10 +79,10 @@ class GLPK_MILP_LP():
         if not indic_constr == None:
             if not M:
                 M = 1e3
-            print(
+            logging.warning(
                 'There is no native support of indicator constraints with GLPK.'
             )
-            print(
+            logging.warning(
                 'Indicator constraints are translated to big-M constraints with M='
                 + str(M) + '.')
             num_ic = len(indic_constr.binv)
@@ -168,8 +170,10 @@ class GLPK_MILP_LP():
                 min_cx = self.ObjVal
                 status = TIME_LIMIT_W_SOL
             elif status in [GLP_UNBND, GLP_UNDEF]:  # solution unbounded
+                x = [nan] * glp_get_num_cols(self.glpk)
                 min_cx = -inf
                 status = UNBOUNDED
+                return x, min_cx, status
             else:
                 raise Exception('Status code ' + str(status) +
                                 " not yet handeld.")
@@ -179,7 +183,7 @@ class GLPK_MILP_LP():
             return x, min_cx, status
 
         except:
-            print('Error while running GLPK.')
+            logging.error('Error while running GLPK.')
             min_cx = nan
             x = [nan] * glp_get_num_cols(self.glpk)
             return x, min_cx, -1
@@ -202,7 +206,7 @@ class GLPK_MILP_LP():
             opt = round(opt, 12)  # workaround, round to 12 decimals
             return opt
         except:
-            print('Error while running GLPK.')
+            logging.error('Error while running GLPK.')
             return nan
 
     def populate(self, pool_limit) -> Tuple[List, float, float]:
@@ -247,7 +251,7 @@ class GLPK_MILP_LP():
                 # glp_del_rows(self.glpk,totrows-numrows,delrows)
                 return sols, min_cx, status
         except:
-            print('Error while running GLPK.')
+            logging.error('Error while running GLPK.')
             x = []
             min_cx = nan
             return x, min_cx, ERROR
@@ -331,7 +335,7 @@ class GLPK_MILP_LP():
             glp_set_row_bnds(self.glpk, idx + 1, GLP_UP, -inf, b_ineq)
 
     def getSolution(self, status) -> list:
-        if self.ismilp and status in [OPTIMAL,UNBOUNDED,TIME_LIMIT_W_SOL]:
+        if self.ismilp and status in [OPTIMAL, UNBOUNDED, TIME_LIMIT_W_SOL]:
             x = [
                 glp_mip_col_val(self.glpk, i + 1)
                 for i in range(glp_get_num_cols(self.glpk))
@@ -357,7 +361,7 @@ class GLPK_MILP_LP():
         else:
             opt = glp_get_obj_val(self.glpk)
         timelim_reached = glp_difftime(glp_time(),
-                                        starttime) >= self.lp_params.tm_lim
+                                       starttime) >= self.lp_params.tm_lim
         return opt, status, timelim_reached
 
     def addExclusionConstraintsIneq(self, x):

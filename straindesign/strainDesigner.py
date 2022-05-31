@@ -7,6 +7,7 @@ from straindesign.names import *
 from straindesign.networktools import *
 from sympy import Rational, nsimplify, parse_expr, to_dnf
 import io
+import logging
 
 
 def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
@@ -59,7 +60,8 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
             if exp == True:
                 model.reactions.get_by_id(r.id).gene_reaction_rule = ''
             elif exp == False:
-                print('Something went wrong during gpr rule simplification.')
+                logging.error(
+                    'Something went wrong during gpr rule simplification.')
             else:
                 model.reactions.get_by_id(
                     r.id).gene_reaction_rule = str(exp).replace(
@@ -87,7 +89,7 @@ def extend_model_regulatory(model, regcost, kocost):
             r.add_metabolites({m: w})
         # add pseudoreaction that defines the bound
         s = Reaction("bnd_" + reg_name)
-        model.add_reaction(s)
+        model.add_reactions([s])
         s.reaction = reg_pseudomet_name + ' --> '
         if eqsign == '=':
             s._lower_bound = -np.inf
@@ -101,7 +103,7 @@ def extend_model_regulatory(model, regcost, kocost):
             s._lower_bound = rhs
         # add knockable pseudoreaction and add it to the kocost list
         t = Reaction(reg_name)
-        model.add_reaction(t)
+        model.add_reactions([t])
         t.reaction = '--> ' + reg_pseudomet_name
         t._upper_bound = np.inf
         t._lower_bound = -np.inf
@@ -286,11 +288,11 @@ class StrainDesigner(StrainDesignMILP):
                                 'Make sure that metabolic interventions are enabled either through reaction or '\
                                 'through gene interventions and are defined either as knock-ins or as knock-outs.')
         # 1) Preprocess Model
-        print('Preparing strain design computation.')
+        logging.info('Preparing strain design computation.')
         self.solver = select_solver(self.solver, model)
         kwargs[SOLVER] = self.solver
-        print('  Using ' + self.solver +
-              ' for solving LPs during preprocessing.')
+        logging.info('  Using ' + self.solver +
+                     ' for solving LPs during preprocessing.')
         with redirect_stdout(io.StringIO()), redirect_stderr(
                 io.StringIO()):  # suppress standard output from copying model
             cmp_model = model.copy()
@@ -303,7 +305,7 @@ class StrainDesigner(StrainDesignMILP):
                      for b in r.bounds])
                 for r in cmp_model.reactions
         ]):
-            print(
+            logging.info(
                 '  Removing reaction bounds when larger than the threshold of '
                 + str(bound_thres) + '.')
             for i in range(len(cmp_model.reactions)):
@@ -312,7 +314,8 @@ class StrainDesigner(StrainDesignMILP):
                 if cmp_model.reactions[i].upper_bound >= bound_thres:
                     cmp_model.reactions[i].upper_bound = np.inf
         # FVAs to identify blocked, irreversible and essential reactions, as well as non-bounding bounds
-        print('  FVA to identify blocked reactions and irreversibilities.')
+        logging.info(
+            '  FVA to identify blocked reactions and irreversibilities.')
         flux_limits = fva(cmp_model, solver=kwargs[SOLVER])
         if kwargs[SOLVER] in ['scip', 'glpk']:
             tol = 1e-10  # use tolerance for tightening problem bounds
@@ -329,7 +332,7 @@ class StrainDesigner(StrainDesignMILP):
                 r._upper_bound = np.inf
             if limits.maximum <= -tol:
                 r._upper_bound = np.min([0.0, r._upper_bound])
-        print('  FVA(s) to identify essential reactions.')
+        logging.info('  FVA(s) to identify essential reactions.')
         essential_reacs = set()
         for m in sd_modules:
             if m[MODULE_TYPE] != SUPPRESS:  # Essential reactions can only be determined from desired
@@ -353,8 +356,8 @@ class StrainDesigner(StrainDesignMILP):
                 num_genes = len(cmp_model.genes)
                 num_gpr = len(
                     [True for r in model.reactions if r.gene_reaction_rule])
-                print('Preprocessing GPR rules (' + str(num_genes) +
-                      ' genes, ' + str(num_gpr) + ' gpr rules).')
+                logging.info('Preprocessing GPR rules (' + str(num_genes) +
+                             ' genes, ' + str(num_gpr) + ' gpr rules).')
                 # removing irrelevant genes will also remove essential reactions from the list of knockable genes
                 self.uncmp_gko_cost = remove_irrelevant_genes(
                     cmp_model, essential_reacs, self.uncmp_gki_cost,
@@ -367,9 +370,9 @@ class StrainDesigner(StrainDesignMILP):
                         True for r in cmp_model.reactions
                         if r.gene_reaction_rule
                     ])
-                    print('  Simplifyied to '+str(num_genes)+' genes and '+\
+                    logging.info('  Simplifyied to '+str(num_genes)+' genes and '+\
                         str(num_gpr)+' gpr rules.')
-            print('  Extending metabolic network with gpr associations.')
+            logging.info('  Extending metabolic network with gpr associations.')
             reac_map = extend_model_gpr(cmp_model, self.uncmp_gko_cost,
                                         self.uncmp_gki_cost)
             for i, m in enumerate(sd_modules):
@@ -399,8 +402,8 @@ class StrainDesigner(StrainDesignMILP):
         self.cmp_mapReac = []
         if kwargs['compress'] is True or kwargs[
                 'compress'] is None:  # If compression is activated (or not defined)
-            print('Compressing Network (' + str(len(cmp_model.reactions)) +
-                  ' reactions).')
+            logging.info('Compressing Network (' +
+                         str(len(cmp_model.reactions)) + ' reactions).')
             # compress network by lumping sequential and parallel reactions alternatingly.
             # Exclude reactions named in strain design modules from parallel compression
             no_par_compress_reacs = set()
@@ -418,7 +421,7 @@ class StrainDesigner(StrainDesignMILP):
                             for k in param.keys():
                                 no_par_compress_reacs.add(k)
             # Remove conservation relations.
-            print('  Removing blocked reactions.')
+            logging.info('  Removing blocked reactions.')
             blocked_reactions = remove_blocked_reactions(cmp_model)
             # remove blocked reactions from ko- and ki-costs
             [
@@ -431,18 +434,19 @@ class StrainDesigner(StrainDesignMILP):
                 for br in blocked_reactions
                 if br.id in self.cmp_ki_cost
             ]
-            print('  Translating stoichiometric coefficients to rationals.')
+            logging.info(
+                '  Translating stoichiometric coefficients to rationals.')
             stoichmat_coeff2rational(cmp_model)
             sd_modules = modules_coeff2rational(sd_modules)
-            print('  Removing conservation relations.')
+            logging.info('  Removing conservation relations.')
             remove_conservation_relations(cmp_model)
             odd = True
             run = 1
             while True:
                 # np.savetxt('Table.csv',create_stoichiometric_matrix(cmp_model),'%i',',')
                 if odd:
-                    print('  Compression ' + str(run) +
-                          ': Applying compression from EFM-tool module.')
+                    logging.info('  Compression ' + str(run) +
+                                 ': Applying compression from EFM-tool module.')
                     subT, reac_map_exp = compress_model(cmp_model)
                     for new_reac, old_reac_val in reac_map_exp.items():
                         old_reacs_no_compress = [
@@ -456,13 +460,14 @@ class StrainDesigner(StrainDesignMILP):
                             ]
                             no_par_compress_reacs.add(new_reac)
                 else:
-                    print('  Compression ' + str(run) +
-                          ': Lumping parallel reactions.')
+                    logging.info('  Compression ' + str(run) +
+                                 ': Lumping parallel reactions.')
                     subT, reac_map_exp = compress_model_parallel(
                         cmp_model, no_par_compress_reacs)
                 remove_conservation_relations(cmp_model)
                 if subT.shape[0] > subT.shape[1]:
-                    print('  Reduced to ' + str(subT.shape[1]) + ' reactions.')
+                    logging.info('  Reduced to ' + str(subT.shape[1]) +
+                                 ' reactions.')
                     # store the information for decompression in a Tuple
                     # (0) compression matrix, (1) reac_id dictornary {cmp_rid: {orig_rid1: factor1, orig_rid2: factor2}},
                     # (2) linear (True) or parallel (False) compression (3,4) ko and ki costs of expanded network
@@ -515,9 +520,6 @@ class StrainDesigner(StrainDesignMILP):
                                                     for k in lumped_reacs
                                                     if k in old_reac_val
                                                 ])
-                                        # if p == MIN_GCP:
-                                        #     m[p] = m[p]
-                                        #     print('lol')
                     # compress ko_cost and ki_cost
                     # ko_cost of lumped reactions: when reacs sequential: lowest of ko costs, when parallel: sum of ko costs
                     # ki_cost of lumped reactions: when reacs sequential: sum of ki costs, when parallel: lowest of ki costs
@@ -573,11 +575,11 @@ class StrainDesigner(StrainDesignMILP):
                         odd = True
                     run += 1
                 else:
-                    print('  Last step could not reduce size further (' +
-                          str(subT.shape[0]) + ' reactions).')
-                    print('  Network compression completed. (' + str(run - 1) +
-                          ' compression iterations)')
-                    print(
+                    logging.info('  Last step could not reduce size further (' +
+                                 str(subT.shape[0]) + ' reactions).')
+                    logging.info('  Network compression completed. (' +
+                                 str(run - 1) + ' compression iterations)')
+                    logging.info(
                         '  Translating stoichiometric coefficients back to float.'
                     )
                     stoichmat_coeff2float(cmp_model)
@@ -585,7 +587,8 @@ class StrainDesigner(StrainDesignMILP):
                     break
 
         # An FVA to identify essentials before building and launching MILP (not sure if this has an effect)
-        print('  FVA(s) in compressed model to identify essential reactions.')
+        logging.info(
+            '  FVA(s) in compressed model to identify essential reactions.')
         essential_reacs = set()
         for m in sd_modules:
             if m[MODULE_TYPE] != SUPPRESS:  # Essential reactions can only be determined from desired
@@ -618,10 +621,11 @@ class StrainDesigner(StrainDesignMILP):
             kwargs1.pop(GKICOST)
         if REGCOST in kwargs1:
             kwargs1.pop(REGCOST)
-        print("Finished preprocessing:")
-        print("  Model size: " + str(len(cmp_model.reactions)) +
-              " reactions, " + str(len(cmp_model.metabolites)) + " metabolites")
-        print("  " + str(
+        logging.info("Finished preprocessing:")
+        logging.info("  Model size: " + str(len(cmp_model.reactions)) +
+                     " reactions, " + str(len(cmp_model.metabolites)) +
+                     " metabolites")
+        logging.info("  " + str(
             len(self.cmp_ko_cost) + len(self.cmp_ki_cost) -
             len(essential_kis)) + " targetable reactions")
         super().__init__(cmp_model, sd_modules, *args, **kwargs1)
@@ -713,7 +717,7 @@ class StrainDesigner(StrainDesignMILP):
         else:
             sd = []
         solutions = self.build_full_sd_solution(sd, cmp_sd_solution)
-        print(str(len(sd)) + ' solutions found.')
+        logging.info(str(len(sd)) + ' solutions found.')
         return solutions
 
     def compute_optimal(self, *args, **kwargs):
@@ -723,7 +727,7 @@ class StrainDesigner(StrainDesignMILP):
         else:
             sd = []
         solutions = self.build_full_sd_solution(sd, cmp_sd_solution)
-        print(str(len(sd)) + ' solutions found.')
+        logging.info(str(len(sd)) + ' solutions found.')
         return solutions
 
     def compute(self, *args, **kwargs):
@@ -733,7 +737,7 @@ class StrainDesigner(StrainDesignMILP):
         else:
             sd = []
         solutions = self.build_full_sd_solution(sd, cmp_sd_solution)
-        print(str(len(sd)) + ' solutions found.')
+        logging.info(str(len(sd)) + ' solutions found.')
         return solutions
 
     def build_full_sd_solution(self, sd, sd_solution_cmp):
