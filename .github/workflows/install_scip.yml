@@ -1,4 +1,4 @@
-name: Build and Upload Python Package
+name: Install PySCIPOpt
 
 on:
   workflow_dispatch:
