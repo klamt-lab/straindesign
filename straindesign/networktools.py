@@ -105,7 +105,7 @@ def compress_model(model):
                 i].upper_bound <= 0:  # can run in backwards direction only (is and stays classified as irreversible)
             model.reactions[i] *= -1
             flipped.append(i)
-            logging.debug("Flipped", model.reactions[i].id)
+            logging.debug("Flipped "+model.reactions[i].id)
         # have to use _metabolites because metabolites gives only a copy
         for k, v in model.reactions[i]._metabolites.items():
             n, d = efm.sympyRat2jBigIntegerPair(v)

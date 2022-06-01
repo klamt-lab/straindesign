@@ -262,12 +262,13 @@ class StrainDesigner(StrainDesignMILP):
         with redirect_stdout(io.StringIO()), redirect_stderr(
                 io.StringIO()):  # suppress standard output from copying model
             self.orig_model = model.copy()
+            self.uncmp_model = model.copy()
         self.orig_ko_cost = self.uncmp_ko_cost
         self.orig_ki_cost = self.uncmp_ki_cost
         self.orig_reg_cost = self.uncmp_reg_cost
         self.compress = kwargs['compress']
         self.M = kwargs['M']
-        self.uncmp_reg_cost = preprocess_regulatory(model, self.uncmp_reg_cost,
+        self.uncmp_reg_cost = preprocess_regulatory(self.uncmp_model, self.uncmp_reg_cost,
                                                     self.has_gene_names)
         if self.gene_sd:
             self.orig_gko_cost = self.uncmp_gko_cost
@@ -281,7 +282,7 @@ class StrainDesigner(StrainDesignMILP):
                 r for r in list(self.uncmp_ko_cost.keys()) +
                 list(self.uncmp_ki_cost.keys())
             }
-            if np.any([np.any([True for g in model.reactions.get_by_id(r).genes if g in g_itv]) for r in r_itv]) or \
+            if np.any([np.any([True for g in self.uncmp_model.reactions.get_by_id(r).genes if g in g_itv]) for r in r_itv]) or \
                 np.any(set(self.uncmp_gko_cost.keys()).intersection(set(self.uncmp_gki_cost.keys()))) or \
                 np.any(set(self.uncmp_ko_cost.keys()).intersection(set(self.uncmp_ki_cost.keys()))):
                 raise Exception('Specified gene and reaction knock-out/-in costs contain overlap. '\
@@ -289,13 +290,13 @@ class StrainDesigner(StrainDesignMILP):
                                 'through gene interventions and are defined either as knock-ins or as knock-outs.')
         # 1) Preprocess Model
         logging.info('Preparing strain design computation.')
-        self.solver = select_solver(self.solver, model)
+        self.solver = select_solver(self.solver, self.uncmp_model)
         kwargs[SOLVER] = self.solver
         logging.info('  Using ' + self.solver +
                      ' for solving LPs during preprocessing.')
         with redirect_stdout(io.StringIO()), redirect_stderr(
                 io.StringIO()):  # suppress standard output from copying model
-            cmp_model = model.copy()
+            cmp_model = self.uncmp_model.copy()
         # remove external metabolites
         remove_ext_mets(cmp_model)
         # replace model bounds with +/- inf if above a certain threshold

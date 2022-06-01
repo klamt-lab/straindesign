@@ -81,13 +81,13 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
 
     def solveZ(self) -> Tuple[List, int]:
         x, _, status = self.milp.solve()
-        z = sparse.csr_matrix([x[i] for i in self.idx_z])
+        z = sparse.csr_matrix([round(x[i],5) for i in self.idx_z])
         return z, status
 
     def populateZ(self, n) -> Tuple[List, int]:
         x, _, status = self.milp.populate(n)
         z = sparse.csr_matrix(
-            [[x[j][i] for i in self.idx_z] for j in range(len(x))])
+            [[round(x[j][i],5) for i in self.idx_z] for j in range(len(x))])
         z.resize((len(x), self.num_z))
         return z, status
 
@@ -196,7 +196,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
             self.resetObjective()
             self.fixObjective(self.c_bu, np.inf)
             x, min_cx, status = self.milp.solve()
-            z = sparse.csr_matrix([x[i] for i in self.idx_z])
+            z = sparse.csr_matrix([round(x[i],5) for i in self.idx_z])
             if np.isnan(z[0, 0]):
                 break
             output = self.sd2dict(z)
@@ -299,7 +299,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
             self.clearObjective()
             self.fixObjective(self.c_bu, np.inf)  # keep objective open
             x, min_cx, status = self.milp.solve()
-            z = sparse.csr_matrix([x[i] for i in self.idx_z])
+            z = sparse.csr_matrix([round(x[i],5) for i in self.idx_z])
             if np.isnan(z[0, 0]):
                 break
             if not all(self.verify_sd(z)):
@@ -427,7 +427,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                 self.resetObjective()
                 self.fixObjective(self.c_bu, np.inf)
                 x, min_cx, status = self.milp.solve()
-                z = sparse.csr_matrix([x[i] for i in self.idx_z])
+                z = sparse.csr_matrix([round(x[i],5) for i in self.idx_z])
                 if np.isnan(z[0, 0]):
                     break
                 logging.info(

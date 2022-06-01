@@ -5,3 +5,8 @@ from straindesign.names import *
 def curr_solver(request: pytest.FixtureRequest) -> str:
     """Provide session-level fixture for parametrized solver names."""
     return request.param
+
+@pytest.fixture(params=[ANY,BEST,POPULATE], scope="session")
+def comp_approach(request: pytest.FixtureRequest) -> str:
+    """Provide session-level fixture for parametrized solver names."""
+    return request.param
