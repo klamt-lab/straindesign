@@ -1,11 +1,11 @@
 import numpy as np
 from contextlib import redirect_stdout, redirect_stderr
 from typing import Dict, List, Tuple
-from cobra import Model, Metabolite, Reaction
+from cobra import Model, Metabolite, Reaction, Configuration
 from straindesign import StrainDesignMILP, SDModule, SDSolution, avail_solvers, select_solver, fva, parse_constraints
 from straindesign.names import *
 from straindesign.networktools import *
-from sympy import Rational, nsimplify, parse_expr, to_dnf
+from sympy import nsimplify, parse_expr, to_dnf
 import io
 import logging
 
@@ -161,35 +161,6 @@ def preprocess_regulatory(model, reg_cost, has_gene_names):
         })
     return reg_cost
 
-
-def modules_coeff2rational(sd_modules):
-    for i, module in enumerate(sd_modules):
-        for param in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
-            if param in module and module[param] is not None:
-                if param == CONSTRAINTS:
-                    for constr in module[CONSTRAINTS]:
-                        for reac in constr[0].keys():
-                            constr[0][reac] = nsimplify(constr[0][reac])
-                if param in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
-                    for reac in module[param].keys():
-                        module[param][reac] = nsimplify(module[param][reac])
-    return sd_modules
-
-
-def modules_coeff2float(sd_modules):
-    for i, module in enumerate(sd_modules):
-        for param in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
-            if param in module and module[param] is not None:
-                if param == CONSTRAINTS:
-                    for constr in module[CONSTRAINTS]:
-                        for reac in constr[0].keys():
-                            constr[0][reac] = float(constr[0][reac])
-                if param in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
-                    for reac in module[param].keys():
-                        module[param][reac] = float(module[param][reac])
-    return sd_modules
-
-
 class StrainDesigner(StrainDesignMILP):
 
     def __init__(self, model: Model, sd_modules: List[SDModule], *args,
@@ -221,7 +192,11 @@ class StrainDesigner(StrainDesignMILP):
         if (GKOCOST in kwargs or GKICOST in kwargs) and hasattr(
                 model, 'genes') and model.genes:
             self.gene_sd = True
-            if np.any([len(g.name) for g in model.genes]):
+            used_g_ids = set(self.uncmp_gko_cost if hasattr(self,'uncmp_gko_cost') and self.uncmp_gko_cost else set())
+            used_g_ids.update(set(self.uncmp_gki_cost if hasattr(self,'uncmp_gki_cost') and self.uncmp_gki_cost else set()))
+            used_g_ids.update(set(self.uncmp_reg_cost if hasattr(self,'uncmp_reg_cost') and self.uncmp_reg_cost else set()))
+            if np.any([len(g.name) for g in model.genes]) and (
+               np.any([g.name in used_g_ids for g in model.genes]) or not used_g_ids):
                 self.has_gene_names = True
             else:
                 self.has_gene_names = False
@@ -300,20 +275,7 @@ class StrainDesigner(StrainDesignMILP):
         # remove external metabolites
         remove_ext_mets(cmp_model)
         # replace model bounds with +/- inf if above a certain threshold
-        bound_thres = 1000
-        if any([
-                any([abs(b) >= bound_thres
-                     for b in r.bounds])
-                for r in cmp_model.reactions
-        ]):
-            logging.info(
-                '  Removing reaction bounds when larger than the threshold of '
-                + str(bound_thres) + '.')
-            for i in range(len(cmp_model.reactions)):
-                if cmp_model.reactions[i].lower_bound <= -bound_thres:
-                    cmp_model.reactions[i].lower_bound = -np.inf
-                if cmp_model.reactions[i].upper_bound >= bound_thres:
-                    cmp_model.reactions[i].upper_bound = np.inf
+        remove_dummy_bounds(model)
         # FVAs to identify blocked, irreversible and essential reactions, as well as non-bounding bounds
         logging.info(
             '  FVA to identify blocked reactions and irreversibilities.')
@@ -400,7 +362,6 @@ class StrainDesigner(StrainDesignMILP):
         self.cmp_ko_cost = self.uncmp_ko_cost
         self.cmp_ki_cost = self.uncmp_ki_cost
         # Compress model
-        self.cmp_mapReac = []
         if kwargs['compress'] is True or kwargs[
                 'compress'] is None:  # If compression is activated (or not defined)
             logging.info('Compressing Network (' +
@@ -421,171 +382,13 @@ class StrainDesigner(StrainDesignMILP):
                         if p in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                             for k in param.keys():
                                 no_par_compress_reacs.add(k)
-            # Remove conservation relations.
-            logging.info('  Removing blocked reactions.')
-            blocked_reactions = remove_blocked_reactions(cmp_model)
-            # remove blocked reactions from ko- and ki-costs
-            [
-                self.cmp_ko_cost.pop(br.id)
-                for br in blocked_reactions
-                if br.id in self.cmp_ko_cost
-            ]
-            [
-                self.cmp_ki_cost.pop(br.id)
-                for br in blocked_reactions
-                if br.id in self.cmp_ki_cost
-            ]
-            logging.info(
-                '  Translating stoichiometric coefficients to rationals.')
-            stoichmat_coeff2rational(cmp_model)
-            sd_modules = modules_coeff2rational(sd_modules)
-            logging.info('  Removing conservation relations.')
-            remove_conservation_relations(cmp_model)
-            odd = True
-            run = 1
-            while True:
-                # np.savetxt('Table.csv',create_stoichiometric_matrix(cmp_model),'%i',',')
-                if odd:
-                    logging.info('  Compression ' + str(run) +
-                                 ': Applying compression from EFM-tool module.')
-                    subT, reac_map_exp = compress_model(cmp_model)
-                    for new_reac, old_reac_val in reac_map_exp.items():
-                        old_reacs_no_compress = [
-                            r for r in no_par_compress_reacs
-                            if r in old_reac_val
-                        ]
-                        if old_reacs_no_compress:
-                            [
-                                no_par_compress_reacs.remove(r)
-                                for r in old_reacs_no_compress
-                            ]
-                            no_par_compress_reacs.add(new_reac)
-                else:
-                    logging.info('  Compression ' + str(run) +
-                                 ': Lumping parallel reactions.')
-                    subT, reac_map_exp = compress_model_parallel(
-                        cmp_model, no_par_compress_reacs)
-                remove_conservation_relations(cmp_model)
-                if subT.shape[0] > subT.shape[1]:
-                    logging.info('  Reduced to ' + str(subT.shape[1]) +
-                                 ' reactions.')
-                    # store the information for decompression in a Tuple
-                    # (0) compression matrix, (1) reac_id dictornary {cmp_rid: {orig_rid1: factor1, orig_rid2: factor2}},
-                    # (2) linear (True) or parallel (False) compression (3,4) ko and ki costs of expanded network
-                    self.cmp_mapReac += [{
-                        "reac_map_exp": reac_map_exp,
-                        "odd": odd,
-                        KOCOST: self.cmp_ko_cost,
-                        KICOST: self.cmp_ki_cost
-                    }]
-                    # compress information in strain design modules
-                    if odd:
-                        for new_reac, old_reac_val in reac_map_exp.items():
-                            for i, m in enumerate(sd_modules):
-                                for p in [
-                                        CONSTRAINTS, INNER_OBJECTIVE,
-                                        OUTER_OBJECTIVE, PROD_ID, MIN_GCP
-                                ]:
-                                    if p in m and m[p] is not None:
-                                        param = m[p]
-                                        if p == CONSTRAINTS:
-                                            for j, c in enumerate(m[p]):
-                                                if np.any([
-                                                        k in old_reac_val
-                                                        for k in c[0].keys()
-                                                ]):
-                                                    lumped_reacs = [
-                                                        k for k in c[0].keys()
-                                                        if k in old_reac_val
-                                                    ]
-                                                    c[0][new_reac] = np.sum([
-                                                        c[0].pop(k) *
-                                                        old_reac_val[k]
-                                                        for k in lumped_reacs
-                                                    ])
-                                        if p in [
-                                                INNER_OBJECTIVE,
-                                                OUTER_OBJECTIVE, PROD_ID
-                                        ]:
-                                            if np.any([
-                                                    k in old_reac_val
-                                                    for k in param.keys()
-                                            ]):
-                                                lumped_reacs = [
-                                                    k for k in param.keys()
-                                                    if k in old_reac_val
-                                                ]
-                                                m[p][new_reac] = np.sum([
-                                                    param.pop(k) *
-                                                    old_reac_val[k]
-                                                    for k in lumped_reacs
-                                                    if k in old_reac_val
-                                                ])
-                    # compress ko_cost and ki_cost
-                    # ko_cost of lumped reactions: when reacs sequential: lowest of ko costs, when parallel: sum of ko costs
-                    # ki_cost of lumped reactions: when reacs sequential: sum of ki costs, when parallel: lowest of ki costs
-                    if self.cmp_ko_cost:
-                        ko_cost_new = {}
-                        for r in cmp_model.reactions.list_attr('id'):
-                            if np.any([
-                                    s in self.cmp_ko_cost
-                                    for s in reac_map_exp[r]
-                            ]):
-                                if odd and not np.any([
-                                        s in self.cmp_ki_cost
-                                        for s in reac_map_exp[r]
-                                ]):
-                                    ko_cost_new[r] = np.min([
-                                        self.cmp_ko_cost[s]
-                                        for s in reac_map_exp[r]
-                                        if s in self.cmp_ko_cost
-                                    ])
-                                elif not odd:
-                                    ko_cost_new[r] = np.sum([
-                                        self.cmp_ko_cost[s]
-                                        for s in reac_map_exp[r]
-                                        if s in self.cmp_ko_cost
-                                    ])
-                        self.cmp_ko_cost = ko_cost_new
-                    if self.cmp_ki_cost:
-                        ki_cost_new = {}
-                        for r in cmp_model.reactions.list_attr('id'):
-                            if np.any([
-                                    s in self.cmp_ki_cost
-                                    for s in reac_map_exp[r]
-                            ]):
-                                if odd:
-                                    ki_cost_new[r] = np.sum([
-                                        self.cmp_ki_cost[s]
-                                        for s in reac_map_exp[r]
-                                        if s in self.cmp_ki_cost
-                                    ])
-                                elif not odd and not np.any([
-                                        s in self.cmp_ko_cost
-                                        for s in reac_map_exp[r]
-                                ]):
-                                    ki_cost_new[r] = np.min([
-                                        self.cmp_ki_cost[s]
-                                        for s in reac_map_exp[r]
-                                        if s in self.cmp_ki_cost
-                                    ])
-                        self.cmp_ki_cost = ki_cost_new
-                    if odd:
-                        odd = False
-                    else:
-                        odd = True
-                    run += 1
-                else:
-                    logging.info('  Last step could not reduce size further (' +
-                                 str(subT.shape[0]) + ' reactions).')
-                    logging.info('  Network compression completed. (' +
-                                 str(run - 1) + ' compression iterations)')
-                    logging.info(
-                        '  Translating stoichiometric coefficients back to float.'
-                    )
-                    stoichmat_coeff2float(cmp_model)
-                    sd_modules = modules_coeff2float(sd_modules)
-                    break
+            self.cmp_mapReac = compress_model(cmp_model,no_par_compress_reacs)
+            # compress information in strain design modules
+            sd_modules = compress_modules(sd_modules,self.cmp_mapReac)
+            # compress ko_cost and ki_cost
+            self.cmp_ko_cost, self.cmp_ki_cost, self.cmp_mapReac = compress_ki_ko_cost(self.cmp_ko_cost,self.cmp_ki_cost,self.cmp_mapReac)
+        else:
+            self.cmp_mapReac = []
 
         # An FVA to identify essentials before building and launching MILP (not sure if this has an effect)
         logging.info(
@@ -690,7 +493,7 @@ class StrainDesigner(StrainDesignMILP):
         if self.max_cost:
             costs = [
                 np.sum([
-                    self.uncmp_ko_cost[k] if v < 0 else self.uncmp_ki_cost[k]
+                    self.uncmp_ko_cost[k] if v < 0 else v*self.uncmp_ki_cost[k]
                     for k, v in m.items()
                 ])
                 for m in sd

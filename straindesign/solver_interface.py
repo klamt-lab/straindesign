@@ -188,7 +188,7 @@ class MILP_LP(object):
         self.backend.set_ineq_constraint(idx, a_ineq, b_ineq)
 
     def clear_objective(self):
-        self.set_objective([0] * len(self.c))
+        self.set_objective([0.0] * len(self.c))
 
     def set_time_limit(self, t):
         self.tlim = t

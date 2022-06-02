@@ -17,6 +17,7 @@ from .pool import *
 from .efmtool import *
 from .parse_constr import *
 from .lptools import *
+from .networktools import *
 from .strainDesignModule import *
 from .strainDesignSolution import *
 from .strainDesignMILPBuilder import *

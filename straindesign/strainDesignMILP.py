@@ -41,15 +41,23 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                             solver=self.solver)
 
     def add_exclusion_constraints(self, z):
-        # if only one reaction should be excluded, set ub to 0.0
-        if z.nnz == 1:
-            interv_idx = int(z.indices[0])
-            self.z_non_targetable[interv_idx] = True
-            self.ub[interv_idx] = 0.0
-            self.milp.set_ub([[interv_idx, 0.0]])
-        # otherwise, introduce integer cut constraint
-        else:
-            for i in range(z.shape[0]):
+        for i in range(z.shape[0]):
+            # introduce constraint to make MILP infeasible. Some solvers cannot handle empty rows
+            if z[i].nnz == 0:
+                A_ineq = sparse.csr_matrix([1.0]*z[i].shape[1])
+                A_ineq.resize((1, self.milp.A_ineq.shape[1]))
+                b_ineq = -1
+                self.A_ineq = sparse.vstack((self.A_ineq, A_ineq))
+                self.b_ineq += [b_ineq]
+                self.milp.add_ineq_constraints(A_ineq, [b_ineq])
+            # otherwise, introduce integer cut constraint
+            elif z[i].nnz == 1:
+                interv_idx = int(z[i].indices[0])
+                self.z_non_targetable[interv_idx] = True
+                self.ub[interv_idx] = 0.0
+                self.milp.set_ub([[interv_idx, 0.0]])
+            # otherwise, introduce integer cut constraint
+            else:
                 A_ineq = z[i].copy()
                 A_ineq.resize((1, self.milp.A_ineq.shape[1]))
                 b_ineq = np.sum(z[i]) - 1
@@ -86,14 +94,25 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
 
     def populateZ(self, n) -> Tuple[List, int]:
         x, _, status = self.milp.populate(n)
-        z = sparse.csr_matrix(
-            [[round(x[j][i],5) for i in self.idx_z] for j in range(len(x))])
-        z.resize((len(x), self.num_z))
+        if status in [OPTIMAL, TIME_LIMIT_W_SOL]:
+            z = sparse.csr_matrix(
+                [[round(x[j][i],5) for i in self.idx_z] for j in range(len(x))])
+            z.resize((len(x), self.num_z))
+            # remove duplicates
+            unique_row_indices, unique_columns = [], []
+            for row_idx, row in enumerate(z):
+                indices = row.indices.tolist()
+                if indices not in unique_columns:
+                    unique_columns.append(indices)
+                    unique_row_indices.append(row_idx)
+            z = z[unique_row_indices]
+        else:
+            z = sparse.csr_matrix((0,self.num_z))
         return z, status
 
     def clearObjective(self):
         self.milp.clear_objective()
-        self.c = [0] * len(self.c)
+        self.c = [0.0] * len(self.c)
 
     def fixObjective(self, c, cx):
         self.milp.set_ineq_constraint(2, c, cx)
@@ -217,7 +236,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
             else:
                 # Verify solution and explore subspace to get minimal intervention sets
                 logging.info('Found solution with objective value ' +
-                             str(min_cx))
+                             str(-min_cx))
                 logging.info(
                     'Minimizing number of interventions in subspace with ' +
                     str(sum(z.toarray()[0])) + ' possible targets.')
@@ -411,9 +430,9 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                 "it returns the same results but faster.")
         if self.solver == 'glpk':
             warn("GLPK does not natively support solution pool generation. "+ \
-            "An instable high-level implementation of populate is used. "
-            "Consider using compute_optimal instead of enumerate, as " + \
-            "it returns the same results but faster." )
+                "An instable high-level implementation of populate is used. "
+                "Consider using compute_optimal instead of enumerate, as " + \
+                "it returns the same results but faster." )
         endtime = time.time() + self.time_limit
         status = OPTIMAL
         sols = sparse.csr_matrix((0, self.num_z))
@@ -428,11 +447,11 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                 self.fixObjective(self.c_bu, np.inf)
                 x, min_cx, status = self.milp.solve()
                 z = sparse.csr_matrix([round(x[i],5) for i in self.idx_z])
-                if np.isnan(z[0, 0]):
+                if status not in [OPTIMAL, TIME_LIMIT_W_SOL]:
                     break
                 logging.info(
                     'Enumerating all solutions with the objective value: ' +
-                    str(min_cx))
+                    str(-min_cx))
                 self.fixObjective(self.c_bu, min_cx)
                 self.setMinIntvCostObjective()
             z, status = self.populateZ(self.max_solutions - sols.shape[0])

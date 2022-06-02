@@ -166,11 +166,7 @@ class Gurobi_MILP_LP(gp.Model):
             else:
                 raise Exception('Status code ' + str(status) +
                                 " not yet handeld.")
-            nSols = self.SolCount
-            x = [nan] * len(self._Model__vars)
-            for i in range(nSols):
-                self.setParam(grb.Param.SolutionNumber, i)
-                x += [self.getSolutionN()]
+            x = self.getSolutions()
             return x, min_cx, status
 
         except gp.GurobiError as e:
@@ -183,17 +179,21 @@ class Gurobi_MILP_LP(gp.Model):
     def set_objective(self, c):
         for i in range(len(self._Model__vars)):
             self._Model__vars[i].Obj = c[i]
+        self.update()
 
     def set_objective_idx(self, C):
         for c in C:
             self._Model__vars[c[0]].Obj = c[1]
+        self.update()
 
     def set_ub(self, ub):
         for i in range(len(ub)):
             self._Model__vars[ub[i][0]].ub = ub[i][1]
+        self.update()
 
     def set_time_limit(self, t):
         self.params.TimeLimit = t
+        self.update()
 
     def add_ineq_constraints(self, A_ineq, b_ineq):
         vars = self._Model__vars
@@ -204,6 +204,7 @@ class Gurobi_MILP_LP(gp.Model):
                     for j in range(len(vars))
                     if not A_ineq[i, j] == 0.0
                 ]) <= b_ineq[i])
+        self.update()
 
     def add_eq_constraints(self, A_eq, b_eq):
         vars = self._Model__vars
@@ -214,6 +215,7 @@ class Gurobi_MILP_LP(gp.Model):
                     for j in range(len(vars))
                     if not A_eq[i, j] == 0.0
                 ]) == b_eq[i])
+        self.update()
 
     def set_ineq_constraint(self, idx, a_ineq, b_ineq):
         constr = self._Model__constrs[idx]
@@ -225,9 +227,16 @@ class Gurobi_MILP_LP(gp.Model):
             constr.rhs = grb.INFINITY
         else:
             constr.rhs = b_ineq
+        self.update()
 
     def getSolution(self) -> list:
         return [x.X for x in self._Model__vars]
 
-    def getSolutionN(self) -> list:
-        return [x.Xn for x in self._Model__vars]
+    def getSolutions(self) -> list:
+        nSols = self.SolCount
+        x = []
+        for i in range(nSols):
+            self.setParam(grb.Param.SolutionNumber, i)
+            if self.PoolObjVal == self.ObjVal:
+                x += [[x.Xn for x in self._Model__vars]]
+        return x

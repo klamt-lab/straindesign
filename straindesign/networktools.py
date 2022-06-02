@@ -4,9 +4,11 @@ from sympy.core.numbers import One
 from sympy import Rational, nsimplify
 from typing import Dict, List
 import jpype
-from cobra import Model, Metabolite, Reaction
+from cobra import Model, Metabolite, Reaction, Configuration
 from cobra.util.array import create_stoichiometric_matrix
 import straindesign.efmtool as efm
+from straindesign import fva, select_solver
+from straindesign.names import *
 import logging
 
 
@@ -88,9 +90,174 @@ def extend_model_gpr(model, gkos, gkis):
             r.add_metabolites({model.metabolites.get_by_id(dt_met_id): -1.0})
     return reac_map
 
+def compress_model(model, no_par_compress_reacs=set()):
+    # Remove conservation relations.
+    logging.info('  Removing blocked reactions.')
+    remove_blocked_reactions(model)
+    logging.info(
+        '  Translating stoichiometric coefficients to rationals.')
+    stoichmat_coeff2rational(model)
+    logging.info('  Removing conservation relations.')
+    remove_conservation_relations(model)
+    odd = True
+    run = 1
+    cmp_mapReac = []
+    while True:
+        if odd:
+            logging.info('  Compression ' + str(run) +
+                            ': Applying compression from EFM-tool module.')
+            subT, reac_map_exp = compress_model_efmtool(model)
+            for new_reac, old_reac_val in reac_map_exp.items():
+                old_reacs_no_compress = [
+                    r for r in no_par_compress_reacs
+                    if r in old_reac_val
+                ]
+                if old_reacs_no_compress:
+                    [
+                        no_par_compress_reacs.remove(r)
+                        for r in old_reacs_no_compress
+                    ]
+                    no_par_compress_reacs.add(new_reac)
+        else:
+            logging.info('  Compression ' + str(run) +
+                            ': Lumping parallel reactions.')
+            subT, reac_map_exp = compress_model_parallel(
+                model, no_par_compress_reacs)
+        remove_conservation_relations(model)
+        if subT.shape[0] == subT.shape[1]:
+            logging.info('  Last step could not reduce size further (' +
+                            str(subT.shape[0]) + ' reactions).')
+            logging.info('  Network compression completed. (' +
+                            str(run - 1) + ' compression iterations)')
+            logging.info(
+                '  Translating stoichiometric coefficients back to float.'
+            )
+            stoichmat_coeff2float(model)
+            break
+        else:
+            logging.info('  Reduced to ' + str(subT.shape[1]) +
+                            ' reactions.')
+            # store the information for decompression in a Tuple
+            # (0) compression matrix, (1) reac_id dictornary {cmp_rid: {orig_rid1: factor1, orig_rid2: factor2}},
+            # (2) linear (True) or parallel (False) compression (3,4) ko and ki costs of expanded network
+            cmp_mapReac += [{
+                "reac_map_exp": reac_map_exp,
+                "odd": odd,
+            }]
+            if odd:
+                odd = False
+            else:
+                odd = True
+            run += 1
+    return cmp_mapReac
+
+def compress_modules(sd_modules,cmp_mapReac):
+    sd_modules = modules_coeff2rational(sd_modules)
+    for cmp in cmp_mapReac:
+        reac_map_exp = cmp["reac_map_exp"]
+        odd = cmp["odd"]
+        if odd:
+            for new_reac, old_reac_val in reac_map_exp.items():
+                for i, m in enumerate(sd_modules):
+                    for p in [
+                            CONSTRAINTS, INNER_OBJECTIVE,
+                            OUTER_OBJECTIVE, PROD_ID, MIN_GCP
+                    ]:
+                        if p in m and m[p] is not None:
+                            param = m[p]
+                            if p == CONSTRAINTS:
+                                for j, c in enumerate(m[p]):
+                                    if np.any([
+                                            k in old_reac_val
+                                            for k in c[0].keys()
+                                    ]):
+                                        lumped_reacs = [
+                                            k for k in c[0].keys()
+                                            if k in old_reac_val
+                                        ]
+                                        c[0][new_reac] = np.sum([
+                                            c[0].pop(k) *
+                                            old_reac_val[k]
+                                            for k in lumped_reacs
+                                        ])
+                            if p in [
+                                    INNER_OBJECTIVE,
+                                    OUTER_OBJECTIVE, PROD_ID
+                            ]:
+                                if np.any([
+                                        k in old_reac_val
+                                        for k in param.keys()
+                                ]):
+                                    lumped_reacs = [
+                                        k for k in param.keys()
+                                        if k in old_reac_val
+                                    ]
+                                    m[p][new_reac] = np.sum([
+                                        param.pop(k) *
+                                        old_reac_val[k]
+                                        for k in lumped_reacs
+                                        if k in old_reac_val
+                                    ])
+    sd_modules = modules_coeff2float(sd_modules)
+    return sd_modules
+
+def compress_ki_ko_cost(kicost,kocost,cmp_mapReac):
+    # kocost of lumped reactions: when reacs sequential: lowest of ko costs, when parallel: sum of ko costs
+    # kicost of lumped reactions: when reacs sequential: sum of ki costs, when parallel: lowest of ki costs
+    for cmp in cmp_mapReac:
+        reac_map_exp = cmp["reac_map_exp"]
+        odd = cmp["odd"]
+        cmp.update({KOCOST: kocost, KICOST: kicost})
+        if kocost:
+            ko_cost_new = {}
+            for r in reac_map_exp:
+                if np.any([
+                        s in kocost
+                        for s in reac_map_exp[r]
+                ]):
+                    if odd and not np.any([
+                            s in kicost
+                            for s in reac_map_exp[r]
+                    ]):
+                        ko_cost_new[r] = np.min([
+                            kocost[s]
+                            for s in reac_map_exp[r]
+                            if s in kocost
+                        ])
+                    elif not odd:
+                        ko_cost_new[r] = np.sum([
+                            kocost[s]
+                            for s in reac_map_exp[r]
+                            if s in kocost
+                        ])
+            kocost = ko_cost_new
+        if kicost:
+            ki_cost_new = {}
+            for r in reac_map_exp:
+                if np.any([
+                        s in kicost
+                        for s in reac_map_exp[r]
+                ]):
+                    if odd:
+                        ki_cost_new[r] = np.sum([
+                            kicost[s]
+                            for s in reac_map_exp[r]
+                            if s in kicost
+                        ])
+                    elif not odd and not np.any([
+                            s in kocost
+                            for s in reac_map_exp[r]
+                    ]):
+                        ki_cost_new[r] = np.min([
+                            kicost[s]
+                            for s in reac_map_exp[r]
+                            if s in kicost
+                        ])
+            kicost = ki_cost_new
+    return kicost,kocost,cmp_mapReac
 
 # compression function (mostly copied from efmtool)
-def compress_model(model):
+def compress_model_efmtool(model):
     for r in model.reactions:
         r.gene_reaction_rule = ''
     num_met = len(model.metabolites)
@@ -180,7 +347,7 @@ def compress_model(model):
     return sparse.csc_matrix(subT), rational_map
 
 
-def compress_model_parallel(model, protected_rxns=[]):
+def compress_model_parallel(model, protected_rxns=set()):
     # lump parallel reactions
     #
     # - exclude lumping of reactions with inhomogenous bounds
@@ -332,3 +499,65 @@ def stoichmat_coeff2float(model):
                 model.reactions[i]._metabolites[k] = float(v)
             else:
                 raise Exception('unknown data type')
+
+def modules_coeff2rational(sd_modules):
+    for i, module in enumerate(sd_modules):
+        for param in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+            if param in module and module[param] is not None:
+                if param == CONSTRAINTS:
+                    for constr in module[CONSTRAINTS]:
+                        for reac in constr[0].keys():
+                            constr[0][reac] = nsimplify(constr[0][reac])
+                if param in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+                    for reac in module[param].keys():
+                        module[param][reac] = nsimplify(module[param][reac])
+    return sd_modules
+
+def modules_coeff2float(sd_modules):
+    for i, module in enumerate(sd_modules):
+        for param in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+            if param in module and module[param] is not None:
+                if param == CONSTRAINTS:
+                    for constr in module[CONSTRAINTS]:
+                        for reac in constr[0].keys():
+                            constr[0][reac] = float(constr[0][reac])
+                if param in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+                    for reac in module[param].keys():
+                        module[param][reac] = float(module[param][reac])
+    return sd_modules
+
+def remove_dummy_bounds(model):
+    cobra_conf = Configuration()
+    bound_thres = max((abs(cobra_conf.lower_bound),abs(cobra_conf.upper_bound)))
+    if any([
+            any([abs(b) >= bound_thres
+                    for b in r.bounds])
+            for r in model.reactions
+        ]):
+        for i in range(len(model.reactions)):
+            logging.warning(
+            '  Removing reaction bounds when larger than the cobra-threshold of '
+            + str(round(bound_thres)) + '.')
+            if model.reactions[i].lower_bound <= -bound_thres:
+                model.reactions[i].lower_bound = -np.inf
+            if model.reactions[i].upper_bound >= bound_thres:
+                model.reactions[i].upper_bound = np.inf
+
+def bound_blocked_or_irrevers_fva(model,solver=None):
+    # FVAs to identify blocked, irreversible and essential reactions, as well as non-bounding bounds
+    flux_limits = fva(model)
+    if select_solver(solver) in [SCIP, GLPK]:
+        tol = 1e-10  # use tolerance for tightening problem bounds
+    else:
+        tol = 0.0
+    for (reac_id, limits) in flux_limits.iterrows():
+        r = model.reactions.get_by_id(reac_id)
+        # modify _lower_bound and _upper_bound to make changes permanent
+        if r.lower_bound < 0.0 and limits.minimum - tol > r.lower_bound:
+            r._lower_bound = -np.inf
+        if limits.minimum >= tol:
+            r._lower_bound = max([0.0, r._lower_bound])
+        if r.upper_bound > 0.0 and limits.maximum + tol < r.upper_bound:
+            r._upper_bound = np.inf
+        if limits.maximum <= -tol:
+            r._upper_bound = min([0.0, r._upper_bound])
