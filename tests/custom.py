@@ -1,43 +1,48 @@
 from os.path import dirname, abspath
-from cobra.io import read_sbml_model
+from cobra.io import read_sbml_model, load_model
 import straindesign as sd
 from straindesign.names import *
 from numpy import inf, isinf
 from cobra import Configuration
+import logging
 
-milp = sd.MILP_LP(solver='cplex')
-milp.solve()
+logging.basicConfig(level="INFO")
 
 curr_solver = 'gurobi'
-model_small_example = read_sbml_model(dirname(abspath(__file__)) + "/model_small_example.xml")
-
-# with no solver specified
-solver1 = sd.select_solver()
-assert(solver1 in [CPLEX,GUROBI,GLPK,SCIP])
-
-# with solver specified
-solver2 = sd.select_solver('scip')
-assert(solver2 == SCIP)
-
-# with model-specified solver
-model_small_example.solver = 'glpk'
-solver3 = sd.select_solver(None, model_small_example)
-assert(solver3 == GLPK)
-
-# with cobrapy-specified solver
-conf = Configuration()
-conf.solver = 'cplex'
-solver4 = sd.select_solver()
-assert(solver4 == CPLEX)
-
-# with solver in model that overwrites the global specification
-model_small_example.solver = 'gurobi'
-solver5 = sd.select_solver(None, model_small_example)
-assert(solver5 == GUROBI)
-
-# load solvers
-from straindesign.cplex_interface import Cplex_MILP_LP
-from straindesign.gurobi_interface import Gurobi_MILP_LP
-from straindesign.glpk_interface import GLPK_MILP_LP
-from straindesign.scip_interface import SCIP_MILP, SCIP_LP
-pass
+comp_approach = BEST
+model_gpr = read_sbml_model(dirname(abspath(__file__)) + "/model_gpr.xml")
+modules = [sd.SDModule(model_gpr, SUPPRESS, constraints=["1.0 rd_ex >= 1.0 "])]
+modules += [sd.SDModule(model_gpr, PROTECT, constraints=[[{'r_bm':1.0}, '>=' ,1.0 ]])]
+kocost = {
+    'rs_up':1.0,
+    'rd_ex':1.0,
+    'rp_ex':1.1,
+    'r_bm':0.75
+}
+gkocost = {
+    'g1':1.0,
+    'g2':1.0,
+    'g4':3.0,
+    'g5':2.0,
+    'g6':1.0,
+    'g7':1.0,
+    'g8':1.0,
+    'g9':1.0,
+}
+gkicost = {
+    'g3':1.0,
+}
+regcost = {
+    'g4 <= 0.4': 1.2
+}
+sd_setup = {MODULES:modules, 
+            MAX_COST:2, 
+            MAX_SOLUTIONS:inf, 
+            SOLUTION_APPROACH:comp_approach,
+            KOCOST:kocost,
+            GKOCOST:gkocost,
+            GKICOST:gkicost,
+            REGCOST:regcost,
+            SOLVER:curr_solver}
+solution = sd.compute_strain_designs(model_gpr, sd_setup=sd_setup)
+assert(len(solution.gene_sd)==4)

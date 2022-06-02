@@ -821,17 +821,17 @@ def plot_flux_space(model, axes, **kwargs):
                                     obj_num=axes[2][0],
                                     obj_den=axes[2][1],
                                     obj_sense='maximize')
-                datapoints_top[i] += [len(datapoints)]
+                datapoints_top[-1] += [len(datapoints)]
                 datapoints += [
                     array([x, y, floor_dec(sol_vmax.objective_value, 9)])
                 ]
-                datapoints_bottom[i] += [len(datapoints)]
+                datapoints_bottom[-1] += [len(datapoints)]
                 datapoints += [
                     array([x, y, ceil_dec(sol_vmin.objective_value, 9)])
                 ]
             if any([
                     isnan(datapoints[d][2])
-                    for d in datapoints_top[i] + datapoints_bottom[i]
+                    for d in datapoints_top[-1] + datapoints_bottom[-1]
             ]):
                 logging.warning(
                     'warning: An optimization finished infeasible. Some sample points are missing.'

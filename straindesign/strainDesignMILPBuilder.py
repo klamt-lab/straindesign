@@ -1,12 +1,11 @@
 from straindesign.strainDesignModule import MINIMIZE
 import numpy as np
 from scipy import sparse
-from cobra.util import solvers, create_stoichiometric_matrix
-from cobra import Model
-from cobra.core import Configuration
+from cobra.util import create_stoichiometric_matrix
+from cobra import Model, Configuration
 from typing import List, Tuple
 from straindesign import SDModule, IndicatorConstraints, lineqlist2mat, linexprdict2mat, MILP_LP, SDPool, \
-                         avail_solvers, select_solver
+                         avail_solvers, select_solver, remove_dummy_bounds
 from straindesign.strainDesignModule import *
 from straindesign.names import *
 import logging
@@ -39,11 +38,13 @@ class StrainDesignMILPBuilder:
                 raise Exception('No solver available. Please ensure that one of the following '\
                     'solvers is avaialable in your Python environment: CPLEX, Gurobi, SCIP, GLPK')
         self.solver = select_solver(self.solver, model)
+        cobra_conf = Configuration()
+        bound_thres = max((abs(cobra_conf.lower_bound),abs(cobra_conf.upper_bound)))
         if self.M is None and self.solver == 'glpk':
             logging.warning(
-                'GLPK only supports strain design computation with the bigM method. Default: M=1000'
-            )
-            self.M = 1000.0
+                'GLPK only supports strain design computation with the bigM method. Using cobra bound: '+str(bound_thres)+\
+                ' as M.')
+            self.M = bound_thres
         elif self.M is None:
             self.M = np.inf
         # the matrices in sd_modules, ko_cost and ki_cost should be numpy.array or scipy.sparse (csr, csc, lil) format
@@ -102,15 +103,8 @@ class StrainDesignMILPBuilder:
         ]  # Add instances of the class 'Indicator_constraint' later
         # Initialize association between z and variables and variables
         self.z_map_vars = sparse.csc_matrix((numr, numr))
-
-        # replace bounds with inf if above a certain threshold
-        bound_thres = 1000
-        for i in range(len(self.model.reactions)):
-            if self.model.reactions[i].lower_bound <= -bound_thres:
-                model.reactions[i].lower_bound = -np.inf
-            if model.reactions[i].upper_bound >= bound_thres:
-                model.reactions[i].upper_bound = np.inf
-
+        # replace bounds with inf if above a cobra bound threshold
+        remove_dummy_bounds(self.model)
         logging.info('Constructing strain design MILP for solver: ' +
                      self.solver + '.')
         for i in range(len(sd_modules)):
