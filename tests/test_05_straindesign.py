@@ -3,7 +3,7 @@ from .test_01_load_models_and_solvers import *
 import straindesign as sd
 from numpy import inf
 
-def test_mcs(curr_solver,model_small_example,comp_approach,bigM):
+def test_mcs(curr_solver,model_small_example,comp_approach,bigM,compression):
     modules = [sd.SDModule(model_small_example, SUPPRESS, constraints=["R3 - 0.5 R1 <= 0.0", "R2 <= 0", "R1 >= 0.1"])]
     modules += [sd.SDModule(model_small_example, SUPPRESS, constraints=["1.0 R3 - 0.5 R1 - 0.5 R2 <= 0.0 ","1.0 R2 >= 0.0 ","1.0 R1 >= 0.1 "])]
     modules += [sd.SDModule(model_small_example, PROTECT, constraints=["1.0 R3 >= 1.0 "])]
@@ -16,6 +16,7 @@ def test_mcs(curr_solver,model_small_example,comp_approach,bigM):
                 SOLUTION_APPROACH:comp_approach,
                 KICOST:kicost,
                 SOLVER:curr_solver,
+                'compress':compression,
                 'M':bigM}
     solution = sd.compute_strain_designs(model_small_example, sd_setup=sd_setup)
     sols = solution.get_reaction_sd()
@@ -26,7 +27,7 @@ def test_mcs(curr_solver,model_small_example,comp_approach,bigM):
     assert({'R10': -1.0} in sols)
 
 
-def test_mcs_opt(curr_solver,model_weak_coupling,comp_approach,bigM):
+def test_mcs_opt(curr_solver,model_weak_coupling,comp_approach,bigM,compression):
     """Test MCS computation with nested optimization constraints."""
     modules = [sd.SDModule(model_weak_coupling, SUPPRESS, inner_objective="r_BM", constraints=["r_P - 0.4 r_S <= 0", "r_S >= 0.1"])]
     modules += [sd.SDModule(model_weak_coupling, PROTECT, constraints=["r_BM >= 0.2"])]
@@ -58,6 +59,7 @@ def test_mcs_opt(curr_solver,model_weak_coupling,comp_approach,bigM):
                 KICOST:kicost,
                 REGCOST:regcost,
                 SOLVER:curr_solver,
+                'compress':compression,
                 'M':bigM}
     solution = sd.compute_strain_designs(model_weak_coupling, sd_setup=sd_setup)
     assert(len(solution.reaction_sd) == 3)
@@ -97,6 +99,7 @@ def test_mcs_gpr(curr_solver,model_gpr,comp_approach,bigM):
                 GKICOST:gkicost,
                 REGCOST:regcost,
                 SOLVER:curr_solver,
+                'compress':True,
                 'M':bigM}
     solution = sd.compute_strain_designs(model_gpr, sd_setup=sd_setup)
     assert(len(solution.gene_sd)==4)
@@ -141,7 +144,8 @@ def test_mcs_gpr2(curr_solver,model_gpr,comp_approach,bigM):
     assert(len(solution.gene_sd)==4)
     assert(any(['G_g4 <= 0.4' in sol for sol in solution.get_gene_sd()]))
     
-def test_optknock(curr_solver,model_weak_coupling,comp_approach_best_populate,bigM):
+def test_optknock(curr_solver,model_weak_coupling,comp_approach_best_populate,bigM,compression):
+    """Test OptKnock computation."""
     modules = [sd.SDModule(model_weak_coupling, OPTKNOCK, outer_objective='r_P', inner_objective='r_BM', constraints='r_BM>=1')] # constraints=[[{'r_BM':1.0}, '>=' ,1.0 ]]
     kocost = {
         'r1':1,
@@ -171,11 +175,13 @@ def test_optknock(curr_solver,model_weak_coupling,comp_approach_best_populate,bi
                 KICOST:kicost,
                 REGCOST:regcost,
                 SOLVER:curr_solver,
+                'compress':compression,
                 'M':bigM}
     solution = sd.compute_strain_designs(model_weak_coupling, sd_setup=sd_setup)
     assert(len(solution.reaction_sd)==3)
     
-def test_robustknock(curr_solver,model_weak_coupling,comp_approach_best_populate,bigM):
+def test_robustknock(curr_solver,model_weak_coupling,comp_approach_best_populate,bigM,compression):
+    """Test RobustKnock computation."""
     modules = [sd.SDModule(model_weak_coupling, ROBUSTKNOCK, outer_objective='r_P', inner_objective='r_BM', constraints=[[{'r_BM':1.0}, '>=' ,1.0 ]])]
     kocost = {
         'r1':1,
@@ -205,6 +211,7 @@ def test_robustknock(curr_solver,model_weak_coupling,comp_approach_best_populate
                 KICOST:kicost,
                 REGCOST:regcost,
                 SOLVER:curr_solver,
+                'compress':compression,
                 'M':bigM}
     solution = sd.compute_strain_designs(model_weak_coupling, sd_setup=sd_setup)
     for s in solution.get_reaction_sd():
@@ -216,7 +223,8 @@ def test_robustknock(curr_solver,model_weak_coupling,comp_approach_best_populate
         sol_min_P = sd.fba(m,obj_sense='minimize',obj='r_P',constraints="r_BM >= "+str(sol_max_BM.objective_value))
         assert(sol_min_P.objective_value > 0)
         
-def test_optcouple(curr_solver,model_weak_coupling,comp_approach_best_populate,bigM):
+def test_optcouple(curr_solver,model_weak_coupling,comp_approach_best_populate,bigM,compression):
+    """Test OptCouple computation."""
     modules = [sd.SDModule(model_weak_coupling, OPTCOUPLE, prod_id='r_P', inner_objective='r_BM', min_gcp=1.0)]
     kocost = {
         'r1':1,
@@ -246,6 +254,7 @@ def test_optcouple(curr_solver,model_weak_coupling,comp_approach_best_populate,b
                 KICOST:kicost,
                 REGCOST:regcost,
                 SOLVER:curr_solver,
+                'compress':compression,
                 'M':bigM}
     solution = sd.compute_strain_designs(model_weak_coupling, sd_setup=sd_setup)
     assert(len(solution.get_reaction_sd()) == 2)

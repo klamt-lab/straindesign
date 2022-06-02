@@ -6,6 +6,7 @@ import subprocess
 import sympy
 import io
 from contextlib import redirect_stdout, redirect_stderr
+# import psutil
 
 efmtool_jar = os.path.join(os.path.dirname(__file__), 'efmtool.jar')
 jpype.addClassPath(efmtool_jar)
@@ -14,6 +15,7 @@ if not jpype.isJVMStarted():
             io.StringIO()):  # suppress console output
         # mem_bytes = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')  # e.g. 4015976448
         # mem_mb = round(mem_bytes/(1024.**2)*0.75) # allow 75% of total memory for heap space
+        # mem_mb = round(psutil.virtual_memory()[0]/(1024.**2)*0.75)
         # jpype.startJVM( jpype.getDefaultJVMPath() , f"-Xmx{mem_mb}m" )
         jpype.startJVM()
 import jpype.imports

@@ -11,7 +11,6 @@ from straindesign import fva, select_solver, parse_constraints
 from straindesign.names import *
 import logging
 
-
 def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
     # 1) Remove gpr rules from blocked reactions
     blocked_reactions = [
