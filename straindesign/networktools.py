@@ -1,16 +1,78 @@
 import numpy as np
 from scipy import sparse
 from sympy.core.numbers import One
-from sympy import Rational, nsimplify
+from sympy import Rational, nsimplify, parse_expr, to_dnf
 from typing import Dict, List
 import jpype
 from cobra import Model, Metabolite, Reaction, Configuration
 from cobra.util.array import create_stoichiometric_matrix
 import straindesign.efmtool as efm
-from straindesign import fva, select_solver
+from straindesign import fva, select_solver, parse_constraints
 from straindesign.names import *
 import logging
 
+
+def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
+    # 1) Remove gpr rules from blocked reactions
+    blocked_reactions = [
+        reac.id for reac in model.reactions if reac.bounds == (0, 0)
+    ]
+    for rid in blocked_reactions:
+        model.reactions.get_by_id(rid).gene_reaction_rule = ''
+    for g in model.genes[::
+                         -1]:  # iterate in reverse order to avoid mixing up the order of the list when removing genes
+        if not g.reactions:
+            model.genes.remove(g)
+    protected_genes = set()
+    # 1. Protect genes that only occur in essential reactions
+    for g in model.genes:
+        if not g.reactions or {r.id for r in g.reactions
+                              }.issubset(essential_reacs):
+            protected_genes.add(g)
+    # 2. Protect genes that are essential to essential reactions
+    for r in [model.reactions.get_by_id(s) for s in essential_reacs]:
+        for g in r.genes:
+            exp = r.gene_reaction_rule.replace(' or ',
+                                               ' | ').replace(' and ', ' & ')
+            exp = to_dnf(parse_expr(exp, {g.id: False}), force=True)
+            if exp == False:
+                protected_genes.add(g)
+    # 3. Remove essential genes, and knockouts without impact from gko_costs
+    [gkos.pop(pg.id) for pg in protected_genes if pg.id in gkos]
+    # 4. Add all notknockable genes to the protected list
+    [
+        protected_genes.add(g)
+        for g in model.genes
+        if (g.id not in gkos) and (g.name not in gkos)
+    ]  # support names or ids in gkos
+    # genes with kiCosts are kept
+    gki_ids = [g.id for g in model.genes if (g.id in gkis) or (g.name in gkis)
+              ]  # support names or ids in gkis
+    protected_genes = protected_genes.difference(
+        {model.genes.get_by_id(g) for g in gki_ids})
+    protected_genes_dict = {pg.id: True for pg in protected_genes}
+    # 5. Simplify gpr rules and discard rules that cannot be knocked out
+    for r in model.reactions:
+        if r.gene_reaction_rule:
+            exp = r.gene_reaction_rule.replace(' or ',
+                                               ' | ').replace(' and ', ' & ')
+            exp = to_dnf(parse_expr(exp, protected_genes_dict),
+                         simplify=True,
+                         force=True)
+            if exp == True:
+                model.reactions.get_by_id(r.id).gene_reaction_rule = ''
+            elif exp == False:
+                logging.error(
+                    'Something went wrong during gpr rule simplification.')
+            else:
+                model.reactions.get_by_id(
+                    r.id).gene_reaction_rule = str(exp).replace(
+                        ' & ', ' and ').replace(' | ', ' or ')
+    # 6. Remove obsolete genes and protected genes
+    for g in model.genes[::-1]:
+        if not g.reactions or g in protected_genes:
+            model.genes.remove(g)
+    return gkos
 
 def extend_model_gpr(model, gkos, gkis):
     # Split reactions when necessary
@@ -90,6 +152,72 @@ def extend_model_gpr(model, gkos, gkis):
             r.add_metabolites({model.metabolites.get_by_id(dt_met_id): -1.0})
     return reac_map
 
+def extend_model_regulatory(model, reg_cost, kocost):
+    keywords = set(model.reactions.list_attr('id'))
+    if '' in keywords:
+        keywords.remove('')
+    for k, v in reg_cost.copy().items():
+        # generate name for regulatory pseudoreaction
+        try:
+            constr = parse_constraints(k, keywords)[0]
+        except:
+            raise Exception(
+                'Regulatory constraints could not be parsed. Please revise.')
+        reacs_dict = constr[0]
+        eqsign = constr[1]
+        rhs = constr[2]
+        reg_name = ''
+        for l, w in reacs_dict.items():
+            if w < 0:
+                reg_name += 'n' + str(w) + '_' + l
+            else:
+                reg_name += 'p' + str(w) + '_' + l
+            reg_name += '_'
+        if eqsign == '=':
+            reg_name += 'eq_'
+        elif eqsign == '<=':
+            reg_name += 'le_'
+        elif eqsign == '>=':
+            reg_name += 'ge_'
+        reg_name += str(rhs)
+        reg_cost.pop(k)
+        reg_cost.update({
+            reg_name: {
+                'str': k,
+                'cost': v
+            }
+        })
+        reg_pseudomet_name = 'met_' + reg_name
+        # add pseudometabolite
+        m = Metabolite(reg_pseudomet_name)
+        model.add_metabolites(m)
+        # add pseudometabolite to stoichiometries
+        for l, w in reacs_dict.items():
+            r = model.reactions.get_by_id(l)
+            r.add_metabolites({m: w})
+        # add pseudoreaction that defines the bound
+        s = Reaction("bnd_" + reg_name)
+        model.add_reactions([s])
+        s.reaction = reg_pseudomet_name + ' --> '
+        if eqsign == '=':
+            s._lower_bound = -np.inf
+            s._upper_bound = rhs
+            s._lower_bound = rhs
+        elif eqsign == '<=':
+            s._lower_bound = -np.inf
+            s._upper_bound = rhs
+        elif eqsign == '>=':
+            s._upper_bound = np.inf
+            s._lower_bound = rhs
+        # add knockable pseudoreaction and add it to the kocost list
+        t = Reaction(reg_name)
+        model.add_reactions([t])
+        t.reaction = '--> ' + reg_pseudomet_name
+        t._upper_bound = np.inf
+        t._lower_bound = -np.inf
+        kocost.update({reg_name: v})
+    return kocost
+
 def compress_model(model, no_par_compress_reacs=set()):
     # Remove conservation relations.
     logging.info('  Removing blocked reactions.')
@@ -124,17 +252,7 @@ def compress_model(model, no_par_compress_reacs=set()):
             subT, reac_map_exp = compress_model_parallel(
                 model, no_par_compress_reacs)
         remove_conservation_relations(model)
-        if subT.shape[0] == subT.shape[1]:
-            logging.info('  Last step could not reduce size further (' +
-                            str(subT.shape[0]) + ' reactions).')
-            logging.info('  Network compression completed. (' +
-                            str(run - 1) + ' compression iterations)')
-            logging.info(
-                '  Translating stoichiometric coefficients back to float.'
-            )
-            stoichmat_coeff2float(model)
-            break
-        else:
+        if subT.shape[0] > subT.shape[1]:
             logging.info('  Reduced to ' + str(subT.shape[1]) +
                             ' reactions.')
             # store the information for decompression in a Tuple
@@ -149,6 +267,16 @@ def compress_model(model, no_par_compress_reacs=set()):
             else:
                 odd = True
             run += 1
+        else:
+            logging.info('  Last step could not reduce size further (' +
+                            str(subT.shape[0]) + ' reactions).')
+            logging.info('  Network compression completed. (' +
+                            str(run - 1) + ' compression iterations)')
+            logging.info(
+                '  Translating stoichiometric coefficients back to float.'
+            )
+            break
+    stoichmat_coeff2float(model)
     return cmp_mapReac
 
 def compress_modules(sd_modules,cmp_mapReac):
@@ -201,7 +329,7 @@ def compress_modules(sd_modules,cmp_mapReac):
     sd_modules = modules_coeff2float(sd_modules)
     return sd_modules
 
-def compress_ki_ko_cost(kicost,kocost,cmp_mapReac):
+def compress_ki_ko_cost(kocost,kicost,cmp_mapReac):
     # kocost of lumped reactions: when reacs sequential: lowest of ko costs, when parallel: sum of ko costs
     # kicost of lumped reactions: when reacs sequential: sum of ki costs, when parallel: lowest of ki costs
     for cmp in cmp_mapReac:
@@ -254,7 +382,81 @@ def compress_ki_ko_cost(kicost,kocost,cmp_mapReac):
                             if s in kicost
                         ])
             kicost = ki_cost_new
-    return kicost,kocost,cmp_mapReac
+    return kocost,kicost,cmp_mapReac
+
+def expand_sd(sd,cmp_mapReac):
+    # expand mcs by applying the compression steps in the reverse order
+    cmp_map = cmp_mapReac[::-1]
+    for exp in cmp_map:
+        reac_map_exp = exp["reac_map_exp"]  # expansion map
+        ko_cost = exp[KOCOST]
+        ki_cost = exp[KICOST]
+        par_reac_cmp = not exp[
+            "odd"]  # if parallel or sequential reactions were lumped
+        for r_cmp, r_orig in reac_map_exp.items():
+            if len(r_orig) > 1:
+                for m in sd.copy():
+                    if r_cmp in m:
+                        val = m[r_cmp]
+                        del m[r_cmp]
+                        if val < 0:  # case: KO
+                            if par_reac_cmp:
+                                new_m = m.copy()
+                                for d in r_orig:
+                                    if d in ko_cost:
+                                        new_m[d] = val
+                                sd += [new_m]
+                            else:
+                                for d in r_orig:
+                                    if d in ko_cost:
+                                        new_m = m.copy()
+                                        new_m[d] = val
+                                        sd += [new_m]
+                        elif val > 0:  # case: KI
+                            if par_reac_cmp:
+                                for d in r_orig:
+                                    if d in ki_cost:
+                                        new_m = m.copy()
+                                        new_m[d] = val
+                                        # other reactions do not need to be knocked in
+                                        for f in [
+                                                e for e in r_orig
+                                                if (e in ki_cost) and e != d
+                                        ]:
+                                            new_m[f] = 0.0
+                                        sd += [new_m]
+                            else:
+                                new_m = m.copy()
+                                for d in r_orig:
+                                    if d in ki_cost:
+                                        new_m[d] = val
+                                sd += [new_m]
+                        elif val == 0:  # case: KI that was not introduced
+                            new_m = m.copy(
+                            )  # assume that none of the expanded
+                            for d in r_orig:  # reactions are inserted, neither
+                                if d in ki_cost:  # parallel, nor sequential
+                                    new_m[d] = val
+                            sd += [new_m]
+                        sd.remove(m)
+    return sd
+
+def filter_sd_maxcost(sd,max_cost,kocost,kicost):
+    # eliminate mcs that are too expensive
+    if max_cost:
+        costs = [
+            np.sum([
+                kocost[k] if v < 0 else (kicost[k] if v>0 else 0)
+                for k, v in m.items()
+            ])
+            for m in sd
+        ]
+        sd = [
+            sd[i]
+            for i in range(len(sd))
+            if costs[i] <= max_cost + 1e-8
+        ]
+    return sd
 
 # compression function (mostly copied from efmtool)
 def compress_model_efmtool(model):

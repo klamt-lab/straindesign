@@ -5,161 +5,8 @@ from cobra import Model, Metabolite, Reaction, Configuration
 from straindesign import StrainDesignMILP, SDModule, SDSolution, avail_solvers, select_solver, fva, parse_constraints
 from straindesign.names import *
 from straindesign.networktools import *
-from sympy import nsimplify, parse_expr, to_dnf
 import io
 import logging
-
-
-def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
-    # 1) Remove gpr rules from blocked reactions
-    blocked_reactions = [
-        reac.id for reac in model.reactions if reac.bounds == (0, 0)
-    ]
-    for rid in blocked_reactions:
-        model.reactions.get_by_id(rid).gene_reaction_rule = ''
-    for g in model.genes[::
-                         -1]:  # iterate in reverse order to avoid mixing up the order of the list when removing genes
-        if not g.reactions:
-            model.genes.remove(g)
-    protected_genes = set()
-    # 1. Protect genes that only occur in essential reactions
-    for g in model.genes:
-        if not g.reactions or {r.id for r in g.reactions
-                              }.issubset(essential_reacs):
-            protected_genes.add(g)
-    # 2. Protect genes that are essential to essential reactions
-    for r in [model.reactions.get_by_id(s) for s in essential_reacs]:
-        for g in r.genes:
-            exp = r.gene_reaction_rule.replace(' or ',
-                                               ' | ').replace(' and ', ' & ')
-            exp = to_dnf(parse_expr(exp, {g.id: False}), force=True)
-            if exp == False:
-                protected_genes.add(g)
-    # 3. Remove essential genes, and knockouts without impact from gko_costs
-    [gkos.pop(pg.id) for pg in protected_genes if pg.id in gkos]
-    # 4. Add all notknockable genes to the protected list
-    [
-        protected_genes.add(g)
-        for g in model.genes
-        if (g.id not in gkos) and (g.name not in gkos)
-    ]  # support names or ids in gkos
-    # genes with kiCosts are kept
-    gki_ids = [g.id for g in model.genes if (g.id in gkis) or (g.name in gkis)
-              ]  # support names or ids in gkis
-    protected_genes = protected_genes.difference(
-        {model.genes.get_by_id(g) for g in gki_ids})
-    protected_genes_dict = {pg.id: True for pg in protected_genes}
-    # 5. Simplify gpr rules and discard rules that cannot be knocked out
-    for r in model.reactions:
-        if r.gene_reaction_rule:
-            exp = r.gene_reaction_rule.replace(' or ',
-                                               ' | ').replace(' and ', ' & ')
-            exp = to_dnf(parse_expr(exp, protected_genes_dict),
-                         simplify=True,
-                         force=True)
-            if exp == True:
-                model.reactions.get_by_id(r.id).gene_reaction_rule = ''
-            elif exp == False:
-                logging.error(
-                    'Something went wrong during gpr rule simplification.')
-            else:
-                model.reactions.get_by_id(
-                    r.id).gene_reaction_rule = str(exp).replace(
-                        ' & ', ' and ').replace(' | ', ' or ')
-    # 6. Remove obsolete genes and protected genes
-    for g in model.genes[::-1]:
-        if not g.reactions or g in protected_genes:
-            model.genes.remove(g)
-    return gkos
-
-
-def extend_model_regulatory(model, regcost, kocost):
-    for reg_name, vals in regcost.items():
-        lhs = vals['lhs']
-        eqsign = vals['eqsign']
-        rhs = vals['rhs']
-        cost = vals['cost']
-        reg_pseudomet_name = 'met_' + reg_name
-        # add pseudometabolite
-        m = Metabolite(reg_pseudomet_name)
-        model.add_metabolites(m)
-        # add pseudometabolite to stoichiometries
-        for l, w in lhs.items():
-            r = model.reactions.get_by_id(l)
-            r.add_metabolites({m: w})
-        # add pseudoreaction that defines the bound
-        s = Reaction("bnd_" + reg_name)
-        model.add_reactions([s])
-        s.reaction = reg_pseudomet_name + ' --> '
-        if eqsign == '=':
-            s._lower_bound = -np.inf
-            s._upper_bound = rhs
-            s._lower_bound = rhs
-        elif eqsign == '<=':
-            s._lower_bound = -np.inf
-            s._upper_bound = rhs
-        elif eqsign == '>=':
-            s._upper_bound = np.inf
-            s._lower_bound = rhs
-        # add knockable pseudoreaction and add it to the kocost list
-        t = Reaction(reg_name)
-        model.add_reactions([t])
-        t.reaction = '--> ' + reg_pseudomet_name
-        t._upper_bound = np.inf
-        t._lower_bound = -np.inf
-        kocost.update({reg_name: cost})
-    return kocost
-
-
-def preprocess_regulatory(model, reg_cost, has_gene_names):
-    keywords = set(
-        model.reactions.list_attr('id') + model.genes.list_attr('name') +
-        model.genes.list_attr('id'))
-    if '' in keywords:
-        keywords.remove('')
-    if has_gene_names:
-        g_id_name_dict = {
-            k: v for k, v in zip(model.genes.list_attr('id'),
-                                 model.genes.list_attr('name'))
-        }
-    for k, v in reg_cost.copy().items():
-        # generate name for regulatory pseudoreaction
-        try:
-            constr = parse_constraints(k, keywords)[0]
-        except:
-            raise Exception(
-                'Regulatory constraints could not be parsed. Please revise.')
-        reacs_dict = constr[0]
-        if has_gene_names:
-            [reacs_dict.update({g_id_name_dict[l]: reacs_dict.pop(l)}) \
-                for l in reacs_dict.copy().keys() if l in g_id_name_dict]
-        eqsign = constr[1]
-        rhs = constr[2]
-        reg_name = ''
-        for l, w in reacs_dict.items():
-            if w < 0:
-                reg_name += 'n' + str(w) + '_' + l
-            else:
-                reg_name += 'p' + str(w) + '_' + l
-            reg_name += '_'
-        if eqsign == '=':
-            reg_name += 'eq_'
-        elif eqsign == '<=':
-            reg_name += 'le_'
-        elif eqsign == '>=':
-            reg_name += 'ge_'
-        reg_name += str(rhs)
-        reg_cost.pop(k)
-        reg_cost.update({
-            reg_name: {
-                'str': k,
-                'lhs': reacs_dict,
-                'eqsign': eqsign,
-                'rhs': rhs,
-                'cost': v
-            }
-        })
-    return reg_cost
 
 class StrainDesigner(StrainDesignMILP):
 
@@ -243,8 +90,6 @@ class StrainDesigner(StrainDesignMILP):
         self.orig_reg_cost = self.uncmp_reg_cost
         self.compress = kwargs['compress']
         self.M = kwargs['M']
-        self.uncmp_reg_cost = preprocess_regulatory(self.uncmp_model, self.uncmp_reg_cost,
-                                                    self.has_gene_names)
         if self.gene_sd:
             self.orig_gko_cost = self.uncmp_gko_cost
             self.orig_gki_cost = self.uncmp_gki_cost
@@ -279,22 +124,7 @@ class StrainDesigner(StrainDesignMILP):
         # FVAs to identify blocked, irreversible and essential reactions, as well as non-bounding bounds
         logging.info(
             '  FVA to identify blocked reactions and irreversibilities.')
-        flux_limits = fva(cmp_model, solver=kwargs[SOLVER])
-        if kwargs[SOLVER] in ['scip', 'glpk']:
-            tol = 1e-10  # use tolerance for tightening problem bounds
-        else:
-            tol = 0.0
-        for (reac_id, limits) in flux_limits.iterrows():
-            r = cmp_model.reactions.get_by_id(reac_id)
-            # modify _lower_bound and _upper_bound to make changes permanent
-            if r.lower_bound < 0.0 and limits.minimum - tol > r.lower_bound:
-                r._lower_bound = -np.inf
-            if limits.minimum >= tol:
-                r._lower_bound = np.max([0.0, r._lower_bound])
-            if r.upper_bound > 0.0 and limits.maximum + tol < r.upper_bound:
-                r._upper_bound = np.inf
-            if limits.maximum <= -tol:
-                r._upper_bound = np.min([0.0, r._upper_bound])
+        bound_blocked_or_irrevers_fva(model,solver=kwargs[SOLVER])
         logging.info('  FVA(s) to identify essential reactions.')
         essential_reacs = set()
         for m in sd_modules:
@@ -304,7 +134,7 @@ class StrainDesigner(StrainDesignMILP):
                                   solver=kwargs[SOLVER],
                                   constraints=m[CONSTRAINTS])
                 for (reac_id, limits) in flux_limits.iterrows():
-                    if np.min(abs(limits)) > tol and np.prod(
+                    if np.min(abs(limits)) > 1e-10 and np.prod(
                             np.sign(limits)) > 0:  # find essential
                         essential_reacs.add(reac_id)
         # remove ko-costs (and thus knockability) of essential reactions
@@ -401,7 +231,7 @@ class StrainDesigner(StrainDesignMILP):
                                   solver=kwargs[SOLVER],
                                   constraints=m[CONSTRAINTS])
                 for (reac_id, limits) in flux_limits.iterrows():
-                    if np.min(abs(limits)) > tol and np.prod(
+                    if np.min(abs(limits)) > 1e-10 and np.prod(
                             np.sign(limits)) > 0:  # find essential
                         essential_reacs.add(reac_id)
         # remove ko-costs (and thus knockability) of essential reactions
@@ -433,76 +263,9 @@ class StrainDesigner(StrainDesignMILP):
             len(self.cmp_ko_cost) + len(self.cmp_ki_cost) -
             len(essential_kis)) + " targetable reactions")
         super().__init__(cmp_model, sd_modules, *args, **kwargs1)
-
-    def expand_sd(self, sd):
-        # expand mcs by applying the compression steps in the reverse order
-        cmp_map = self.cmp_mapReac[::-1]
-        for exp in cmp_map:
-            reac_map_exp = exp["reac_map_exp"]  # expansion map
-            ko_cost = exp[KOCOST]
-            ki_cost = exp[KICOST]
-            par_reac_cmp = not exp[
-                "odd"]  # if parallel or sequential reactions were lumped
-            for r_cmp, r_orig in reac_map_exp.items():
-                if len(r_orig) > 1:
-                    for m in sd.copy():
-                        if r_cmp in m:
-                            val = m[r_cmp]
-                            del m[r_cmp]
-                            if val < 0:  # case: KO
-                                if par_reac_cmp:
-                                    new_m = m.copy()
-                                    for d in r_orig:
-                                        if d in ko_cost:
-                                            new_m[d] = val
-                                    sd += [new_m]
-                                else:
-                                    for d in r_orig:
-                                        if d in ko_cost:
-                                            new_m = m.copy()
-                                            new_m[d] = val
-                                            sd += [new_m]
-                            elif val > 0:  # case: KI
-                                if par_reac_cmp:
-                                    for d in r_orig:
-                                        if d in ki_cost:
-                                            new_m = m.copy()
-                                            new_m[d] = val
-                                            # other reactions do not need to be knocked in
-                                            for f in [
-                                                    e for e in r_orig
-                                                    if (e in ki_cost) and e != d
-                                            ]:
-                                                new_m[f] = 0.0
-                                            sd += [new_m]
-                                else:
-                                    new_m = m.copy()
-                                    for d in r_orig:
-                                        if d in ki_cost:
-                                            new_m[d] = val
-                                    sd += [new_m]
-                            elif val == 0:  # case: KI that was not introduced
-                                new_m = m.copy(
-                                )  # assume that none of the expanded
-                                for d in r_orig:  # reactions are inserted, neither
-                                    if d in ki_cost:  # parallel, nor sequential
-                                        new_m[d] = val
-                                sd += [new_m]
-                            sd.remove(m)
-        # eliminate mcs that are too expensive
-        if self.max_cost:
-            costs = [
-                np.sum([
-                    self.uncmp_ko_cost[k] if v < 0 else v*self.uncmp_ki_cost[k]
-                    for k, v in m.items()
-                ])
-                for m in sd
-            ]
-            sd = [
-                sd[i]
-                for i in range(len(sd))
-                if costs[i] <= self.max_cost + 1e-8
-            ]
+        
+        
+    def postprocess_reg_sd(self,sd):
         # mark regulatory interventions with true or false
         for s in sd:
             for k, v in self.uncmp_reg_cost.items():
@@ -517,7 +280,9 @@ class StrainDesigner(StrainDesignMILP):
     def enumerate(self, *args, **kwargs):
         cmp_sd_solution = super().enumerate(*args, **kwargs)
         if cmp_sd_solution.status in [OPTIMAL, TIME_LIMIT_W_SOL]:
-            sd = self.expand_sd(cmp_sd_solution.get_reaction_sd_mark_no_ki())
+            sd = expand_sd(cmp_sd_solution.get_reaction_sd_mark_no_ki(),self.cmp_mapReac)
+            sd = filter_sd_maxcost(sd,self.max_cost,self.uncmp_ko_cost,self.uncmp_ki_cost)
+            sd = self.postprocess_reg_sd(sd)
         else:
             sd = []
         solutions = self.build_full_sd_solution(sd, cmp_sd_solution)
@@ -527,7 +292,9 @@ class StrainDesigner(StrainDesignMILP):
     def compute_optimal(self, *args, **kwargs):
         cmp_sd_solution = super().compute_optimal(*args, **kwargs)
         if cmp_sd_solution.status in [OPTIMAL, TIME_LIMIT_W_SOL]:
-            sd = self.expand_sd(cmp_sd_solution.get_reaction_sd_mark_no_ki())
+            sd = expand_sd(cmp_sd_solution.get_reaction_sd_mark_no_ki(),self.cmp_mapReac)
+            sd = filter_sd_maxcost(sd,self.max_cost,self.uncmp_ko_cost,self.uncmp_ki_cost)
+            sd = self.postprocess_reg_sd(sd)
         else:
             sd = []
         solutions = self.build_full_sd_solution(sd, cmp_sd_solution)
@@ -537,7 +304,9 @@ class StrainDesigner(StrainDesignMILP):
     def compute(self, *args, **kwargs):
         cmp_sd_solution = super().compute(*args, **kwargs)
         if cmp_sd_solution.status in [OPTIMAL, TIME_LIMIT_W_SOL]:
-            sd = self.expand_sd(cmp_sd_solution.get_reaction_sd_mark_no_ki())
+            sd = expand_sd(cmp_sd_solution.get_reaction_sd_mark_no_ki(),self.cmp_mapReac)
+            sd = filter_sd_maxcost(sd,self.max_cost,self.uncmp_ko_cost,self.uncmp_ki_cost)
+            sd = self.postprocess_reg_sd(sd)
         else:
             sd = []
         solutions = self.build_full_sd_solution(sd, cmp_sd_solution)
