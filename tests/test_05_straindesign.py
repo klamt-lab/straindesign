@@ -64,8 +64,8 @@ def test_mcs_opt(curr_solver,model_weak_coupling,comp_approach,bigM,compression)
     solution = sd.compute_strain_designs(model_weak_coupling, sd_setup=sd_setup)
     assert(len(solution.reaction_sd) == 3)
     
-def test_mcs_gpr(curr_solver,model_gpr,comp_approach,bigM):
-    """Test MCS computation gpr rule (compression)."""
+def test_mcs_gpr(curr_solver,model_gpr,comp_approach,BigM, compression):
+    """Test MCS computation with gpr rules."""
     modules = [sd.SDModule(model_gpr, SUPPRESS, constraints=["1.0 rd_ex >= 1.0 "])]
     modules += [sd.SDModule(model_gpr, PROTECT, constraints=[[{'r_bm':1.0}, '>=' ,1.0 ]])]
     kocost = {
@@ -99,7 +99,7 @@ def test_mcs_gpr(curr_solver,model_gpr,comp_approach,bigM):
                 GKICOST:gkicost,
                 REGCOST:regcost,
                 SOLVER:curr_solver,
-                'compress':True,
+                'compress':compression,
                 'M':bigM}
     solution = sd.compute_strain_designs(model_gpr, sd_setup=sd_setup)
     assert(len(solution.gene_sd)==4)
