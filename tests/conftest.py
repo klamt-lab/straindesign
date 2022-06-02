@@ -24,3 +24,8 @@ def comp_approach_best_populate(request: pytest.FixtureRequest) -> str:
 def bigM(request: pytest.FixtureRequest) -> str:
     """Provide session-level fixture for nested-opt computation modes."""
     return request.param
+
+@pytest.fixture(scope="session")
+def compression(request: pytest.FixtureRequest) -> str:
+    """Provide session-level fixture for nested-opt computation modes."""
+    return False
