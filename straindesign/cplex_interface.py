@@ -94,7 +94,7 @@ class Cplex_MILP_LP(Cplex):
                 min_cx = nan
                 status = TIME_LIMIT
                 return x, min_cx, status
-            elif status in [3,103]:  # infeasible
+            elif status in [3, 103]:  # infeasible
                 x = [nan] * self.variables.get_num()
                 min_cx = nan
                 status = INFEASIBLE

@@ -95,7 +95,8 @@ class MILP_LP(object):
             self.indic_constr.b = [float(v) for v in self.indic_constr.b]
         if not self.solver == GLPK and self.M and not (isnan(self.M) or isinf(self.M)) and \
            self.indic_constr and self.indic_constr.A.shape[0]:
-            logging.warning('Provided big M value is ignored unless glpk is used.')
+            logging.warning(
+                'Provided big M value is ignored unless glpk is used.')
         # Create backend
         if self.solver == CPLEX:
             from straindesign.cplex_interface import Cplex_MILP_LP
@@ -131,7 +132,8 @@ class MILP_LP(object):
 
     def solve(self) -> Tuple[List, float, float]:
         x, min_cx, status = self.backend.solve()
-        if status not in [INFEASIBLE, UNBOUNDED, TIME_LIMIT]:  # if solution exists (is not nan), round integers
+        if status not in [INFEASIBLE, UNBOUNDED, TIME_LIMIT
+                         ]:  # if solution exists (is not nan), round integers
             x = [
                 x[i] if self.vtype[i] == 'C' else int(round(x[i]))
                 for i in range(len(x))

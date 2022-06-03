@@ -14,6 +14,7 @@ import logging
 
 gstatus = gp.StatusConstClass
 
+
 # Create a Gurobi-object from a matrix-based problem setup
 class Gurobi_MILP_LP(gp.Model):
 
@@ -72,20 +73,25 @@ class Gurobi_MILP_LP(gp.Model):
             self.optimize(
             )  # call parent solve function (that was overwritten in this class)
             status = self.Status
-            if status in [gstatus.OPTIMAL, gstatus.SOLUTION_LIMIT, gstatus.SUBOPTIMAL, gstatus.USER_OBJ_LIMIT]:  # solution
+            if status in [
+                    gstatus.OPTIMAL, gstatus.SOLUTION_LIMIT, gstatus.SUBOPTIMAL,
+                    gstatus.USER_OBJ_LIMIT
+            ]:  # solution
                 min_cx = self.ObjVal
                 status = OPTIMAL
-            elif status == gstatus.TIME_LIMIT and not hasattr(self._Model__vars[0],
-                                             'X'):  # timeout without solution
+            elif status == gstatus.TIME_LIMIT and not hasattr(
+                    self._Model__vars[0], 'X'):  # timeout without solution
                 x = [nan] * self.NumVars
                 min_cx = nan
                 status = TIME_LIMIT
                 return x, min_cx, status
-            elif status == gstatus.TIME_LIMIT and hasattr(self._Model__vars[0],
-                                         'X'):
+            elif status == gstatus.TIME_LIMIT and hasattr(
+                    self._Model__vars[0], 'X'):
                 min_cx = self.ObjVal
                 status = TIME_LIMIT_W_SOL
-            elif status in [gstatus.INF_OR_UNBD, gstatus.UNBOUNDED, gstatus.INFEASIBLE]:
+            elif status in [
+                    gstatus.INF_OR_UNBD, gstatus.UNBOUNDED, gstatus.INFEASIBLE
+            ]:
                 # solve problem again without objective to verify that problem is feasible
                 self.params.DualReductions = 0
                 self.optimize()
@@ -117,7 +123,10 @@ class Gurobi_MILP_LP(gp.Model):
             self.optimize(
             )  # call parent solve function (that was overwritten in this class)
             status = self.Status
-            if status in [gstatus.OPTIMAL, gstatus.SOLUTION_LIMIT, gstatus.SUBOPTIMAL, gstatus.USER_OBJ_LIMIT]:  # solution integer optimal (tolerance)
+            if status in [
+                    gstatus.OPTIMAL, gstatus.SOLUTION_LIMIT, gstatus.SUBOPTIMAL,
+                    gstatus.USER_OBJ_LIMIT
+            ]:  # solution integer optimal (tolerance)
                 opt = self.ObjVal
             elif status in [gstatus.INF_OR_UNBD, gstatus.UNBOUNDED]:
                 opt = -inf

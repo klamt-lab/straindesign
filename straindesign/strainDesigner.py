@@ -8,6 +8,7 @@ from straindesign.networktools import *
 import io
 import logging
 
+
 class StrainDesigner(StrainDesignMILP):
 
     def __init__(self, model: Model, sd_modules: List[SDModule], *args,
@@ -39,11 +40,16 @@ class StrainDesigner(StrainDesignMILP):
         if (GKOCOST in kwargs or GKICOST in kwargs) and hasattr(
                 model, 'genes') and model.genes:
             self.gene_sd = True
-            used_g_ids = set(self.uncmp_gko_cost if hasattr(self,'uncmp_gko_cost') and self.uncmp_gko_cost else set())
-            used_g_ids.update(set(self.uncmp_gki_cost if hasattr(self,'uncmp_gki_cost') and self.uncmp_gki_cost else set()))
-            used_g_ids.update(set(self.uncmp_reg_cost if hasattr(self,'uncmp_reg_cost') and self.uncmp_reg_cost else set()))
-            if np.any([len(g.name) for g in model.genes]) and (
-               np.any([g.name in used_g_ids for g in model.genes]) or not used_g_ids):
+            used_g_ids = set(self.uncmp_gko_cost if hasattr(
+                self, 'uncmp_gko_cost') and self.uncmp_gko_cost else set())
+            used_g_ids.update(
+                set(self.uncmp_gki_cost if hasattr(self, 'uncmp_gki_cost') and
+                    self.uncmp_gki_cost else set()))
+            used_g_ids.update(
+                set(self.uncmp_reg_cost if hasattr(self, 'uncmp_reg_cost') and
+                    self.uncmp_reg_cost else set()))
+            if np.any([len(g.name) for g in model.genes]) and (np.any(
+                [g.name in used_g_ids for g in model.genes]) or not used_g_ids):
                 self.has_gene_names = True
             else:
                 self.has_gene_names = False
@@ -124,7 +130,7 @@ class StrainDesigner(StrainDesignMILP):
         # FVAs to identify blocked, irreversible and essential reactions, as well as non-bounding bounds
         logging.info(
             '  FVA to identify blocked reactions and irreversibilities.')
-        bound_blocked_or_irrevers_fva(model,solver=kwargs[SOLVER])
+        bound_blocked_or_irrevers_fva(model, solver=kwargs[SOLVER])
         logging.info('  FVA(s) to identify essential reactions.')
         essential_reacs = set()
         for m in sd_modules:
@@ -212,11 +218,12 @@ class StrainDesigner(StrainDesignMILP):
                         if p in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                             for k in param.keys():
                                 no_par_compress_reacs.add(k)
-            self.cmp_mapReac = compress_model(cmp_model,no_par_compress_reacs)
+            self.cmp_mapReac = compress_model(cmp_model, no_par_compress_reacs)
             # compress information in strain design modules
-            sd_modules = compress_modules(sd_modules,self.cmp_mapReac)
+            sd_modules = compress_modules(sd_modules, self.cmp_mapReac)
             # compress ko_cost and ki_cost
-            self.cmp_ko_cost, self.cmp_ki_cost, self.cmp_mapReac = compress_ki_ko_cost(self.cmp_ko_cost,self.cmp_ki_cost,self.cmp_mapReac)
+            self.cmp_ko_cost, self.cmp_ki_cost, self.cmp_mapReac = compress_ki_ko_cost(
+                self.cmp_ko_cost, self.cmp_ki_cost, self.cmp_mapReac)
         else:
             self.cmp_mapReac = []
 
@@ -263,9 +270,8 @@ class StrainDesigner(StrainDesignMILP):
             len(self.cmp_ko_cost) + len(self.cmp_ki_cost) -
             len(essential_kis)) + " targetable reactions")
         super().__init__(cmp_model, sd_modules, *args, **kwargs1)
-        
-        
-    def postprocess_reg_sd(self,sd):
+
+    def postprocess_reg_sd(self, sd):
         # mark regulatory interventions with true or false
         for s in sd:
             for k, v in self.uncmp_reg_cost.items():
@@ -280,8 +286,10 @@ class StrainDesigner(StrainDesignMILP):
     def enumerate(self, *args, **kwargs):
         cmp_sd_solution = super().enumerate(*args, **kwargs)
         if cmp_sd_solution.status in [OPTIMAL, TIME_LIMIT_W_SOL]:
-            sd = expand_sd(cmp_sd_solution.get_reaction_sd_mark_no_ki(),self.cmp_mapReac)
-            sd = filter_sd_maxcost(sd,self.max_cost,self.uncmp_ko_cost,self.uncmp_ki_cost)
+            sd = expand_sd(cmp_sd_solution.get_reaction_sd_mark_no_ki(),
+                           self.cmp_mapReac)
+            sd = filter_sd_maxcost(sd, self.max_cost, self.uncmp_ko_cost,
+                                   self.uncmp_ki_cost)
             sd = self.postprocess_reg_sd(sd)
         else:
             sd = []
@@ -292,8 +300,10 @@ class StrainDesigner(StrainDesignMILP):
     def compute_optimal(self, *args, **kwargs):
         cmp_sd_solution = super().compute_optimal(*args, **kwargs)
         if cmp_sd_solution.status in [OPTIMAL, TIME_LIMIT_W_SOL]:
-            sd = expand_sd(cmp_sd_solution.get_reaction_sd_mark_no_ki(),self.cmp_mapReac)
-            sd = filter_sd_maxcost(sd,self.max_cost,self.uncmp_ko_cost,self.uncmp_ki_cost)
+            sd = expand_sd(cmp_sd_solution.get_reaction_sd_mark_no_ki(),
+                           self.cmp_mapReac)
+            sd = filter_sd_maxcost(sd, self.max_cost, self.uncmp_ko_cost,
+                                   self.uncmp_ki_cost)
             sd = self.postprocess_reg_sd(sd)
         else:
             sd = []
@@ -304,8 +314,10 @@ class StrainDesigner(StrainDesignMILP):
     def compute(self, *args, **kwargs):
         cmp_sd_solution = super().compute(*args, **kwargs)
         if cmp_sd_solution.status in [OPTIMAL, TIME_LIMIT_W_SOL]:
-            sd = expand_sd(cmp_sd_solution.get_reaction_sd_mark_no_ki(),self.cmp_mapReac)
-            sd = filter_sd_maxcost(sd,self.max_cost,self.uncmp_ko_cost,self.uncmp_ki_cost)
+            sd = expand_sd(cmp_sd_solution.get_reaction_sd_mark_no_ki(),
+                           self.cmp_mapReac)
+            sd = filter_sd_maxcost(sd, self.max_cost, self.uncmp_ko_cost,
+                                   self.uncmp_ki_cost)
             sd = self.postprocess_reg_sd(sd)
         else:
             sd = []

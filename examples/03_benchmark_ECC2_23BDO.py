@@ -50,6 +50,6 @@ mcsEnum = straindesign.StrainDesigner(network,
 # solutions = mcsEnum.compute_optimal(max_solutions=maxSolutions)
 solutions = mcsEnum.compute(max_solutions=3)
 print(len(solutions.get_strain_designs()))
-io.savemat('mcs_python.mat', mdict={'whatever_data':   \
+io.savemat('mcs_python.mat', mdict={'whatever_data':    \
     [','.join(a) for a in [[k for k,v in m.items()] for m in solutions.get_strain_designs()]]})
 pass

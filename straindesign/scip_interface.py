@@ -356,7 +356,7 @@ class SCIP_LP(pso.LP):
     def set_objective_idx(self, C):
         for i_v in C:
             self.chgObj(i_v[0], i_v[1])
-            
+
     def add_ineq_constraints(self, A_ineq, b_ineq):
         self.addRows([[(i,v) for i,v in zip(rows.indices,rows.data)] for rows in A_ineq], \
                         lhss = [-self.infinity()]*A_ineq.shape[0],\

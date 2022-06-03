@@ -9,6 +9,7 @@ from straindesign.names import *
 from warnings import warn
 import logging
 
+
 class StrainDesignMILP(StrainDesignMILPBuilder):
 
     def __init__(self, model: Model, sd_modules: List[SDModule], **kwargs):
@@ -44,7 +45,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         for i in range(z.shape[0]):
             # introduce constraint to make MILP infeasible. Some solvers cannot handle empty rows
             if z[i].nnz == 0:
-                A_ineq = sparse.csr_matrix([1.0]*z[i].shape[1])
+                A_ineq = sparse.csr_matrix([1.0] * z[i].shape[1])
                 A_ineq.resize((1, self.milp.A_ineq.shape[1]))
                 b_ineq = -1
                 self.A_ineq = sparse.vstack((self.A_ineq, A_ineq))
@@ -89,14 +90,15 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
 
     def solveZ(self) -> Tuple[List, int]:
         x, _, status = self.milp.solve()
-        z = sparse.csr_matrix([round(x[i],5) for i in self.idx_z])
+        z = sparse.csr_matrix([round(x[i], 5) for i in self.idx_z])
         return z, status
 
     def populateZ(self, n) -> Tuple[List, int]:
         x, _, status = self.milp.populate(n)
         if status in [OPTIMAL, TIME_LIMIT_W_SOL]:
-            z = sparse.csr_matrix(
-                [[round(x[j][i],5) for i in self.idx_z] for j in range(len(x))])
+            z = sparse.csr_matrix([
+                [round(x[j][i], 5) for i in self.idx_z] for j in range(len(x))
+            ])
             z.resize((len(x), self.num_z))
             # remove duplicates
             unique_row_indices, unique_columns = [], []
@@ -107,7 +109,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                     unique_row_indices.append(row_idx)
             z = z[unique_row_indices]
         else:
-            z = sparse.csr_matrix((0,self.num_z))
+            z = sparse.csr_matrix((0, self.num_z))
         return z, status
 
     def clearObjective(self):
@@ -215,7 +217,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
             self.resetObjective()
             self.fixObjective(self.c_bu, np.inf)
             x, min_cx, status = self.milp.solve()
-            z = sparse.csr_matrix([round(x[i],5) for i in self.idx_z])
+            z = sparse.csr_matrix([round(x[i], 5) for i in self.idx_z])
             if np.isnan(z[0, 0]):
                 break
             output = self.sd2dict(z)
@@ -318,7 +320,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
             self.clearObjective()
             self.fixObjective(self.c_bu, np.inf)  # keep objective open
             x, min_cx, status = self.milp.solve()
-            z = sparse.csr_matrix([round(x[i],5) for i in self.idx_z])
+            z = sparse.csr_matrix([round(x[i], 5) for i in self.idx_z])
             if np.isnan(z[0, 0]):
                 break
             if not all(self.verify_sd(z)):
@@ -446,7 +448,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
                 self.resetObjective()
                 self.fixObjective(self.c_bu, np.inf)
                 x, min_cx, status = self.milp.solve()
-                z = sparse.csr_matrix([round(x[i],5) for i in self.idx_z])
+                z = sparse.csr_matrix([round(x[i], 5) for i in self.idx_z])
                 if status not in [OPTIMAL, TIME_LIMIT_W_SOL]:
                     break
                 logging.info(

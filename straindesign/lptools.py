@@ -38,8 +38,8 @@ def select_solver(solver=None, model=None):
             return solver
         else:
             logging.warning('Selected solver ' + solver +
-                         ' not available. Using ' + avail_solvers[0] +
-                         " instead.")
+                            ' not available. Using ' + avail_solvers[0] +
+                            " instead.")
     try:
         # if no solver was defined, use solver specified in model
         if hasattr(model, 'solver') and hasattr(model.solver, 'interface'):
@@ -49,7 +49,8 @@ def select_solver(solver=None, model=None):
                 return solver[0]
             else:
                 logging.warning('Solver specified in model (' +
-                             model.solver.interface.__name__ + ') unavailable')
+                                model.solver.interface.__name__ +
+                                ') unavailable')
         # if no solver specified in model, use solver from cobra configuration
         cobra_conf = Configuration()
         if hasattr(cobra_conf, 'solver'):
@@ -59,7 +60,7 @@ def select_solver(solver=None, model=None):
                 return solver[0]
             else:
                 logging.warning('Solver specified in cobra config (' +
-                             cobra_conf.solver.__name__ + ') unavailable')
+                                cobra_conf.solver.__name__ + ') unavailable')
     except:
         pass
     return avail_solvers[
@@ -434,7 +435,7 @@ def yopt(model, **kwargs):
     A_eq_base = sparse.csr_matrix(A_eq_base)
     b_eq_base = [0] * len(model.metabolites)
     if 'A_eq' in locals():
-        A_eq = sparse.vstack((A_eq_base, A_eq),'csr')
+        A_eq = sparse.vstack((A_eq_base, A_eq), 'csr')
         b_eq = b_eq_base + b_eq
     else:
         A_eq = A_eq_base
@@ -457,7 +458,7 @@ def yopt(model, **kwargs):
     sparse_ub = sparse.coo_matrix(
         ([1] * len(real_ub), (range(len(real_ub)), real_ub)),
         (len(real_ub), A_ineq.shape[1]))
-    A_ineq = sparse.vstack((A_ineq, sparse_lb, sparse_ub),'csr')
+    A_ineq = sparse.vstack((A_ineq, sparse_lb, sparse_ub), 'csr')
     b_ineq = b_ineq + [-model.reactions[i].lower_bound for i in real_lb] + \
                       [ model.reactions[i].upper_bound for i in real_ub]
     # Analyze maximum and minimum value of denominator function to decide whether to fix it to +1 or -1 or abort computation
@@ -490,7 +491,7 @@ def yopt(model, **kwargs):
     # Create linear fractional problem (LFP)
     # A variable is added here to scale the right hand side of the original problem
     A_ineq_lfp = sparse.hstack(
-        (A_ineq, sparse.csr_matrix([-b for b in b_ineq]).transpose()),'csr')
+        (A_ineq, sparse.csr_matrix([-b for b in b_ineq]).transpose()), 'csr')
     b_ineq_lfp = [0 for _ in b_ineq]
     A_eq_lfp = sparse.vstack((  sparse.hstack((A_eq,sparse.csr_matrix([-b for b in b_eq]).transpose())),\
                             sparse.hstack((obj_den,0))),'csr')

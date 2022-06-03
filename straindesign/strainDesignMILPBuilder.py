@@ -39,7 +39,8 @@ class StrainDesignMILPBuilder:
                     'solvers is avaialable in your Python environment: CPLEX, Gurobi, SCIP, GLPK')
         self.solver = select_solver(self.solver, model)
         cobra_conf = Configuration()
-        bound_thres = max((abs(cobra_conf.lower_bound),abs(cobra_conf.upper_bound)))
+        bound_thres = max(
+            (abs(cobra_conf.lower_bound), abs(cobra_conf.upper_bound)))
         if self.M is None and self.solver == 'glpk':
             logging.warning(
                 'GLPK only supports strain design computation with the bigM method. Using cobra bound: '+str(bound_thres)+\

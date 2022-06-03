@@ -3,8 +3,7 @@ from straindesign.names import *
 from os.path import dirname, abspath
 from cobra.io import read_sbml_model
 
-se = read_sbml_model(
-    dirname(abspath(__file__)) + "/SmallExample.sbml")
+se = read_sbml_model(dirname(abspath(__file__)) + "/SmallExample.sbml")
 
 # se = read_sbml_model('/scratch/Python/straindesign/examples/SmallExample.sbml')
 results = yopt(se,
