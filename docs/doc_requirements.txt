@@ -2,3 +2,5 @@ myst-parser
 sphinx-autoapi
 nbsphinx
 pandoc
+ipython
+ipykernel
