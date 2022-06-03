@@ -9,7 +9,7 @@ StrainDesign
   :width: 50
   :alt: Icon
   
-|logo|
+.. |logo|
 
 .. image:: https://img.shields.io/github/v/release/klamt-lab/straindesign.svg
    :target: https://github.com/klamt-lab/straindesign/releases
