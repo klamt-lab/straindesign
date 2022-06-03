@@ -705,10 +705,10 @@ def remove_dummy_bounds(model):
                  for b in r.bounds])
             for r in model.reactions
     ]):
+        logging.warning(
+            '  Removing reaction bounds when larger than the cobra-threshold of '
+            + str(round(bound_thres)) + '.')
         for i in range(len(model.reactions)):
-            logging.warning(
-                '  Removing reaction bounds when larger than the cobra-threshold of '
-                + str(round(bound_thres)) + '.')
             if model.reactions[i].lower_bound <= -bound_thres:
                 model.reactions[i].lower_bound = -np.inf
             if model.reactions[i].upper_bound >= bound_thres:

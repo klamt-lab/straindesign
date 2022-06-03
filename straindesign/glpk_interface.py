@@ -147,10 +147,6 @@ class GLPK_MILP_LP():
         # ideally, one would generate random seeds here, but glpk does not seem to
         # offer this function
 
-    def __del__(self):
-        glp_delete_prob(self.glpk)
-        # glp_free(self.glpk)
-
     def solve(self) -> Tuple[List, float, float]:
         try:
             min_cx, status, bool_tlim = self.solve_MILP_LP()
