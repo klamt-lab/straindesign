@@ -71,7 +71,7 @@ source_suffix = [".rst", ".md"]  # , '.ipynb' (not required for nbsphinx)
 # a list of builtin themes.
 #
 html_theme = "default"
-
+html_theme_options = {'bgcolor': 'white'}
 html_logo = "../logo.png"
 
 # Add any paths that contain custom static files (such as style sheets) here,
