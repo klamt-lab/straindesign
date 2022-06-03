@@ -6,7 +6,7 @@ version = sys.argv[2]
 
 with open(file_i, 'r') as f:
     content = f.read()
-    content_new = re.sub(r"(?<=version\=\").*?(?=")",
+    content_new = re.sub(r"(?<=version\=\").*?(?=\")",
                          str(version),
                          content,
                          flags=re.M)
