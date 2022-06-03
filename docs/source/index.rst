@@ -58,6 +58,7 @@ A COBRApy\ :html:`<a href="#ref1"><sup>[1]</sup></a>`\ -based package for comput
 The comprehensive StrainDesign package for MILP-based strain design computation with the COBRApy toolbox supports MCS, MCS with nested optimization, OptKnock, RobustKnock and OptCouple, GPR-rule integration, gene and reaction knockouts and additions as well as regulatory interventions. The automatic lossless network and GPR compression allows strain design computations from genome-scale metabolic networks. Supported solvers are GLPK (available from COBRApy), CPLEX, Gurobi and SCIP. :html:`<br>` 
 
 :html:`<a href="#installation">Installation instructions ...</a>`
+:html:`<a href="#examples">Download Jupyter notebook examples ...</a>`
 
 |pic1| |pic2| |pic3| 
 
@@ -79,14 +80,21 @@ Parts of the compression routine is done by efmtool's compression function (http
    :maxdepth: 4
    :caption: Contents:
 
-   1_installation
-   examples/JN_08_mcs_test.ipynb
+   1_solver_installation
+   examples/JN_02_analysis.ipynb
+   examples/JN_03_plotting.ipynb
+   examples/JN_04_strain_design_introduction.ipynb
+   examples/JN_05_strain_design_mcs.ipynb
+   examples/JN_06_strain_design_nested.ipynb
+   examples/JN_07_network_design.ipynb
+   examples/JN_08_compression.ipynb
+   9_cnapy_integration
    api_reference
 
 :html:`<a id="installation"></a>`\ Installation:
-============================================================
+================================================
 
-The straindesign package is available on pip and Anaconda. To install the latest release, run:
+The StrainDesign package is available on pip and Anaconda. To install the latest release, run:
 
 ``pip install straindesign``
 
@@ -102,6 +110,11 @@ Download the repository and run
 ``pip install -e .``
 
 in the main folder. Through the installation with -e, updates from a 'git pull' are at once available in your Python envrionment without the need for a reinstallation.
+
+:html:`<a id="examples"></a>`\ Examples:
+================================================
+
+Computation examples are provided in the different chapters of this documentation. The original Jupyer notebook files are located in the StrainDesign package at `docs/source/examples <https://github.com/klamt-lab/straindesign/tree/main/docs/source/examples>`_.
 
 
 References:

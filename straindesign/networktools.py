@@ -224,11 +224,11 @@ def compress_model(model, no_par_compress_reacs=set()):
     stoichmat_coeff2rational(model)
     logging.info('  Removing conservation relations.')
     remove_conservation_relations(model)
-    odd = True
+    parallel = False
     run = 1
     cmp_mapReac = []
     while True:
-        if odd:
+        if not parallel:
             logging.info('  Compression ' + str(run) +
                          ': Applying compression from EFM-tool module.')
             subT, reac_map_exp = compress_model_efmtool(model)
@@ -255,12 +255,12 @@ def compress_model(model, no_par_compress_reacs=set()):
             # (2) linear (True) or parallel (False) compression (3,4) ko and ki costs of expanded network
             cmp_mapReac += [{
                 "reac_map_exp": reac_map_exp,
-                "odd": odd,
+                "parallel": parallel,
             }]
-            if odd:
-                odd = False
+            if parallel:
+                parallel = False
             else:
-                odd = True
+                parallel = True
             run += 1
         else:
             logging.info('  Last step could not reduce size further (' +
@@ -278,8 +278,8 @@ def compress_modules(sd_modules, cmp_mapReac):
     sd_modules = modules_coeff2rational(sd_modules)
     for cmp in cmp_mapReac:
         reac_map_exp = cmp["reac_map_exp"]
-        odd = cmp["odd"]
-        if odd:
+        parallel = cmp["parallel"]
+        if not parallel:
             for new_reac, old_reac_val in reac_map_exp.items():
                 for i, m in enumerate(sd_modules):
                     for p in [
@@ -323,17 +323,17 @@ def compress_ki_ko_cost(kocost, kicost, cmp_mapReac):
     # kicost of lumped reactions: when reacs sequential: sum of ki costs, when parallel: lowest of ki costs
     for cmp in cmp_mapReac:
         reac_map_exp = cmp["reac_map_exp"]
-        odd = cmp["odd"]
+        parallel = cmp["parallel"]
         cmp.update({KOCOST: kocost, KICOST: kicost})
         if kocost:
             ko_cost_new = {}
             for r in reac_map_exp:
                 if np.any([s in kocost for s in reac_map_exp[r]]):
-                    if odd and not np.any(
+                    if not parallel and not np.any(
                         [s in kicost for s in reac_map_exp[r]]):
                         ko_cost_new[r] = np.min(
                             [kocost[s] for s in reac_map_exp[r] if s in kocost])
-                    elif not odd:
+                    elif parallel:
                         ko_cost_new[r] = np.sum(
                             [kocost[s] for s in reac_map_exp[r] if s in kocost])
             kocost = ko_cost_new
@@ -341,10 +341,10 @@ def compress_ki_ko_cost(kocost, kicost, cmp_mapReac):
             ki_cost_new = {}
             for r in reac_map_exp:
                 if np.any([s in kicost for s in reac_map_exp[r]]):
-                    if odd:
+                    if not parallel:
                         ki_cost_new[r] = np.sum(
                             [kicost[s] for s in reac_map_exp[r] if s in kicost])
-                    elif not odd and not np.any(
+                    elif parallel and not np.any(
                         [s in kocost for s in reac_map_exp[r]]):
                         ki_cost_new[r] = np.min(
                             [kicost[s] for s in reac_map_exp[r] if s in kicost])
@@ -359,8 +359,8 @@ def expand_sd(sd, cmp_mapReac):
         reac_map_exp = exp["reac_map_exp"]  # expansion map
         ko_cost = exp[KOCOST]
         ki_cost = exp[KICOST]
-        par_reac_cmp = not exp[
-            "odd"]  # if parallel or sequential reactions were lumped
+        par_reac_cmp = exp[
+            "parallel"]  # if parallel or sequential reactions were lumped
         for r_cmp, r_orig in reac_map_exp.items():
             if len(r_orig) > 1:
                 for m in sd.copy():
