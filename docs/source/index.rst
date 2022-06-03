@@ -59,18 +59,19 @@ The comprehensive StrainDesign package for MILP-based strain design computation 
 
 |pic1| |pic2| |pic3| 
 
-.. |pic1| image:: https://github.com/klamt-lab/straindesign/blob/host_gifs/docs/puzzle.svg
+.. |pic1| image:: https://raw.githubusercontent.com/klamt-lab/straindesign/host_gifs/docs/puzzle.svg
   :width: 25%
-  :alt: Network interventions
+  :alt: Network interventions   
    
-.. |pic2| image:: https://github.com/klamt-lab/straindesign/blob/host_gifs/docs/network.svg
+.. |pic2| image:: https://raw.githubusercontent.com/klamt-lab/straindesign/host_gifs/docs/network.svg
   :width: 30%
   :alt: Network interventions
   
-.. |pic3| image:: https://github.com/klamt-lab/straindesign/blob/host_gifs/docs/plot.gif
+.. |pic3| image:: https://raw.githubusercontent.com/klamt-lab/straindesign/host_gifs/docs/plot.gif
   :width: 40%
   :alt: Plot animation
 
+Parts of the compression routine is done by efmtool's compression function (https://csb.ethz.ch/tools/software/efmtool.html\ :html:`<a href="#ref2"><sup>[2]</sup></a>`).
 
 .. toctree::
    :maxdepth: 4
