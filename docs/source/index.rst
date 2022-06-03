@@ -53,9 +53,11 @@ StrainDesign
      :alt: Zenodo DOI
      
 A COBRApy\ :html:`<a href="#ref1"><sup>[1]</sup></a>`\ -based package for computational design of metabolic networks
-======================================================================
+====================================================================================================================
 
 The comprehensive StrainDesign package for MILP-based strain design computation with the COBRApy toolbox supports MCS, MCS with nested optimization, OptKnock, RobustKnock and OptCouple, GPR-rule integration, gene and reaction knockouts and additions as well as regulatory interventions. The automatic lossless network and GPR compression allows strain design computations from genome-scale metabolic networks. Supported solvers are GLPK (available from COBRApy), CPLEX, Gurobi and SCIP. :html:`<br>` 
+
+:html:`<a href="#installation"><sup>Installation instructions ...</sup></a>`
 
 |pic1| |pic2| |pic3| 
 
@@ -81,8 +83,8 @@ Parts of the compression routine is done by efmtool's compression function (http
    examples/JN_08_mcs_test.ipynb
    api_reference
 
-Installation:
-=============
+:html:`<a id="#installation">Installation:</a>`
+============================================================
 
 The straindesign package is available on pip and Anaconda. To install the latest release, run:
 
