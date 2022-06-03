@@ -53,7 +53,7 @@ A COBRApy\ :html:`<a href="#ref1"><sup>[1]</sup></a>`\ -based package for comput
 ======================================================================
 
 The comprehensive StrainDesign package for MILP-based strain design computation with the COBRApy toolbox supports MCS, MCS with nested optimization, OptKnock, RobustKnock and OptCouple, GPR-rule integration, gene and reaction knockouts and additions as well as regulatory interventions. The automatic lossless network and GPR compression allows strain design computations from genome-scale metabolic networks. Supported solvers are GLPK (available from COBRApy), CPLEX, Gurobi and SCIP (manual install, see below). :html:`<br>` 
-`Getting started... <https://straindesign.readthedocs.io/en/latest/>`_
+`Getting started ... <https://straindesign.readthedocs.io/en/latest/>`_
 
 |pic1| |pic2| |pic3| 
 
@@ -69,7 +69,7 @@ The comprehensive StrainDesign package for MILP-based strain design computation 
   :width: 40%
   :alt: Plot animation
 
-Parts of the compression routine is done by efmtool's compression function (https://csb.ethz.ch/tools/software/efmtool.html\ :html:`<a href="#ref2"><sup>[2]</sup></a>`).
+Parts of the compression routine is done by efmtool's compression function (https://csb.ethz.ch/tools/software/efmtool.html\ :html:`<a href="#ref2"><sup>[2]</sup></a>`). Therefore some source code from the `efmtool_link <https://github.com/cnapy-org/efmtool_link>`_ package was adopted.
 
 Installation:
 =============
