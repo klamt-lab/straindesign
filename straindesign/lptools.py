@@ -202,7 +202,7 @@ def fva(model, **kwargs):
     # Dummy to check if optimization runs
     # worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver)
     # worker_compute(1)
-    if processes > 1 and numr > 300 and solver != GLPK:
+    if processes > 1 and numr > 300: #and solver != 'GLPK': # activate alternative routine with GLPK, if issues arise
         # with Pool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver)) as pool:
         with SDPool(processes,
                     initializer=fva_worker_init,
