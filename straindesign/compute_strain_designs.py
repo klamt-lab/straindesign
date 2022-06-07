@@ -7,7 +7,7 @@ import io
 import logging
 from cobra import Model
 from straindesign import SDModule, SDSolutions, select_solver, fva, DisableLogger
-from straindesign import StrainDesignMILPSolver as milp
+from straindesign import StrainDesignMILPSolver as MILP
 from straindesign.names import *
 from straindesign.networktools import *
 
@@ -299,7 +299,7 @@ def compute_strain_designs(model: Model, **kwargs):
         len(cmp_ko_cost) + len(cmp_ki_cost) -
         len(essential_kis)) + " targetable reactions")
     
-    strain_design_MILP = milp(cmp_model, sd_modules, **kwargs_milp)
+    strain_design_MILP = MILP(cmp_model, sd_modules, **kwargs_milp)
 
     kwargs_computation = {}
     if MAX_SOLUTIONS in kwargs:
