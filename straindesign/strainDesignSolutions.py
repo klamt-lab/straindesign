@@ -21,7 +21,7 @@ import pickle
 import logging
 
 
-class SDSolution(object):
+class SDSolutions(object):
 
     def __init__(self, model, sd, status, sd_setup):
         self.status = status

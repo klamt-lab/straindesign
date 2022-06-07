@@ -1,33 +1,20 @@
-from straindesign.strainDesignSolution import SDSolution
 import numpy as np
 from scipy import sparse
 import time
 from cobra import Model
 from typing import Dict, List, Tuple
-from straindesign import StrainDesignMILPBuilder, MILP_LP, SDModule
+from straindesign import StrainDesignMILPBuilder, SDSolutions, MILP_LP, SDModule
 from straindesign.names import *
 from warnings import warn
 import logging
 
 
-class StrainDesignMILP(StrainDesignMILPBuilder):
+class StrainDesignMILPSolver(StrainDesignMILPBuilder):
 
     def __init__(self, model: Model, sd_modules: List[SDModule], **kwargs):
-        keys = {'options'}
-        # remove keys that are irrelevant for MILP construction
-        kwargs1 = kwargs.copy()
-        for k in keys:
-            if k in kwargs1:
-                del kwargs1[k]
-        super().__init__(model, sd_modules, **kwargs1)
-        # set keys passed in kwargs
-        for key, value in dict(kwargs).items():
-            if key in keys:
-                setattr(self, key, value)
-        # set all remaining keys to None
-        for key in keys:
-            if key not in dict(kwargs).keys():
-                setattr(self, key, None)
+        # Build MILP problem with constructor of parent class
+        super().__init__(model, sd_modules, **kwargs)
+        # Build MILP object from constructed problem
         self.sd_modules = sd_modules
         self.milp = MILP_LP(c=self.c,
                             A_ineq=self.A_ineq,
@@ -185,7 +172,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
 
     # Find iteratively smallest solutions
     def compute_optimal(self, **kwargs):
-        keys = {'max_solutions', 'time_limit', 'show_no_ki'}
+        keys = {MAX_SOLUTIONS, T_LIMIT, 'show_no_ki'}
         # set keys passed in kwargs
         for key, value in dict(kwargs).items():
             if key in keys:
@@ -272,7 +259,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         if endtime - time.time() > 0 and sols.shape[0] > 0:
             logging.info('Finished solving strain design MILP. ')
             if 'strainDesignMILP' in self.__module__:
-                logging.info(str(sols.shape[0]) + ' solutions found.')
+                logging.info(str(sols.shape[0]) + ' solutions to MILP found.')
         elif endtime - time.time() > 0:
             logging.info('Finished solving strain design MILP.')
             if 'strainDesignMILP' in self.__module__:
@@ -288,7 +275,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
     # Find iteratively intervention sets of arbitrary size or quality
     # output format: list of 'dict' (default) or 'sparse'
     def compute(self, **kwargs):
-        keys = {'max_solutions', 'time_limit', 'show_no_ki'}
+        keys = {MAX_SOLUTIONS, T_LIMIT, 'show_no_ki'}
         # set keys passed in kwargs
         for key, value in kwargs.items():
             if key in keys:
@@ -389,7 +376,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         if endtime - time.time() > 0 and sols.shape[0] > 0:
             logging.info('Finished solving strain design MILP. ')
             if 'strainDesignMILP' in self.__module__:
-                logging.info(str(sols.shape[0]) + ' solutions found.')
+                logging.info(str(sols.shape[0]) + ' solutions to MILP found.')
         elif endtime - time.time() > 0:
             logging.info('Finished solving strain design MILP.')
             if 'strainDesignMILP' in self.__module__:
@@ -405,7 +392,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
     # Enumerate iteratively optimal strain designs using the populate function
     # output format: list of 'dict' (default) or 'sparse'
     def enumerate(self, **kwargs):
-        keys = {'max_solutions', 'time_limit', 'show_no_ki'}
+        keys = {MAX_SOLUTIONS, T_LIMIT, 'show_no_ki'}
         # set keys passed in kwargs
         for key, value in dict(kwargs).items():
             if key in keys:
@@ -481,7 +468,7 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         if endtime - time.time() > 0 and sols.shape[0] > 0:
             logging.info('Finished solving strain design MILP. ')
             if 'strainDesignMILP' in self.__module__:
-                logging.info(str(sols.shape[0]) + ' solutions found.')
+                logging.info(str(sols.shape[0]) + ' solutions to MILP found.')
         elif endtime - time.time() > 0:
             logging.info('Finished solving strain design MILP.')
             if 'strainDesignMILP' in self.__module__:
@@ -508,4 +495,4 @@ class StrainDesignMILP(StrainDesignMILPBuilder):
         sd_setup[KICOST] = {k:float(v) for k,v in \
             zip(self.model.reactions.list_attr('id'),self.ki_cost) if not np.isnan(v)}
         sd_setup[MODULES] = self.sd_modules
-        return SDSolution(self.model, sd_dict, status, sd_setup)
+        return SDSolutions(self.model, sd_dict, status, sd_setup)
