@@ -1,17 +1,15 @@
-from straindesign.strainDesignModule import MINIMIZE
 import numpy as np
 from scipy import sparse
 from cobra.util import create_stoichiometric_matrix
 from cobra import Model, Configuration
 from typing import List, Tuple
 from straindesign import SDModule, IndicatorConstraints, lineqlist2mat, linexprdict2mat, MILP_LP, SDPool, \
-                         avail_solvers, select_solver, remove_dummy_bounds
-from straindesign.strainDesignModule import *
+                         avail_solvers, select_solver, remove_dummy_bounds, SDModule
 from straindesign.names import *
 import logging
 
 
-class StrainDesignMILPBuilder:
+class SDProblem:
     """Class for computing Strain Designs (SD)"""
 
     def __init__(self, model: Model, sd_modules: List[SDModule], *args,
@@ -50,6 +48,7 @@ class StrainDesignMILPBuilder:
             self.M = np.inf
         # the matrices in sd_modules, ko_cost and ki_cost should be numpy.array or scipy.sparse (csr, csc, lil) format
         self.model = model
+        self.sd_modules = sd_modules
         reac_ids = model.reactions.list_attr("id")
         numr = len(model.reactions)
         # Create vectors for ko_cost, ki_cost, inverted bool-vars and non-targetable bools

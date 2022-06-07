@@ -1,4 +1,3 @@
-from dis import show_code
 from cobra.core import Solution
 from cobra.util import create_stoichiometric_matrix
 from cobra import Configuration

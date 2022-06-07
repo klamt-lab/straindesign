@@ -6,8 +6,7 @@ import json
 import io
 import logging
 from cobra import Model
-from straindesign import SDModule, SDSolutions, select_solver, fva, DisableLogger
-from straindesign import StrainDesignMILPSolver as MILP
+from straindesign import SDModule, SDSolutions, select_solver, fva, DisableLogger, SDProblem, SDMILP
 from straindesign.names import *
 from straindesign.networktools import *
 
@@ -299,7 +298,8 @@ def compute_strain_designs(model: Model, **kwargs):
         len(cmp_ko_cost) + len(cmp_ki_cost) -
         len(essential_kis)) + " targetable reactions")
     
-    strain_design_MILP = MILP(cmp_model, sd_modules, **kwargs_milp)
+    sd_problem = SDProblem(cmp_model, sd_modules, **kwargs_milp)
+    sd_milp = SDMILP(sd_problem)
 
     kwargs_computation = {}
     if MAX_SOLUTIONS in kwargs:
@@ -316,11 +316,11 @@ def compute_strain_designs(model: Model, **kwargs):
         solution_approach = ANY
     # solve MILP
     if solution_approach == ANY:
-        cmp_sd_solution = strain_design_MILP.compute(**kwargs_computation)
+        cmp_sd_solution = sd_milp.compute(**kwargs_computation)
     elif solution_approach == BEST:
-        cmp_sd_solution = strain_design_MILP.compute_optimal(**kwargs_computation)
+        cmp_sd_solution = sd_milp.compute_optimal(**kwargs_computation)
     elif solution_approach == POPULATE:
-        cmp_sd_solution = strain_design_MILP.enumerate(**kwargs_computation)
+        cmp_sd_solution = sd_milp.enumerate(**kwargs_computation)
         
     logging.info('  Decompressing.')
     if cmp_sd_solution.status in [OPTIMAL, TIME_LIMIT_W_SOL]:

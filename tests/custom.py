@@ -2,8 +2,7 @@ from os.path import dirname, abspath
 from cobra.io import read_sbml_model, load_model
 import straindesign as sd
 from straindesign.names import *
-from numpy import inf, isinf
-from cobra import Configuration
+from numpy import inf
 import logging
 
 logging.basicConfig(level="INFO")

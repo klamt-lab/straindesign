@@ -1,66 +1,68 @@
 import numpy as np
 from scipy import sparse
 import time
-from cobra import Model
 from typing import Dict, List, Tuple
-from straindesign import StrainDesignMILPBuilder, SDSolutions, MILP_LP, SDModule
+from straindesign import SDProblem, SDSolutions, MILP_LP, SDModule
 from straindesign.names import *
 from warnings import warn
 import logging
 
 
-class StrainDesignMILPSolver(StrainDesignMILPBuilder):
-
-    def __init__(self, model: Model, sd_modules: List[SDModule], **kwargs):
-        # Build MILP problem with constructor of parent class
-        super().__init__(model, sd_modules, **kwargs)
+class SDMILP(MILP_LP):
+    def __init__(self, sd_problem: SDProblem):
         # Build MILP object from constructed problem
-        self.sd_modules = sd_modules
-        self.milp = MILP_LP(c=self.c,
-                            A_ineq=self.A_ineq,
-                            b_ineq=self.b_ineq,
-                            A_eq=self.A_eq,
-                            b_eq=self.b_eq,
-                            lb=self.lb,
-                            ub=self.ub,
-                            vtype=self.vtype,
-                            indic_constr=self.indic_constr,
-                            M=self.M,
-                            solver=self.solver)
+        super().__init__(   c=sd_problem.c,
+                            A_ineq=sd_problem.A_ineq,
+                            b_ineq=sd_problem.b_ineq,
+                            A_eq=sd_problem.A_eq,
+                            b_eq=sd_problem.b_eq,
+                            lb=sd_problem.lb,
+                            ub=sd_problem.ub,
+                            vtype=sd_problem.vtype,
+                            indic_constr=sd_problem.indic_constr,
+                            M=sd_problem.M,
+                            solver=sd_problem.solver)
+        # Set some 
+        self.cont_MILP          = sd_problem.cont_MILP
+        self.model              = sd_problem.model
+        self.sd_modules         = sd_problem.sd_modules
+        self.is_mcs_computation = sd_problem.is_mcs_computation
+        self.max_cost           = sd_problem.max_cost
+        self.cost               = sd_problem.cost
+        self.c_bu               = sd_problem.c
+        self.idx_z              = sd_problem.idx_z
+        self.z_inverted         = sd_problem.z_inverted
+        self.z_non_targetable   = sd_problem.z_non_targetable
+        self.num_z              = sd_problem.num_z
+        self.ko_cost            = sd_problem.ko_cost
+        self.ki_cost            = sd_problem.ki_cost
 
     def add_exclusion_constraints(self, z):
         for i in range(z.shape[0]):
             # introduce constraint to make MILP infeasible. Some solvers cannot handle empty rows
             if z[i].nnz == 0:
                 A_ineq = sparse.csr_matrix([1.0] * z[i].shape[1])
-                A_ineq.resize((1, self.milp.A_ineq.shape[1]))
+                A_ineq.resize((1, self.A_ineq.shape[1]))
                 b_ineq = -1
-                self.A_ineq = sparse.vstack((self.A_ineq, A_ineq))
-                self.b_ineq += [b_ineq]
-                self.milp.add_ineq_constraints(A_ineq, [b_ineq])
+                self.add_ineq_constraints(A_ineq, [b_ineq])
             # otherwise, introduce integer cut constraint
             elif z[i].nnz == 1:
                 interv_idx = int(z[i].indices[0])
                 self.z_non_targetable[interv_idx] = True
-                self.ub[interv_idx] = 0.0
-                self.milp.set_ub([[interv_idx, 0.0]])
+                self.set_ub([[interv_idx, 0.0]])
             # otherwise, introduce integer cut constraint
             else:
                 A_ineq = z[i].copy()
-                A_ineq.resize((1, self.milp.A_ineq.shape[1]))
+                A_ineq.resize((1, self.A_ineq.shape[1]))
                 b_ineq = np.sum(z[i]) - 1
-                self.A_ineq = sparse.vstack((self.A_ineq, A_ineq))
-                self.b_ineq += [b_ineq]
-                self.milp.add_ineq_constraints(A_ineq, [b_ineq])
+                self.add_ineq_constraints(A_ineq, [b_ineq])
 
     def add_exclusion_constraints_ineq(self, z):
         for j in range(z.shape[0]):
             A_ineq = [1.0 if z[j, i] else -1.0 for i in self.idx_z]
-            A_ineq.resize((1, self.milp.A_ineq.shape[1]))
+            A_ineq.resize((1, self.A_ineq.shape[1]))
             b_ineq = np.sum(z[j]) - 1
-            self.A_ineq = sparse.vstack((self.A_ineq, A_ineq))
-            self.b_ineq += [b_ineq]
-            self.milp.add_ineq_constraints(A_ineq, [b_ineq])
+            self.add_ineq_constraints(A_ineq, [b_ineq])
 
     def sd2dict(self, sol, *args) -> Dict:
         output = {}
@@ -76,12 +78,12 @@ class StrainDesignMILPSolver(StrainDesignMILPBuilder):
         return output
 
     def solveZ(self) -> Tuple[List, int]:
-        x, _, status = self.milp.solve()
+        x, _, status = self.solve()
         z = sparse.csr_matrix([round(x[i], 5) for i in self.idx_z])
         return z, status
 
     def populateZ(self, n) -> Tuple[List, int]:
-        x, _, status = self.milp.populate(n)
+        x, _, status = self.populate(n)
         if status in [OPTIMAL, TIME_LIMIT_W_SOL]:
             z = sparse.csr_matrix([
                 [round(x[j][i], 5) for i in self.idx_z] for j in range(len(x))
@@ -100,39 +102,26 @@ class StrainDesignMILPSolver(StrainDesignMILPBuilder):
         return z, status
 
     def clearObjective(self):
-        self.milp.clear_objective()
-        self.c = [0.0] * len(self.c)
+        self.clear_objective()
 
     def fixObjective(self, c, cx):
-        self.milp.set_ineq_constraint(2, c, cx)
-        self.A_ineq = self.A_ineq.tolil()
-        self.A_ineq[2] = sparse.lil_matrix(c)
-        self.A_ineq = self.A_ineq.tocsr()
-        self.b_ineq[2] = cx
+        self.set_ineq_constraint(2, c, cx)
 
     def resetObjective(self):
-        for i, v in enumerate(self.c_bu):
-            self.c[i] = v
-        self.milp.set_objective_idx([[i, v] for i, v in enumerate(self.c_bu)])
+        self.set_objective_idx([[i, v] for i, v in enumerate(self.c_bu)])
 
     def setMinIntvCostObjective(self):
         self.clearObjective()
-        for i in self.idx_z:
-            if i not in self.z_non_targetable:
-                self.c[i] = self.cost[i]
-        self.milp.set_objective_idx([
-            [i, self.c[i]] for i in self.idx_z if i not in self.z_non_targetable
+        self.set_objective_idx([
+            [i, self.cost[i]] for i in self.idx_z if i not in self.z_non_targetable
         ])
 
     def resetTargetableZ(self):
-        for i, b in enumerate(self.z_non_targetable):
-            self.ub[i] = 1.0 - float(b)
-        self.milp.set_ub(
+        self.set_ub(
             [[i, 1.0] for i in self.idx_z if not self.z_non_targetable[i]])
 
     def setTargetableZ(self, sol):
-        self.ub = [1.0 if sol[0, i] else 0.0 for i in self.idx_z]
-        self.milp.set_ub([[i, 0.0] for i in self.idx_z if not sol[0, i]])
+        self.set_ub([[i, 0.0] for i in self.idx_z if not sol[0, i]])
 
     def verify_sd(self, sols) -> List:
         valid = [False] * sols.shape[0]
@@ -199,11 +188,11 @@ class StrainDesignMILPSolver(StrainDesignMILPBuilder):
         while sols.shape[0] < self.max_solutions and \
           status == OPTIMAL and \
           endtime-time.time() > 0:
-            self.milp.set_time_limit(endtime - time.time())
+            self.set_time_limit(endtime - time.time())
             self.resetTargetableZ()
             self.resetObjective()
             self.fixObjective(self.c_bu, np.inf)
-            x, min_cx, status = self.milp.solve()
+            x, min_cx, status = self.solve()
             z = sparse.csr_matrix([round(x[i], 5) for i in self.idx_z])
             if np.isnan(z[0, 0]):
                 break
@@ -235,7 +224,7 @@ class StrainDesignMILPSolver(StrainDesignMILPBuilder):
                 while sols.shape[0] < self.max_solutions and \
                         status == OPTIMAL and \
                         endtime-time.time() > 0:
-                    self.milp.set_time_limit(endtime - time.time())
+                    self.set_time_limit(endtime - time.time())
                     z1, status1 = self.solveZ()
                     output = self.sd2dict(z1)
                     if status1 in [OPTIMAL, TIME_LIMIT_W_SOL] and all(
@@ -302,16 +291,16 @@ class StrainDesignMILPSolver(StrainDesignMILPBuilder):
           status == OPTIMAL and \
           endtime-time.time() > 0:
             logging.info('Searching in full search space.')
-            self.milp.set_time_limit(endtime - time.time())
+            self.set_time_limit(endtime - time.time())
             self.resetTargetableZ()
             self.clearObjective()
             self.fixObjective(self.c_bu, np.inf)  # keep objective open
-            x, min_cx, status = self.milp.solve()
+            x, min_cx, status = self.solve()
             z = sparse.csr_matrix([round(x[i], 5) for i in self.idx_z])
             if np.isnan(z[0, 0]):
                 break
             if not all(self.verify_sd(z)):
-                self.milp.set_time_limit(endtime - time.time())
+                self.set_time_limit(endtime - time.time())
                 self.resetObjective()
                 self.setTargetableZ(z)
                 self.fixObjective(self.c_bu,
@@ -351,8 +340,8 @@ class StrainDesignMILPSolver(StrainDesignMILPBuilder):
             while sols.shape[0] < self.max_solutions and \
                     status == OPTIMAL and \
                     endtime-time.time() > 0:
-                self.milp.set_time_limit(endtime - time.time())
-                x1, min_cx, status1 = self.milp.solve()
+                self.set_time_limit(endtime - time.time())
+                x1, min_cx, status1 = self.solve()
                 z1 = sparse.csr_matrix([x1[i] for i in self.idx_z])
                 output = self.sd2dict(z1)
                 if status1 in [OPTIMAL, TIME_LIMIT_W_SOL] and all(
@@ -429,12 +418,12 @@ class StrainDesignMILPSolver(StrainDesignMILPBuilder):
         while sols.shape[0] < self.max_solutions and \
           status == OPTIMAL and \
           endtime-time.time() > 0:
-            self.milp.set_time_limit(endtime - time.time())
+            self.set_time_limit(endtime - time.time())
             if not self.is_mcs_computation:
                 self.resetTargetableZ()
                 self.resetObjective()
                 self.fixObjective(self.c_bu, np.inf)
-                x, min_cx, status = self.milp.solve()
+                x, min_cx, status = self.solve()
                 z = sparse.csr_matrix([round(x[i], 5) for i in self.idx_z])
                 if status not in [OPTIMAL, TIME_LIMIT_W_SOL]:
                     break

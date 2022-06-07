@@ -27,6 +27,6 @@ from .lptools import *
 from .networktools import *
 from .strainDesignModule import *
 from .strainDesignSolutions import *
-from .strainDesignMILPBuilder import *
-from .strainDesignMILPSolver import *
+from .strainDesignProblem import *
+from .strainDesignMILP import *
 from .compute_strain_designs import *
