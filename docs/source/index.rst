@@ -80,7 +80,7 @@ Parts of the compression routine is done by efmtool's compression function (http
    :maxdepth: 4
    :caption: Contents:
 
-   1_solver_installation
+   examples/JN_01_solver.ipynb
    examples/JN_02_analysis.ipynb
    examples/JN_03_plotting.ipynb
    examples/JN_04_strain_design_introduction.ipynb
