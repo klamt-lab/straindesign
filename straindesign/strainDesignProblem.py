@@ -80,7 +80,10 @@ class SDProblem:
         self.z_non_targetable = [np.isnan(x) for x in self.cost]
         for i in [i for i, x in enumerate(self.cost) if np.isnan(x)]:
             self.cost[i] = 0.0
-        # Prepare top 3 lines of MILP (sum of KOs below (1) and above (2) threshold) and objective function (3)
+        # Prepare top 3 lines of MILP (sum of weighted interventions below (0) and above (1) threshold) and objective function (2)
+        self.idx_row_maxcost = 0
+        self.idx_row_mincost = 1
+        self.idx_row_obj     = 2
         self.A_ineq = sparse.csr_matrix([[-i for i in self.cost], self.cost,
                                          [0] * self.num_z])
         if self.max_cost is None:

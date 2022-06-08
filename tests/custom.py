@@ -8,7 +8,7 @@ import logging
 logging.basicConfig(level="INFO")
 
 curr_solver = 'gurobi'
-comp_approach = BEST
+comp_approach = ANY
 model_gpr = read_sbml_model(dirname(abspath(__file__)) + "/model_gpr.xml")
 modules = [sd.SDModule(model_gpr, SUPPRESS, constraints=["1.0 rd_ex >= 1.0 "])]
 modules += [

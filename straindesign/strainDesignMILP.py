@@ -22,7 +22,7 @@ class SDMILP(MILP_LP):
                             indic_constr=sd_problem.indic_constr,
                             M=sd_problem.M,
                             solver=sd_problem.solver)
-        # Set some 
+        # Copy some parameters
         self.cont_MILP          = sd_problem.cont_MILP
         self.model              = sd_problem.model
         self.sd_modules         = sd_problem.sd_modules
@@ -36,6 +36,9 @@ class SDMILP(MILP_LP):
         self.num_z              = sd_problem.num_z
         self.ko_cost            = sd_problem.ko_cost
         self.ki_cost            = sd_problem.ki_cost
+        self.idx_row_maxcost    = sd_problem.idx_row_maxcost
+        self.idx_row_mincost    = sd_problem.idx_row_mincost
+        self.idx_row_obj        = sd_problem.idx_row_obj    
 
     def add_exclusion_constraints(self, z):
         for i in range(z.shape[0]):
@@ -78,9 +81,9 @@ class SDMILP(MILP_LP):
         return output
 
     def solveZ(self) -> Tuple[List, int]:
-        x, _, status = self.solve()
+        x, opt, status = self.solve()
         z = sparse.csr_matrix([round(x[i], 5) for i in self.idx_z])
-        return z, status
+        return z, x, opt, status
 
     def populateZ(self, n) -> Tuple[List, int]:
         x, _, status = self.populate(n)
@@ -101,17 +104,14 @@ class SDMILP(MILP_LP):
             z = sparse.csr_matrix((0, self.num_z))
         return z, status
 
-    def clearObjective(self):
-        self.clear_objective()
-
     def fixObjective(self, c, cx):
-        self.set_ineq_constraint(2, c, cx)
+        self.set_ineq_constraint(self.idx_row_obj, c, cx)
 
     def resetObjective(self):
         self.set_objective_idx([[i, v] for i, v in enumerate(self.c_bu)])
 
     def setMinIntvCostObjective(self):
-        self.clearObjective()
+        self.clear_objective()
         self.set_objective_idx([
             [i, self.cost[i]] for i in self.idx_z if i not in self.z_non_targetable
         ])
@@ -192,8 +192,7 @@ class SDMILP(MILP_LP):
             self.resetTargetableZ()
             self.resetObjective()
             self.fixObjective(self.c_bu, np.inf)
-            x, min_cx, status = self.solve()
-            z = sparse.csr_matrix([round(x[i], 5) for i in self.idx_z])
+            z, _, opt, status = self.solveZ()
             if np.isnan(z[0, 0]):
                 break
             output = self.sd2dict(z)
@@ -214,18 +213,18 @@ class SDMILP(MILP_LP):
             else:
                 # Verify solution and explore subspace to get minimal intervention sets
                 logging.info('Found solution with objective value ' +
-                             str(-min_cx))
+                             str(-opt))
                 logging.info(
                     'Minimizing number of interventions in subspace with ' +
                     str(sum(z.toarray()[0])) + ' possible targets.')
-                self.fixObjective(self.c_bu, min_cx)
+                self.fixObjective(self.c_bu, opt)
                 self.setMinIntvCostObjective()
                 self.setTargetableZ(z)
                 while sols.shape[0] < self.max_solutions and \
                         status == OPTIMAL and \
                         endtime-time.time() > 0:
                     self.set_time_limit(endtime - time.time())
-                    z1, status1 = self.solveZ()
+                    z1, _, _, status1 = self.solveZ()
                     output = self.sd2dict(z1)
                     if status1 in [OPTIMAL, TIME_LIMIT_W_SOL] and all(
                             self.verify_sd(z1)):
@@ -293,11 +292,10 @@ class SDMILP(MILP_LP):
             logging.info('Searching in full search space.')
             self.set_time_limit(endtime - time.time())
             self.resetTargetableZ()
-            self.clearObjective()
+            self.clear_objective()
             self.fixObjective(self.c_bu, np.inf)  # keep objective open
-            x, min_cx, status = self.solve()
-            z = sparse.csr_matrix([round(x[i], 5) for i in self.idx_z])
-            if np.isnan(z[0, 0]):
+            z, x, _, status = self.solveZ()
+            if status not in [OPTIMAL, TIME_LIMIT_W_SOL]:
                 break
             if not all(self.verify_sd(z)):
                 self.set_time_limit(endtime - time.time())
@@ -305,7 +303,7 @@ class SDMILP(MILP_LP):
                 self.setTargetableZ(z)
                 self.fixObjective(self.c_bu,
                                   np.sum([c * x for c, x in zip(self.c_bu, x)]))
-                z1, status1 = self.solveZ()
+                z1, _, _, status1 = self.solveZ()
                 if status1 == OPTIMAL and not self.verify_sd(z1):
                     self.add_exclusion_constraints(z1)
                     output = self.sd2dict(z1)
@@ -341,8 +339,7 @@ class SDMILP(MILP_LP):
                     status == OPTIMAL and \
                     endtime-time.time() > 0:
                 self.set_time_limit(endtime - time.time())
-                x1, min_cx, status1 = self.solve()
-                z1 = sparse.csr_matrix([x1[i] for i in self.idx_z])
+                z1, _, _, status1 = self.solveZ()
                 output = self.sd2dict(z1)
                 if status1 in [OPTIMAL, TIME_LIMIT_W_SOL] and all(
                         self.verify_sd(z1)):
@@ -423,14 +420,13 @@ class SDMILP(MILP_LP):
                 self.resetTargetableZ()
                 self.resetObjective()
                 self.fixObjective(self.c_bu, np.inf)
-                x, min_cx, status = self.solve()
-                z = sparse.csr_matrix([round(x[i], 5) for i in self.idx_z])
+                z, _, opt, status = self.solveZ()
                 if status not in [OPTIMAL, TIME_LIMIT_W_SOL]:
                     break
                 logging.info(
                     'Enumerating all solutions with the objective value: ' +
-                    str(-min_cx))
-                self.fixObjective(self.c_bu, min_cx)
+                    str(-opt))
+                self.fixObjective(self.c_bu, opt)
                 self.setMinIntvCostObjective()
             z, status = self.populateZ(self.max_solutions - sols.shape[0])
             if status in [OPTIMAL, TIME_LIMIT_W_SOL]:
