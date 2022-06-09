@@ -46,7 +46,7 @@ jobs:
     - name: stage changed files
       run: git add .
     - name: commit changed files
-      run: git commit -m "updated version number"
+      run: git commit -m "updated version number" --allow-empty
     - name: fetch
       run: git fetch
     - name: push code to main
