@@ -421,7 +421,7 @@ def filter_sd_maxcost(sd, max_cost, kocost, kicost):
         ]
         sd = [sd[i] for i in range(len(sd)) if costs[i] <= max_cost + 1e-8]
         # sort strain designs by intervention costs
-        [s.update({'**cost**':c}) for s,c in zip(sd,costs)]
+        [s.update({'**cost**': c}) for s, c in zip(sd, costs)]
         sd.sort(key=lambda x: x.pop('**cost**'))
     return sd
 

@@ -9,36 +9,37 @@ import logging
 
 
 class SDMILP(MILP_LP):
+
     def __init__(self, sd_problem: SDProblem):
         # Build MILP object from constructed problem
-        super().__init__(   c=sd_problem.c,
-                            A_ineq=sd_problem.A_ineq,
-                            b_ineq=sd_problem.b_ineq,
-                            A_eq=sd_problem.A_eq,
-                            b_eq=sd_problem.b_eq,
-                            lb=sd_problem.lb,
-                            ub=sd_problem.ub,
-                            vtype=sd_problem.vtype,
-                            indic_constr=sd_problem.indic_constr,
-                            M=sd_problem.M,
-                            solver=sd_problem.solver)
+        super().__init__(c=sd_problem.c,
+                         A_ineq=sd_problem.A_ineq,
+                         b_ineq=sd_problem.b_ineq,
+                         A_eq=sd_problem.A_eq,
+                         b_eq=sd_problem.b_eq,
+                         lb=sd_problem.lb,
+                         ub=sd_problem.ub,
+                         vtype=sd_problem.vtype,
+                         indic_constr=sd_problem.indic_constr,
+                         M=sd_problem.M,
+                         solver=sd_problem.solver)
         # Copy some parameters
-        self.cont_MILP          = sd_problem.cont_MILP
-        self.model              = sd_problem.model
-        self.sd_modules         = sd_problem.sd_modules
+        self.cont_MILP = sd_problem.cont_MILP
+        self.model = sd_problem.model
+        self.sd_modules = sd_problem.sd_modules
         self.is_mcs_computation = sd_problem.is_mcs_computation
-        self.max_cost           = sd_problem.max_cost
-        self.cost               = sd_problem.cost
-        self.c_bu               = sd_problem.c
-        self.idx_z              = sd_problem.idx_z
-        self.z_inverted         = sd_problem.z_inverted
-        self.z_non_targetable   = sd_problem.z_non_targetable
-        self.num_z              = sd_problem.num_z
-        self.ko_cost            = sd_problem.ko_cost
-        self.ki_cost            = sd_problem.ki_cost
-        self.idx_row_maxcost    = sd_problem.idx_row_maxcost
-        self.idx_row_mincost    = sd_problem.idx_row_mincost
-        self.idx_row_obj        = sd_problem.idx_row_obj    
+        self.max_cost = sd_problem.max_cost
+        self.cost = sd_problem.cost
+        self.c_bu = sd_problem.c
+        self.idx_z = sd_problem.idx_z
+        self.z_inverted = sd_problem.z_inverted
+        self.z_non_targetable = sd_problem.z_non_targetable
+        self.num_z = sd_problem.num_z
+        self.ko_cost = sd_problem.ko_cost
+        self.ki_cost = sd_problem.ki_cost
+        self.idx_row_maxcost = sd_problem.idx_row_maxcost
+        self.idx_row_mincost = sd_problem.idx_row_mincost
+        self.idx_row_obj = sd_problem.idx_row_obj
 
     def add_exclusion_constraints(self, z):
         for i in range(z.shape[0]):
@@ -112,9 +113,9 @@ class SDMILP(MILP_LP):
 
     def setMinIntvCostObjective(self):
         self.clear_objective()
-        self.set_objective_idx([
-            [i, self.cost[i]] for i in self.idx_z if i not in self.z_non_targetable
-        ])
+        self.set_objective_idx([[i, self.cost[i]]
+                                for i in self.idx_z
+                                if i not in self.z_non_targetable])
 
     def resetTargetableZ(self):
         self.set_ub(
@@ -212,8 +213,7 @@ class SDMILP(MILP_LP):
                     break
             else:
                 # Verify solution and explore subspace to get minimal intervention sets
-                logging.info('Found solution with objective value ' +
-                             str(-opt))
+                logging.info('Found solution with objective value ' + str(-opt))
                 logging.info(
                     'Minimizing number of interventions in subspace with ' +
                     str(sum(z.toarray()[0])) + ' possible targets.')
