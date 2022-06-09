@@ -38,6 +38,8 @@ def compute_strain_designs(model: Model, **kwargs):
 
     if MAX_COST in kwargs:
         kwargs.update({MAX_COST: float(kwargs.pop(MAX_COST))})
+    else:
+        kwargs.update({MAX_COST: np.inf})
 
     if MODEL_ID in kwargs:
         model_id = kwargs.pop(MODEL_ID)
