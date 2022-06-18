@@ -752,7 +752,7 @@ def plot_flux_space(model, axes, **kwargs):
         if lb[0] != ub[0]:
             x.extend([x_space[0], x_space[0]])
             y.extend([lb[0], ub[0]])
-        plot1 = plt.fill(x, y, edgecolor='mediumblue', linewidth=0.5)
+        plot1 = plt.fill(x, y, linewidth=0.5) # edgecolor='mediumblue',
         plot1 = plot1[0]
         # plot1 = plt.plot(x, y)
 
