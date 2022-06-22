@@ -29,7 +29,7 @@ def compute_strain_designs(model: Model, **kwargs):
             kwargs = kwargs[SETUP]
 
     if MODULES in kwargs:
-        sd_modules = kwargs.pop(MODULES)
+        sd_modules = kwargs.pop(MODULES).copy()
 
     if SOLVER in kwargs:
         kwargs[SOLVER] = select_solver(kwargs[SOLVER])

@@ -49,7 +49,7 @@ class SDModule(Dict):
         self[MODULE_TYPE] = module_type
         allowed_keys = {
             CONSTRAINTS, INNER_OBJECTIVE, INNER_OPT_SENSE, OUTER_OBJECTIVE,
-            OUTER_OPT_SENSE, PROD_ID, 'skip_checks', MIN_GCP
+            OUTER_OPT_SENSE, PROD_ID, 'skip_checks', MIN_GCP, 'reac_ids'
         }
         # set all keys passed in kwargs as properties of the SD_Module object
         for key, value in kwargs.items():
@@ -62,9 +62,10 @@ class SDModule(Dict):
             if key not in kwargs.keys():
                 self[key] = None
 
-        if not model.reactions:
-            raise Exception('Strain design module cannot be constructed for models without reactions. ' \
-                             'Make sure to provide a valid module.')
+        if not self['reac_ids'] and not model.reactions:
+            raise Exception('Strain design module cannot be constructed without information about '+\
+                            'available reactions reactions. Make sure to provide a valid model or '+\
+                            'reaction list.')
 
         # check if there is sufficient information for each module type
         if self[MODULE_TYPE] not in [
@@ -105,13 +106,14 @@ class SDModule(Dict):
                     'When module type is "' + OPTCOUPLE +
                     '", the production reaction id must be provided.')
 
-        reac_id = model.reactions.list_attr('id')
+        if not self['reac_ids']:
+            self['reac_ids'] = model.reactions.list_attr('id')
 
         # parse constraints and ensure they have the form:
         # [ [{'r1': -1, 'r3': 2}, '<=', 3],
         #   [{'r2': 1, 'r3': -1},  '=', 0]  ]
         if self[CONSTRAINTS] is not None:
-            self[CONSTRAINTS] = parse_constraints(self[CONSTRAINTS], reac_id)
+            self[CONSTRAINTS] = parse_constraints(self[CONSTRAINTS], self['reac_ids'])
         else:
             self[CONSTRAINTS] = []
 
@@ -119,21 +121,21 @@ class SDModule(Dict):
         if self[INNER_OBJECTIVE] is not None:
             if type(self[INNER_OBJECTIVE]) is str:
                 self[INNER_OBJECTIVE] = linexpr2dict(self[INNER_OBJECTIVE],
-                                                     reac_id)
+                                                     self['reac_ids'])
 
         # parse outer objective
         if self[OUTER_OBJECTIVE] is not None:
             if type(self[OUTER_OBJECTIVE]) is str:
                 self[OUTER_OBJECTIVE] = linexpr2dict(self[OUTER_OBJECTIVE],
-                                                     reac_id)
+                                                     self['reac_ids'])
 
         # parse prod_id
         if self[PROD_ID] is not None:
             if type(self[PROD_ID]) is str:
-                self[PROD_ID] = linexpr2dict(self[PROD_ID], reac_id)
+                self[PROD_ID] = linexpr2dict(self[PROD_ID], self['reac_ids'])
 
         # verify self[CONSTRAINTS]
-        if self['skip_checks'] is None:
+        if not self['skip_checks']:
             from straindesign import fba
             if fba(model, constraints=self[CONSTRAINTS]).status == INFEASIBLE:
                 raise Exception(
@@ -151,19 +153,19 @@ class SDModule(Dict):
                         '", the zero vector must not be a contained in the described flux space.')
 
             if (self[INNER_OBJECTIVE] is not None) and (not all([
-                    True if r in reac_id else False
+                    True if r in self['reac_ids'] else False
                     for r in self[INNER_OBJECTIVE].keys()
             ])):
                 raise Exception("Inner objective invalid.")
 
             if (self[OUTER_OBJECTIVE] is not None) and (not all([
-                    True if r in reac_id else False
+                    True if r in self['reac_ids'] else False
                     for r in self[OUTER_OBJECTIVE].keys()
             ])):
                 raise Exception("Outer objective invalid.")
 
             if (self[PROD_ID] is not None) and (not all(
-                [True if r in reac_id else False
+                [True if r in self['reac_ids'] else False
                  for r in self[PROD_ID].keys()])):
                 raise Exception("Production id (prod_id) invalid.")
 
@@ -175,3 +177,19 @@ class SDModule(Dict):
                 else:
                     raise Exception("Minimum growth coupling potential (" +
                                     MIN_GCP + ").")
+
+    def copy(self):
+        class DummyModel:
+            id = self[MODEL_ID]
+        return SDModule(DummyModel(),
+                        self[MODULE_TYPE],
+                        constraints=self[CONSTRAINTS],
+                        inner_objective=self[INNER_OBJECTIVE],
+                        inner_opt_sense=self[INNER_OPT_SENSE],
+                        outer_objective=self[OUTER_OBJECTIVE],
+                        outer_opt_sense=self[OUTER_OPT_SENSE],
+                        prod_id=self[PROD_ID],
+                        min_gcp=self[MIN_GCP],
+                        skip_checks=True,
+                        reac_ids=self['reac_ids']
+                        )
