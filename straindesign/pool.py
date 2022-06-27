@@ -11,7 +11,7 @@ import pickle
 from os.path import isfile
 from platform import system
 from tempfile import mkstemp
-from typing import Callable, Optional, Tuple, Type
+from typing import Callable, Optional, Tuple
 
 RUN = 0
 CLOSE = 1
@@ -68,12 +68,14 @@ class SDPool(Pool):
             context = get_context('spawn')  # If not declared otherwise,
             # 'spawn' new threads. Experience has shown
             # that forking is unreliable.
-            if sys.modules['__main__'].__spec__ is not None:
-                spec = sys.modules['__main__'].__spec__
-                sys.modules['__main__'].__spec__ = None
-            if sys.modules['__main__'].__file__ is not None:
-                file = sys.modules['__main__'].__file__
-                sys.modules['__main__'].__file__ = None
+            if hasattr(sys.modules['__main__'],'__spec__'):
+                if not sys.modules['__main__'].__spec__:
+                    spec = sys.modules['__main__'].__spec__
+                    sys.modules['__main__'].__spec__ = None
+            if hasattr(sys.modules['__main__'],'__file__'):
+                if not sys.modules['__main__'].__file__:
+                    file = sys.modules['__main__'].__file__
+                    sys.modules['__main__'].__file__ = None
         super().__init__(
             processes=processes,
             initializer=initializer,

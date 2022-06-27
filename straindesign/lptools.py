@@ -188,11 +188,7 @@ def fva(model, **kwargs):
             index=reaction_ids,
         )
 
-    processes = cpu_count() - 1
-    if not processes:
-        logging.info(
-            "The number of cores could not be detected - assuming one.")
-        processes = 1
+    processes = Configuration().processes
     num_reactions = len(reaction_ids)
     processes = min(processes, num_reactions)
 

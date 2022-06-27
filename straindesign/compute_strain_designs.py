@@ -6,10 +6,10 @@ import json
 import io
 import logging
 from cobra import Model
+from cobra.manipulation import rename_genes
 from straindesign import SDModule, SDSolutions, select_solver, fva, DisableLogger, SDProblem, SDMILP
 from straindesign.names import *
 from straindesign.networktools import *
-
 
 def compute_strain_designs(model: Model, **kwargs):
     ## Two computation modes:
@@ -21,6 +21,7 @@ def compute_strain_designs(model: Model, **kwargs):
         KOCOST, KICOST, GKOCOST, GKICOST, REGCOST, SOLUTION_APPROACH,
         'gene_kos', 'advanced', 'use_scenario', T_LIMIT
     }
+    logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
         if type(kwargs[SETUP]) is str:
             with open(kwargs[SETUP], 'r') as fs:
@@ -79,11 +80,19 @@ def compute_strain_designs(model: Model, **kwargs):
         used_g_ids.update(
             set(kwargs[REGCOST]
                 if REGCOST in kwargs and kwargs[REGCOST] else set()))
-        if np.any([len(g.name) for g in model.genes]) and (np.any(
+        # genes must not begin with number, put a 'g' in front of genes that start with a number
+        if any([True for g in model.genes if g.id[0].isdigit()]):
+            logging.warning("Gene IDs must not start with a digit. Inserting prefix 'g' where necessary.")
+            rename_genes(model, {g.id : 'g'+g.id for g in model.genes if g.id[0].isdigit()})
+        if np.all([len(g.name) for g in model.genes]) and (np.any(
             [g.name in used_g_ids for g in model.genes]) or not used_g_ids):
             has_gene_names = True
         else:
             has_gene_names = False
+        if has_gene_names and any([True for g in model.genes if g.name[0].isdigit()]):
+            logging.warning("Gene names must not start with a digit. Inserting prefix 'g' where necessary.")
+            for g,v in {g.id : 'g'+g.name for g in model.genes if g.name[0].isdigit()}.items():
+                model.genes.get_by_id(g).name = v
         if GKOCOST not in kwargs or not kwargs[GKOCOST]:
             if has_gene_names:  # if gene names are defined, use them instead of ids
                 uncmp_gko_cost = {k: 1.0 for k in model.genes.list_attr('name')}
@@ -111,6 +120,8 @@ def compute_strain_designs(model: Model, **kwargs):
     if len(bilvl_modules) > 1:
         raise Exception("Only one of the module types 'OptKnock', 'RobustKnock' and 'OptCouple' can be defined per "\
                             "strain design setup.")
+    logging.info('  Using ' + kwargs[SOLVER] +
+                 ' for solving LPs during preprocessing.')
     with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO(
     )), DisableLogger():  # suppress standard output from copying model
         orig_model = model.copy()
@@ -138,9 +149,6 @@ def compute_strain_designs(model: Model, **kwargs):
                             'Make sure that metabolic interventions are enabled either through reaction or '\
                             'through gene interventions and are defined either as knock-ins or as knock-outs.')
     # 1) Preprocess Model
-    logging.info('Preparing strain design computation.')
-    logging.info('  Using ' + kwargs[SOLVER] +
-                 ' for solving LPs during preprocessing.')
     with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO(
     )), DisableLogger():  # suppress standard output from copying model
         cmp_model = uncmp_model.copy()
