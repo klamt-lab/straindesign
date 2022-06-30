@@ -113,7 +113,8 @@ class SDModule(Dict):
         # [ [{'r1': -1, 'r3': 2}, '<=', 3],
         #   [{'r2': 1, 'r3': -1},  '=', 0]  ]
         if self[CONSTRAINTS] is not None:
-            self[CONSTRAINTS] = parse_constraints(self[CONSTRAINTS], self['reac_ids'])
+            self[CONSTRAINTS] = parse_constraints(self[CONSTRAINTS],
+                                                  self['reac_ids'])
         else:
             self[CONSTRAINTS] = []
 
@@ -164,9 +165,10 @@ class SDModule(Dict):
             ])):
                 raise Exception("Outer objective invalid.")
 
-            if (self[PROD_ID] is not None) and (not all(
-                [True if r in self['reac_ids'] else False
-                 for r in self[PROD_ID].keys()])):
+            if (self[PROD_ID] is not None) and (not all([
+                    True if r in self['reac_ids'] else False
+                    for r in self[PROD_ID].keys()
+            ])):
                 raise Exception("Production id (prod_id) invalid.")
 
             if (self[MIN_GCP] is not None) and type(self[MIN_GCP]) is not None:
@@ -179,8 +181,10 @@ class SDModule(Dict):
                                     MIN_GCP + ").")
 
     def copy(self):
+
         class DummyModel:
             id = self[MODEL_ID]
+
         return SDModule(DummyModel(),
                         self[MODULE_TYPE],
                         constraints=self[CONSTRAINTS],
@@ -191,5 +195,4 @@ class SDModule(Dict):
                         prod_id=self[PROD_ID],
                         min_gcp=self[MIN_GCP],
                         skip_checks=True,
-                        reac_ids=self['reac_ids']
-                        )
+                        reac_ids=self['reac_ids'])

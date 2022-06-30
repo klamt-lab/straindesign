@@ -11,6 +11,7 @@ from straindesign import SDModule, SDSolutions, select_solver, fva, DisableLogge
 from straindesign.names import *
 from straindesign.networktools import *
 
+
 def compute_strain_designs(model: Model, **kwargs):
     ## Two computation modes:
     # 1. Provide model, strain design module and optional computation parameters
@@ -82,16 +83,27 @@ def compute_strain_designs(model: Model, **kwargs):
                 if REGCOST in kwargs and kwargs[REGCOST] else set()))
         # genes must not begin with number, put a 'g' in front of genes that start with a number
         if any([True for g in model.genes if g.id[0].isdigit()]):
-            logging.warning("Gene IDs must not start with a digit. Inserting prefix 'g' where necessary.")
-            rename_genes(model, {g.id : 'g'+g.id for g in model.genes if g.id[0].isdigit()})
+            logging.warning(
+                "Gene IDs must not start with a digit. Inserting prefix 'g' where necessary."
+            )
+            rename_genes(
+                model,
+                {g.id: 'g' + g.id for g in model.genes if g.id[0].isdigit()})
         if np.all([len(g.name) for g in model.genes]) and (np.any(
             [g.name in used_g_ids for g in model.genes]) or not used_g_ids):
             has_gene_names = True
         else:
             has_gene_names = False
-        if has_gene_names and any([True for g in model.genes if g.name[0].isdigit()]):
-            logging.warning("Gene names must not start with a digit. Inserting prefix 'g' where necessary.")
-            for g,v in {g.id : 'g'+g.name for g in model.genes if g.name[0].isdigit()}.items():
+        if has_gene_names and any(
+            [True for g in model.genes if g.name[0].isdigit()]):
+            logging.warning(
+                "Gene names must not start with a digit. Inserting prefix 'g' where necessary."
+            )
+            for g, v in {
+                    g.id: 'g' + g.name
+                    for g in model.genes
+                    if g.name[0].isdigit()
+            }.items():
                 model.genes.get_by_id(g).name = v
         if GKOCOST not in kwargs or not kwargs[GKOCOST]:
             if has_gene_names:  # if gene names are defined, use them instead of ids
