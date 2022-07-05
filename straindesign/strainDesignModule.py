@@ -6,10 +6,10 @@ e.g. desired or undesired flux states for MCS strain design.
 """
 
 from numpy import all
+from copy import deepcopy
 from typing import List, Dict, Tuple, Union, Set, FrozenSet
 from straindesign.parse_constr import *
 from straindesign.names import *
-
 
 class SDModule(Dict):
     """
@@ -187,12 +187,13 @@ class SDModule(Dict):
 
         return SDModule(DummyModel(),
                         self[MODULE_TYPE],
-                        constraints=self[CONSTRAINTS],
-                        inner_objective=self[INNER_OBJECTIVE],
-                        inner_opt_sense=self[INNER_OPT_SENSE],
-                        outer_objective=self[OUTER_OBJECTIVE],
-                        outer_opt_sense=self[OUTER_OPT_SENSE],
-                        prod_id=self[PROD_ID],
+                        constraints=deepcopy(self[CONSTRAINTS]),
+                        inner_objective=deepcopy(self[INNER_OBJECTIVE]),
+                        inner_opt_sense=deepcopy(self[INNER_OPT_SENSE]),
+                        outer_objective=deepcopy(self[OUTER_OBJECTIVE]),
+                        outer_opt_sense=deepcopy(self[OUTER_OPT_SENSE]),
+                        prod_id=deepcopy(self[PROD_ID]),
                         min_gcp=self[MIN_GCP],
                         skip_checks=True,
-                        reac_ids=self['reac_ids'])
+                        reac_ids=deepcopy(self['reac_ids'])
+                        )

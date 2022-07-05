@@ -4,6 +4,7 @@ import numpy as np
 import logging
 import json
 import io
+from copy import deepcopy
 import logging
 from cobra import Model
 from cobra.manipulation import rename_genes
@@ -138,9 +139,9 @@ def compute_strain_designs(model: Model, **kwargs):
     )), DisableLogger():  # suppress standard output from copying model
         orig_model = model.copy()
         uncmp_model = model.copy()
-    orig_ko_cost = uncmp_ko_cost
-    orig_ki_cost = uncmp_ki_cost
-    orig_reg_cost = uncmp_reg_cost
+    orig_ko_cost = deepcopy(uncmp_ko_cost)
+    orig_ki_cost = deepcopy(uncmp_ki_cost)
+    orig_reg_cost = deepcopy(uncmp_reg_cost)
     if 'compress' not in kwargs:
         kwargs['compress'] = True
 
@@ -334,7 +335,7 @@ def compute_strain_designs(model: Model, **kwargs):
     else:
         sd = []
 
-    setup = cmp_sd_solution.sd_setup.copy()
+    setup = deepcopy(cmp_sd_solution.sd_setup)
     setup.update({
         MODULES: orig_sd_modules,
         KOCOST: orig_ko_cost,
