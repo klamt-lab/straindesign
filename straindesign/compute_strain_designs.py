@@ -126,6 +126,7 @@ def compute_strain_designs(model: Model, **kwargs):
         uncmp_reg_cost = {}
     if "SDModule" in str(type(sd_modules)):
         sd_modules = [sd_modules]
+    sd_modules = sd_modules.copy()
     orig_sd_modules = sd_modules
     # check that at most one bilevel module is provided
     bilvl_modules = [i for i,m in enumerate(sd_modules) \
