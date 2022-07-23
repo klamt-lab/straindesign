@@ -1,3 +1,24 @@
+#!/usr/bin/env python3
+#
+# Copyright 2022 Max Planck Insitute Magdeburg
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# 
+#
+#
+"""Computing metabolic strain designs."""
+
 from contextlib import redirect_stdout, redirect_stderr
 from typing import Dict, List, Tuple
 import numpy as np
@@ -13,7 +34,29 @@ from straindesign.names import *
 from straindesign.networktools import *
 
 
-def compute_strain_designs(model: Model, **kwargs):
+def compute_strain_designs(model: Model, **kwargs: Dict) -> SDSolutions:
+    """Computes strain designs for a user-defined strain design problem
+    
+    A number of arguments can be specified to detail the problem and influence the solution process. 
+    This function supports the computation of Minimal Cut Sets (MCS), OptKock, RobustKnock and OptCouple 
+    strain designs. It is possible to combine any of the latter ones with the MCS approach, e.g., to 
+    engineer growth coupled production, but also suppress the production of an undesired by-product.
+    
+    Args:
+        model :class:cobra.Model
+            A metabolic model that is an instance of the cobra.Model class. The model may or may not 
+            contain genes/GPR-rules.
+        setup (:class:)
+        modules (:class:List of straindesign.SDModule): List of strain design modules that describe the
+            sub-problems, such as the MCS-like protection or suppression of flux subspaces or the OptKnock,
+            RobustKnock or OptCouple objective and constraints. For details, see SDModule.
+        
+
+    Returns:
+        SDSolutions: An object that contains all computed strain designs. If strain designs were computed
+            as gene-interventions, the solution object contains a set of corresponding reaction-interventions
+            that facilitate the analysis of the computed strain designs with COBRA methods.
+    """
     ## Two computation modes:
     # 1. Provide model, strain design module and optional computation parameters
     # 2. Provide a full strain design setup in dict form (either as a dict from

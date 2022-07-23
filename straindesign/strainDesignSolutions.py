@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from numpy import all, any, nan, isnan, inf
+from numpy import all, any, nan, isnan, sign
 from typing import List, Dict, Tuple, Union, Set, FrozenSet
 from straindesign.parse_constr import *
 from straindesign.names import *
@@ -194,9 +194,9 @@ class SDSolutions(object):
                             bnds = model.reactions.get_by_id(reac).bounds
                         if eqsign == '=':
                             bnds = (rhs / coeff, rhs / coeff)
-                        elif eqsign == '<=':
+                        elif (eqsign == '<=') == (sign(coeff)>0):
                             bnds = (bnds[0], rhs / coeff)
-                        elif eqsign == '>=':
+                        else:
                             bnds = (rhs / coeff, bnds[1])
                         self.itv_bounds[i].update({reac: bnds})
 

@@ -15,7 +15,7 @@ def parse_constraints(constr, reaction_ids) -> List:
         reaction_ids (:class:List): List of reaction identifiers.
 
     Returns:
-        parsed_constr: List of constraints. Each constraint is a list of three elements. [[dict_v,'=',0.3],[dict_w,'<=',0.5],...]
+        List of dicts: List of constraints. Each constraint is a list of three elements. [[dict_v,'=',0.3],[dict_w,'<=',0.5],...]
     """
     if not constr:
         return []
