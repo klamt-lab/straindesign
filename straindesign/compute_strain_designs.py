@@ -63,19 +63,19 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             The number of SUPPRESS and PROTECT modules is unrestricted and can be combined with the other
             modules, however only one of the modules OPTKNOCK, ROBUSKNOCK and OPTCOUPLE may be used at a time.
             For details, see SDModule.
-        solver: (:class:str)
-            (Default: same as model / COBRApy)
+        solver (str): (Default: same as model / COBRApy)
+        
             The solver that should be used for preparing and carrying out the strain design computation.
             Allowed values are 'cplex', 'gurobi', 'scip' and 'glpk'.
             
-        max_cost (int):
-            (Default: inf)
+        max_cost (int): (Default: inf)
             
             The maximum cost threshold for interventions. Every possible intervention is associated with a
             cost value (1, by default). Strain designs cannot exceed the max_cost threshold. Individual
             intervention cost factors may be defined through ki_cost, ko_cost, gki_cost, gko_cost and reg_cost.
             
-        max_solutions (int, Default: inf):
+        max_solutions (int): (Default: inf)
+        
             The maximum number of MILP solutions that are generated for a strain design problem. The number of returned
             strain designs is usually larger than the number of max_solutions, since a MILP solution is decompressed
             to multiple strain designs. Whena the compress-flag is set to 'False' the number of returned solutions is
