@@ -53,7 +53,9 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             sd_setup should be a dictionary containing a set of parameters for strain design computation. 
             The allowed keywords are the same listed hereafter. Therefore, *sd_setup and other arguments 
             (except for model) must not be used together*.
-        sd_modules (:class:list of straindesign.SDModule):
+            
+        sd_modules (list of straindesign.SDModule):
+        
             List of strain design modules that describe the sub-problems, such as the MCS-like protection 
             or suppression of flux subspaces or the OptKnock, RobustKnock or OptCouple objective and 
             constraints. The list of modules determines the global objective function of the strain design
@@ -63,13 +65,13 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             The number of SUPPRESS and PROTECT modules is unrestricted and can be combined with the other
             modules, however only one of the modules OPTKNOCK, ROBUSKNOCK and OPTCOUPLE may be used at a time.
             For details, see SDModule.
-        solver (str): (Default: same as model / COBRApy)
+            
+        solver (str): (Default: same as defined in model / COBRApy)
         
             The solver that should be used for preparing and carrying out the strain design computation.
             Allowed values are 'cplex', 'gurobi', 'scip' and 'glpk'.
             
-        max_cost (int): (Default: inf)
-            
+        max_cost (int): (Default: inf):            
             The maximum cost threshold for interventions. Every possible intervention is associated with a
             cost value (1, by default). Strain designs cannot exceed the max_cost threshold. Individual
             intervention cost factors may be defined through ki_cost, ko_cost, gki_cost, gko_cost and reg_cost.
