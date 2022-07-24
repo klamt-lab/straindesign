@@ -49,7 +49,9 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         model :class:cobra.Model
             A metabolic model that is an instance of the cobra.Model class. The model may or may not 
             contain genes/GPR-rules.
-        sd_setup (:class:dict):
+            
+        sd_setup (dict):
+        
             sd_setup should be a dictionary containing a set of parameters for strain design computation. 
             The allowed keywords are the same listed hereafter. Therefore, *sd_setup and other arguments 
             (except for model) must not be used together*.
@@ -71,7 +73,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             The solver that should be used for preparing and carrying out the strain design computation.
             Allowed values are 'cplex', 'gurobi', 'scip' and 'glpk'.
             
-        max_cost (int): (Default: inf):            
+        max_cost (int): (Default: inf): 
+        
             The maximum cost threshold for interventions. Every possible intervention is associated with a
             cost value (1, by default). Strain designs cannot exceed the max_cost threshold. Individual
             intervention cost factors may be defined through ki_cost, ko_cost, gki_cost, gko_cost and reg_cost.
