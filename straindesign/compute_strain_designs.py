@@ -72,9 +72,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             The maximum cost threshold for interventions. Every possible intervention is associated with a
             cost value (1, by default). Strain designs cannot exceed the max_cost threshold. Individual
             intervention cost factors may be defined through ki_cost, ko_cost, gki_cost, gko_cost and reg_cost.
-        max_solutions:
-            (int)
-            (Default: inf)
+        max_solutions (int, Default: inf):
+            <br>
             The maximum number of MILP solutions that are generated for a strain design problem. The number of returned
             strain designs is usually larger than the number of max_solutions, since a MILP solution is decompressed
             to multiple strain designs. Whena the compress-flag is set to 'False' the number of returned solutions is
@@ -88,7 +87,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             (bool) (Default: True):
             If 'True', the interative network compressor is used.
         gene_kos: (Default: False):
-            (:class:bool)
+            (bool)
             If 'True', strain designs are computed based on gene-knockouts instead of reaction knockouts. This
             parameter needs not be defined if any of ki_cost, ko_cost, gki_cost, gko_cost and reg_cost is used.
             By default, reactions are considered as knockout targets.
