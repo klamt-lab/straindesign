@@ -6,6 +6,7 @@ from cplex.exceptions import CplexError
 from typing import Tuple, List
 import logging
 import io
+from psutil import virtual_memory
 from straindesign.names import *
 
 
@@ -69,6 +70,8 @@ class Cplex_MILP_LP(Cplex):
         self.parameters.simplex.tolerances.feasibility.set(1e-9)
 
         if 'B' in vtype or 'I' in vtype:
+            # set usable working memory to 3/4 of the total available memory
+            self.parameters.workmem.set(round(virtual_memory().total/1024/1024*0.75))
             # self.parameters.threads.set(cpu_count())
             # yield only optimal solutions in pool
             seed = randint(0, _const.CPX_BIGINT)

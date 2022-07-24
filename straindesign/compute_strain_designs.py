@@ -31,29 +31,117 @@ from cobra import Model
 from cobra.manipulation import rename_genes
 from straindesign import SDModule, SDSolutions, select_solver, fva, DisableLogger, SDProblem, SDMILP
 from straindesign.names import *
-from straindesign.networktools import *
+from straindesign.networktools import   remove_ext_mets, remove_dummy_bounds, bound_blocked_or_irrevers_fva, \
+                                        remove_irrelevant_genes, extend_model_gpr, extend_model_regulatory, \
+                                        compress_model, compress_modules, compress_ki_ko_cost, expand_sd, filter_sd_maxcost
 
-
-def compute_strain_designs(model: Model, **kwargs: Dict) -> SDSolutions:
+def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """Computes strain designs for a user-defined strain design problem
     
     A number of arguments can be specified to detail the problem and influence the solution process. 
     This function supports the computation of Minimal Cut Sets (MCS), OptKock, RobustKnock and OptCouple 
     strain designs. It is possible to combine any of the latter ones with the MCS approach, e.g., to 
     engineer growth coupled production, but also suppress the production of an undesired by-product.
+    One can either specify the computation parameters indivdually or reuse a parameters dictionary 
+    from a previous computation.
     
     Args:
         model :class:cobra.Model
             A metabolic model that is an instance of the cobra.Model class. The model may or may not 
             contain genes/GPR-rules.
-        setup (:class:)
-        modules (:class:List of straindesign.SDModule): List of strain design modules that describe the
-            sub-problems, such as the MCS-like protection or suppression of flux subspaces or the OptKnock,
-            RobustKnock or OptCouple objective and constraints. For details, see SDModule.
-        
-
+        sd_setup (:class:dict):
+            sd_setup should be a dictionary containing a set of parameters for strain design computation. 
+            The allowed keywords are the same listed hereafter. Therefore, *sd_setup and other arguments 
+            (except for model) must not be used together*.
+        sd_modules (:class:list of straindesign.SDModule):
+            List of strain design modules that describe the sub-problems, such as the MCS-like protection 
+            or suppression of flux subspaces or the OptKnock, RobustKnock or OptCouple objective and 
+            constraints. The list of modules determines the global objective function of the strain design
+            computation. If only SUPPRESS and PROTECT modules are used, the strain design computation is 
+            MCS-like, such that the number of interventions is minimized. If a module for one of the nested
+            optimization approaches is used, the global objective function is retrieved from this module.
+            The number of SUPPRESS and PROTECT modules is unrestricted and can be combined with the other
+            modules, however only one of the modules OPTKNOCK, ROBUSKNOCK and OPTCOUPLE may be used at a time.
+            For details, see SDModule.
+        solver: (:class:str)
+            (Default: same as model / COBRApy)
+            The solver that should be used for preparing and carrying out the strain design computation.
+            Allowed values are 'cplex', 'gurobi', 'scip' and 'glpk'.
+        max_cost (int):
+            (Default: inf)
+            The maximum cost threshold for interventions. Every possible intervention is associated with a
+            cost value (1, by default). Strain designs cannot exceed the max_cost threshold. Individual
+            intervention cost factors may be defined through ki_cost, ko_cost, gki_cost, gko_cost and reg_cost.
+        max_solutions:
+            (int)
+            (Default: inf)
+            The maximum number of MILP solutions that are generated for a strain design problem. The number of returned
+            strain designs is usually larger than the number of max_solutions, since a MILP solution is decompressed
+            to multiple strain designs. Whena the compress-flag is set to 'False' the number of returned solutions is
+            equal to max_solutions.
+        M: (int)
+            (Default: None) If this value is specified (and non-zero, not None), the computation uses the big-M 
+            method instead of indicator constraints. Since GLPK does not support indicator constraints it uses
+            the big-M method by default (with M=1000). M should be chosen 'sufficiently large' to avoid computational 
+            artifacts and 'sufficiently small' to avoid numerical issues.
+        compress: 
+            (bool) (Default: True):
+            If 'True', the interative network compressor is used.
+        gene_kos: (Default: False):
+            (:class:bool)
+            If 'True', strain designs are computed based on gene-knockouts instead of reaction knockouts. This
+            parameter needs not be defined if any of ki_cost, ko_cost, gki_cost, gko_cost and reg_cost is used.
+            By default, reactions are considered as knockout targets.
+        ko_cost
+            (dict)
+            (Default: None)
+            A dictionary of reaction identifiers and their associated knockout costs. If not specified, all reactions
+            are treated as knockout candidates, equivalent to ko_cost = {'r1':1, 'r2':1, ...}. If a subset of reactions
+            is listed in the dict, all other are not considered as knockout candidates.
+        ki_cost:
+            (class:dict)
+            (Default: None)
+            A dictionary of reaction identifiers and their associated costs for addition. If not specified, all reactions
+            are treated as knockout candidates. Reaction addition candidates must be present in the original model with
+            the intended flux boundaries **after** insertion. Additions are treated adversely to knockouts, meaning that
+            their exclusion from the network is not associated with any cost while their presence entails intervention costs.
+        gko_cost:
+            dict
+            Default: None
+            A dictionary of gene identifiers and their associated knockout costs. To reference genes, gene IDs can be 
+            used,as well as gene names. If not specified, genes are not treated as knockout candidates. An exception is 
+            the 'gene_kos' argument. If 'gene_kos' is used, all genes are treated as knockout candidates with intervention
+            costs of 1. This is equivalent to gko_cost = {'g1':1, 'g2':1, ...}.
+        gki_cost (:class:dict):
+            Default: None
+            A dictionary of gene identifiers and their associated addition costs. To reference genes, gene IDs can be 
+            used, as well as gene names. If not specified, none of the genes are treated as addition candidates.
+        reg_cost:
+            (list of dicts, Default: None)
+            Regulatory interventions candidates can be optionally specified as a list. Thereby, the constraint marking the
+            regulatory intervention is put as key and the associated intervention cost is used as the corresponding value.
+            E.g., reg_cost = {'1 EX_o2_e = -1': 1, ... <other regulatory interventions>}. Instead of strings, constraints 
+            can also be passed as lists. reg_cost = {[{'EX_o2_e':1}, '=', -1]: 1, ...}
+        solution_approach (:class:str, Default: 'best')
+            The approach used to find strain designs. Possible values are 'any', 'best' or 'populate'. 'any' is usually the
+            fastest option, since optimality is not enforced. Hereby computed MCS are still irreducible intervention sets,
+            however, not MCS with the fewest possible number of interventions. 'best' computes globally optimal strain designs,
+            that is, MCS with the fewest number of interventions, OptKnock strain designs with the highest possible production
+            rate, OptCouple strain designs with the hightest growth coupling potential etc.. 'populate' does the same as 'best',
+            but makes use of CPLEX' and Gurobi's populate function to generate multiple strain designs. It is identical to 'best'
+            when used with SCIP or GLPK.
+            Attention:
+            If 'any' used with OptKnock, for instance, the MILP may return the wild type as a possible immediately. Technically, 
+            the wiltype fulfills the criterion of maximal growth (inner objective) and maximality of the global objective is
+            omitted by using 'any', so that carrying no product synthesis is permitted. Additional constraints can be used
+            in the OptKnock problem to circumvent this. However, Optknock should generally be used with the 'best' option.
+        time_limit (int, Default: inf):
+            The time limit in seconds for the MILP-solver.
+        advanced, use_scenario:
+            Dummy parameters used for the CNApy interface.
     Returns:
-        SDSolutions: An object that contains all computed strain designs. If strain designs were computed
+        SDSolutions: 
+            An object that contains all computed strain designs. If strain designs were computed
             as gene-interventions, the solution object contains a set of corresponding reaction-interventions
             that facilitate the analysis of the computed strain designs with COBRA methods.
     """
@@ -63,8 +151,8 @@ def compute_strain_designs(model: Model, **kwargs: Dict) -> SDSolutions:
     #    previous MCS computations or a JSON ".sd"-file)
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress',
-        KOCOST, KICOST, GKOCOST, GKICOST, REGCOST, SOLUTION_APPROACH,
-        'gene_kos', 'advanced', 'use_scenario', T_LIMIT
+        'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST, SOLUTION_APPROACH,
+        'advanced', 'use_scenario', T_LIMIT
     }
     logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
@@ -360,7 +448,7 @@ def compute_strain_designs(model: Model, **kwargs: Dict) -> SDSolutions:
     if SOLUTION_APPROACH in kwargs:
         solution_approach = kwargs.pop(SOLUTION_APPROACH)
     else:
-        solution_approach = ANY
+        solution_approach = BEST
     # solve MILP
     if solution_approach == ANY:
         cmp_sd_solution = sd_milp.compute(**kwargs_computation)
