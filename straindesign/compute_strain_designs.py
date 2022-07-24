@@ -72,12 +72,14 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             The maximum cost threshold for interventions. Every possible intervention is associated with a
             cost value (1, by default). Strain designs cannot exceed the max_cost threshold. Individual
             intervention cost factors may be defined through ki_cost, ko_cost, gki_cost, gko_cost and reg_cost.
+            
         max_solutions (int, Default: inf):
-            <br>
+
             The maximum number of MILP solutions that are generated for a strain design problem. The number of returned
             strain designs is usually larger than the number of max_solutions, since a MILP solution is decompressed
             to multiple strain designs. Whena the compress-flag is set to 'False' the number of returned solutions is
             equal to max_solutions.
+            
         M: (int)
             (Default: None) If this value is specified (and non-zero, not None), the computation uses the big-M 
             method instead of indicator constraints. Since GLPK does not support indicator constraints it uses
