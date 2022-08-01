@@ -276,7 +276,7 @@ def fba(model, **kwargs):
     # prepare vectors and matrices
     A_eq_base = create_stoichiometric_matrix(model)
     A_eq_base = sparse.csr_matrix(A_eq_base)
-    b_eq_base = [0] * len(model.metabolites)
+    b_eq_base = [0.0] * len(model.metabolites)
     if 'A_eq' in locals():
         A_eq = sparse.vstack((A_eq_base, A_eq))
         b_eq = b_eq_base + b_eq
@@ -312,8 +312,8 @@ def fba(model, **kwargs):
                            ub=ub,
                            solver=solver)
         min_cx = num_prob.slim_solve()
-        if min_cx <= 0:
-            num_prob.add_eq_constraints(c, [-1])
+        if min_cx <= 0 or isnan(min_cx):
+            num_prob.add_eq_constraints(c, [-1.0])
         else:
             num_prob.add_eq_constraints(c, min_cx)
         x, _, _ = num_prob.solve()
