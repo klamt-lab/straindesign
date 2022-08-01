@@ -42,11 +42,13 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     This function supports the computation of Minimal Cut Sets (MCS), OptKock, RobustKnock and OptCouple 
     strain designs. It is possible to combine any of the latter ones with the MCS approach, e.g., to 
     engineer growth coupled production, but also suppress the production of an undesired by-product.
-    One can either specify the computation parameters indivdually or reuse a parameters dictionary 
-    from a previous computation.
-    
+    The computation can be started in two different ways. Either by specifying the computation parameters 
+    indivdually or reuse a parameters dictionary from a previous computation. CNApy stores strain design
+    setup dics as JSON ".sd"-files that can be loaded in python and used as an input for this function.
+
     Args:
-        model :class:cobra.Model
+        model (cobra.Model):
+        
             A metabolic model that is an instance of the cobra.Model class. The model may or may not 
             contain genes/GPR-rules.
             
@@ -152,10 +154,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             as gene-interventions, the solution object contains a set of corresponding reaction-interventions
             that facilitate the analysis of the computed strain designs with COBRA methods.
     """
-    ## Two computation modes:
-    # 1. Provide model, strain design module and optional computation parameters
-    # 2. Provide a full strain design setup in dict form (either as a dict from
-    #    previous MCS computations or a JSON ".sd"-file)
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress',
         'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST, SOLUTION_APPROACH,
@@ -170,7 +168,11 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             kwargs = kwargs[SETUP]
 
     if MODULES in kwargs:
-        sd_modules = kwargs.pop(MODULES).copy()
+        sd_modules = kwargs.pop(MODULES)
+        if isinstance(sd_modules,SDModule):
+            sd_modules = [sd_modules]
+        orig_sd_modules = [m.copy() for m in sd_modules]
+        sd_modules = [m.copy() for m in sd_modules]
 
     if SOLVER in kwargs:
         kwargs[SOLVER] = select_solver(kwargs[SOLVER])
@@ -262,10 +264,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         uncmp_ki_cost = {}
     if REGCOST not in kwargs or not kwargs[REGCOST]:
         uncmp_reg_cost = {}
-    if "SDModule" in str(type(sd_modules)):
-        sd_modules = [sd_modules]
-    sd_modules = sd_modules.copy()
-    orig_sd_modules = sd_modules
     # check that at most one bilevel module is provided
     bilvl_modules = [i for i,m in enumerate(sd_modules) \
                 if m[MODULE_TYPE] in [OPTKNOCK,ROBUSTKNOCK,OPTCOUPLE]]

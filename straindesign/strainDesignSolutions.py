@@ -131,6 +131,9 @@ class SDSolutions(object):
         else:
             self.reaction_sd = sd
             self.is_gene_sd = False
+            
+        if GKOCOST in sd_setup or GKICOST in sd_setup:
+            sd = [s.copy() for s in self.gene_sd]
 
         # compute intervention costs
         self.sd_cost = [0 for _ in range(len(sd))]
