@@ -274,7 +274,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                  ' for solving LPs during preprocessing.')
     with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO(
     )), DisableLogger():  # suppress standard output from copying model
-        orig_model = model.copy()
+        orig_model  = model
+        model       = model.copy()
         uncmp_model = model.copy()
     orig_ko_cost = deepcopy(uncmp_ko_cost)
     orig_ki_cost = deepcopy(uncmp_ki_cost)
