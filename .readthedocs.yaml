@@ -17,9 +17,6 @@ python:
       extra_requirements:
         - docs
 
-.. toctree::
- :maxdepth: 2
- 
 formats:
   - pdf
   - epub
