@@ -52,7 +52,7 @@ StrainDesign
 A COBRApy\ :html:`<a href="#ref1"><sup>[1]</sup></a>`\ -based package for computational design of metabolic networks
 ======================================================================
 
-The comprehensive StrainDesign package for MILP-based strain design computation with the COBRApy toolbox supports MCS, MCS with nested optimization, OptKnock(https://csb.ethz.ch/tools/software/efmtool.html\ :html:`<a href="#ref2"><sup>[2]</sup></a>`), RobustKnock(https://csb.ethz.ch/tools/software/efmtool.html\ :html:`<a href="#ref3"><sup>[3]</sup></a>`) and OptCouple(https://csb.ethz.ch/tools/software/efmtool.html\ :html:`<a href="#ref4"><sup>[4]</sup></a>`), GPR-rule integration, gene and reaction knockouts and additions as well as regulatory interventions. The automatic lossless network and GPR compression allows strain design computations from genome-scale metabolic networks. Supported solvers are GLPK (available from COBRApy), CPLEX, Gurobi and SCIP (manual install, see below). :html:`<br>` 
+The comprehensive StrainDesign package for MILP-based strain design computation with the COBRApy toolbox supports MCS, MCS with nested optimization, OptKnock :html:`<a href="#ref2"><sup>[2]</sup></a>`, RobustKnock :html:`<a href="#ref3"><sup>[3]</sup></a>` and OptCouple :html:`<a href="#ref4"><sup>[4]</sup></a>`, GPR-rule integration, gene and reaction knockouts and additions as well as regulatory interventions. The automatic lossless network and GPR compression allows strain design computations from genome-scale metabolic networks. Supported solvers are GLPK (available from COBRApy), CPLEX, Gurobi and SCIP :html:`<a href="#ref5"><sup>[5]</sup></a>`. :html:`<br>` 
 To get started, check out the `StrainDesign documentation <https://straindesign.readthedocs.io/en/latest/>`_. :html:`<br>`
 Guides and examples are provided as `Jupyter notebooks <https://github.com/klamt-lab/straindesign/tree/main/docs/source/examples>`_. 
 
@@ -179,8 +179,13 @@ References:
 ===========
 
 :html:`<a id="ref1">[1]</a>` `Ebrahim, A., Lerman, J.A., Palsson, B.O. et al. - COBRApy: COnstraints-Based Reconstruction and Analysis for Python. BMC Syst Biol 7, 74 (2013) <http://dx.doi.org/doi:10.1186/1752-0509-7-74>`_
+
 :html:`<a id="ref2">[2]</a>` `Burgard, A. P., Pharkya, P., & Maranas, C. D. - Optknock: a bilevel programming framework for identifying gene knockout strategies for microbial strain optimization. Biotechnology and bioengineering, 84(6), 647–657 (2003) <https://doi.org/10.1002/bit.10803>`_
+
 :html:`<a id="ref3">[3]</a>` `Tepper N., Shlomi T. - Predicting metabolic engineering knockout strategies for chemical production: accounting for competing pathways, Bioinformatics. Volume 26, Issue 4, Pages 536–543 (2010) <https://doi.org/10.1093/bioinformatics/btp704>`_
+
 :html:`<a id="ref4">[4]</a>` `Jensen K., Broeken V., Lærke Hansen A.S., et al. - OptCouple: Joint simulation of gene knockouts, insertions and medium modifications for prediction of growth-coupled strain designs. Metabolic Engineering Communications, Volume 8 (2019) <https://doi.org/10.1016/j.mec.2019.e00087>`_
+
 :html:`<a id="ref5">[5]</a>` `Bestuzheva K., Besançon M., Chen W.K. et al. - The SCIP Optimization Suite 8.0. Available at Optimization Online and as ZIB-Report 21-41, (2021) <https://doi.org/10.48550/arXiv.2112.08872>`_
+
 :html:`<a id="ref6">[6]</a>` `Marco Terzer, Jörg Stelling, Large-scale computation of elementary flux modes with bit pattern trees, Bioinformatics, Volume 24, Issue 19, (2008), Pages 2229–2235, <https://doi.org/10.1093/bioinformatics/btn401>`_
