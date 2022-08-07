@@ -54,7 +54,7 @@ A COBRApy\ :html:`<a href="#ref1"><sup>[1]</sup></a>`\ -based package for comput
 
 The comprehensive StrainDesign package for MILP-based strain design computation with the COBRApy toolbox supports MCS, MCS with nested optimization, OptKnock :html:`<a href="#ref2"><sup>[2]</sup></a>`, RobustKnock :html:`<a href="#ref3"><sup>[3]</sup></a>` and OptCouple :html:`<a href="#ref4"><sup>[4]</sup></a>`, GPR-rule integration, gene and reaction knockouts and additions as well as regulatory interventions. The automatic lossless network and GPR compression allows strain design computations from genome-scale metabolic networks. Supported solvers are GLPK (available from COBRApy), CPLEX, Gurobi and SCIP :html:`<a href="#ref5"><sup>[5]</sup></a>`. :html:`<br>` 
 To get started, check out the `StrainDesign documentation <https://straindesign.readthedocs.io/en/latest/>`_. :html:`<br>`
-Guides and examples are provided as `Jupyter notebooks <https://github.com/klamt-lab/straindesign/tree/main/docs/source/examples>`_. 
+Guides and examples are provided as `Jupyter notebooks at docs/source/examples <https://github.com/klamt-lab/straindesign/tree/main/docs/source/examples>`_. 
 
 |pic1| |pic2| |pic3| 
 
@@ -67,7 +67,7 @@ Guides and examples are provided as `Jupyter notebooks <https://github.com/klamt
   :alt: Network interventions
   
 .. |pic3| image:: https://github.com/klamt-lab/straindesign/blob/host_gifs/docs/plot.gif
-  :width: 40%
+  :width: 100%
   :alt: Plot animation
 
 Parts of the compression routine is done by efmtool's compression function (https://csb.ethz.ch/tools/software/efmtool.html\ :html:`<a href="#ref2"><sup>[2]</sup></a>`). Therefore some source code from the `efmtool_link <https://github.com/cnapy-org/efmtool_link>`_ package was adopted.
@@ -169,12 +169,6 @@ CNApy, a GUI-featured toolbox for metabolic modeling offers a graphical user int
   :width: 354
   :alt: CNApy screenshot
   
-
-Examples:
-=========
-
-Will be added soon...
-
 References:
 ===========
 

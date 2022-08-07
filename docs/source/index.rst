@@ -77,7 +77,7 @@ The comprehensive StrainDesign package for MILP-based strain design computation 
 Parts of the compression routine is done by efmtool's compression function (https://csb.ethz.ch/tools/software/efmtool.html\ :html:`<a href="#ref6"><sup>[6]</sup></a>`).
 
 .. toctree::
-   :maxdepth: 3
+   :maxdepth: 4
    :caption: Contents:
 
    examples/JN_01_solver.ipynb
