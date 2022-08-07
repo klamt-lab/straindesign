@@ -69,11 +69,11 @@ class SDPool(Pool):
             # 'spawn' new threads. Experience has shown
             # that forking is unreliable.
             if hasattr(sys.modules['__main__'], '__spec__'):
-                if not sys.modules['__main__'].__spec__:
+                if sys.modules['__main__'].__spec__:
                     spec = sys.modules['__main__'].__spec__
                     sys.modules['__main__'].__spec__ = None
             if hasattr(sys.modules['__main__'], '__file__'):
-                if not sys.modules['__main__'].__file__:
+                if sys.modules['__main__'].__file__:
                     file = sys.modules['__main__'].__file__
                     sys.modules['__main__'].__file__ = None
         super().__init__(
