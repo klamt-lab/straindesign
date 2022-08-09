@@ -58,6 +58,7 @@ A COBRApy\ :html:`<a href="#ref1"><sup>[1]</sup></a>`\ -based package for comput
 The comprehensive StrainDesign package for MILP-based strain design computation with the COBRApy toolbox supports MCS, MCS with nested optimization, OptKnock :html:`<a href="#ref2"><sup>[2]</sup></a>`, RobustKnock :html:`<a href="#ref3"><sup>[3]</sup></a>` and OptCouple :html:`<a href="#ref4"><sup>[4]</sup></a>`, GPR-rule integration, gene and reaction knockouts and additions as well as regulatory interventions. The automatic lossless network and GPR compression allows strain design computations from genome-scale metabolic networks. Supported solvers are GLPK (available from COBRApy), CPLEX, Gurobi and SCIP :html:`<a href="#ref5"><sup>[5]</sup></a>`. :html:`<br>` 
 
 :html:`<a href="#installation">Installation instructions ...</a>`
+
 :html:`<a href="#examples">Download Jupyter notebook examples ...</a>`
 
 |pic1| |pic2| |pic3| 
