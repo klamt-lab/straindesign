@@ -75,7 +75,11 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
     return gkos
 
 
-def extend_model_gpr(model, gkos, gkis):
+def extend_model_gpr(model, **kwargs):
+    if 'gki_cost' not in kwargs:
+        kwargs.update({'gki_cost' : {}})
+    if 'gko_cost' not in kwargs:
+        kwargs.update({'gko_cost' : {}})
     # Split reactions when necessary
     reac_map = {}
     rev_reac = set()
@@ -102,8 +106,8 @@ def extend_model_gpr(model, gkos, gkis):
 
     gene_names = set(g.name for g in model.genes)
     gene_names_exist = np.all([len(g.name) for g in model.genes])
-    use_name_not_id = gene_names_exist and (gene_names.intersection(gkos) or
-                                            gene_names.intersection(gkis))
+    use_name_not_id = gene_names_exist and (gene_names.intersection(kwargs['gko_cost']) or
+                                            gene_names.intersection(kwargs['gki_cost']))
 
     # All reaction rules are provided in dnf.
     for r in model.reactions:

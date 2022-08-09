@@ -5,7 +5,7 @@ CNApy interface
    :target: https://github.com/cnapy-org/cnapy
    :alt: CNApy repository
 
-CNApy, a GUI-featured toolbox for metabolic modeling offers a graphical user interface for the modeling and design of metabolic networks. The software provides a dialog box for specifying strain design problems.
+CNApy, a GUI-featured toolbox for metabolic modeling offers a graphical user interface for the modeling and design of metabolic networks. The software provides a dialog box for specifying strain design problems. A full documentation can be found :html:`<a href="#https://cnapy-org.github.io/CNApy-guide/">here</a>`.
 
 |pic4|
  
