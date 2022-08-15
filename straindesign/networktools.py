@@ -106,8 +106,10 @@ def extend_model_gpr(model, **kwargs):
 
     gene_names = set(g.name for g in model.genes)
     gene_names_exist = np.all([len(g.name) for g in model.genes])
-    use_name_not_id = gene_names_exist and (gene_names.intersection(kwargs['gko_cost']) or
-                                            gene_names.intersection(kwargs['gki_cost']))
+    if 'use_names' not in kwargs:
+        kwargs['use_names'] = gene_names_exist and (gene_names.intersection(kwargs['gko_cost']) or
+                                                    gene_names.intersection(kwargs['gki_cost']))
+        
 
     # All reaction rules are provided in dnf.
     for r in model.reactions:
@@ -125,7 +127,7 @@ def extend_model_gpr(model, **kwargs):
                         model.add_metabolites(Metabolite(gene_met_id))
                         gene = model.genes.get_by_id(g)
                         w = Reaction(gene.id)
-                        if use_name_not_id:  # if gene name is available and used in gki_cost and gko_cost
+                        if kwargs['use_names']:  # if gene name is available and used in gki_cost and gko_cost
                             w.id = gene.name
                         model.add_reactions([w])
                         w.reaction = '--> ' + gene_met_id
