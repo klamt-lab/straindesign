@@ -14,7 +14,7 @@ def test_gpr_extension_compression1(model_gpr):
         'g9': 1.0,
     }
     gkicost = {'g3': 1.0, 'g6': 1.0, 'g7': 1.0}
-    sd.extend_model_gpr(model_gpr, gkocost, gkicost)
+    sd.extend_model_gpr(model_gpr, gko_cost = gkocost, gki_cost = gkicost)
     cmp_map = sd.compress_model(model_gpr)
     assert (len(model_gpr.reactions) == 16)
     gkocost, gkicost, cmp_map = sd.compress_ki_ko_cost(gkocost, gkicost,
@@ -33,7 +33,7 @@ def test_gpr_extension_compression2(model_gpr):
         'g9': 1.0,
     }
     gkicost = {'g3': 1.0, 'g6': 1.0, 'g7': 1.0}
-    sd.extend_model_gpr(model_gpr, gkocost, gkicost)
+    sd.extend_model_gpr(model_gpr, gko_cost = gkocost, gki_cost = gkicost)
     assert (len(model_gpr.reactions) == 40)
     sd.compress_model(model_gpr, set(('g5', 'g9')))
     assert (len(model_gpr.reactions) == 18)
