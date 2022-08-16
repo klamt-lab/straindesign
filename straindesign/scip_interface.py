@@ -65,11 +65,9 @@ class SCIP_MILP(pso.Model):
         # add indicator constraints
         if indic_constr is not None:
             for i in range(len(indic_constr.sense)):
-                if indic_constr.indicval[
-                        i] == 0:  # if the constraints activity is indicated by 0, an auxiliary variable needs to be added
+                if indic_constr.indicval[i] == 0:  # if the constraints activity is indicated by 0, an auxiliary variable needs to be added
                     z = self.addVar(lb=0, ub=1, obj=0, vtype='B')
-                    xor_constr = self.addConsXor([x[indic_constr.binv[i]], z],
-                                                 True)
+                    xor_constr = self.addConsXor([x[indic_constr.binv[i]], z],True)
                 else:
                     z = x[indic_constr.binv[i]]
                 if indic_constr.sense[i] == 'E':
@@ -80,14 +78,9 @@ class SCIP_MILP(pso.Model):
                     b = [indic_constr.b[i]]
                 for k in range(A.shape[0]):
                     for a in A[k]:
-                        pass
-                        e = pso.scip.Expr({
-                            self.trms[j]: d for j, d in zip(a.indices, a.data)
-                        })
+                        e = pso.scip.Expr({self.trms[j]: d for j, d in zip(a.indices, a.data)})
                         f = pso.scip.ExprCons(e, lhs=None, rhs=b[k])
-                        self.constr += [
-                            self.addConsIndicator(f, binvar=z, initial=False)
-                        ]
+                        self.constr += [self.addConsIndicator(f, binvar=z, initial=False)]
 
         # set parameters
         self.max_tlim = self.getParam('limits/time')
