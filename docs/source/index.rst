@@ -89,6 +89,7 @@ Parts of the compression routine is done by efmtool's compression function (http
    examples/JN_06_strain_design_nested.ipynb
 .. 
    examples/JN_07_network_design.ipynb
+   
    examples/JN_08_compression.ipynb
    9_cnapy_integration
    api_reference
