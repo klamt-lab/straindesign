@@ -14,7 +14,7 @@ setup(
     python_requires=">=3.7",
     package_data={"straindesign": ["efmtool.jar"]},
     packages=find_packages(),
-    install_requires=["cobra", "jpype1", "scipy", "matplotlib"],
+    install_requires=["cobra", "jpype1", "scipy", "matplotlib", "psutil"],
     project_urls={
         "Bug Reports":
             "https://github.com/klamt-lab/straindesign/issues",
