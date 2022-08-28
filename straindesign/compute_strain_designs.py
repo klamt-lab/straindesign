@@ -70,7 +70,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             modules, however only one of the modules OPTKNOCK, ROBUSKNOCK and OPTCOUPLE may be used at a time.
             For details, see SDModule.
             
-        solver (str) - Optional: (Default: same as defined in model / COBRApy)
+        solver (Optional - str): (Default: same as defined in model / COBRApy)
         
             The solver that should be used for preparing and carrying out the strain design computation.
             Allowed values are 'cplex', 'gurobi', 'scip' and 'glpk'.
