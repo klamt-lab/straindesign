@@ -39,7 +39,7 @@ jobs:
           pip install flake8 wheel pytest setuptools
       - name: Install solvers
         run: |
-          conda install -c conda-forge pyscipopt
+          conda install -c conda-forge pyscipopt scip=8.0.0
           pip install cplex gurobipy
       - name: Install straindesign
         run: | 
