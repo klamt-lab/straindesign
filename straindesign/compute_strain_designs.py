@@ -17,7 +17,7 @@
 # 
 #
 #
-"""Computing metabolic strain designs."""
+"""Function: computing metabolic strain designs (:function:`compute_strain_designs`)"""
 
 from contextlib import redirect_stdout, redirect_stderr
 from typing import Dict, List, Tuple
@@ -46,6 +46,9 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     indivdually or reuse a parameters dictionary from a previous computation. CNApy stores strain design
     setup dics as JSON ".sd"-files that can be loaded in python and used as an input for this function.
 
+    Example:
+
+    
     Args:
         model (cobra.Model):
         
@@ -161,7 +164,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             Dummy parameters used for the CNApy interface.
             
     Returns:
-    
         (SDSolutions):
         
             An object that contains all computed strain designs. If strain designs were computed
