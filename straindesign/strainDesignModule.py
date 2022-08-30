@@ -13,15 +13,21 @@ from straindesign.names import *
 
 class SDModule(Dict):
     """
-    Modules to describe desired or undesired flux states for MCS strain design.
+    Strain design modules are used to specify the goal of a strain design computation.
     
-    There are three kinds of flux states that can be described
-        1. The wildtype model, constrainted with additional inequalities:
-            e.g.: T v <= t.
-        2. The wildtype model at a specific optimum, constrained with additional inequalities
-            e.g.: objective*v = optimal, T v <= t
-        3. A yield range:
-            e.g.: numerator*v/denominator*v <= t (Definition of A and b is not required)
+    (Lists of) SDModule objects are passed to compute_strain_design to specify the goal strain design computation.
+    Strain design modules indicate the appraoch that should be used (OptKnock, RobustKnock, OptCouple or MCS) and
+    the parameters for each approach. In each strain design computation, one of the following modules can be used
+    at most once: OptKnock, RobustKnock and OptCouple. Additionally an arbitrary number of MCS modules (PROTECT or 
+    SUPPRESS) may me used. In the following, the modules and their mandatory/optional arguments are presented in
+    more detail.
+    
+    OptKnock:
+        Globally maximize the *outer objective* under the condition that the *inner objective* is maximal/optimal. 
+        For instance, maximize product synthesis, assuming that the strain maximizes its growth rate. When used 
+        with the 'best' or 'populate' approach (see compute_strain_designs), this module will guarantee that the
+        found intervention set allows for the highest possible outer objective (e.g., production) under the premise
+        that the inner objective (growth) is enforced. It does not enfore that
 
     Args:
         module_sense: 'desired' or 'undesired'
