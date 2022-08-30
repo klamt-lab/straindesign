@@ -125,10 +125,10 @@ class SDModule(Dict):
         (Detailed description of the arguments follow below)
 
     Example:
-        module_optknock = sd.SDModule(model,sd.names.OPTKNOCK,
-                            outer_objective='BIOMASS_Ecoli_core_w_GAM',
-                            inner_objective='EX_etoh_e',
-                            constraints='BIOMASS_Ecoli_core_w_GAM >= 0.2')
+        module_optknock = sd.SDModule(  model,sd.names.OPTKNOCK,
+                                        outer_objective='BIOMASS_Ecoli_core_w_GAM',
+                                        inner_objective='EX_etoh_e',
+                                        constraints='BIOMASS_Ecoli_core_w_GAM >= 0.2')
 
     Args:
         model (cobra.Model):
@@ -358,7 +358,7 @@ class SDModule(Dict):
                                     MIN_GCP + ").")
 
     def copy(self):
-
+        """Create a deep copy of a strain design module."""
         class DummyModel:
             id = self[MODEL_ID]
 

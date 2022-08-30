@@ -43,14 +43,10 @@ import logging
 
 from straindesign.parse_constr import linexpr2mat, linexprdict2str
 
-
-# FBA, FVA and yield optimization for cobra using a unified
-# the user may provide the optional arguments
-#   constraints:    Additional constraints in text form (list of lists)
-#   A_ineq, b_ineq: Additional constraints in matrix form
-#   obj:            Alternative objective in text form
-#   c:              Alternative objective in vector form
 def select_solver(solver=None, model=None):
+    """Select a solver
+    
+    """
     # first try to use selected solver
     if solver:
         if solver in avail_solvers:
@@ -160,6 +156,13 @@ def fva_worker_compute_glpk(i) -> Tuple[int, float]:
 
 
 def fva(model, **kwargs):
+    """Flux variability analysis"""
+    # FBA, FVA and yield optimization for cobra using a unified
+    # the user may provide the optional arguments
+    #   constraints:    Additional constraints in text form (list of lists)
+    #   A_ineq, b_ineq: Additional constraints in matrix form
+    #   obj:            Alternative objective in text form
+    #   c:              Alternative objective in vector form
     reaction_ids = model.reactions.list_attr("id")
     numr = len(model.reactions)
 

@@ -17,7 +17,11 @@
 #
 #
 #
-"""Functions for the compression of metabolic networks, taken from the efmtool_link package"""
+"""Functions for the compression of metabolic networks, taken from the efmtool_link package
+
+Functions in this module not meant to be used outside the compression of networks. For a
+the documentation of the efmtool compression provided by StrainDesign, refer to the networktools
+module."""
 
 import numpy
 import jpype
@@ -27,6 +31,7 @@ import sympy
 import io
 from contextlib import redirect_stdout, redirect_stderr
 
+"""Initialization of the java machine, since efmtool compression is done in java."""
 efmtool_jar = os.path.join(os.path.dirname(__file__), 'efmtool.jar')
 jpype.addClassPath(efmtool_jar)
 if not jpype.isJVMStarted():
@@ -82,10 +87,7 @@ if _java_executable == '':
         "bin", "java")
 
 
-def basic_columns_rat(
-        mx,
-        tolerance=0
-):  # mx is ch.javasoft.smx.impl.DefaultBigIntegerRationalMatrix
+def basic_columns_rat(mx,tolerance=0):  # mx is ch.javasoft.smx.impl.DefaultBigIntegerRationalMatrix
     if type(mx) is numpy.ndarray:
         mx = DefaultBigIntegerRationalMatrix(numpy_mat2jpypeArrayOfArrays(mx),
                                              jTrue, jTrue)

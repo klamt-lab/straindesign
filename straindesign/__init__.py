@@ -16,7 +16,7 @@
 #
 #
 #
-"""Module import initialization"""
+"""Package initialization"""
 
 from importlib.util import find_spec as module_exists
 from .names import *

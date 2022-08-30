@@ -46,9 +46,15 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     indivdually or reuse a parameters dictionary from a previous computation. CNApy stores strain design
     setup dics as JSON ".sd"-files that can be loaded in python and used as an input for this function.
 
-    Example:
-
+    Example: 
     
+        sols = sd.compute_strain_designs(   model,
+                                            sd_modules = [module_suppress, module_protect],
+                                            time_limit = 300,
+                                            max_solutions = 1,
+                                            max_cost = 10,
+                                            solution_approach = sd.names.ANY)
+                
     Args:
         model (cobra.Model):
         
