@@ -43,9 +43,46 @@ import logging
 
 from straindesign.parse_constr import linexpr2mat, linexprdict2str
 
-def select_solver(solver=None, model=None):
-    """Select a solver
+avail_solvers = set()
+if module_exists("swiglpk"):
+    avail_solvers.add(GLPK)
+if module_exists("cplex"):
+    avail_solvers.add(CPLEX)
+if module_exists("gurobipy"):
+    avail_solvers.add(GUROBI)
+if module_exists("pyscipopt"):
+    avail_solvers.add(SCIP)
+
+
+def select_solver(solver=None, model=None) -> str:
+    """Select a solver for subsequent MILP/LP computations
     
+    This function will determine the solver to be used for subsequend MILP/LP computations. If no
+    argument is provided, this function will try to determine the currently selected solver from the
+    COBRA configuration. If unavailable, the solver will be inferred from the packages available at
+    package initialization and one of the solvers will be picked and retured in the prioritized 
+    order: 'glpk', 'cplex', 'gurobi', 'scip'
+    One may provide a solver or a model manually. This function then checks if the selected solver 
+    is available, or else, if the solver indicated in the model is available. If yes, this function 
+    returns the name of the solver as a str. If both arguments are specified, the function prefers
+    'solver' over 'model'.
+    
+    Args:
+        solver (optional (str)):
+        
+            A user preferred solver, that should be checked for availability: 'glpk', 'cplex',
+            'gurobi' or 'scip'.
+            
+        model (optional (cobra.Model)):
+        
+            A metabolic model that is an instance of the cobra.Model class. The function will try to
+            dertermine the selected solver by accessing the field model.solver.
+            
+    Returns:
+        (str):
+        
+            The selected solver name as a str (one of the following: 'glpk', 'cplex', 'gurobi', 'scip').
+            
     """
     # first try to use selected solver
     if solver:
@@ -78,11 +115,25 @@ def select_solver(solver=None, model=None):
                                 cobra_conf.solver.__name__ + ') unavailable')
     except:
         pass
-    return avail_solvers[
-        0]  # if no solver is specified in cobra, fall back to list of available solvers
+    # if no solver is specified in cobra, fall back to list of available solvers and return the
+    # first one available.
+    return avail_solvers[0]  
 
-
-def idx2c(i, prev):
+def idx2c(i, prev) -> 'list':
+    """Helper function for parallel FVA
+    
+    Builds the objective function for minimizing or maximizing the flux through the reaction
+    with the index floor(i / 2). If i is even, there is a maximization.
+    
+    Args:
+        i (float):
+            An index between 0 and 2*num_reacs.
+        prev (optional (str)):
+            Index of the previously optimized reaction.
+    Returns:
+        (list):
+            An optimization vector.
+    """
     col = int(floor(i / 2))
     sig = sign(mod(i, 2) - 0.5)
     C = [[col, sig], [prev, 0.0]]
@@ -93,6 +144,16 @@ def idx2c(i, prev):
 
 
 def fva_worker_init(A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver):
+    """Helper function for parallel FVA
+    
+    Initialize the LP that will be solved iteratively. Is executed on workers, not on main thread.
+    
+    Args:
+        A_ineq, b_ineq, A_eq, b_eq, lb, ub:
+            The LP.
+        solver (str):
+            Solver to be used.
+    """
     global lp_glob
     # redirect output to empty stream. Perhaps avoids some multithreading issues
     with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
@@ -110,6 +171,14 @@ def fva_worker_init(A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver):
 
 
 def fva_worker_compute(i) -> Tuple[int, float]:
+    """Helper function for parallel FVA
+    
+    Run a single LP as a step of FVA. Is executed on workers, not on main thread.
+    
+    Args:
+        i (int):
+            Index of the computation step.
+    """
     global lp_glob
     with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
         C = idx2c(i, lp_glob.prev)
@@ -128,6 +197,14 @@ def fva_worker_compute(i) -> Tuple[int, float]:
 
 
 def fva_worker_init_glpk(A_ineq, b_ineq, A_eq, b_eq, lb, ub):
+    """Helper function for parallel FVA
+    
+    Initialize the LP for GLPK that will be solved iteratively. Is executed on workers, not on main thread.
+    
+    Args:
+        A_ineq, b_ineq, A_eq, b_eq, lb, ub:
+            The LP.
+    """
     global lp_glob
     lp_glob = {}
     lp_glob['A_ineq'] = A_ineq
@@ -139,6 +216,14 @@ def fva_worker_init_glpk(A_ineq, b_ineq, A_eq, b_eq, lb, ub):
 
 
 def fva_worker_compute_glpk(i) -> Tuple[int, float]:
+    """Helper function for parallel FVA
+    
+    Run a single LP for GLPK as a step of FVA. Is executed on workers, not on main thread.
+    
+    Args:
+        i (int):
+            Index of the computation step.
+    """
     global lp_glob
     with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
         lp_i = MILP_LP(A_ineq=lp_glob['A_ineq'],
@@ -156,13 +241,32 @@ def fva_worker_compute_glpk(i) -> Tuple[int, float]:
 
 
 def fva(model, **kwargs):
-    """Flux variability analysis"""
-    # FBA, FVA and yield optimization for cobra using a unified
-    # the user may provide the optional arguments
-    #   constraints:    Additional constraints in text form (list of lists)
-    #   A_ineq, b_ineq: Additional constraints in matrix form
-    #   obj:            Alternative objective in text form
-    #   c:              Alternative objective in vector form
+    """Flux Variability Analysis (FVA)
+    
+    Flux Variability Analysis determines the global flux ranges of reactions by minimizing and 
+    maximizing the flux through all reactions of a given metabolic network. This FVA function
+    additionally allows the user to narrow down the flux states with additional constraints.
+    
+    Args:
+        model (cobra.Model):
+            A metabolic model that is an instance of the cobra.Model class.
+            
+        solver (optional (str)):
+            The solver that should be used for FVA.
+            
+        constraints (optional (str) or (list of str) or (list of [dict,str,float])): (Default: '')
+            List of *linear* constraints to be applied on top of the model: signs + or -, scalar 
+            factors for reaction rates, inclusive (in)equalities and a float value on the right hand 
+            side. The parsing of the constraints input allows for some flexibility. Correct (and 
+            identical) inputs are, for instance: 
+            constraints='-EX_o2_e <= 5, ATPM = 20' or
+            constraints=['-EX_o2_e <= 5', 'ATPM = 20'] or
+            constraints=[[{'EX_o2_e':-1},'<=',5], [{'ATPM':1},'=',20]]
+            
+    Returns:
+        (pandas.DataFrame):
+            A data frame containing the minimum and maximum attainable flux rates for all reactions.
+    """
     reaction_ids = model.reactions.list_attr("id")
     numr = len(model.reactions)
 
@@ -263,6 +367,53 @@ def fva(model, **kwargs):
 
 
 def fba(model, **kwargs):
+    """Flux Balance Analysis (FBA), parsimonius Flux Balance Analysis (pFBA),
+    
+    Flux Balance Analysis optimizes a *linear objective function* in a space of steady-state
+    flux vectors given by a constraint-based metabolic model. FVA is often used to determine
+    the (stoichiometrically) maximal possible growth rate, or flux rate towards a particular
+    product. This FBA function allows to us a custom objective function and sense and 
+    allows the user to narrow down the flux states with additional constraints. In addition, 
+    one may use different types of parsimonious FBAs to either reduce the total sum of fluxes
+    or the total number of active reactions after the primary objective is optimized.    
+    
+    Args:
+        model (cobra.Model):
+            A metabolic model that is an instance of the cobra.Model class. If no custom objective
+            function is provided, the model's objective function is retrieved from the fields
+            model.reactions[i].objective_coefficient.
+            
+        solver (optional (str)):
+            The solver that should be used for FBA.
+            
+        constraints (optional (str) or (list of str) or (list of [dict,str,float])): (Default: '')
+            List of *linear* constraints to be applied on top of the model: signs + or -, scalar 
+            factors for reaction rates, inclusive (in)equalities and a float value on the right hand 
+            side. The parsing of the constraints input allows for some flexibility. Correct (and 
+            identical) inputs are, for instance: 
+            constraints='-EX_o2_e <= 5, ATPM = 20' or
+            constraints=['-EX_o2_e <= 5', 'ATPM = 20'] or
+            constraints=[[{'EX_o2_e':-1},'<=',5], [{'ATPM':1},'=',20]]
+            
+        obj (optional (str) or (dict)):
+            As a custom objective function, any linear expression can be used, either provided as a 
+            single string or as a dict. Correct (and identical) inputs are, for instance:
+            inner_objective='BIOMASS_Ecoli_core_w_GAM'
+            inner_objective={'BIOMASS_Ecoli_core_w_GAM': 1}
+            
+        obj_sense (optional (str)):
+            The optimization direction can be set either to 'maximize' (or 'max') or 'minimize' (or 'min').
+            
+        pfba (optional (int)): (Default: 0)
+            The level of parsimonious FBA that should be applied. 0: no pFBA, only optmize the primary 
+            objective, 1: minimize sum of fluxes after the primary objective is optimized, 2: minimize the
+            number of active reactions after the primary objective is optimized.
+            
+    Returns:
+        (cobra.core.Solution):
+            A solution object that contains the objective value, an optimal flux vector and the optmization
+            status.
+    """
     reaction_ids = model.reactions.list_attr("id")
 
     if CONSTRAINTS in kwargs:
@@ -409,6 +560,64 @@ def fba(model, **kwargs):
 
 
 def yopt(model, **kwargs):
+    """Yield optmization (YOpt)
+    
+    Yield optimization optimizes a *fractional objective function* in a space of steady-state
+    flux vectors given by a constraint-based metabolic model. Yield optimization employs linear
+    fractional programming, and is often utilized to determine the (stoichiometrically) maximal 
+    possible product yield, that is, the fraction between the product exchange and the substrate
+    uptake flux. This function requires a custom fractional objective function specified by a 
+    *linear* numerator and denominator terms. Coefficients in the linear numerator or denominator
+    expression can be used to optimize for carbon recovery, for instance: 
+    objective: (3*pyruvate_ex)/(2*ac_up+6*glc_up)
+    The user may also specify the optimization sense. In addition, additional constraints can be 
+    specified to narrow down the flux space.
+    
+    Yield optimization can fail because of several reasons. Here is how the function reacts:
+    1. The model is infeasible:
+        The function returns infeasible with no flux vector
+    2. The denominator is fixed to zero:
+        The function returns infeasible with no flux vector
+    3. The numerator is unbounded:
+        The function returns unbounded with no flux vector
+    4. The denominator can become zero:
+        The function returns unbounded, and a flux vector is computed by fixing the
+        the denominator
+    
+    Args:
+        model (cobra.Model):
+            A metabolic model that is an instance of the cobra.Model class.
+            
+        obj_num ((str) or (dict)):
+            The numerator of the fractional objective function, provided as a linear expression,
+            either as a character string or as a dict. E.g.: obj_num='EX_prod_e' or 
+            obj_num={'EX_prod_e': 1}
+            
+        obj_den ((str) or (dict)):
+            The denominator of the fractional objective function, provided as a linear expression,
+            either as a character string or as a dict. E.g.: obj_num='1.0 EX_subst_e' or 
+            obj_num={'EX_subst_e': 1}
+            
+        obj_sense (optional (str)):
+            The optimization direction can be set either to 'maximize' (or 'max') or 'minimize' (or 'min').
+            
+        solver (optional (str)):
+            The solver that should be used for FBA.
+            
+        constraints (optional (str) or (list of str) or (list of [dict,str,float])): (Default: '')
+            List of *linear* constraints to be applied on top of the model: signs + or -, scalar 
+            factors for reaction rates, inclusive (in)equalities and a float value on the right hand 
+            side. The parsing of the constraints input allows for some flexibility. Correct (and 
+            identical) inputs are, for instance: 
+            constraints='-EX_o2_e <= 5, ATPM = 20' or
+            constraints=['-EX_o2_e <= 5', 'ATPM = 20'] or
+            constraints=[[{'EX_o2_e':-1},'<=',5], [{'ATPM':1},'=',20]]
+
+    Returns:
+        (cobra.core.Solution):
+            A solution object that contains the objective value, an optimal flux vector and the optmization
+            status.
+    """
     reaction_ids = model.reactions.list_attr("id")
     if 'obj_num' not in kwargs:
         raise Exception(
@@ -502,9 +711,9 @@ def yopt(model, **kwargs):
         den_sign += [1]
     # is denominator fixed to zero
     if not den_sign:
-        raise Exception(
-            'Denominator term can only take the value 0. Yield computation impossible.'
-        )
+        logging.error('Denominator term can only take the value 0. Yield computation impossible.')
+        fluxes = {reaction_ids[i]: nan for i in range(len(reaction_ids))}
+        return Solution(objective_value=nan, status=INFEASIBLE, fluxes=fluxes)
 
     # Create linear fractional problem (LFP)
     # A variable is added here to scale the right hand side of the original problem
@@ -610,6 +819,53 @@ def yopt(model, **kwargs):
 
 
 def plot_flux_space(model, axes, **kwargs):
+    """Plot projections of the space of steady-state flux vectors onto two or three dimensions.
+    
+    This function uses LP and matplotlib to generate lower dimensional representations of the 
+    flux space. Custom *linear* or *fractional-linear* expressions can be used for the plot
+    axis. The most commonly used flux space reprentations are the *production envelope* that
+    plots the growth rate (x) vs the product synthesis rate (y) and the *yield space plot*
+    that plots the biomass yield (x) vs the product yiel (y). One may specify additional
+    constraints to investigate subspaces of the metabolic steady-state flux space.
+    
+    Example:
+        plot_flux_space(model,('BIOMASS_Ecoli_core_w_GAM','EX_etoh_e'))
+    
+    Args:
+        model (cobra.Model):
+            A metabolic model that is an instance of the cobra.Model class.
+            
+        axes ((list of lists) or (list of str)):
+            A set of linear expressions that specify which reactions/expressions/dimensions should be
+            used on the axis. Examples: axes=['BIOMASS_Ecoli_core_w_GAM','EX_etoh_e'] or 
+            axes=[['BIOMASS_Ecoli_core_w_GAM','-EX_glc_e'],['EX_etoh_e','-EX_glc_e']] or
+            axes=[['BIOMASS_Ecoli_core_w_GAM'],['EX_etoh_e','-EX_glc_e']]
+            
+        obj_den ((str) or (dict)):
+            The denominator of the fractional objective function, provided as a linear expression,
+            either as a character string or as a dict. E.g.: obj_num='1.0 EX_subst_e' or 
+            obj_num={'EX_subst_e': 1}
+            
+        obj_sense (optional (str)):
+            The optimization direction can be set either to 'maximize' (or 'max') or 'minimize' (or 'min').
+            
+        solver (optional (str)):
+            The solver that should be used for FBA.
+            
+        constraints (optional (str) or (list of str) or (list of [dict,str,float])): (Default: '')
+            List of *linear* constraints to be applied on top of the model: signs + or -, scalar 
+            factors for reaction rates, inclusive (in)equalities and a float value on the right hand 
+            side. The parsing of the constraints input allows for some flexibility. Correct (and 
+            identical) inputs are, for instance: 
+            constraints='-EX_o2_e <= 5, ATPM = 20' or
+            constraints=['-EX_o2_e <= 5', 'ATPM = 20'] or
+            constraints=[[{'EX_o2_e':-1},'<=',5], [{'ATPM':1},'=',20]]
+
+    Returns:
+        (cobra.core.Solution):
+            A solution object that contains the objective value, an optimal flux vector and the optmization
+            status.
+    """
     reaction_ids = model.reactions.list_attr("id")
 
     if CONSTRAINTS in kwargs:
