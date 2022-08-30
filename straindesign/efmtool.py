@@ -1,4 +1,24 @@
-# This code was derived from the efmtool_link package
+
+#!/usr/bin/env python3
+#
+# Copyright 2022 Max Planck Insitute Magdeburg
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+#
+#
+"""Functions for the compression of metabolic networks, taken from the efmtool_link package"""
+
 import numpy
 import jpype
 import os
@@ -6,7 +26,6 @@ import subprocess
 import sympy
 import io
 from contextlib import redirect_stdout, redirect_stderr
-# import psutil
 
 efmtool_jar = os.path.join(os.path.dirname(__file__), 'efmtool.jar')
 jpype.addClassPath(efmtool_jar)
