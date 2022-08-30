@@ -67,6 +67,9 @@ def select_solver(solver=None, model=None) -> str:
     returns the name of the solver as a str. If both arguments are specified, the function prefers
     'solver' over 'model'.
     
+    Example:
+        solver = select_solver('cplex')
+    
     Args:
         solver (optional (str)):
         
@@ -247,6 +250,9 @@ def fva(model, **kwargs):
     maximizing the flux through all reactions of a given metabolic network. This FVA function
     additionally allows the user to narrow down the flux states with additional constraints.
     
+    Example:
+        flux_ranges = fva(model, constraints='EX_o2_e=0', solver='gurobi')
+    
     Args:
         model (cobra.Model):
             A metabolic model that is an instance of the cobra.Model class.
@@ -377,6 +383,9 @@ def fba(model, **kwargs):
     one may use different types of parsimonious FBAs to either reduce the total sum of fluxes
     or the total number of active reactions after the primary objective is optimized.    
     
+    Example:
+        optim = fba(model, constraints='EX_o2_e=0', solver='gurobi', pfba=1)
+    
     Args:
         model (cobra.Model):
             A metabolic model that is an instance of the cobra.Model class. If no custom objective
@@ -401,7 +410,7 @@ def fba(model, **kwargs):
             inner_objective='BIOMASS_Ecoli_core_w_GAM'
             inner_objective={'BIOMASS_Ecoli_core_w_GAM': 1}
             
-        obj_sense (optional (str)):
+        obj_sense (optional (str)): (Default: 'maximize')
             The optimization direction can be set either to 'maximize' (or 'max') or 'minimize' (or 'min').
             
         pfba (optional (int)): (Default: 0)
@@ -583,6 +592,9 @@ def yopt(model, **kwargs):
     4. The denominator can become zero:
         The function returns unbounded, and a flux vector is computed by fixing the
         the denominator
+        
+    Example:
+        optim = yopt(model, obj_num='2 EX_etoh_e', obj_den='-6 EX_glc__D_e', constraints='EX_o2_e=0')
     
     Args:
         model (cobra.Model):
@@ -598,11 +610,11 @@ def yopt(model, **kwargs):
             either as a character string or as a dict. E.g.: obj_num='1.0 EX_subst_e' or 
             obj_num={'EX_subst_e': 1}
             
-        obj_sense (optional (str)):
+        obj_sense (optional (str)): (Default: 'maximize')
             The optimization direction can be set either to 'maximize' (or 'max') or 'minimize' (or 'min').
             
         solver (optional (str)):
-            The solver that should be used for FBA.
+            The solver that should be used for YOpt.
             
         constraints (optional (str) or (list of str) or (list of [dict,str,float])): (Default: '')
             List of *linear* constraints to be applied on top of the model: signs + or -, scalar 
@@ -841,16 +853,8 @@ def plot_flux_space(model, axes, **kwargs):
             axes=[['BIOMASS_Ecoli_core_w_GAM','-EX_glc_e'],['EX_etoh_e','-EX_glc_e']] or
             axes=[['BIOMASS_Ecoli_core_w_GAM'],['EX_etoh_e','-EX_glc_e']]
             
-        obj_den ((str) or (dict)):
-            The denominator of the fractional objective function, provided as a linear expression,
-            either as a character string or as a dict. E.g.: obj_num='1.0 EX_subst_e' or 
-            obj_num={'EX_subst_e': 1}
-            
-        obj_sense (optional (str)):
-            The optimization direction can be set either to 'maximize' (or 'max') or 'minimize' (or 'min').
-            
         solver (optional (str)):
-            The solver that should be used for FBA.
+            The solver that should be used for scanning the flux space.
             
         constraints (optional (str) or (list of str) or (list of [dict,str,float])): (Default: '')
             List of *linear* constraints to be applied on top of the model: signs + or -, scalar 
@@ -860,11 +864,29 @@ def plot_flux_space(model, axes, **kwargs):
             constraints='-EX_o2_e <= 5, ATPM = 20' or
             constraints=['-EX_o2_e <= 5', 'ATPM = 20'] or
             constraints=[[{'EX_o2_e':-1},'<=',5], [{'ATPM':1},'=',20]]
+            
+        plt_backend (optional (str)):
+            The matplotlib backend that should be used for plotting:
+            interactive backends: GTK3Agg, GTK3Cairo, GTK4Agg, GTK4Cairo, MacOSX, nbAgg, QtAgg, QtCairo,
+                                  TkAgg, TkCairo, WebAgg, WX, WXAgg, WXCairo, Qt5Agg, Qt5Cairo
+            non-interactive backends: agg, cairo, pdf, pgf, ps, svg, template
+            
+        show (optional (bool)): (Default: True)
+            Should matplotlib show the plot or should it stop after plot generation. show=False can
+            be useful if multiple flux spaces should be plotted at once or the plot should be modified
+            before been shown.
+        
+        points (optional (int)): (Default: 25 (3D) or 40 (2D))
+            The number of intervals in which the flux space should be sampled along each axis. A higher
+            number will increase resoltion but also computation time.
 
     Returns:
-        (cobra.core.Solution):
-            A solution object that contains the objective value, an optimal flux vector and the optmization
-            status.
+        (Tuple):
+            (datapoints, triang, plot1). The array of datapoints from which the plot was generated. These
+            datapoints are optimal values for different optimizations within the flux space. The triang
+            variable contains information about which datapoints need to be connected in triangles to
+            render a consistend 3-D surface with Delaunay triangles (Delaunay triangulation). The last
+            variable contains the matplotlib object.
     """
     reaction_ids = model.reactions.list_attr("id")
 
@@ -879,9 +901,6 @@ def plot_flux_space(model, axes, **kwargs):
     solver = select_solver(kwargs[SOLVER], model)
 
     if 'plt_backend' in kwargs:
-        # interactive backends: GTK3Agg, GTK3Cairo, GTK4Agg, GTK4Cairo, MacOSX, nbAgg, QtAgg, QtCairo,
-        #                       TkAgg, TkCairo, WebAgg, WX, WXAgg, WXCairo, Qt5Agg, Qt5Cairo
-        # non-interactive backends: agg, cairo, pdf, pgf, ps, svg, template
         set_matplotlib_backend(kwargs['plt_backend'])
 
     if 'show' not in kwargs:

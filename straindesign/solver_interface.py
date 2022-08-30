@@ -17,7 +17,7 @@
 #
 #
 #
-"""Class: Unified solver interface for LPs and MILPs (:class:`MILP_LP`)"""
+"""Class: Unified solver interface for LPs and MILPs (MILP_LP)"""
 
 from numpy import inf, isinf, sign, nan, isnan, unique
 from scipy import sparse

@@ -17,7 +17,7 @@
 #
 #
 #
-"""Class: strain design module (:class:`SDModule`)"""
+"""Class: strain design module (SDModule)"""
 
 from numpy import all
 from copy import deepcopy

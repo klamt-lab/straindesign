@@ -17,7 +17,7 @@
 #
 #
 #
-"""Class: strain design solutions (:class:`SDSolutions`)"""
+"""Class: strain design solutions (SDSolutions)"""
 
 from numpy import all, any, nan, isnan, sign
 from typing import List, Dict, Tuple, Union, Set, FrozenSet

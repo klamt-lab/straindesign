@@ -16,7 +16,7 @@
 #
 #
 #
-"""Class for indicator contraints (:class:`IndicatorConstraints`)"""
+"""Class for indicator contraints (IndicatorConstraints)"""
 
 class IndicatorConstraints:
 
