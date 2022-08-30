@@ -19,7 +19,7 @@
 """Class for indicator contraints (IndicatorConstraints)"""
 
 class IndicatorConstraints:
-
+    """Class for indicator contraints"""
     def __init__(self, binv, A, b, sense, indicval):
         self.binv = binv  # index of binary variable
         self.A = A  # CPLEX: lin_expr,   left hand side coefficient row for indicator constraint

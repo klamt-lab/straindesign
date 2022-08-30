@@ -33,6 +33,38 @@ import logging
 
 
 def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
+    """Remove genes whose that do not affect the flux space of the model.
+    
+    This function is used in preprocessing of computational strain design computations. Often,
+    certain reactions, for instance, reactions essential for microbial growth can/must not be
+    targeted by interventions. That can be exploited to reduce the set of genes in which 
+    interventions need to be considered.
+    
+    Given a set of essential reactions that is to be maintained operational, some genes can be 
+    removed from a metabolic model, either because they only affect only blocked reactions or 
+    essential reactions, or because they are essential reactions and must not be removed. As a
+    consequence, the GPR rules of a model can be simplified. 
+    
+        
+    Example:
+        remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
+    
+    Args:
+        model (cobra.Model):
+            A metabolic model that is an instance of the cobra.Model class containing GPR rules
+            
+        essential_reacs (list of str):
+            A list of identifiers of essential reactions.
+            
+        gkis, gkos (dict):
+            Dictionaries that contain the costs for gene knockouts and additions. E.g.,
+            gkos={'adhE': 1.0, 'ldhA' : 1.0 ...}
+            
+    Returns:
+        (dict):
+            An updated dictionary of the knockout costs in which irrelevant genes are removed.
+            
+    """
     # 1) Remove gpr rules from blocked reactions
     blocked_reactions = [
         reac.id for reac in model.reactions if reac.bounds == (0, 0)
