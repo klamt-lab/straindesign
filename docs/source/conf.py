@@ -51,7 +51,7 @@ autoapi_type = "python"
 autoapi_dirs = ["../../straindesign"]
 autoapi_generate_api_docs = True
 autoapi_add_toctree_entry = False
-autoapi_options = ["members", "show-inheritance", "special-members", "show-module-summary"]
+autoapi_options = ["members", "show-inheritance", "special-members"]
 # show-module-summary, imported-members
 autoapi_python_class_content = "both"
 suppress_warnings = ["autoapi.python_import_resolution", "autoapi.not_readable"]
