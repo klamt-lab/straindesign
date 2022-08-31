@@ -24,7 +24,7 @@ import logging
 
 
 class DisableLogger():
-
+    """Environment in which logging is disabled"""
     def __enter__(self):
         logging.disable(logging.CRITICAL)
 

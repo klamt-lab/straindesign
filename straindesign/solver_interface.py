@@ -16,7 +16,6 @@
 #
 #
 #
-#
 """Unified solver interface for LPs and MILPs (MILP_LP)"""
 
 from numpy import inf, isinf, isnan, unique
@@ -33,7 +32,7 @@ class MILP_LP(object):
     consistent bindings for the construction and manipulation of MILPs and LPs 
     in an vector-matrix-based manner and their solution.
     """
-    def __init__(self, *args, **kwargs):
+    def __init__(self, **kwargs):
         """Constructor of the solver interface (MILP_LP) class
         
         Accepts a (mixed integer) linear problem in the form:

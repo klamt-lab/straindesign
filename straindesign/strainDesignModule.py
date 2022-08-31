@@ -27,7 +27,7 @@ from straindesign.names import *
 
 class SDModule(Dict):
     """
-    Strain design modules are used to specify the goal of a strain design computation.
+    Strain design modules are used to specify the goal of a strain design computation
     
     (Lists of) SDModule objects are passed to compute_strain_design to specify the goal strain design computation.
     Strain design modules indicate the appraoch that should be used (OptKnock, RobustKnock, OptCouple or MCS) and

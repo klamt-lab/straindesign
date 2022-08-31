@@ -43,7 +43,7 @@ def _init_win_worker(filename: str) -> None:
 
 
 class SDPool(Pool):
-    """Define a process pool that handles the Windows platform specially."""
+    """Multiprocessing process pool with enhanced Windows compatibility"""
 
     def __init__(self,
                  processes: Optional[int] = None,

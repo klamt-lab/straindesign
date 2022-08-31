@@ -16,7 +16,7 @@
 #
 #
 #
-"""Static strings used throughout the StrainDesign package"""
+"""Static strings used in the StrainDesign package"""
 
 from optlang.interface import OPTIMAL, INFEASIBLE, TIME_LIMIT, UNBOUNDED
 
