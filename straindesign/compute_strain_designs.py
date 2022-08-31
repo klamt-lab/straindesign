@@ -505,7 +505,9 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
 
 
 def postprocess_reg_sd(reg_cost, sd):
-    # mark regulatory interventions with true or false
+    """Postprocess regulatory interventions
+    
+    Mark regulatory interventions with true or false"""
     for s in sd:
         for k, v in reg_cost.items():
             if k in s:

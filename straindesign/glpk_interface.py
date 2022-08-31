@@ -19,20 +19,27 @@
 """GLPK solver interface for LP and MILP"""
 
 from scipy import sparse
-from numpy import nan, isnan, inf, isinf, sum, random
+from numpy import nan, isnan, inf, isinf, sum
 from straindesign.names import *
 from typing import Tuple, List
 from swiglpk import *
 import logging
 
-# Collection of GLPK-related functions that facilitate the creation
-# of GLPK-object and the solutions of LPs/MILPs with GLPK from
-# vector-matrix-based problem setups.
-
-
-# Create a GLPK-object from a matrix-based problem setup
 class GLPK_MILP_LP():
-
+    """GLPK interface for MILP and LP
+    
+    This class is a wrapper for the GLPK-Python API to offer bindings and namings
+    for functions for the construction and manipulation of MILPs and LPs in an
+    vector-matrix-based manner that are consistent with those of the other solver 
+    interfaces in the StrainDesign package. The purpose is to unify the instructions 
+    for operating with MILPs and LPs throughout StrainDesign.
+    
+    The GLPK interface does not natively support indicator constraints. They are
+    hence translated to bigM-constraints when passed to the GLPK constructor
+    (see docstring of IndicatorConstraints). The GLPK interface does not natively
+    support the populate function. A high level implementation emulates the behavior
+    of populate.
+    """
     def __init__(self,
                  c,
                  A_ineq,
@@ -44,6 +51,62 @@ class GLPK_MILP_LP():
                  vtype,
                  indic_constr,
                  M=None):
+        """Constructor of the GLPK interface class
+        
+        Accepts a (mixed integer) linear problem in the form:
+            minimize(c)
+            subject to: A_ineq * x <= b_ineq
+                        A_eq   * x  = b_eq
+                        lb <= x <= ub
+                        forall(i) type(x_i) = vtype(i) (continous, binary, integer)
+                        indicator constraints:
+                        x(j) = [0|1] -> a_indic * x [<=|=|>=] b_indic
+                        
+        Please ensure that the number of variables and (in)equalities is consistent
+            
+        Example: 
+            glpk = GLPK_MILP_LP(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype, indic_constr, M)
+                    
+        Args:
+            c (list of float): (Default: None)
+                The objective vector (Objective sense: minimization).
+                
+            A_ineq (sparse.csr_matrix): (Default: None)
+                A coefficient matrix of the static inequalities.   
+                
+            b_ineq (list of float): (Default: None)
+                The right hand side of the static inequalities.
+                
+            A_eq (sparse.csr_matrix): (Default: None)
+                A coefficient matrix of the static equalities.   
+                
+            b_eq (list of float): (Default: None)
+                The right hand side of the static equalities.
+                
+            lb (list of float): (Default: None)
+                The lower variable bounds.
+                
+            ub (list of float): (Default: None)
+                The upper variable bounds.
+                
+            vtype (str): (Default: None)
+                A character string that specifies the type of each variable:
+                'c'ontinous, 'b'inary or 'i'nteger
+                
+            indic_constr (IndicatorConstraints): (Default: None)
+                A set of indicator constraints stored in an object of IndicatorConstraints.
+                To make GLPK compatible with indicator constraints, they are translated into
+                bigM-constraints (see reference manual or docstring of IndicatorConstraints).
+                
+            M (int): (Default: None)
+                A large value that is used in the translation of indicator constraints to
+                bigM-constraints. If no value is provided, 1000 is used.
+                
+            Returns:
+                (GLPK_MILP_LP):
+                
+                    A GLPK MILP/LP interface class.
+        """
         self.glpk = glp_create_prob()
         # Careful with indexing! GLPK indexing starts with 1 and not with 0
         try:
@@ -168,6 +231,16 @@ class GLPK_MILP_LP():
         # offer this function
 
     def solve(self) -> Tuple[List, float, float]:
+        """Solve the MILP or LP
+        
+        Example:
+            sol_x, optim, status = glpk.solve()
+        
+        Returns:
+            (Tuple[List, float, float])
+            
+            solution_vector, optimal_value, optimization_status
+        """
         try:
             min_cx, status, bool_tlim = self.solve_MILP_LP()
             if status in [GLP_OPT, GLP_FEAS]:  # solution
@@ -205,6 +278,16 @@ class GLPK_MILP_LP():
             return x, min_cx, -1
 
     def slim_solve(self) -> float:
+        """Solve the MILP or LP, but return only the optimal value
+                
+        Example:
+            optim = glpk.slim_solve()
+        
+        Returns:
+            (float)
+            
+            Optimum value of the objective function.
+        """
         try:
             opt, status, bool_tlim = self.solve_MILP_LP()
             if status in [GLP_OPT,
@@ -226,6 +309,19 @@ class GLPK_MILP_LP():
             return nan
 
     def populate(self, pool_limit) -> Tuple[List, float, float]:
+        """Generate a solution pool for MILPs
+        
+        This is only a high-level implementation of the populate function.
+        There is no native support in GLPK.
+                
+        Example:
+            sols_x, optim, status = glpk.populate()
+        
+        Returns:
+            (Tuple[List of lists, float, float])
+            
+            solution_vectors, optimal_value, optimization_status
+        """
         numvars = glp_get_num_cols(self.glpk)
         numrows = glp_get_num_rows(self.glpk)
         try:
@@ -273,14 +369,19 @@ class GLPK_MILP_LP():
             return x, min_cx, ERROR
 
     def set_objective(self, c):
+        """Set the objective function with a vector"""
         for i, c_i in enumerate(c):
             glp_set_obj_coef(self.glpk, i + 1, float(c_i))
 
     def set_objective_idx(self, C):
+        """Set the objective function with index-value pairs
+        
+        e.g.: C=[[1, 1.0], [4,-0.2]]"""
         for c in C:
             glp_set_obj_coef(self.glpk, c[0] + 1, float(c[1]))
 
     def set_ub(self, ub):
+        """Set the upper bounds to a given vector"""
         setvars = [ub[i][0] for i in range(len(ub))]
         lb = [glp_get_col_lb(self.glpk, i + 1) for i in setvars]
         ub = [ub[i][1] for i in range(len(ub))]
@@ -296,6 +397,7 @@ class GLPK_MILP_LP():
                 glp_set_col_bnds(self.glpk, i + 1, GLP_FX, l, u)
 
     def set_time_limit(self, t):
+        """Set the computation time limit (in seconds)"""
         if t * 1000 > self.max_tlim:
             self.milp_params.tm_lim = self.max_tlim
             self.lp_params.tm_lim = self.max_tlim
@@ -304,6 +406,19 @@ class GLPK_MILP_LP():
             self.lp_params.tm_lim = int(t * 1000)
 
     def add_ineq_constraints(self, A_ineq, b_ineq):
+        """Add inequality constraints to the model
+        
+        Additional inequality constraints have the form A_ineq * x <= b_ineq.
+        The number of columns in A_ineq must match with the number of variables x
+        in the problem.
+        
+        Args:
+            A_ineq (sparse.csr_matrix):
+                The coefficient matrix
+                
+            b_ineq (list of float):
+                The right hand side vector
+        """
         numvars = glp_get_num_cols(self.glpk)
         numrows = glp_get_num_rows(self.glpk)
         num_newrows = A_ineq.shape[0]
@@ -323,6 +438,19 @@ class GLPK_MILP_LP():
                                  b_ineq[j])
 
     def add_eq_constraints(self, A_eq, b_eq):
+        """Add equality constraints to the model
+        
+        Additional equality constraints have the form A_eq * x = b_eq.
+        The number of columns in A_eq must match with the number of variables x
+        in the problem.
+        
+        Args:
+            A_eq (sparse.csr_matrix):
+                The coefficient matrix
+                
+            b_eq (list of float):
+                The right hand side vector
+        """
         numvars = glp_get_num_cols(self.glpk)
         numrows = glp_get_num_rows(self.glpk)
         num_newrows = A_eq.shape[0]
@@ -338,6 +466,20 @@ class GLPK_MILP_LP():
                              b_eq[j])
 
     def set_ineq_constraint(self, idx, a_ineq, b_ineq):
+        """Replace a specific inequality constraint
+        
+        Replace the constraint with the index idx with the constraint a_ineq*x ~ b_ineq
+        
+        Args:
+            idx (int):
+                Index of the constraint
+                
+            a_ineq (list of float):
+                The coefficient vector
+                
+            b_ineq (float):
+                The right hand side value
+        """
         numvars = glp_get_num_cols(self.glpk)
         col = intArray(numvars + 1)
         val = doubleArray(numvars + 1)
@@ -351,6 +493,7 @@ class GLPK_MILP_LP():
             glp_set_row_bnds(self.glpk, idx + 1, GLP_UP, -inf, b_ineq)
 
     def getSolution(self, status) -> list:
+        """Retrieve solution from GLPK backend"""
         if self.ismilp and status in [OPTIMAL, UNBOUNDED, TIME_LIMIT_W_SOL]:
             x = [
                 glp_mip_col_val(self.glpk, i + 1)
@@ -364,6 +507,7 @@ class GLPK_MILP_LP():
         return x
 
     def solve_MILP_LP(self) -> Tuple[float, int, bool]:
+        """Trigger GLPK solution through backend"""
         starttime = glp_time()
         # MILP solving needs prior solution of the LP-relaxed problem, because occasionally
         # the MILP solver interface crashes when a problem is infesible, which, in turn,
@@ -381,6 +525,7 @@ class GLPK_MILP_LP():
         return opt, status, timelim_reached
 
     def addExclusionConstraintsIneq(self, x):
+        """Function to add exclusion constraint (GLPK compatibility function)"""
         numvars = glp_get_num_cols(self.glpk)
         # Here, we also need to take integer variables into account, because GLPK changes
         # variable type to integer when you lock a binary variable to zero

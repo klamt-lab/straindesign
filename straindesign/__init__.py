@@ -16,7 +16,7 @@
 #
 #
 #
-"""Package initialization"""
+"""StrainDesign package for computational metabolic engineering"""
 
 from importlib.util import find_spec as module_exists
 from .names import *

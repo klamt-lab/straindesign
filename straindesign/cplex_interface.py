@@ -29,11 +29,71 @@ import io
 from psutil import virtual_memory
 from straindesign.names import *
 
-
 class Cplex_MILP_LP(Cplex):
-
-    def __init__(self, c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype,
-                 indic_constr):
+    """CPLEX interface for MILP and LP
+    
+    This class is a wrapper for the CPLEX-Python API to offer bindings and namings
+    for functions for the construction and manipulation of MILPs and LPs in an
+    vector-matrix-based manner that are consistent with those of the other solver 
+    interfaces in the StrainDesign package. The purpose is to unify the instructions 
+    for operating with MILPs and LPs throughout StrainDesign.
+    
+    The CPLEX interface provides support for indicator constraints as well as for
+    the populate function.
+    """
+    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, 
+                 lb=None, ub=None, vtype=None, indic_constr=None):
+        """Constructor of the CPLEX interface class
+        
+        Accepts a (mixed integer) linear problem in the form:
+            minimize(c)
+            subject to: A_ineq * x <= b_ineq
+                        A_eq   * x  = b_eq
+                        lb <= x <= ub
+                        forall(i) type(x_i) = vtype(i) (continous, binary, integer)
+                        indicator constraints:
+                        x(j) = [0|1] -> a_indic * x [<=|=|>=] b_indic
+                        
+        Please ensure that the number of variables and (in)equalities is consistent
+            
+        Example: 
+            cplex = Cplex_MILP_LP(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype, indic_constr)
+                    
+        Args:
+            c (list of float): (Default: None)
+                The objective vector (Objective sense: minimization).
+                
+            A_ineq (sparse.csr_matrix): (Default: None)
+                A coefficient matrix of the static inequalities.   
+                
+            b_ineq (list of float): (Default: None)
+                The right hand side of the static inequalities.
+                
+            A_eq (sparse.csr_matrix): (Default: None)
+                A coefficient matrix of the static equalities.   
+                
+            b_eq (list of float): (Default: None)
+                The right hand side of the static equalities.
+                
+            lb (list of float): (Default: None)
+                The lower variable bounds.
+                
+            ub (list of float): (Default: None)
+                The upper variable bounds.
+                
+            vtype (str): (Default: None)
+                A character string that specifies the type of each variable:
+                'c'ontinous, 'b'inary or 'i'nteger
+                
+            indic_constr (IndicatorConstraints): (Default: None)
+                A set of indicator constraints stored in an object of IndicatorConstraints
+                (see reference manual or docstring).
+                
+            Returns:
+                (Cplex_MILP_LP):
+                
+                    A CPLEX MILP/LP interface class.
+        """
         super().__init__()
         self.objective.set_sense(self.objective.sense.minimize)
         try:
@@ -104,6 +164,16 @@ class Cplex_MILP_LP(Cplex):
             self.parameters.mip.tolerances.integrality.set(0.0)
 
     def solve(self) -> Tuple[List, float, float]:
+        """Solve the MILP or LP
+        
+        Example:
+            sol_x, optim, status = cplex.solve()
+        
+        Returns:
+            (Tuple[List, float, float])
+            
+            solution_vector, optimal_value, optimization_status
+        """
         try:
             super().solve(
             )  # call parent solve function (that was overwritten in this class)
@@ -145,6 +215,16 @@ class Cplex_MILP_LP(Cplex):
             return x, min_cx, ERROR
 
     def slim_solve(self) -> float:
+        """Solve the MILP or LP, but return only the optimal value
+                
+        Example:
+            optim = cplex.slim_solve()
+        
+        Returns:
+            (float)
+            
+            Optimum value of the objective function.
+        """
         try:
             super().solve(
             )  # call parent solve function (that was overwritten in this class)
@@ -165,6 +245,16 @@ class Cplex_MILP_LP(Cplex):
             return nan
 
     def populate(self, n) -> Tuple[List, float, float]:
+        """Generate a solution pool for MILPs
+                
+        Example:
+            sols_x, optim, status = cplex.populate()
+        
+        Returns:
+            (Tuple[List of lists, float, float])
+            
+            solution_vectors, optimal_value, optimization_status
+        """
         try:
             if isinf(n):
                 self.parameters.mip.pool.capacity.set(
@@ -212,21 +302,40 @@ class Cplex_MILP_LP(Cplex):
             return x, min_cx, ERROR
 
     def set_objective(self, c):
+        """Set the objective function with a vector"""
         self.objective.set_linear([[i, c[i]] for i in range(len(c))])
 
     def set_objective_idx(self, C):
+        """Set the objective function with index-value pairs
+        
+        e.g.: C=[[1, 1.0], [4,-0.2]]"""
         self.objective.set_linear(C)
 
     def set_ub(self, ub):
+        """Set the upper bounds to a given vector"""
         self.variables.set_upper_bounds(ub)
 
     def set_time_limit(self, t):
+        """Set the computation time limit (in seconds)"""
         if isinf(t):
             self.parameters.timelimit.set(self.parameters.timelimit.max())
         else:
             self.parameters.timelimit.set(t)
 
     def add_ineq_constraints(self, A_ineq, b_ineq):
+        """Add inequality constraints to the model
+        
+        Additional inequality constraints have the form A_ineq * x <= b_ineq.
+        The number of columns in A_ineq must match with the number of variables x
+        in the problem.
+        
+        Args:
+            A_ineq (sparse.csr_matrix):
+                The coefficient matrix
+                
+            b_ineq (list of float):
+                The right hand side vector
+        """
         numconst = self.linear_constraints.get_num()
         numnewconst = A_ineq.shape[0]
         newconst_idx = [numconst + i for i in range(numnewconst)]
@@ -243,9 +352,21 @@ class Cplex_MILP_LP(Cplex):
         self.linear_constraints.set_coefficients(zip(rows_A, cols_A, data_A))
 
     def add_eq_constraints(self, A_eq, b_eq):
+        """Add equality constraints to the model
+        
+        Additional equality constraints have the form A_eq * x = b_eq.
+        The number of columns in A_eq must match with the number of variables x
+        in the problem.
+        
+        Args:
+            A_eq (sparse.csr_matrix):
+                The coefficient matrix
+                
+            b_eq (list of float):
+                The right hand side vector
+        """
         numconst = self.linear_constraints.get_num()
         numnewconst = A_eq.shape[0]
-        newconst_idx = [numconst + i for i in range(numnewconst)]
         self.linear_constraints.add(rhs=b_eq, senses='E' * numnewconst)
         # retrieve row and column indices from sparse matrix and convert them to int
         A_eq = A_eq.tocoo()
@@ -256,6 +377,20 @@ class Cplex_MILP_LP(Cplex):
         self.linear_constraints.set_coefficients(zip(rows_A, cols_A, data_A))
 
     def set_ineq_constraint(self, idx, a_ineq, b_ineq):
+        """Replace a specific inequality constraint
+        
+        Replace the constraint with the index idx with the constraint a_ineq*x ~ b_ineq
+        
+        Args:
+            idx (int):
+                Index of the constraint
+                
+            a_ineq (list of float):
+                The coefficient vector
+                
+            b_ineq (float):
+                The right hand side value
+        """
         if isinf(b_ineq):
             b_ineq = infinity
         self.linear_constraints.set_coefficients(

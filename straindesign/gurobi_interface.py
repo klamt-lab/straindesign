@@ -27,19 +27,73 @@ from straindesign.names import *
 from typing import Tuple, List
 import logging
 
-# Collection of Gurobi-related functions that facilitate the creation
-# of Gurobi-object and the solutions of LPs/MILPs with Gurobi from
-# vector-matrix-based problem setups.
-#
-
 gstatus = gp.StatusConstClass
 
-
-# Create a Gurobi-object from a matrix-based problem setup
 class Gurobi_MILP_LP(gp.Model):
-
+    """Gurobi interface for MILP and LP
+    
+    This class is a wrapper for the Gurobi-Python API to offer bindings and namings
+    for functions for the construction and manipulation of MILPs and LPs in an
+    vector-matrix-based manner that are consistent with those of the other solver 
+    interfaces in the StrainDesign package. The purpose is to unify the instructions 
+    for operating with MILPs and LPs throughout StrainDesign.
+    
+    The Gurobi interface provides support for indicator constraints as well as for
+    the populate function.
+    """
     def __init__(self, c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype,
                  indic_constr):
+        """Constructor of the Gurobi interface class
+        
+        Accepts a (mixed integer) linear problem in the form:
+            minimize(c)
+            subject to: A_ineq * x <= b_ineq
+                        A_eq   * x  = b_eq
+                        lb <= x <= ub
+                        forall(i) type(x_i) = vtype(i) (continous, binary, integer)
+                        indicator constraints:
+                        x(j) = [0|1] -> a_indic * x [<=|=|>=] b_indic
+                        
+        Please ensure that the number of variables and (in)equalities is consistent
+            
+        Example: 
+            gurobi = Gurobi_MILP_LP(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype, indic_constr)
+                    
+        Args:
+            c (list of float): (Default: None)
+                The objective vector (Objective sense: minimization).
+                
+            A_ineq (sparse.csr_matrix): (Default: None)
+                A coefficient matrix of the static inequalities.   
+                
+            b_ineq (list of float): (Default: None)
+                The right hand side of the static inequalities.
+                
+            A_eq (sparse.csr_matrix): (Default: None)
+                A coefficient matrix of the static equalities.   
+                
+            b_eq (list of float): (Default: None)
+                The right hand side of the static equalities.
+                
+            lb (list of float): (Default: None)
+                The lower variable bounds.
+                
+            ub (list of float): (Default: None)
+                The upper variable bounds.
+                
+            vtype (str): (Default: None)
+                A character string that specifies the type of each variable:
+                'c'ontinous, 'b'inary or 'i'nteger
+                
+            indic_constr (IndicatorConstraints): (Default: None)
+                A set of indicator constraints stored in an object of IndicatorConstraints
+                (see reference manual or docstring).
+                
+            Returns:
+                (Gurobi_MILP_LP):
+                
+                    A Gurobi MILP/LP interface class.
+        """
         super().__init__()
         try:
             numvars = A_ineq.shape[1]
@@ -89,6 +143,16 @@ class Gurobi_MILP_LP(gp.Model):
             self.params.PoolGapAbs = 0.0
 
     def solve(self) -> Tuple[List, float, float]:
+        """Solve the MILP or LP
+        
+        Example:
+            sol_x, optim, status = gurobi.solve()
+        
+        Returns:
+            (Tuple[List, float, float])
+            
+            solution_vector, optimal_value, optimization_status
+        """
         try:
             self.optimize(
             )  # call parent solve function (that was overwritten in this class)
@@ -139,6 +203,16 @@ class Gurobi_MILP_LP(gp.Model):
             return x, min_cx, ERROR
 
     def slim_solve(self) -> float:
+        """Solve the MILP or LP, but return only the optimal value
+                
+        Example:
+            optim = gurobi.slim_solve()
+        
+        Returns:
+            (float)
+            
+            Optimum value of the objective function.
+        """
         try:
             self.optimize(
             )  # call parent solve function (that was overwritten in this class)
@@ -161,6 +235,16 @@ class Gurobi_MILP_LP(gp.Model):
             return nan
 
     def populate(self, n) -> Tuple[List, float, float]:
+        """Generate a solution pool for MILPs
+                
+        Example:
+            sols_x, optim, status = cplex.populate()
+        
+        Returns:
+            (Tuple[List of lists, float, float])
+            
+            solution_vectors, optimal_value, optimization_status
+        """
         try:
             if isinf(n):
                 self.params.PoolSolutions = grb.MAXINT
@@ -208,25 +292,44 @@ class Gurobi_MILP_LP(gp.Model):
             return x, min_cx, ERROR
 
     def set_objective(self, c):
+        """Set the objective function with a vector"""
         for i in range(len(self._Model__vars)):
             self._Model__vars[i].Obj = c[i]
         self.update()
 
     def set_objective_idx(self, C):
+        """Set the objective function with index-value pairs
+        
+        e.g.: C=[[1, 1.0], [4,-0.2]]"""
         for c in C:
             self._Model__vars[c[0]].Obj = c[1]
         self.update()
 
     def set_ub(self, ub):
+        """Set the upper bounds to a given vector"""
         for i in range(len(ub)):
             self._Model__vars[ub[i][0]].ub = ub[i][1]
         self.update()
 
     def set_time_limit(self, t):
+        """Set the computation time limit (in seconds)"""
         self.params.TimeLimit = t
         self.update()
 
     def add_ineq_constraints(self, A_ineq, b_ineq):
+        """Add inequality constraints to the model
+        
+        Additional inequality constraints have the form A_ineq * x <= b_ineq.
+        The number of columns in A_ineq must match with the number of variables x
+        in the problem.
+        
+        Args:
+            A_ineq (sparse.csr_matrix):
+                The coefficient matrix
+                
+            b_ineq (list of float):
+                The right hand side vector
+        """
         vars = self._Model__vars
         for i in range(A_ineq.shape[0]):
             self.addConstr(
@@ -238,6 +341,19 @@ class Gurobi_MILP_LP(gp.Model):
         self.update()
 
     def add_eq_constraints(self, A_eq, b_eq):
+        """Add equality constraints to the model
+        
+        Additional equality constraints have the form A_eq * x = b_eq.
+        The number of columns in A_eq must match with the number of variables x
+        in the problem.
+        
+        Args:
+            A_eq (sparse.csr_matrix):
+                The coefficient matrix
+                
+            b_eq (list of float):
+                The right hand side vector
+        """
         vars = self._Model__vars
         for i in range(A_eq.shape[0]):
             self.addConstr(
@@ -249,6 +365,20 @@ class Gurobi_MILP_LP(gp.Model):
         self.update()
 
     def set_ineq_constraint(self, idx, a_ineq, b_ineq):
+        """Replace a specific inequality constraint
+        
+        Replace the constraint with the index idx with the constraint a_ineq*x ~ b_ineq
+        
+        Args:
+            idx (int):
+                Index of the constraint
+                
+            a_ineq (list of float):
+                The coefficient vector
+                
+            b_ineq (float):
+                The right hand side value
+        """
         constr = self._Model__constrs[idx]
         [
             self.chgCoeff(constr, x, val)
@@ -261,9 +391,11 @@ class Gurobi_MILP_LP(gp.Model):
         self.update()
 
     def getSolution(self) -> list:
+        """Retrieve solution from Gurobi backend"""
         return [x.X for x in self._Model__vars]
 
     def getSolutions(self) -> list:
+        """Retrieve solution pool from Gurobi backend"""
         nSols = self.SolCount
         x = []
         for i in range(nSols):

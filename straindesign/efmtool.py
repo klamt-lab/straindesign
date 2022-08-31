@@ -88,6 +88,7 @@ if _java_executable == '':
 
 
 def basic_columns_rat(mx,tolerance=0):  # mx is ch.javasoft.smx.impl.DefaultBigIntegerRationalMatrix
+    """efmtool: Translate matrix coefficients to rational numbers"""
     if type(mx) is numpy.ndarray:
         mx = DefaultBigIntegerRationalMatrix(numpy_mat2jpypeArrayOfArrays(mx),
                                              jTrue, jTrue)
@@ -100,6 +101,7 @@ def basic_columns_rat(mx,tolerance=0):  # mx is ch.javasoft.smx.impl.DefaultBigI
 
 
 def numpy_mat2jpypeArrayOfArrays(npmat):
+    """efmtool: Translate matrix to array of arrays"""
     rows = npmat.shape[0]
     cols = npmat.shape[1]
     jmat = jpype.JDouble[rows, cols]
@@ -111,6 +113,7 @@ def numpy_mat2jpypeArrayOfArrays(npmat):
 
 
 def jpypeArrayOfArrays2numpy_mat(jmat):
+    """efmtool: Translate array of arrays to numpy matrix"""
     rows = len(jmat)
     cols = len(jmat[0])  # assumes all rows have the same number of columns
     npmat = numpy.zeros((rows, cols))
@@ -121,6 +124,7 @@ def jpypeArrayOfArrays2numpy_mat(jmat):
 
 
 def sympyRat2jBigIntegerPair(val):
+    """efmtool: Translate rational numbers to big integer pair"""
     numer = val.p  # numerator
     if numer.bit_length() <= 63:
         numer = BigInteger.valueOf(numer)
@@ -135,10 +139,12 @@ def sympyRat2jBigIntegerPair(val):
 
 
 def jBigFraction2sympyRat(val):
+    """efmtool: Translate rational numbers to sympy rational numbers"""
     return jBigIntegerPair2sympyRat(val.getNumerator(), val.getDenominator())
 
 
 def jBigIntegerPair2sympyRat(numer, denom):
+    """efmtool: Translate big integer pair to sympy rational numbers"""
     if numer.bitLength() <= 63:
         numer = numer.longValue()
     else:

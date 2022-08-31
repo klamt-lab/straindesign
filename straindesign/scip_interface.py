@@ -27,17 +27,72 @@ from typing import Tuple, List
 import time as t
 import logging
 
-# Collection of SCIP-related functions that facilitate the creation
-# of SCIP-object and the solutions of LPs/MILPs with SCIP from
-# vector-matrix-based problem setups.
-#
-
-
-# Create a SCIP-object from a matrix-based problem setup
 class SCIP_MILP(pso.Model):
-
+    """SCIP interface for MILP
+    
+    This class is a wrapper for the SCIP-Python API to offer bindings and namings
+    for functions for the construction and manipulation of MILPs in an
+    vector-matrix-based manner that are consistent with those of the other solver 
+    interfaces in the StrainDesign package. The purpose is to unify the instructions 
+    for operating with MILPs and LPs throughout StrainDesign.
+    
+    The SCIP interface provides support for indicator constraints as well as for
+    the populate function. The SCIP interface does not natively support the populate 
+    function. A high level implementation emulates the behavior of populate.
+    """
     def __init__(self, c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype,
                  indic_constr):
+        """Constructor of the SCIP MILP interface class
+        
+        Accepts a (mixed integer) linear problem in the form:
+            minimize(c)
+            subject to: A_ineq * x <= b_ineq
+                        A_eq   * x  = b_eq
+                        lb <= x <= ub
+                        forall(i) type(x_i) = vtype(i) (continous, binary, integer)
+                        indicator constraints:
+                        x(j) = [0|1] -> a_indic * x [<=|=|>=] b_indic
+                        
+        Please ensure that the number of variables and (in)equalities is consistent
+            
+        Example: 
+            scip = SCIP_MILP(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype, indic_constr)
+                    
+        Args:
+            c (list of float): (Default: None)
+                The objective vector (Objective sense: minimization).
+                
+            A_ineq (sparse.csr_matrix): (Default: None)
+                A coefficient matrix of the static inequalities.   
+                
+            b_ineq (list of float): (Default: None)
+                The right hand side of the static inequalities.
+                
+            A_eq (sparse.csr_matrix): (Default: None)
+                A coefficient matrix of the static equalities.   
+                
+            b_eq (list of float): (Default: None)
+                The right hand side of the static equalities.
+                
+            lb (list of float): (Default: None)
+                The lower variable bounds.
+                
+            ub (list of float): (Default: None)
+                The upper variable bounds.
+                
+            vtype (str): (Default: None)
+                A character string that specifies the type of each variable:
+                'c'ontinous, 'b'inary or 'i'nteger
+                
+            indic_constr (IndicatorConstraints): (Default: None)
+                A set of indicator constraints stored in an object of IndicatorConstraints
+                (see reference manual or docstring).
+                
+            Returns:
+                (SCIP_MILP):
+                
+                    A SCIP MILP interface class.
+        """
         super().__init__()
         # uncomment to forward SCIP output to python terminal
         self.redirectOutput()
@@ -114,6 +169,16 @@ class SCIP_MILP(pso.Model):
         # self.setParam('reoptimization/enable',True)
 
     def solve(self) -> Tuple[List, float, float]:
+        """Solve the MILP
+        
+        Example:
+            sol_x, optim, status = scip.solve()
+        
+        Returns:
+            (Tuple[List, float, float])
+            
+            solution_vector, optimal_value, optimization_status
+        """
         try:
             self.optimize()
             status = self.getStatus()
@@ -153,6 +218,16 @@ class SCIP_MILP(pso.Model):
             return x, min_cx, ERROR
 
     def slim_solve(self) -> float:
+        """Solve the MILP, but return only the optimal value
+                
+        Example:
+            optim = scip.slim_solve()
+        
+        Returns:
+            (float)
+            
+            Optimum value of the objective function.
+        """
         try:
             self.optimize()
             status = self.getStatus()
@@ -173,7 +248,19 @@ class SCIP_MILP(pso.Model):
 
     def populate(self, pool_limit) -> Tuple[List, float, float]:
         numrows = len(self.constr)
-
+        """Generate a solution pool for MILPs
+        
+        This is only a high-level implementation of the populate function.
+        There is no native support in SCIP.
+                
+        Example:
+            sols_x, optim, status = scip.populate()
+        
+        Returns:
+            (Tuple[List of lists, float, float])
+            
+            solution_vectors, optimal_value, optimization_status
+        """
         try:
             if pool_limit > 0:
                 sols = []
@@ -219,6 +306,7 @@ class SCIP_MILP(pso.Model):
             return x, min_cx, ERROR
 
     def set_objective(self, c):
+        """Set the objective function with a vector"""
         if self.getParam('reoptimization/enable'):
             self.freeReoptSolve()
             self.chgReoptObjective(
@@ -229,6 +317,9 @@ class SCIP_MILP(pso.Model):
                 pso.Expr({self.trms[i]: c[i] for i in nonzero(c)[0]}))
 
     def set_objective_idx(self, C):
+        """Set the objective function with index-value pairs
+        
+        e.g.: C=[[1, 1.0], [4,-0.2]]"""
         if self.getParam('reoptimization/enable'):
             self.freeReoptSolve()
             self.chgReoptObjective(pso.Expr({self.trms[c[0]]: c[1] for c in C}))
@@ -237,6 +328,7 @@ class SCIP_MILP(pso.Model):
             self.setObjective(pso.Expr({self.trms[c[0]]: c[1] for c in C}))
 
     def set_ub(self, ub):
+        """Set the upper bounds to a given vector"""
         self.freeTransform()
         for i in range(len(ub)):
             if not isinf(ub[i][1]):
@@ -245,12 +337,26 @@ class SCIP_MILP(pso.Model):
                 self.chgVarUb(self.vars[ub[i][0]], None)
 
     def set_time_limit(self, t):
+        """Set the computation time limit (in seconds)"""
         if t >= self.max_tlim:
             self.setParam('limits/time', self.max_tlim)
         else:
             self.setParam('limits/time', t)
 
     def add_ineq_constraints(self, A_ineq, b_ineq):
+        """Add inequality constraints to the model
+        
+        Additional inequality constraints have the form A_ineq * x <= b_ineq.
+        The number of columns in A_ineq must match with the number of variables x
+        in the problem.
+        
+        Args:
+            A_ineq (sparse.csr_matrix):
+                The coefficient matrix
+                
+            b_ineq (list of float):
+                The right hand side vector
+        """
         self.freeTransform()
         ineqs = [self.addCons(pso.Expr() <= b_i) for b_i in b_ineq]
         for row, a_ineq in zip(ineqs, A_ineq):
@@ -260,6 +366,19 @@ class SCIP_MILP(pso.Model):
         self.constr += ineqs
 
     def add_eq_constraints(self, A_eq, b_eq):
+        """Add equality constraints to the model
+        
+        Additional equality constraints have the form A_eq * x = b_eq.
+        The number of columns in A_eq must match with the number of variables x
+        in the problem.
+        
+        Args:
+            A_eq (sparse.csr_matrix):
+                The coefficient matrix
+                
+            b_eq (list of float):
+                The right hand side vector
+        """
         self.freeTransform()
         eqs = [self.addCons(pso.Expr() == b_i) for b_i in b_eq]
         for row, a_eq in zip(eqs, A_eq):
@@ -269,6 +388,20 @@ class SCIP_MILP(pso.Model):
         self.constr += eqs
 
     def set_ineq_constraint(self, idx, a_ineq, b_ineq):
+        """Replace a specific inequality constraint
+        
+        Replace the constraint with the index idx with the constraint a_ineq*x ~ b_ineq
+        
+        Args:
+            idx (int):
+                Index of the constraint
+                
+            a_ineq (list of float):
+                The coefficient vector
+                
+            b_ineq (float):
+                The right hand side value
+        """
         self.freeTransform()
         # Make previous constraint non binding. removing or
         # changing old constraints would be better but doesn't work
@@ -284,9 +417,11 @@ class SCIP_MILP(pso.Model):
         pass
 
     def getSolution(self) -> list:
+        """Retrieve solution from SCIP backend"""
         return [self.getVal(x) for x in self.vars]
 
     def addExclusionConstraintIneq(self, x):
+        """Function to add exclusion constraint (SCIP compatibility function)"""
         data = [1.0 if x[i] else -1.0 for i in self.binvars]
         row = [0] * len(self.binvars)
         A_ineq = sparse.csr_matrix((data, (row, self.binvars)),
@@ -294,11 +429,59 @@ class SCIP_MILP(pso.Model):
         b_ineq = sum([x[i] for i in self.binvars]) - 1
         self.add_ineq_constraints(A_ineq, [b_ineq])
 
-
-# Create a SCIP-object from a matrix-based problem setup
 class SCIP_LP(pso.LP):
-
+    """SoPlex interface for LP
+    
+    This class is a wrapper for the SoPlex-Python API to offer bindings and namings
+    for functions for the construction and manipulation of LPs in an
+    vector-matrix-based manner that are consistent with those of the other solver 
+    interfaces in the StrainDesign package. The purpose is to unify the instructions 
+    for operating with MILPs and LPs throughout StrainDesign.
+    """
     def __init__(self, c, A_ineq, b_ineq, A_eq, b_eq, lb, ub):
+        """Constructor of the SCIP (SoPlex) LP interface class
+        
+        Accepts a (mixed integer) linear problem in the form:
+            minimize(c)
+            subject to: A_ineq * x <= b_ineq
+                        A_eq   * x  = b_eq
+                        lb <= x <= ub
+                        forall(i) type(x_i) = vtype(i) (continous, binary, integer)
+                        indicator constraints:
+                        x(j) = [0|1] -> a_indic * x [<=|=|>=] b_indic
+                        
+        Please ensure that the number of variables and (in)equalities is consistent
+            
+        Example: 
+            scip = SCIP_LP(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub)
+                    
+        Args:
+            c (list of float): (Default: None)
+                The objective vector (Objective sense: minimization).
+                
+            A_ineq (sparse.csr_matrix): (Default: None)
+                A coefficient matrix of the static inequalities.   
+                
+            b_ineq (list of float): (Default: None)
+                The right hand side of the static inequalities.
+                
+            A_eq (sparse.csr_matrix): (Default: None)
+                A coefficient matrix of the static equalities.   
+                
+            b_eq (list of float): (Default: None)
+                The right hand side of the static equalities.
+                
+            lb (list of float): (Default: None)
+                The lower variable bounds.
+                
+            ub (list of float): (Default: None)
+                The upper variable bounds.
+                
+            Returns:
+                (SCIP_LP):
+                
+                    A SCIP LP interface class.
+        """
         super().__init__(sense='minimize')
         # uncomment to forward SCIP output to python terminal
         try:
@@ -328,6 +511,16 @@ class SCIP_LP(pso.LP):
         self.optimize = super().solve
 
     def solve(self) -> Tuple[List, float, float]:
+        """Solve the LP
+        
+        Example:
+            sol_x, optim, status = scip.solve()
+        
+        Returns:
+            (Tuple[List, float, float])
+            
+            solution_vector, optimal_value, optimization_status
+        """
         try:
             min_cx = self.optimize(
             )  # this function was inherited from super().solve() during initialization
@@ -350,6 +543,16 @@ class SCIP_LP(pso.LP):
             return x, min_cx, ERROR
 
     def slim_solve(self) -> float:
+        """Solve the LP, but return only the optimal value
+                
+        Example:
+            optim = scip.slim_solve()
+        
+        Returns:
+            (float)
+            
+            Optimum value of the objective function.
+        """
         try:
             opt = self.optimize(
             )  # this function was inherited from super().solve() during initialization
@@ -363,19 +566,49 @@ class SCIP_LP(pso.LP):
             return nan
 
     def set_objective(self, c):
+        """Set the objective function with a vector"""
         for i in range(len(c)):
             self.chgObj(i, c[i])
 
     def set_objective_idx(self, C):
+        """Set the objective function with index-value pairs
+        
+        e.g.: C=[[1, 1.0], [4,-0.2]]"""
         for i_v in C:
             self.chgObj(i_v[0], i_v[1])
 
     def add_ineq_constraints(self, A_ineq, b_ineq):
+        """Add inequality constraints to the model
+        
+        Additional inequality constraints have the form A_ineq * x <= b_ineq.
+        The number of columns in A_ineq must match with the number of variables x
+        in the problem.
+        
+        Args:
+            A_ineq (sparse.csr_matrix):
+                The coefficient matrix
+                
+            b_ineq (list of float):
+                The right hand side vector
+        """
         self.addRows([[(i,v) for i,v in zip(rows.indices,rows.data)] for rows in A_ineq], \
                         lhss = [-self.infinity()]*A_ineq.shape[0],\
                         rhss = b_ineq)
 
     def add_eq_constraints(self, A_eq, b_eq):
+        """Add equality constraints to the model
+        
+        Additional equality constraints have the form A_eq * x = b_eq.
+        The number of columns in A_eq must match with the number of variables x
+        in the problem.
+        
+        Args:
+            A_eq (sparse.csr_matrix):
+                The coefficient matrix
+                
+            b_eq (list of float):
+                The right hand side vector
+        """
         self.addRows([[(i,v) for i,v in zip(rows.indices,rows.data)] for rows in A_eq], \
                         lhss = b_eq,\
                         rhss = b_eq)

@@ -32,11 +32,9 @@ from pandas import DataFrame
 from numpy import floor, sign, mod, nan, isnan, unique, inf, isinf, full, linspace, \
                   prod, array, mean, flip, ceil, floor
 from numpy.linalg import matrix_rank
-from os import cpu_count
 from contextlib import redirect_stdout, redirect_stderr
 from io import StringIO
 import matplotlib.pyplot as plt
-import matplotlib.tri as tri
 from matplotlib.cm import get_cmap
 from matplotlib import use as set_matplotlib_backend
 import logging
@@ -242,8 +240,7 @@ def fva_worker_compute_glpk(i) -> Tuple[int, float]:
         min_cx = lp_i.slim_solve()
     return i, min_cx
 
-
-def fva(model, **kwargs):
+def fva(model, **kwargs) -> DataFrame:
     """Flux Variability Analysis (FVA)
     
     Flux Variability Analysis determines the global flux ranges of reactions by minimizing and 
@@ -372,7 +369,7 @@ def fva(model, **kwargs):
     return fva_result
 
 
-def fba(model, **kwargs):
+def fba(model, **kwargs) -> Solution:
     """Flux Balance Analysis (FBA), parsimonius Flux Balance Analysis (pFBA),
     
     Flux Balance Analysis optimizes a *linear objective function* in a space of steady-state
@@ -568,7 +565,7 @@ def fba(model, **kwargs):
     return sol
 
 
-def yopt(model, **kwargs):
+def yopt(model, **kwargs) -> Solution:
     """Yield optmization (YOpt)
     
     Yield optimization optimizes a *fractional objective function* in a space of steady-state
@@ -829,8 +826,7 @@ def yopt(model, **kwargs):
     else:
         status = INFEASIBLE
 
-
-def plot_flux_space(model, axes, **kwargs):
+def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, Plot]:
     """Plot projections of the space of steady-state flux vectors onto two or three dimensions.
     
     This function uses LP and matplotlib to generate lower dimensional representations of the 
@@ -1259,8 +1255,10 @@ def plot_flux_space(model, axes, **kwargs):
 
 
 def ceil_dec(v, n):
+    """Round up v to n decimals"""
     return ceil(v * (10**n)) / (10**n)
 
 
 def floor_dec(v, n):
+    """Round down v to n decimals"""
     return floor(v * (10**n)) / (10**n)
