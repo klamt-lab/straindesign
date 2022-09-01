@@ -24,7 +24,7 @@ StrainDesign
    :alt: Current Anaconda Version
    
 .. image:: https://readthedocs.org/projects/straindesign/badge/?version=latest
-   :target: https://straindesign.readthedocs.io/en/latest/
+   :target: https://readthedocs.org/projects/straindesign/builds/
    :alt: Documentation Status
    
 .. image:: https://img.shields.io/pypi/pyversions/straindesign.svg
@@ -33,7 +33,7 @@ StrainDesign
 
 .. image:: https://github.com/klamt-lab/straindesign/workflows/CI-test/badge.svg
     :target: https://github.com/klamt-lab/straindesign/actions/workflows/CI-test.yml
-    :alt: GitHub Actions CI-test Status]
+    :alt: GitHub Actions CI-test Status
    
 .. image:: https://img.shields.io/pypi/l/straindesign.svg
    :target: https://www.gnu.org/licenses/old-licenses/lgpl-2.0.html
