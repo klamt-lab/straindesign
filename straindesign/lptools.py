@@ -41,17 +41,6 @@ import logging
 
 from straindesign.parse_constr import linexpr2mat, linexprdict2str
 
-avail_solvers = set()
-if module_exists("swiglpk"):
-    avail_solvers.add(GLPK)
-if module_exists("cplex"):
-    avail_solvers.add(CPLEX)
-if module_exists("gurobipy"):
-    avail_solvers.add(GUROBI)
-if module_exists("pyscipopt"):
-    avail_solvers.add(SCIP)
-
-
 def select_solver(solver=None, model=None) -> str:
     """Select a solver for subsequent MILP/LP computations
     
@@ -826,7 +815,7 @@ def yopt(model, **kwargs) -> Solution:
     else:
         status = INFEASIBLE
 
-def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, Plot]:
+def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
     """Plot projections of the space of steady-state flux vectors onto two or three dimensions.
     
     This function uses LP and matplotlib to generate lower dimensional representations of the 

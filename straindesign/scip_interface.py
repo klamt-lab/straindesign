@@ -95,7 +95,7 @@ class SCIP_MILP(pso.Model):
         """
         super().__init__()
         # uncomment to forward SCIP output to python terminal
-        self.redirectOutput()
+        # self.redirectOutput()
         try:
             numvars = A_ineq.shape[1]
         except:
@@ -142,7 +142,9 @@ class SCIP_MILP(pso.Model):
             for i in range(len(indic_constr.sense)):
                 if indic_constr.indicval[i] == 0:  # if the constraints activity is indicated by 0, an auxiliary variable needs to be added
                     z = self.addVar(lb=0, ub=1, obj=0, vtype='B')
-                    xor_constr = self.addConsXor([x[indic_constr.binv[i]], z],True)
+                    xor = self.addCons(pso.Expr() == 1)
+                    self.addConsCoeff(xor, x[indic_constr.binv[i]], 1)
+                    self.addConsCoeff(xor, z, 1)
                 else:
                     z = x[indic_constr.binv[i]]
                 if indic_constr.sense[i] == 'E':
