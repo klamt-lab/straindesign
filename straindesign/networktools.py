@@ -405,11 +405,12 @@ def compress_model(model, no_par_compress_reacs=set()):
     parallel = False
     run = 1
     cmp_mapReac = []
+    numr = len(model.reactions)
     while True:
         if not parallel:
             logging.info('  Compression ' + str(run) +
                          ': Applying compression from EFM-tool module.')
-            subT, reac_map_exp = compress_model_efmtool(model)
+            reac_map_exp = compress_model_efmtool(model)
             for new_reac, old_reac_val in reac_map_exp.items():
                 old_reacs_no_compress = [
                     r for r in no_par_compress_reacs if r in old_reac_val
@@ -423,11 +424,11 @@ def compress_model(model, no_par_compress_reacs=set()):
         else:
             logging.info('  Compression ' + str(run) +
                          ': Lumping parallel reactions.')
-            subT, reac_map_exp = compress_model_parallel(
+            reac_map_exp = compress_model_parallel(
                 model, no_par_compress_reacs)
         remove_conservation_relations(model)
-        if subT.shape[0] > subT.shape[1]:
-            logging.info('  Reduced to ' + str(subT.shape[1]) + ' reactions.')
+        if numr > len(reac_map_exp):
+            logging.info('  Reduced to ' + str(len(reac_map_exp)) + ' reactions.')
             # store the information for decompression in a Tuple
             # (0) compression matrix, (1) reac_id dictornary {cmp_rid: {orig_rid1: factor1, orig_rid2: factor2}},
             # (2) linear (True) or parallel (False) compression (3,4) ko and ki costs of expanded network
@@ -440,9 +441,10 @@ def compress_model(model, no_par_compress_reacs=set()):
             else:
                 parallel = True
             run += 1
+            numr = len(reac_map_exp)
         else:
             logging.info('  Last step could not reduce size further (' +
-                         str(subT.shape[0]) + ' reactions).')
+                         str(numr) + ' reactions).')
             logging.info('  Network compression completed. (' + str(run - 1) +
                          ' compression iterations)')
             logging.info(
@@ -680,19 +682,19 @@ def filter_sd_maxcost(sd, max_cost, kocost, kicost):
 
 # compression function (mostly copied from efmtool)
 def compress_model_efmtool(model):
-    """Compress
+    """Compress model by lumping dependent reactions using the efmtool compression approach
     
     Example:
-        expanded_sd = expand_sd(compressed_sds, cmp_mapReac)
+        cmp_mapReac = compress_model_efmtool(model)
     
     Args:
         model (cobra.Model):
             A metabolic model that is an instance of the cobra.Model class
             
     Returns:
-        (Tuple[subT, rational_map]):
-        A matrix and a dict that contain information about the reactions that were lumped
-        in the compression process. 
+        (dict):
+        A dict that contains information about the lumping done in the compression process.
+        process. E.g.: {'reaction_lumped1' : {'reaction_orig1' : 2/3 'reaction_orig2' : 1/2}, ...}
     """
     for r in model.reactions:
         r.gene_reaction_rule = ''
@@ -780,11 +782,24 @@ def compress_model_efmtool(model):
         })
     # for i in flipped: # adapt so that it matches the reaction direction before flipping
     #         subT[i, :] *= -1
-    return sparse.csc_matrix(subT), rational_map
+    return rational_map
 
 
 def compress_model_parallel(model, protected_rxns=set()):
-    # lump parallel reactions
+    """Compress model by lumping parallel reactions
+    
+    Example:
+        cmp_mapReac = compress_model_parallel(model)
+    
+    Args:
+        model (cobra.Model):
+            A metabolic model that is an instance of the cobra.Model class
+            
+    Returns:
+        (dict):
+        A dict that contains information about the lumping done in the compression process.
+        E.g.: {'reaction_lumped1' : {'reaction_orig1' : 1 'reaction_orig2' : 1}, ...}
+    """
     #
     # - exclude lumping of reactions with inhomogenous bounds
     # - exclude protected reactions
@@ -864,10 +879,11 @@ def compress_model_parallel(model, protected_rxns=set()):
     new_objective = old_objective @ subT
     for r, c in zip(model.reactions, new_objective):
         r.objective_coefficient = c
-    return sparse.csc_matrix(subT), rational_map
+    return rational_map
 
 
 def remove_blocked_reactions(model) -> List:
+    """Remove blocked reactions from a network"""
     blocked_reactions = [
         reac for reac in model.reactions if reac.bounds == (0, 0)
     ]
@@ -876,6 +892,7 @@ def remove_blocked_reactions(model) -> List:
 
 
 def remove_ext_mets(model):
+    """Remove (unbalanced) external metabolites from the compartment External_Species"""
     external_mets = [
         i for i, cpts in zip(model.metabolites,
                              model.metabolites.list_attr("compartment"))
@@ -891,6 +908,10 @@ def remove_ext_mets(model):
 
 
 def remove_conservation_relations(model):
+    """Remove conservation relations in a model
+    
+    This reduces the number of metabolites in a model while maintaining the 
+    original flux space. This is a compression technique."""
     stoich_mat = create_stoichiometric_matrix(model, array_type='lil')
     basic_metabolites = efm.basic_columns_rat(stoich_mat.transpose().toarray(),
                                               tolerance=0)
@@ -904,6 +925,7 @@ def remove_conservation_relations(model):
 
 # replace all stoichiometric coefficients with rationals.
 def stoichmat_coeff2rational(model):
+    """Convert coefficients from to stoichiometric matrix to rational numbers"""
     num_reac = len(model.reactions)
     for i in range(num_reac):
         for k, v in model.reactions[i]._metabolites.items():
@@ -928,6 +950,7 @@ def stoichmat_coeff2rational(model):
 
 # replace all stoichiometric coefficients with ints and floats
 def stoichmat_coeff2float(model):
+    """Convert coefficients from to stoichiometric matrix to floats"""
     num_reac = len(model.reactions)
     for i in range(num_reac):
         for k, v in model.reactions[i]._metabolites.items():
@@ -938,6 +961,7 @@ def stoichmat_coeff2float(model):
 
 
 def modules_coeff2rational(sd_modules):
+    """Convert coefficients occurring in SDModule objects to rational numbers"""
     for i, module in enumerate(sd_modules):
         for param in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
             if param in module and module[param] is not None:
@@ -952,6 +976,7 @@ def modules_coeff2rational(sd_modules):
 
 
 def modules_coeff2float(sd_modules):
+    """Convert coefficients occurring in SDModule objects to floats"""
     for i, module in enumerate(sd_modules):
         for param in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
             if param in module and module[param] is not None:
@@ -966,6 +991,11 @@ def modules_coeff2float(sd_modules):
 
 
 def remove_dummy_bounds(model):
+    """Replace COBRA standard bounds with +/-inf
+    
+    Retrieve the standard bounds from the COBRApy Configuration and replace model bounds
+    of the same value with +/-inf.
+    """
     cobra_conf = Configuration()
     bound_thres = max(
         (abs(cobra_conf.lower_bound), abs(cobra_conf.upper_bound)))
@@ -985,7 +1015,13 @@ def remove_dummy_bounds(model):
 
 
 def bound_blocked_or_irrevers_fva(model, solver=None):
-    # FVAs to identify blocked, irreversible and essential reactions, as well as non-bounding bounds
+    """Use FVA to determine the flux ranges. Use this information to update the model bounds
+    
+    If flux ranges for a reaction are narrower than its bounds in the mode, these bounds can be omitted, 
+    since other reactions must constrain the reaction flux. If (upper or lower) flux bounds are found to 
+    be zero, the model bounds are updated to reduce the model complexity.
+    """
+    # FVAs to identify blocked and irreversible reactions, as well as non-bounding bounds
     flux_limits = fva(model)
     if select_solver(solver) in [SCIP, GLPK]:
         tol = 1e-10  # use tolerance for tightening problem bounds
