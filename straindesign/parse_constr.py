@@ -24,7 +24,7 @@ import re
 
 
 def parse_constraints(constr, reaction_ids) -> list:
-    """Parses constraints written as strings
+    """Parses linear constraints written as strings
     
     Parses one or more *linear* constraints written as strings.
     
@@ -58,7 +58,24 @@ def parse_constraints(constr, reaction_ids) -> list:
 
 
 def parse_linexpr(expr, reaction_ids) -> List:
-    """Parses linear expressions written as strings"""
+    """Parses linear expressions written as strings
+    
+    Parses one or more *linear* expressions written as strings.
+    
+    Args:
+        expr (str or list of str): 
+            (List of) expressions in string form.
+            E.g.: ['r1 + 3*r2', '-5*r3 -r4'] or
+            '1.0 r1 + 3.0*r2,-r4-5*r3' or ...
+            
+        reaction_ids (list of str): 
+            List of reaction identifiers.
+
+    Returns:
+        (List of dicts): 
+        List of expressions. Each expression is a dictionary.
+        E.g.: [{'r1':1.0,'r2':3.0},{'r3':-5.0,'r4':-1.0},...]
+    """
     if not expr:
         return []
     if type(expr) is str:
