@@ -42,13 +42,13 @@ class GLPK_MILP_LP():
     
     Accepts a (mixed integer) linear problem in the form:
         minimize(c),
-            subject to: 
-            A_ineq * x <= b_ineq,
-            A_eq * x  = b_eq,
-            lb <= x <= ub,
-            forall(i) type(x_i) = vtype(i) (continous, binary, integer),
-            indicator constraints:
-            x(j) = [0|1] -> a_indic * x [<=|=|>=] b_indic
+        subject to: 
+        A_ineq * x <= b_ineq,
+        A_eq * x  = b_eq,
+        lb <= x <= ub,
+        forall(i) type(x_i) = vtype(i) (continous, binary, integer),
+        indicator constraints:
+        x(j) = [0|1] -> a_indic * x [<=|=|>=] b_indic
                     
     Please ensure that the number of variables and (in)equalities is consistent
         
