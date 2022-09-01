@@ -31,75 +31,74 @@ class MILP_LP(object):
     This class is a wrapper for several solver interfaces to offer unique and 
     consistent bindings for the construction and manipulation of MILPs and LPs 
     in an vector-matrix-based manner and their solution.
+    
+    Accepts a (mixed integer) linear problem in the form:
+        minimize(c),
+            subject to: 
+            A_ineq * x <= b_ineq,
+            A_eq * x  = b_eq,
+            lb <= x <= ub,
+            forall(i) type(x_i) = vtype(i) (continous, binary, integer),
+            indicator constraints:
+            x(j) = [0|1] -> a_indic * x [<=|=|>=] b_indic
+                    
+    Please ensure that the number of variables and (in)equalities is consistent
+        
+    Example: 
+        milp = MILP_LP(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype, indic_constr)
+                
+    Args:
+        c (list of float): (Default: None)
+            The objective vector (Objective sense: minimization).
+            
+        A_ineq (sparse.csr_matrix): (Default: None)
+            A coefficient matrix of the static inequalities.   
+            
+        b_ineq (list of float): (Default: None)
+            The right hand side of the static inequalities.
+            
+        A_eq (sparse.csr_matrix): (Default: None)
+            A coefficient matrix of the static equalities.   
+            
+        b_eq (list of float): (Default: None)
+            The right hand side of the static equalities.
+            
+        lb (list of float): (Default: None)
+            The lower variable bounds.
+            
+        ub (list of float): (Default: None)
+            The upper variable bounds.
+            
+        vtype (str): (Default: None)
+            A character string that specifies the type of each variable:
+            'c'ontinous, 'b'inary or 'i'nteger
+            
+        indic_constr (IndicatorConstraints): (Default: None)
+            A set of indicator constraints stored in an object of IndicatorConstraints
+            (see reference manual or docstring).
+
+        M (int): (Default: None)
+            A large value that is used in the translation of indicator constraints to
+            bigM-constraints for solvers that do not natively support them. If no value 
+            is provided, 1000 is used.
+            
+        solver (str): (Default: taken from avail_solvers)
+            Solver backend that should be used: 'cplex', 'gurobi', 'glpk' or 'scip'
+
+        skip_checks (bool): (Default: False)
+            Upon MILP construction, the dimensions of all provided vectors and matrices
+            are checked to verify their consistency. If skip_checks=True is set, these
+            checks are skipped.
+        
+        tlim (float):
+            Solution time limit in seconds.
+            
+        Returns:
+            (MILP_LP):
+            
+            A MILP/LP solver interface class.
     """
     def __init__(self, **kwargs):
-        """Constructor of the solver interface (MILP_LP) class
-        
-        Accepts a (mixed integer) linear problem in the form:
-            minimize(c)
-            subject to: A_ineq * x <= b_ineq
-                        A_eq   * x  = b_eq
-                        lb <= x <= ub
-                        forall(i) type(x_i) = vtype(i) (continous, binary, integer)
-                        indicator constraints:
-                        x(j) = [0|1] -> a_indic * x [<=|=|>=] b_indic
-                        
-        Please ensure that the number of variables and (in)equalities is consistent
-            
-        Example: 
-            milp = MILP_LP(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype, indic_constr)
-                    
-        Args:
-            c (list of float): (Default: None)
-                The objective vector (Objective sense: minimization).
-                
-            A_ineq (sparse.csr_matrix): (Default: None)
-                A coefficient matrix of the static inequalities.   
-                
-            b_ineq (list of float): (Default: None)
-                The right hand side of the static inequalities.
-                
-            A_eq (sparse.csr_matrix): (Default: None)
-                A coefficient matrix of the static equalities.   
-                
-            b_eq (list of float): (Default: None)
-                The right hand side of the static equalities.
-                
-            lb (list of float): (Default: None)
-                The lower variable bounds.
-                
-            ub (list of float): (Default: None)
-                The upper variable bounds.
-                
-            vtype (str): (Default: None)
-                A character string that specifies the type of each variable:
-                'c'ontinous, 'b'inary or 'i'nteger
-                
-            indic_constr (IndicatorConstraints): (Default: None)
-                A set of indicator constraints stored in an object of IndicatorConstraints
-                (see reference manual or docstring).
-
-            M (int): (Default: None)
-                A large value that is used in the translation of indicator constraints to
-                bigM-constraints for solvers that do not natively support them. If no value 
-                is provided, 1000 is used.
-               
-            solver (str): (Default: taken from avail_solvers)
-                Solver backend that should be used: 'cplex', 'gurobi', 'glpk' or 'scip'
-
-            skip_checks (bool): (Default: False)
-                Upon MILP construction, the dimensions of all provided vectors and matrices
-                are checked to verify their consistency. If skip_checks=True is set, these
-                checks are skipped.
-            
-            tlim (float):
-                Solution time limit in seconds.
-                
-            Returns:
-                (MILP_LP):
-                
-                    A MILP/LP solver interface class.
-        """
         allowed_keys = {
             'c', 'A_ineq', 'b_ineq', 'A_eq', 'b_eq', 'lb', 'ub', 'vtype',
             'indic_constr', 'M', 'solver', 'skip_checks', 'tlim'

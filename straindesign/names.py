@@ -20,7 +20,7 @@
 
 from optlang.interface import OPTIMAL, INFEASIBLE, TIME_LIMIT, UNBOUNDED
 
-MODEL_ID = 'model_id' """'model_id'"""
+MODEL_ID = 'model_id'
 PROTECT = 'mcs_lin'
 SUPPRESS = 'mcs_bilvl'
 SUPPRESS = 'suppress'

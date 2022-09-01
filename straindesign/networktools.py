@@ -33,7 +33,7 @@ import logging
 
 
 def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
-    """Remove genes whose that do not affect the flux space of the model.
+    """Remove genes whose that do not affect the flux space of the model
     
     This function is used in preprocessing of computational strain design computations. Often,
     certain reactions, for instance, reactions essential for microbial growth can/must not be
@@ -62,7 +62,7 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
             
     Returns:
         (dict):
-            An updated dictionary of the knockout costs in which irrelevant genes are removed.
+        An updated dictionary of the knockout costs in which irrelevant genes are removed.
             
     """
     # 1) Remove gpr rules from blocked reactions
@@ -127,11 +127,43 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
     return gkos
 
 
-def extend_model_gpr(model, **kwargs):
-    if 'gki_cost' not in kwargs:
-        kwargs.update({'gki_cost' : {}})
-    if 'gko_cost' not in kwargs:
-        kwargs.update({'gko_cost' : {}})
+def extend_model_gpr(model, use_names=False):
+    """Integrate GPR-rules into a metabolic model as pseudo metabolites and reactions
+    
+    COBRA modules often have gene-protein-reaction (GPR) rules associated with each reaction. 
+    These can be integrated into the metabolic network structure through pseudo reactions
+    and variables. As GPR rules are integrated into the metabolic network, the metabolic flux 
+    space does not change. After integration, the gene-pseudoreactions can be fixed to a flux of 
+    zero to simulate gene knockouts. Gene pseudoreactions are referenced either by the gene name 
+    or the gene identifier (user selected).
+    
+    GPR-rule integration enables the computation of strain designs based on genetic interventions.
+    
+    This function requires all GPR-rules to be provided in DNF (disjunctive normal form).
+    (e.g. g1 and g2 or g1 and g3, NOT g1 and (g2 or g3)). Brackets are allowed but not required.
+    If reversible reactions are associated with GPR-rules, these reactions are spit during
+    GPR-integration. The function returns a mapping of old and new reaction identifiers.
+        
+    Example:
+        reac_map = extend_model_gpr(model):
+    
+    Args:
+        model (cobra.Model):
+            A metabolic model that is an instance of the cobra.Model class containing GPR rules 
+            in DNF
+                      
+        use_names (bool): (Default: False)
+            If set to True, the gene pseudoreactions will carry the gene name as reaction
+            identifier. If False, the gene identifier will be used. By default this option is
+            turned off because many models do not provide gene names.
+            
+    Returns:
+        (dict):
+        A dictionary to reference old and new reaction identifiers, for reversible reactions
+        that were split (when they are associated with GPR rules). Entries have the form:
+        {'Reaction1' : {'Reaction1' : 1, 'Reaction1_reverse_a59c' : -1}}
+            
+    """
     # Split reactions when necessary
     reac_map = {}
     rev_reac = set()
@@ -156,13 +188,6 @@ def extend_model_gpr(model, **kwargs):
     model.remove_reactions(del_reac)
     model.add_reactions(rev_reac)
 
-    gene_names = set(g.name for g in model.genes)
-    gene_names_exist = np.all([len(g.name) for g in model.genes])
-    if 'use_names' not in kwargs:
-        kwargs['use_names'] = gene_names_exist and (gene_names.intersection(kwargs['gko_cost']) or
-                                                    gene_names.intersection(kwargs['gki_cost']))
-        
-
     # All reaction rules are provided in dnf.
     for r in model.reactions:
         if r.gene_reaction_rule:  # if reaction has a gpr rule
@@ -179,7 +204,7 @@ def extend_model_gpr(model, **kwargs):
                         model.add_metabolites(Metabolite(gene_met_id))
                         gene = model.genes.get_by_id(g)
                         w = Reaction(gene.id)
-                        if kwargs['use_names']:  # if gene name is available and used in gki_cost and gko_cost
+                        if use_names:  # if gene name is available and used in gki_cost and gko_cost
                             w.id = gene.name
                         model.add_reactions([w])
                         w.reaction = '--> ' + gene_met_id

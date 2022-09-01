@@ -361,7 +361,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                 logging.info('  Simplifyied to '+str(num_genes)+' genes and '+\
                     str(num_gpr)+' gpr rules.')
         logging.info('  Extending metabolic network with gpr associations.')
-        reac_map = extend_model_gpr(cmp_model, gko_cost=uncmp_gko_cost, gki_cost=uncmp_gki_cost)
+        reac_map = extend_model_gpr(cmp_model, has_gene_names)
         for i, m in enumerate(sd_modules):
             for p in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                 if p in m and m[p] is not None:
