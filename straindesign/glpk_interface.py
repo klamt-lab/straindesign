@@ -39,6 +39,60 @@ class GLPK_MILP_LP():
     (see docstring of IndicatorConstraints). The GLPK interface does not natively
     support the populate function. A high level implementation emulates the behavior
     of populate.
+    
+    Accepts a (mixed integer) linear problem in the form:
+        minimize(c)
+        subject to: A_ineq * x <= b_ineq
+                    A_eq   * x  = b_eq
+                    lb <= x <= ub
+                    forall(i) type(x_i) = vtype(i) (continous, binary, integer)
+                    indicator constraints:
+                    x(j) = [0|1] -> a_indic * x [<=|=|>=] b_indic
+                    
+    Please ensure that the number of variables and (in)equalities is consistent
+        
+    Example: 
+        glpk = GLPK_MILP_LP(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype, indic_constr, M)
+                
+    Args:
+        c (list of float): (Default: None)
+            The objective vector (Objective sense: minimization).
+            
+        A_ineq (sparse.csr_matrix): (Default: None)
+            A coefficient matrix of the static inequalities.   
+            
+        b_ineq (list of float): (Default: None)
+            The right hand side of the static inequalities.
+            
+        A_eq (sparse.csr_matrix): (Default: None)
+            A coefficient matrix of the static equalities.   
+            
+        b_eq (list of float): (Default: None)
+            The right hand side of the static equalities.
+            
+        lb (list of float): (Default: None)
+            The lower variable bounds.
+            
+        ub (list of float): (Default: None)
+            The upper variable bounds.
+            
+        vtype (str): (Default: None)
+            A character string that specifies the type of each variable:
+            'c'ontinous, 'b'inary or 'i'nteger
+            
+        indic_constr (IndicatorConstraints): (Default: None)
+            A set of indicator constraints stored in an object of IndicatorConstraints.
+            To make GLPK compatible with indicator constraints, they are translated into
+            bigM-constraints (see reference manual or docstring of IndicatorConstraints).
+            
+        M (int): (Default: None)
+            A large value that is used in the translation of indicator constraints to
+            bigM-constraints. If no value is provided, 1000 is used.
+            
+        Returns:
+            (GLPK_MILP_LP):
+            
+            A GLPK MILP/LP interface class.
     """
     def __init__(self,
                  c,
@@ -51,62 +105,6 @@ class GLPK_MILP_LP():
                  vtype,
                  indic_constr,
                  M=None):
-        """Constructor of the GLPK interface class
-        
-        Accepts a (mixed integer) linear problem in the form:
-            minimize(c)
-            subject to: A_ineq * x <= b_ineq
-                        A_eq   * x  = b_eq
-                        lb <= x <= ub
-                        forall(i) type(x_i) = vtype(i) (continous, binary, integer)
-                        indicator constraints:
-                        x(j) = [0|1] -> a_indic * x [<=|=|>=] b_indic
-                        
-        Please ensure that the number of variables and (in)equalities is consistent
-            
-        Example: 
-            glpk = GLPK_MILP_LP(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype, indic_constr, M)
-                    
-        Args:
-            c (list of float): (Default: None)
-                The objective vector (Objective sense: minimization).
-                
-            A_ineq (sparse.csr_matrix): (Default: None)
-                A coefficient matrix of the static inequalities.   
-                
-            b_ineq (list of float): (Default: None)
-                The right hand side of the static inequalities.
-                
-            A_eq (sparse.csr_matrix): (Default: None)
-                A coefficient matrix of the static equalities.   
-                
-            b_eq (list of float): (Default: None)
-                The right hand side of the static equalities.
-                
-            lb (list of float): (Default: None)
-                The lower variable bounds.
-                
-            ub (list of float): (Default: None)
-                The upper variable bounds.
-                
-            vtype (str): (Default: None)
-                A character string that specifies the type of each variable:
-                'c'ontinous, 'b'inary or 'i'nteger
-                
-            indic_constr (IndicatorConstraints): (Default: None)
-                A set of indicator constraints stored in an object of IndicatorConstraints.
-                To make GLPK compatible with indicator constraints, they are translated into
-                bigM-constraints (see reference manual or docstring of IndicatorConstraints).
-                
-            M (int): (Default: None)
-                A large value that is used in the translation of indicator constraints to
-                bigM-constraints. If no value is provided, 1000 is used.
-                
-            Returns:
-                (GLPK_MILP_LP):
-                
-                    A GLPK MILP/LP interface class.
-        """
         self.glpk = glp_create_prob()
         # Careful with indexing! GLPK indexing starts with 1 and not with 0
         try:

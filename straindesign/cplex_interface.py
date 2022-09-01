@@ -40,60 +40,60 @@ class Cplex_MILP_LP(Cplex):
     
     The CPLEX interface provides support for indicator constraints as well as for
     the populate function.
+    
+    Accepts a (mixed integer) linear problem in the form:
+        ```
+        minimize(c)
+        subject to: A_ineq * x <= b_ineq
+                    A_eq   * x  = b_eq
+                    lb <= x <= ub
+                    forall(i) type(x_i) = vtype(i) (continous, binary, integer)
+                    indicator constraints:
+                    x(j) = [0|1] -> a_indic * x [<=|=|>=] b_indic
+        ```
+                    
+    Please ensure that the number of variables and (in)equalities is consistent
+        
+    Example: 
+        cplex = Cplex_MILP_LP(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype, indic_constr)
+                
+    Args:
+        c (list of float): (Default: None)
+            The objective vector (Objective sense: minimization).
+            
+        A_ineq (sparse.csr_matrix): (Default: None)
+            A coefficient matrix of the static inequalities.   
+            
+        b_ineq (list of float): (Default: None)
+            The right hand side of the static inequalities.
+            
+        A_eq (sparse.csr_matrix): (Default: None)
+            A coefficient matrix of the static equalities.   
+            
+        b_eq (list of float): (Default: None)
+            The right hand side of the static equalities.
+            
+        lb (list of float): (Default: None)
+            The lower variable bounds.
+            
+        ub (list of float): (Default: None)
+            The upper variable bounds.
+            
+        vtype (str): (Default: None)
+            A character string that specifies the type of each variable:
+            'c'ontinous, 'b'inary or 'i'nteger
+            
+        indic_constr (IndicatorConstraints): (Default: None)
+            A set of indicator constraints stored in an object of IndicatorConstraints
+            (see reference manual or docstring).
+            
+        Returns:
+            (Cplex_MILP_LP):
+            
+            A CPLEX MILP/LP interface class.
     """
     def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, 
                  lb=None, ub=None, vtype=None, indic_constr=None):
-        """Constructor of the CPLEX interface class
-        
-        Accepts a (mixed integer) linear problem in the form:
-            minimize(c)
-            subject to: A_ineq * x <= b_ineq
-                        A_eq   * x  = b_eq
-                        lb <= x <= ub
-                        forall(i) type(x_i) = vtype(i) (continous, binary, integer)
-                        indicator constraints:
-                        x(j) = [0|1] -> a_indic * x [<=|=|>=] b_indic
-                        
-        Please ensure that the number of variables and (in)equalities is consistent
-            
-        Example: 
-            cplex = Cplex_MILP_LP(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype, indic_constr)
-                    
-        Args:
-            c (list of float): (Default: None)
-                The objective vector (Objective sense: minimization).
-                
-            A_ineq (sparse.csr_matrix): (Default: None)
-                A coefficient matrix of the static inequalities.   
-                
-            b_ineq (list of float): (Default: None)
-                The right hand side of the static inequalities.
-                
-            A_eq (sparse.csr_matrix): (Default: None)
-                A coefficient matrix of the static equalities.   
-                
-            b_eq (list of float): (Default: None)
-                The right hand side of the static equalities.
-                
-            lb (list of float): (Default: None)
-                The lower variable bounds.
-                
-            ub (list of float): (Default: None)
-                The upper variable bounds.
-                
-            vtype (str): (Default: None)
-                A character string that specifies the type of each variable:
-                'c'ontinous, 'b'inary or 'i'nteger
-                
-            indic_constr (IndicatorConstraints): (Default: None)
-                A set of indicator constraints stored in an object of IndicatorConstraints
-                (see reference manual or docstring).
-                
-            Returns:
-                (Cplex_MILP_LP):
-                
-                    A CPLEX MILP/LP interface class.
-        """
         super().__init__()
         self.objective.set_sense(self.objective.sense.minimize)
         try:
