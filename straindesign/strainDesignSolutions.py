@@ -17,7 +17,7 @@
 #
 #
 #
-"""Class: strain design solutions (SDSolutions)"""
+"""Container for strain design solutions (SDSolutions)"""
 
 from numpy import all, any, nan, isnan, sign
 from typing import List, Dict, Tuple, Union, Set, FrozenSet
@@ -30,7 +30,45 @@ import logging
 
 
 class SDSolutions(object):
-    """A class for storing strain design solutions"""
+    """Container for strain design solutions
+    
+    Objects of this class are returned by strain design computations. This class
+    contains the metabolic interventions on the gene, reaction or regulation level
+    alongside with information about the strain design setup, including the model
+    used and the strain design modules. Strain design solutions can be accessed
+    either through the fields or through specific functions that preprocess or
+    reformat strain designs for different purposes.
+    
+    Instances of this class are not meant to be created by StrainDesign users.
+    
+    Args:
+        model (cobra.Model):
+            A metabolic model that is an instance of the cobra.Model class.
+            
+        sd (list of dict):
+            A list of dicts every dict represents an intervention set. Keys in
+            each dict are reaction/gene identifiers and the associated value
+            determines if it is added (1), not added (0) or knocked out (-1).
+            For regulatory interventions, (1) means active regulation and 
+            (0) means regulatory intervention not added. These will be translated
+            to True and False.
+        
+        status (str):
+            Status string of the computation (e.g.: 'optimal')
+            
+        sd_setup (dict):
+            A dictionary containing information about the problem setup. This dict can/should contain
+            the keys MODEL_ID, MODULES, MAX_SOLUTIONS, MAX_COST, TIME_LIMIT, SOLVER, KOCOST, KICOST, 
+            REGCOST, GKICOST, GKOCOST
+            
+            These entries can be set like this:
+            sd_setup[straindesign.MODEL_ID] = model.id
+            
+    Returns
+        (SDSolutions):
+        Strain design solutions
+        
+    """
     def __init__(self, model, sd, status, sd_setup):
         self.status = status
         self.sd_setup = sd_setup
@@ -212,21 +250,30 @@ class SDSolutions(object):
                         self.itv_bounds[i].update({reac: bnds})
 
     def get_num_sols(self):
+        """Get number of solutions"""
         return len(self.reaction_sd)
 
     def get_strain_design_costs(self, i=None):
+        """Get costs of i-th strain design or of all in a list"""
         if i is None:
             return self.sd_cost
         else:
             return get_subset(self.sd_cost, i)
 
     def get_strain_designs(self, i=None):
+        """Get i-th strain design (intervention set) or all in original format"""
         if self.is_gene_sd:
             return self.get_gene_sd(i)
         else:
             return self.get_reaction_sd(i)
 
     def get_reaction_sd(self, i=None):
+        """Get reaction-based strain design solutions
+        
+        Gene-based intervention sets are translated to the reaction level. This can
+        be helpful to understand the impact of gene interventions. GPR-rules are 
+        accounted for automatically.
+        """
         if i is None:
             return [strip_non_ki(s) for s in self.reaction_sd]
         else:
@@ -239,6 +286,10 @@ class SDSolutions(object):
             ]
 
     def get_reaction_sd_bnds(self, i=None):
+        """Get reaction-based strain design solutions represented by upper and lower bounds
+        
+        Knocked-out reactions will show as upper and lower bounds of zero.
+        """
         if i is None:
             return self.itv_bounds
         else:
@@ -249,6 +300,7 @@ class SDSolutions(object):
             ]
 
     def get_gene_sd(self, i=None):
+        """Get gene-based strain design solutions"""
         if not self.is_gene_sd:
             raise Exception(
                 'The solutions are based on reaction interventions only.')
@@ -262,6 +314,11 @@ class SDSolutions(object):
             ]
 
     def get_reaction_sd_mark_no_ki(self, i=None):
+        """Get reaction-based strain design solutions, 
+        but also tag knock-ins that were not made with a 0
+        
+        This can be helpful to analyze gene intervention sets in original metabolic models.
+        GPR-rules are accounted for automatically."""
         if i is None:
             return self.reaction_sd
         else:
@@ -270,6 +327,8 @@ class SDSolutions(object):
             return get_subset(self.reaction_sd, i)
 
     def get_gene_sd_mark_no_ki(self, i=None):
+        """Get gene-based strain design solutions, 
+        but also tag knock-ins that were not made with a 0"""
         if not self.is_gene_sd:
             raise Exception(
                 'The solutions are based on reaction interventions only.')
@@ -281,6 +340,10 @@ class SDSolutions(object):
             return get_subset(self.gene_sd, i)
 
     def get_gene_reac_sd_assoc(self, i=None):
+        """Get reaction and gene-based strain design solutions, 
+        and show which reaction-based solution corresponds to which gene-based.
+        
+        Often the association is not 1:1 but n:1."""
         if not self.is_gene_sd:
             raise Exception(
                 'The solutions are based on reaction interventions only.')
@@ -308,6 +371,10 @@ class SDSolutions(object):
         return reacs_sd, assoc, gene_sd
 
     def get_gene_reac_sd_assoc_mark_no_ki(self, i=None):
+        """Get reaction and gene-based strain design solutions, 
+        but also tag knock-ins that were not made with a 0
+        
+        Often the association is not 1:1 but n:1."""
         if not self.is_gene_sd:
             raise Exception(
                 'The solutions are based on reaction interventions only.')
@@ -329,25 +396,30 @@ class SDSolutions(object):
         return reacs_sd, assoc, gene_sd
 
     def save(self, filename):
+        """Save strain design solutions to a file."""
         with open(filename, 'wb') as f:
             pickle.dump(self, f)
 
     @classmethod
     def load(cls, filename):
+        """Load strain design solutions from a file."""
         with open(filename, 'rb') as f:
             cls = pickle.load(f)
         return cls
 
 
 def strip_non_ki(sd):
+    """SDSolutions internal function: removing non-added reactions or genes"""
     return {k: v for k, v in sd.items() if v not in (0.0, False)}
 
 
 def get_subset(sd, i):
+    """SDSolutions internal function: getting a subset of solutions"""
     return [s for j, s in enumerate(sd) if j in i]
 
 
 def gpr_eval(cj_terms, interv):
+    """SDSolutions internal function: evaluate a GPR term"""
     gpr_ev = [0.0 for _ in range(len(cj_terms))]
     for i, c in enumerate(cj_terms):
         cj_term = [interv[k] if k in interv else nan for k in c]

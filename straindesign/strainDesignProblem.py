@@ -31,7 +31,7 @@ import logging
 
 
 class SDProblem:
-    """Class for computing Strain Designs (SD)"""
+    """Class that contains the strain design MILP"""
 
     def __init__(self, model: Model, sd_modules: List[SDModule], *args,
                  **kwargs):

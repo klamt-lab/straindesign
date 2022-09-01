@@ -23,17 +23,24 @@ from scipy import sparse
 import re
 
 
-def parse_constraints(constr, reaction_ids) -> List:
+def parse_constraints(constr, reaction_ids) -> list:
     """Parses constraints written as strings
     
-    This is a longer description of the parse constraints function.
+    Parses one or more *linear* constraints written as strings.
     
     Args:
-        constr (:class:str or :class:List): (List of) constraints in string form.
-        reaction_ids (:class:List): List of reaction identifiers.
+        constr (str or list of str): 
+            (List of) constraints in string form.
+            E.g.: ['r1 + 3*r2 = 0.3', '-5*r3 -r4 <= -0.5'] or
+            '1.0 r1 + 3.0*r2 =0.3,-r4-5*r3<=-0.5' or ...
+            
+        reaction_ids (list of str): 
+            List of reaction identifiers.
 
     Returns:
-        List of dicts: List of constraints. Each constraint is a list of three elements. [[dict_v,'=',0.3],[dict_w,'<=',0.5],...]
+        (List of dicts): 
+        List of constraints. Each constraint is a list of three elements.
+        E.g.: [[{'r1':1.0,'r2':3.0},'=',0.3],[{'r3':-5.0,'r4':-1.0},'<=',-0.5],...]
     """
     if not constr:
         return []
@@ -51,6 +58,7 @@ def parse_constraints(constr, reaction_ids) -> List:
 
 
 def parse_linexpr(expr, reaction_ids) -> List:
+    """Parses linear expressions written as strings"""
     if not expr:
         return []
     if type(expr) is str:
@@ -58,9 +66,7 @@ def parse_linexpr(expr, reaction_ids) -> List:
             expr = re.split(r"\n|,", expr)
     if bool(expr) and (type(expr) is not list):
         expr = [expr]
-    return [
-        linexpr2dict(e, reaction_ids) if type(e) is str else e for e in expr
-    ]
+    return [linexpr2dict(e, reaction_ids) if type(e) is str else e for e in expr]
 
 
 def lineq2mat(

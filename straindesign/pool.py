@@ -43,7 +43,20 @@ def _init_win_worker(filename: str) -> None:
 
 
 class SDPool(Pool):
-    """Multiprocessing process pool with enhanced Windows compatibility"""
+    """Multiprocessing process pool with enhanced Windows compatibility
+    
+    Initialize a process pool.
+
+    Add a thin layer on top of the `multiprocessing.Pool` that, on Windows, passes
+    initialization code to workers via a pickle file rather than directly. This is
+    done to avoid a performance issue that exists on Windows. Please, also see the
+    discussion [1_].
+
+    References
+    ----------
+    .. [1] https://github.com/opencobra/cobrapy/issues/997
+
+    """
 
     def __init__(self,
                  processes: Optional[int] = None,
@@ -51,19 +64,6 @@ class SDPool(Pool):
                  initargs: Tuple = (),
                  maxtasksperchild: Optional[int] = None,
                  context=None):
-        """
-        Initialize a process pool.
-
-        Add a thin layer on top of the `multiprocessing.Pool` that, on Windows, passes
-        initialization code to workers via a pickle file rather than directly. This is
-        done to avoid a performance issue that exists on Windows. Please, also see the
-        discussion [1_].
-
-        References
-        ----------
-        .. [1] https://github.com/opencobra/cobrapy/issues/997
-
-        """
         self._filename = None
         if initializer is not None and system() == "Windows":
             descriptor, self._filename = mkstemp(suffix=".pkl")
@@ -105,15 +105,16 @@ class SDPool(Pool):
             sys.modules['__main__'].__file__ = file
 
     def __exit__(self, *args, **kwargs):
-        """Clean up resources when leaving a context."""
+        """Clean up resources when leaving a context"""
         self._clean_up()
         super().__exit__(*args, **kwargs)
 
     def close(self):
+        """Call cleanup function and close"""
         self._clean_up()
         super().close()
 
     def _clean_up(self):
-        """Remove the dump file if it exists."""
+        """Remove the dump file if it exists"""
         if self._filename is not None and isfile(self._filename):
             os.remove(self._filename)
