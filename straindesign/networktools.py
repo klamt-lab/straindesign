@@ -63,7 +63,6 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
     Returns:
         (dict):
         An updated dictionary of the knockout costs in which irrelevant genes are removed.
-            
     """
     # 1) Remove gpr rules from blocked reactions
     blocked_reactions = [
@@ -237,11 +236,71 @@ def extend_model_gpr(model, use_names=False):
     return reac_map
 
 
-def extend_model_regulatory(model, reg_cost, kocost):
+def extend_model_regulatory(model, reg_itv):
+    """Extend a metabolic model to account for regulatory constraints
+    
+    This function emulates regulatory interventions in a network. These can either be added
+    permanently or linked to a pseudoreation whose boundaries can be fixed to zero used 
+    to activate the regulatory constraint.
+    
+    Accounting for regulatory interventions, such as applying an upper or lower bound
+    to a reaction or gene pseudoreaction, can be achieved by combining different
+    pseudometabolites and reactions. For instance, to introduce the regulatory constraint:
+    
+    2*r_1 + 3*r_2 <= 4
+    
+    and make it 'toggleable', one adds 1 metabolite 'm' and 2 reactions, 'r_bnd' to account for
+    the bound/rhs and r_ctl to control whether the regulatory intervention is active or not:
+    
+    dm/dt = 2*r_1 + 3*r_2 - r_bnd + r_ctl = 0, -inf <= r_bnd <= 4, -inf <= r_ctl <= inf
+    
+    When r_ctl is fixed to zero, the constraint 2*r_1 + 3*r_2 <= 4 is enforced, otherwise,
+    the constraint is non binding, thus virtually non-existant. To use this mechanism for 
+    strain design, we add the metabolite and reactions as described above and tag r_ctl as 
+    knockout candidate. If the algorithm decides to knockout r_ctl, this means, it choses to 
+    add the regulatory intervention 2*r_1 + 3*r_2 <= 4.
+    
+    If the constraint is be added permanently, this function completely omits the r_ctl reaction.
+    
+    Example:
+        reg_itv_costs = extend_model_regulatory(model, {'1 PDH + 1 PFL <= 5' : 1, '-EX_o2_e <= 2' : 1.5})
+    
+    Args:
+        model (cobra.Model):
+            A metabolic model that is an instance of the cobra.Model class
+            
+        reg_itv (dict or list of str or str):
+            A set of regulatory constraints that should be added to the model. If reg_itv is a
+            string or a list of strings, regulatory constraints are added permanently. If reg_itv
+            is a dict, regulatory interventions are added in a controllable manner. The id of the
+            reaction that controls the constraint is contained in the return variable. The constraint
+            to be added will be parsed from strings, so ensure that you use the correct reaction
+            identifiers. Valid inputs are:
+            reg_itv = '-EX_o2_e <= 2' # A single permanent regulatory constraint
+            reg_itv = ['1 PDH + 1 PFL <= 5', '-EX_o2_e <= 2'] # Two permanent constraints
+            reg_itv = {'1 PDH + 1 PFL <= 5' : 1, '-EX_o2_e <= 2' : 1.5} # Two controllable constraints
+            # one costs '1' and the other one '1.5' to be added. The function returns a dict with 
+            # {'p1_PDH_p1_PFK_le_5' : 1 'nEX_o2_e_le_2' : 1.5}. Fixing the reaction 
+            # p1_PDH_p1_PFK_le_5 to zero will activate the constraint in the model.
+            
+    Returns:
+        (dict):
+        A dictionary that contains the cost of adding each constraint; e.g.,
+        {'p1_PDH_p1_PFK_le_5' : 1 'n1EX_o2_e_le_2' : 1.5}
+    """
     keywords = set(model.reactions.list_attr('id'))
     if '' in keywords:
         keywords.remove('')
-    for k, v in reg_cost.copy().items():
+    if not isinstance(reg_itv,dict):
+        if not isinstance(reg_itv,str) and not isinstance(reg_itv,list):
+            raise Exception('reg_itv must be a string, a list or a dictionary.'\
+                            'See function description for details.')
+        if isinstance(reg_itv,str):
+            reg_itv = {reg_itv : np.nan}
+        elif isinstance(reg_itv,list):
+            reg_itv = {r : np.nan for r in reg_itv}
+    regcost={}
+    for k, v in reg_itv.copy().items():
         # generate name for regulatory pseudoreaction
         try:
             constr = parse_constraints(k, keywords)[0]
@@ -264,9 +323,9 @@ def extend_model_regulatory(model, reg_cost, kocost):
             reg_name += 'le_'
         elif eqsign == '>=':
             reg_name += 'ge_'
-        reg_name += str(rhs)
-        reg_cost.pop(k)
-        reg_cost.update({reg_name: {'str': k, 'cost': v}})
+        reg_name += str(rhs).replace('-','n').replace('.','p')
+        reg_itv.pop(k)
+        reg_itv.update({reg_name: {'str': k, 'cost': v}})
         reg_pseudomet_name = 'met_' + reg_name
         # add pseudometabolite
         m = Metabolite(reg_pseudomet_name)
@@ -276,30 +335,66 @@ def extend_model_regulatory(model, reg_cost, kocost):
             r = model.reactions.get_by_id(l)
             r.add_metabolites({m: w})
         # add pseudoreaction that defines the bound
-        s = Reaction("bnd_" + reg_name)
-        model.add_reactions([s])
-        s.reaction = reg_pseudomet_name + ' --> '
+        r_bnd = Reaction("bnd_" + reg_name)
+        model.add_reactions([r_bnd])
+        r_bnd.reaction = reg_pseudomet_name + ' --> '
         if eqsign == '=':
-            s._lower_bound = -np.inf
-            s._upper_bound = rhs
-            s._lower_bound = rhs
+            r_bnd._lower_bound = -np.inf
+            r_bnd._upper_bound = rhs
+            r_bnd._lower_bound = rhs
         elif eqsign == '<=':
-            s._lower_bound = -np.inf
-            s._upper_bound = rhs
+            r_bnd._lower_bound = -np.inf
+            r_bnd._upper_bound = rhs
         elif eqsign == '>=':
-            s._upper_bound = np.inf
-            s._lower_bound = rhs
+            r_bnd._upper_bound = np.inf
+            r_bnd._lower_bound = rhs
         # add knockable pseudoreaction and add it to the kocost list
-        t = Reaction(reg_name)
-        model.add_reactions([t])
-        t.reaction = '--> ' + reg_pseudomet_name
-        t._upper_bound = np.inf
-        t._lower_bound = -np.inf
-        kocost.update({reg_name: v})
-    return kocost
+        if not np.isnan(v):
+            r_ctl = Reaction(reg_name)
+            model.add_reactions([r_ctl])
+            r_ctl.reaction = '--> ' + reg_pseudomet_name
+            r_ctl._upper_bound = np.inf
+            r_ctl._lower_bound = -np.inf
+            regcost.update({reg_name: v})
+    return regcost
 
 
 def compress_model(model, no_par_compress_reacs=set()):
+    """Compress a metabolic model with a number of different techniques
+    
+    The network compression routine removes blocked reactions, removes conservation
+    relations and then performs alternatingly lumps dependent (compress_model_efmtool) 
+    and parallel (compress_model_parallel) reactions. The compression returns a compressed 
+    network and a list of compression maps. Each map consists of a dictionary that contains 
+    complete information for reversing the compression steps successively and expand 
+    information obtained from the compressed model to the full model. Each entry of each 
+    map contains the id of a compressed reaction, associated with the original reaction 
+    names and their factor (provided as a rational number) with which they were lumped.
+    
+    Furthermore, the user can select reactions that should be exempt from the parallel 
+    compression. This is a critical feature for strain design computations. There is
+    currently no way to exempt reactions from the efmtool/dependency compression.
+    
+    Example:
+        comression_map = compress_model(model,set('EX_etoh_e','PFL'))
+    
+    Args:
+        model (cobra.Model):
+            A metabolic model that is an instance of the cobra.Model class
+        
+        no_par_compress_reacs (set or list of str): (Default: set())
+            A set of reaction identifiers whose reactions should not be lumped with other
+            parallel reactions.
+        
+    Returns:
+        (list of dict):
+        A list of compression maps. Each map is a dict that contains information for reversing 
+        the compression steps successively and expand information obtained from the compressed 
+        model to the full model. Each entry of each map contains the id of a compressed reaction, 
+        associated with the original reaction identifiers and their factor with which they are
+        represented in the lumped reaction (provided as a rational number) with which they were 
+        lumped.
+    """
     # Remove conservation relations.
     logging.info('  Removing blocked reactions.')
     remove_blocked_reactions(model)
@@ -358,6 +453,27 @@ def compress_model(model, no_par_compress_reacs=set()):
 
 
 def compress_modules(sd_modules, cmp_mapReac):
+    """Compress strain design modules to match with a compressed model
+    
+    When a strain design task has been specified with modules and the original metabolic model 
+    was compressed, one needs to refit the strain design modules (objects of the SDModule class)
+    to the new compressed model. This function takes a list of modules and a compression map
+    and returns the strain design modules for a compressed network.
+    
+    Example:
+        comression_map = compress_modules(sd_modules, cmp_mapReac)
+    
+    Args:
+        model (list of SDModule):
+            A list of strain design modules
+        
+        cmp_mapReac (list of dicts):
+            Compression map obtained from cmp_mapReac = compress_model(model)
+        
+    Returns:
+        (list of SDModule):
+        A list of strain design modules for the compressed network
+    """
     sd_modules = modules_coeff2rational(sd_modules)
     for cmp in cmp_mapReac:
         reac_map_exp = cmp["reac_map_exp"]
@@ -402,6 +518,34 @@ def compress_modules(sd_modules, cmp_mapReac):
 
 
 def compress_ki_ko_cost(kocost, kicost, cmp_mapReac):
+    """Compress knockout/addition cost vectors to match with a compressed model
+    
+    When knockout/addition cost vectors have been specified (as dicts) and the original
+    metabolic model was compressed, one needs to update the knockout/addition cost vectors.
+    This function takes care of this. In particular it makes sure that the resulting costs
+    are calculated correctly. 
+    
+    E.g.: r_ko_a (cost 1) and r_ko_b (cost 2) are lumped parallel: The resulting cost of r_ko_ab is 3
+    If they are lumped as dependent reactions the resulting cost is 1. If one of the two reactions
+    is an addition candidate, the resulting reaction will be an addition candidate when lumped as 
+    dependent reactions and a knockout candidate when lumped in parallel. There are various possible
+    cases that are treated by this function.
+    
+    Example:
+        kocost, kicost, cmp_mapReac = compress_ki_ko_cost(kocost, kicost, cmp_mapReac)
+    
+    Args:
+        kocost, kicost (dict):
+            Knockout and addition cost vectors
+        
+        cmp_mapReac (list of dicts):
+            Compression map obtained from cmp_mapReac = compress_model(model)
+        
+    Returns:
+        (Tuple):
+        Updated vectors of KO costs and KI costs and an updated compression map that contains information
+        on how to expand strain designs and correctly distinguish between knockouts and additions.
+    """
     # kocost of lumped reactions: when reacs sequential: lowest of ko costs, when parallel: sum of ko costs
     # kicost of lumped reactions: when reacs sequential: sum of ki costs, when parallel: lowest of ki costs
     for cmp in cmp_mapReac:
@@ -436,6 +580,25 @@ def compress_ki_ko_cost(kocost, kicost, cmp_mapReac):
 
 
 def expand_sd(sd, cmp_mapReac):
+    """Expand computed strain designs from a compressed to a full model
+    
+    Needed after computing strain designs in a compressed model
+    
+    Example:
+        expanded_sd = expand_sd(compressed_sds, cmp_mapReac)
+    
+    Args:
+        sd (SDSolutions):
+            Solutions of a strain design computation that refer to a compressed model
+        
+        cmp_mapReac (list of dicts):
+            Compression map obtained from cmp_mapReac = compress_model(model) and updated with
+            kocost, kicost, cmp_mapReac = compress_ki_ko_cost(kocost, kicost, cmp_mapReac)
+        
+    Returns:
+        (SDSolutions):
+        Strain design solutions that refer to the uncompressed model
+    """
     # expand mcs by applying the compression steps in the reverse order
     cmp_map = cmp_mapReac[::-1]
     for exp in cmp_map:
@@ -493,6 +656,12 @@ def expand_sd(sd, cmp_mapReac):
 
 
 def filter_sd_maxcost(sd, max_cost, kocost, kicost):
+    """Filter out strain designs that exceed the maximum allowed intervention costs
+    
+    Returns:
+        (SDSolutions):
+        Strain design solutions complying with the intervention costs limit
+    """
     # eliminate mcs that are too expensive
     if max_cost:
         costs = [
@@ -511,6 +680,20 @@ def filter_sd_maxcost(sd, max_cost, kocost, kicost):
 
 # compression function (mostly copied from efmtool)
 def compress_model_efmtool(model):
+    """Compress
+    
+    Example:
+        expanded_sd = expand_sd(compressed_sds, cmp_mapReac)
+    
+    Args:
+        model (cobra.Model):
+            A metabolic model that is an instance of the cobra.Model class
+            
+    Returns:
+        (Tuple[subT, rational_map]):
+        A matrix and a dict that contain information about the reactions that were lumped
+        in the compression process. 
+    """
     for r in model.reactions:
         r.gene_reaction_rule = ''
     num_met = len(model.metabolites)

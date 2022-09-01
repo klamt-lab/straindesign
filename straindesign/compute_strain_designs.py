@@ -378,8 +378,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                                 m[p][n] = v * w
         uncmp_ko_cost.update(uncmp_gko_cost)
         uncmp_ki_cost.update(uncmp_gki_cost)
-    uncmp_ko_cost = extend_model_regulatory(cmp_model, uncmp_reg_cost,
-                                            uncmp_ko_cost)
+    uncmp_ko_cost.update(extend_model_regulatory(cmp_model, uncmp_reg_cost))
     cmp_ko_cost = uncmp_ko_cost
     cmp_ki_cost = uncmp_ki_cost
     # Compress model
