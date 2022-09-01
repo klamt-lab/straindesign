@@ -27,7 +27,7 @@ StrainDesign
    :alt: Current Anaconda Version
    
 .. image:: https://readthedocs.org/projects/straindesign/badge/?version=latest
-   :target: https://straindesign.readthedocs.io/en/latest/
+   :target: https://readthedocs.org/projects/straindesign/builds/
    :alt: Documentation Status
    
 .. image:: https://img.shields.io/pypi/pyversions/straindesign.svg
