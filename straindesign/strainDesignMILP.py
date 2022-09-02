@@ -30,8 +30,10 @@ import logging
 
 
 class SDMILP(MILP_LP):
-    """Class that contains functions for the solution of the strain design MILP, 
-    inherited from the class that contains the strain design MILP."""
+    """Class that contains functions for the solution of the strain design MILP.
+     
+    This class is inherited from the class that contains the strain design MILP and its 
+    construction instructions."""
     def __init__(self, sd_problem: SDProblem):
         # Build MILP object from constructed problem
         super().__init__(c=sd_problem.c,

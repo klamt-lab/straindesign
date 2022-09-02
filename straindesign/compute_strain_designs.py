@@ -17,7 +17,7 @@
 #
 #
 #
-"""Function: computing metabolic strain designs (:function:`compute_strain_designs`)"""
+"""Function: computing metabolic strain designs (compute_strain_designs)"""
 
 from contextlib import redirect_stdout, redirect_stderr
 from typing import Dict, List, Tuple

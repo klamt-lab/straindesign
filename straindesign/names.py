@@ -137,7 +137,10 @@ CPLEX = 'cplex'
 GUROBI = 'gurobi'
 SCIP = 'scip'
 GLPK = 'glpk'
-from optlang.interface import OPTIMAL, INFEASIBLE, TIME_LIMIT, UNBOUNDED
+from optlang.interface import OPTIMAL,    \
+                              INFEASIBLE, \
+                              TIME_LIMIT, \
+                              UNBOUNDED
 TIME_LIMIT_W_SOL = 'time_limit_w_sols'
 ERROR = 'error'
 
