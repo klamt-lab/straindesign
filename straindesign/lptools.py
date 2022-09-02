@@ -569,6 +569,7 @@ def yopt(model, **kwargs) -> Solution:
     specified to narrow down the flux space.
     
     Yield optimization can fail because of several reasons. Here is how the function reacts:
+    
     1. The model is infeasible:
         The function returns infeasible with no flux vector
     2. The denominator is fixed to zero:
