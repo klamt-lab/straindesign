@@ -213,7 +213,6 @@ class SDModule(Dict):
 
     Returns:
         (SDModule):
-        
             A strain design module object that can be used with the function compute_strain_design.
             Multiple modules can be used to specify a strain design problem.
     """

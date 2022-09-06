@@ -23,49 +23,87 @@ import numpy as np
 from scipy import sparse
 import time
 from typing import Dict, List, Tuple
-from straindesign import SDProblem, SDSolutions, MILP_LP, SDModule
+from straindesign import SDProblem, SDSolutions, MILP_LP, SDModule, Model
 from straindesign.names import *
 from warnings import warn
 import logging
 
 
-class SDMILP(MILP_LP):
-    """Class that contains functions for the solution of the strain design MILP.
+class SDMILP(SDProblem, MILP_LP):
+    """Class that contains functions for the solution of the strain design MILP
      
-    This class is inherited from the class that contains the strain design MILP and its 
-    construction instructions."""
-    def __init__(self, sd_problem: SDProblem):
+    This class is a wrapper and inherited from the casses SDProblem, MILP_LP.
+    The constructor of SDProblem (see strainDesignProblem.py) translates a given
+    problem into a MILP. The constructor of MILP_LP (see solver_interface.py) then
+    sets up the solver interface for the selected solver. In addition to the functions
+    from SDProblem and MILP_LP, SDMILP provides functions for the solution of the 
+    strain design MILP, such as verification of strain design solutions or introduction 
+    of exclusion constraints for computing multiple solutions.
+    
+    Args:
+        model (cobra.Model):
+            A metabolic model that is an instance of the cobra.Model class.
+        
+        sd_modules ((list of) straindesign.SDModule):
+            Modules that specify the strain design problem, e.g., protected or suppressed flux states for 
+            MCS strain design or inner and outer objective functions for OptKnock. See description
+            of SDModule for more information on how to set up modules.
+            
+        ko_cost (optional (dict)): (Default: None)
+            A dictionary of reaction identifiers and their associated knockout costs. If not specified, all reactions
+            are treated as knockout candidates, equivalent to ko_cost = {'r1':1, 'r2':1, ...}. If a subset of reactions
+            is listed in the dict, all other are not considered as knockout candidates.
+            
+        ki_cost (optional (dict)): (Default: None)
+            A dictionary of reaction identifiers and their associated costs for addition. If not specified, all reactions
+            are treated as knockout candidates. Reaction addition candidates must be present in the original model with
+            the intended flux boundaries **after** insertion. Additions are treated adversely to knockouts, meaning that
+            their exclusion from the network is not associated with any cost while their presence entails intervention costs.
+            
+        max_cost (optional (int)): (Default: inf): 
+            The maximum cost threshold for interventions. Every possible intervention is associated with a
+            cost value (1, by default). Strain designs cannot exceed the max_cost threshold. Individual
+            intervention cost factors may be defined through ki_cost and ko_cost.
+        
+        solver (optional (str)): (Default: same as defined in model / COBRApy)
+            The solver that should be used for preparing and carrying out the strain design computation.
+            Allowed values are 'cplex', 'gurobi', 'scip' and 'glpk'.
+            
+        M (optional (int)): (Default: None)
+            If this value is specified (and non-zero, not None), the computation uses the big-M 
+            method instead of indicator constraints. Since GLPK does not support indicator constraints it uses
+            the big-M method by default (with COBRA standard M=1000). M should be chosen 'sufficiently large' 
+            to avoid computational artifacts and 'sufficiently small' to avoid numerical issues.
+            
+        essential_kis (optional (set)):
+            A set of reactions that are marked as addable and that are essential for at least one of the
+            strain design modules. Providing such "essential knock-ins" may speed up the strain design computation.
+            
+    Returns:
+        (SDMILP):
+            An instance of SDProblem containing the strain design MILP and providing several functions for its solution
+    """
+    def __init__(self, model: Model, sd_modules: List[SDModule], **kwargs):
+        # Construct problem
+        SDProblem.__init__( self,
+                            model,
+                            sd_modules,**kwargs)
         # Build MILP object from constructed problem
-        super().__init__(c=sd_problem.c,
-                         A_ineq=sd_problem.A_ineq,
-                         b_ineq=sd_problem.b_ineq,
-                         A_eq=sd_problem.A_eq,
-                         b_eq=sd_problem.b_eq,
-                         lb=sd_problem.lb,
-                         ub=sd_problem.ub,
-                         vtype=sd_problem.vtype,
-                         indic_constr=sd_problem.indic_constr,
-                         M=sd_problem.M,
-                         solver=sd_problem.solver)
-        # Copy some parameters
-        self.cont_MILP = sd_problem.cont_MILP
-        self.model = sd_problem.model
-        self.sd_modules = sd_problem.sd_modules
-        self.is_mcs_computation = sd_problem.is_mcs_computation
-        self.max_cost = sd_problem.max_cost
-        self.cost = sd_problem.cost
-        self.c_bu = sd_problem.c
-        self.idx_z = sd_problem.idx_z
-        self.z_inverted = sd_problem.z_inverted
-        self.z_non_targetable = sd_problem.z_non_targetable
-        self.num_z = sd_problem.num_z
-        self.ko_cost = sd_problem.ko_cost
-        self.ki_cost = sd_problem.ki_cost
-        self.idx_row_maxcost = sd_problem.idx_row_maxcost
-        self.idx_row_mincost = sd_problem.idx_row_mincost
-        self.idx_row_obj = sd_problem.idx_row_obj
+        MILP_LP.__init__(   self,
+                            c=self.c,
+                            A_ineq=self.A_ineq,
+                            b_ineq=self.b_ineq,
+                            A_eq=self.A_eq,
+                            b_eq=self.b_eq,
+                            lb=self.lb,
+                            ub=self.ub,
+                            vtype=self.vtype,
+                            indic_constr=self.indic_constr,
+                            M=self.M,
+                            solver=self.solver)
 
     def add_exclusion_constraints(self, z):
+        """Exclude binary solution in z and all supersets from MILP"""
         for i in range(z.shape[0]):
             # introduce constraint to make MILP infeasible. Some solvers cannot handle empty rows
             if z[i].nnz == 0:
@@ -86,6 +124,7 @@ class SDMILP(MILP_LP):
                 self.add_ineq_constraints(A_ineq, [b_ineq])
 
     def add_exclusion_constraints_ineq(self, z):
+        """Exclude binary solution in z (but not its supersets) from MILP"""
         for j in range(z.shape[0]):
             A_ineq = [1.0 if z[j, i] else -1.0 for i in self.idx_z]
             A_ineq.resize((1, self.A_ineq.shape[1]))
@@ -93,6 +132,7 @@ class SDMILP(MILP_LP):
             self.add_ineq_constraints(A_ineq, [b_ineq])
 
     def sd2dict(self, sol, *args) -> Dict:
+        """Translate binary solution vector to dictionary for human-readable output"""
         output = {}
         reacID = self.model.reactions.list_attr("id")
         for i in self.idx_z:
@@ -106,11 +146,13 @@ class SDMILP(MILP_LP):
         return output
 
     def solveZ(self) -> Tuple[List, int]:
+        """Solve MILP, and return only binary variables rounded to 5 decimals (should return ints)"""
         x, opt, status = self.solve()
         z = sparse.csr_matrix([round(x[i], 5) for i in self.idx_z])
         return z, x, opt, status
 
     def populateZ(self, n) -> Tuple[List, int]:
+        """Populate MILP, and return only binary variables rounded to 5 decimals (should return ints)"""
         x, _, status = self.populate(n)
         if status in [OPTIMAL, TIME_LIMIT_W_SOL]:
             z = sparse.csr_matrix([
@@ -130,25 +172,31 @@ class SDMILP(MILP_LP):
         return z, status
 
     def fixObjective(self, c, cx):
+        """Enforce a certain objective function and value (or any other constraint of the form c*x <= cx)"""
         self.set_ineq_constraint(self.idx_row_obj, c, cx)
 
     def resetObjective(self):
+        """Reset objective to the one set upon MILP construction"""
         self.set_objective_idx([[i, v] for i, v in enumerate(self.c_bu)])
 
     def setMinIntvCostObjective(self):
+        """Reset minimization of intervention costs as global objective"""
         self.clear_objective()
         self.set_objective_idx([[i, self.cost[i]]
                                 for i in self.idx_z
                                 if i not in self.z_non_targetable])
 
     def resetTargetableZ(self):
+        """Reset targetable/switchable intervention indicators / allow all intervention candidates"""
         self.set_ub(
             [[i, 1.0] for i in self.idx_z if not self.z_non_targetable[i]])
 
     def setTargetableZ(self, sol):
+        """Only allow a subset of intervention candidates"""
         self.set_ub([[i, 0.0] for i in self.idx_z if not sol[0, i]])
 
     def verify_sd(self, sols) -> List:
+        """Verify computed strain design"""
         valid = [False] * sols.shape[0]
         for i, sol in zip(range(sols.shape[0]), sols):
             inactive_vars = [var for z_i,var,sense in \
@@ -184,8 +232,23 @@ class SDMILP(MILP_LP):
             valid[i] = not np.isnan(lp.slim_solve())
         return valid
 
-    # Find iteratively smallest solutions
     def compute_optimal(self, **kwargs):
+        """Compute the global optimum of the strain design MILP and iteratively find the next best solution
+        
+        Args:
+            max_solutions (optional (int)): (Default: inf)
+                The maximum number of MILP solutions that are generated for a strain design problem.
+                
+            time_limit (optional (int)): (Default: inf)
+                The time limit in seconds for the MILP-solver.
+                
+            show_no_ki (optional (bool)): (Default: True)
+                Indicate non-added addition candidates in a solution specifically with a value of 0
+                
+        Returns:
+            (SDSolutions):
+            Strain design solutions provided as an SDSolutions object
+        """
         keys = {MAX_SOLUTIONS, T_LIMIT, 'show_no_ki'}
         # set keys passed in kwargs
         for key, value in dict(kwargs).items():
@@ -199,6 +262,8 @@ class SDMILP(MILP_LP):
             self.max_solutions = np.inf
         if self.time_limit is None:
             self.time_limit = np.inf
+        if self.show_no_ki is None:
+            self.show_no_ki = True
         # first check if strain doesn't already fulfill the strain design setup
         if self.is_mcs_computation and self.verify_sd(
                 sparse.csr_matrix((1, self.num_z)))[0]:
@@ -279,7 +344,6 @@ class SDMILP(MILP_LP):
         else:
             logging.info('Time limit reached.')
         # Translate solutions into dict
-        m = sd_dict = []
         for sol in sols:
             sd_dict += [self.sd2dict(sol, self.show_no_ki)]
         return self.build_sd_solution(sd_dict, status, BEST)
@@ -287,6 +351,22 @@ class SDMILP(MILP_LP):
     # Find iteratively intervention sets of arbitrary size or quality
     # output format: list of 'dict' (default) or 'sparse'
     def compute(self, **kwargs):
+        """Compute arbitrary solutions of the strain design MILP and iteratively find further solutions
+        
+        Args:
+            max_solutions (optional (int)): (Default: inf)
+                The maximum number of MILP solutions that are generated for a strain design problem.
+                
+            time_limit (optional (int)): (Default: inf)
+                The time limit in seconds for the MILP-solver.
+                
+            show_no_ki (optional (bool)): (Default: True)
+                Indicate non-added addition candidates in a solution specifically with a value of 0
+                
+        Returns:
+            (SDSolutions):
+            Strain design solutions provided as an SDSolutions object
+        """
         keys = {MAX_SOLUTIONS, T_LIMIT, 'show_no_ki'}
         # set keys passed in kwargs
         for key, value in kwargs.items():
@@ -300,6 +380,8 @@ class SDMILP(MILP_LP):
             self.max_solutions = np.inf
         if self.time_limit is None:
             self.time_limit = np.inf
+        if self.show_no_ki is None:
+            self.show_no_ki = True
         # first check if strain doesn't already fulfill the strain design setup
         if self.verify_sd(sparse.csr_matrix((1, self.num_z)))[0]:
             logging.warning('The strain already meets the requirements defined in the strain design setup. ' \
@@ -402,6 +484,22 @@ class SDMILP(MILP_LP):
     # Enumerate iteratively optimal strain designs using the populate function
     # output format: list of 'dict' (default) or 'sparse'
     def enumerate(self, **kwargs):
+        """Find all globally optimal solutions to the strain design MILP and iteratively construct pools for the suboptimal values
+            
+        Args:
+            max_solutions (optional (int)): (Default: inf)
+                The maximum number of MILP solutions that are generated for a strain design problem.
+                
+            time_limit (optional (int)): (Default: inf)
+                The time limit in seconds for the MILP-solver.
+                
+            show_no_ki (optional (bool)): (Default: True)
+                Indicate non-added addition candidates in a solution specifically with a value of 0
+                
+        Returns:
+            (SDSolutions):
+            Strain design solutions provided as an SDSolutions object
+        """
         keys = {MAX_SOLUTIONS, T_LIMIT, 'show_no_ki'}
         # set keys passed in kwargs
         for key, value in dict(kwargs).items():
@@ -415,6 +513,8 @@ class SDMILP(MILP_LP):
             self.max_solutions = np.inf
         if self.time_limit is None:
             self.time_limit = np.inf
+        if self.show_no_ki is None:
+            self.show_no_ki = True
         # first check if strain doesn't already fulfill the strain design setup
         if self.is_mcs_computation and self.verify_sd(
                 sparse.csr_matrix((1, self.num_z)))[0]:
@@ -492,6 +592,7 @@ class SDMILP(MILP_LP):
         return sd_solution
 
     def build_sd_solution(self, sd_dict, status, solution_approach):
+        """Build the strain design solution object"""
         sd_setup = {}
         sd_setup[MODEL_ID] = self.model.id
         sd_setup[MAX_SOLUTIONS] = self.max_solutions
