@@ -344,6 +344,7 @@ class SDMILP(SDProblem, MILP_LP):
         else:
             logging.info('Time limit reached.')
         # Translate solutions into dict
+        sd_dict = []
         for sol in sols:
             sd_dict += [self.sd2dict(sol, self.show_no_ki)]
         return self.build_sd_solution(sd_dict, status, BEST)
