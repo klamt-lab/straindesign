@@ -17,7 +17,15 @@
 #
 #
 #
-"""Classes and function for the construction of strain design MILPs"""
+"""Classes and functions for the construction of strain design MILPs
+
+This module contains functions that help construct mixed-integer linear problems,
+mainly functions that facilitate the construction of Lagrange and Farkas dual
+problems from linear problems of the type A_ineq*x<=b_ineq, A_eq*x<=b_eq, lb<=x<=ub.
+The functions also help keeping track of the relationship of constraints and variables
+and their individual counterparts in dual problems, which is essential when simulating 
+knockouts in dual problems. Most of the time, the sparse datatype is used to store and
+edit matrices for improved speed and memory."""
 
 import numpy as np
 from scipy import sparse
