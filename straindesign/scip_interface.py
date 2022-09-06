@@ -27,6 +27,7 @@ from typing import Tuple, List
 import time as t
 import logging
 
+
 class SCIP_MILP(pso.Model):
     """SCIP interface for MILP
     
@@ -90,8 +91,8 @@ class SCIP_MILP(pso.Model):
             
             A SCIP MILP interface class.
     """
-    def __init__(self, c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype,
-                 indic_constr):
+
+    def __init__(self, c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype, indic_constr):
         super().__init__()
         # uncomment to forward SCIP output to python terminal
         # self.redirectOutput()
@@ -110,10 +111,7 @@ class SCIP_MILP(pso.Model):
         ub = [u if not isinf(u) else None for u in ub]
         lb = [l if not isinf(l) else None for l in lb]
         # add variables and constraints
-        x = [
-            self.addVar(lb=l, ub=u, obj=o, vtype=v)
-            for l, u, o, v in zip(lb, ub, c, vtype)
-        ]
+        x = [self.addVar(lb=l, ub=u, obj=o, vtype=v) for l, u, o, v in zip(lb, ub, c, vtype)]
         self.vars = x
         self.binvars = [i for i in range(len(x)) if vtype[i] == 'B']
         # generate "Terms" and "Expressions" for faster problem construction
@@ -186,8 +184,7 @@ class SCIP_MILP(pso.Model):
             if status in ['optimal']:  # solution
                 min_cx = self.getObjVal()
                 status = OPTIMAL
-            elif status == 'timelimit' and self.getSols(
-            ) == []:  # timeout without solution
+            elif status == 'timelimit' and self.getSols() == []:  # timeout without solution
                 x = [nan] * len(self.vars)
                 min_cx = nan
                 status = TIME_LIMIT
@@ -197,8 +194,7 @@ class SCIP_MILP(pso.Model):
                 min_cx = nan
                 status = INFEASIBLE
                 return x, min_cx, status
-            elif status == 'timelimit' and not self.getSols(
-            ) == []:  # timeout with solution
+            elif status == 'timelimit' and not self.getSols() == []:  # timeout with solution
                 min_cx = self.getObjVal()
                 status = TIME_LIMIT_W_SOL
             elif status in ['inforunbd', 'unbounded']:  # solution unbounded
@@ -207,8 +203,7 @@ class SCIP_MILP(pso.Model):
                 status = UNBOUNDED
                 return x, min_cx, status
             else:
-                raise Exception('Status code ' + str(status) +
-                                " not yet handeld.")
+                raise Exception('Status code ' + str(status) + " not yet handeld.")
             x = self.getSolution()
             return x, min_cx, status
 
@@ -239,8 +234,7 @@ class SCIP_MILP(pso.Model):
             elif status in ['inforunbd', 'unbounded']:
                 opt = -inf
             else:
-                raise Exception('Status code ' + str(status) +
-                                " not yet handeld.")
+                raise Exception('Status code ' + str(status) + " not yet handeld.")
             return opt
 
         except:
@@ -274,10 +268,7 @@ class SCIP_MILP(pso.Model):
                 sols = [x]
                 # 2. constrain problem to optimality
                 objTerms = self.getObjective().terms
-                c = [
-                    objTerms[x] if x in objTerms.keys() else 0.0
-                    for x in self.trms
-                ]
+                c = [objTerms[x] if x in objTerms.keys() else 0.0 for x in self.trms]
                 self.add_ineq_constraints(sparse.csr_matrix(c), [min_cx])
                 # 3. exclude first solution pool
                 self.addExclusionConstraintIneq(x)
@@ -310,12 +301,10 @@ class SCIP_MILP(pso.Model):
         """Set the objective function with a vector"""
         if self.getParam('reoptimization/enable'):
             self.freeReoptSolve()
-            self.chgReoptObjective(
-                pso.Expr({self.trms[i]: c[i] for i in nonzero(c)[0]}))
+            self.chgReoptObjective(pso.Expr({self.trms[i]: c[i] for i in nonzero(c)[0]}))
         else:
             self.freeTransform()
-            self.setObjective(
-                pso.Expr({self.trms[i]: c[i] for i in nonzero(c)[0]}))
+            self.setObjective(pso.Expr({self.trms[i]: c[i] for i in nonzero(c)[0]}))
 
     def set_objective_idx(self, C):
         """Set the objective function with index-value pairs
@@ -425,10 +414,10 @@ class SCIP_MILP(pso.Model):
         """Function to add exclusion constraint (SCIP compatibility function)"""
         data = [1.0 if x[i] else -1.0 for i in self.binvars]
         row = [0] * len(self.binvars)
-        A_ineq = sparse.csr_matrix((data, (row, self.binvars)),
-                                   (1, len(self.vars)))
+        A_ineq = sparse.csr_matrix((data, (row, self.binvars)), (1, len(self.vars)))
         b_ineq = sum([x[i] for i in self.binvars]) - 1
         self.add_ineq_constraints(A_ineq, [b_ineq])
+
 
 class SCIP_LP(pso.LP):
     """SoPlex interface for LP
@@ -439,6 +428,7 @@ class SCIP_LP(pso.LP):
     interfaces in the StrainDesign package. The purpose is to unify the instructions 
     for operating with MILPs and LPs throughout StrainDesign.
     """
+
     def __init__(self, c, A_ineq, b_ineq, A_eq, b_eq, lb, ub):
         """Constructor of the SCIP (SoPlex) LP interface class
         
@@ -523,8 +513,7 @@ class SCIP_LP(pso.LP):
             solution_vector, optimal_value, optimization_status
         """
         try:
-            min_cx = self.optimize(
-            )  # this function was inherited from super().solve() during initialization
+            min_cx = self.optimize()  # this function was inherited from super().solve() during initialization
             if self.isInfinity(-min_cx):  # solution
                 min_cx = -inf
                 status = UNBOUNDED
@@ -555,8 +544,7 @@ class SCIP_LP(pso.LP):
             Optimum value of the objective function.
         """
         try:
-            opt = self.optimize(
-            )  # this function was inherited from super().solve() during initialization
+            opt = self.optimize()  # this function was inherited from super().solve() during initialization
             if self.isInfinity(-opt):  # solution
                 opt = -inf
             elif self.isInfinity(opt):

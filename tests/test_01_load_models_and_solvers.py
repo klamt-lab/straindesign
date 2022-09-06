@@ -16,15 +16,13 @@ def model_gpr():
 @pytest.fixture
 def model_weak_coupling():
     """Load model with potential for designing weakly growth coupled production."""
-    return read_sbml_model(
-        dirname(abspath(__file__)) + "/model_weak_coupling.xml")
+    return read_sbml_model(dirname(abspath(__file__)) + "/model_weak_coupling.xml")
 
 
 @pytest.fixture
 def model_small_example():
     """Load example model with two substrates."""
-    return read_sbml_model(
-        dirname(abspath(__file__)) + "/model_small_example.xml")
+    return read_sbml_model(dirname(abspath(__file__)) + "/model_small_example.xml")
 
 
 def test_import_sd():

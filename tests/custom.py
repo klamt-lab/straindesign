@@ -11,11 +11,7 @@ curr_solver = 'gurobi'
 comp_approach = ANY
 model_gpr = read_sbml_model(dirname(abspath(__file__)) + "/model_gpr.xml")
 modules = [sd.SDModule(model_gpr, SUPPRESS, constraints=["1.0 rd_ex >= 1.0 "])]
-modules += [
-    sd.SDModule(model_gpr, PROTECT, constraints=[[{
-        'r_bm': 1.0
-    }, '>=', 1.0]])
-]
+modules += [sd.SDModule(model_gpr, PROTECT, constraints=[[{'r_bm': 1.0}, '>=', 1.0]])]
 kocost = {'rs_up': 1.0, 'rd_ex': 1.0, 'rp_ex': 1.1, 'r_bm': 0.75}
 gkocost = {
     'g1': 1.0,

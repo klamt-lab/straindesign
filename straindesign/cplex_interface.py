@@ -29,6 +29,7 @@ import io
 from psutil import virtual_memory
 from straindesign.names import *
 
+
 class Cplex_MILP_LP(Cplex):
     """CPLEX interface for MILP and LP
     
@@ -91,8 +92,8 @@ class Cplex_MILP_LP(Cplex):
             
             A CPLEX MILP/LP interface class.
     """
-    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, 
-                 lb=None, ub=None, vtype=None, indic_constr=None):
+
+    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None):
         super().__init__()
         self.objective.set_sense(self.objective.sense.minimize)
         try:
@@ -112,34 +113,25 @@ class Cplex_MILP_LP(Cplex):
         if isinstance(A_ineq, list):
             if not A_ineq:
                 A_ineq = sparse.csr_matrix((0, numvars))
-        A = sparse.vstack((A_ineq, A_eq),
-                          format='coo')  # concatenate coefficient matrices
+        A = sparse.vstack((A_ineq, A_eq), format='coo')  # concatenate coefficient matrices
         sense = len(b_ineq) * 'L' + len(b_eq) * 'E'
 
         # construct CPLEX problem. Add variables and linear constraints
         self.variables.add(obj=c, lb=lb, ub=ub, types=vtype)
         self.linear_constraints.add(rhs=b, senses=sense)
         if A.nnz:
-            self.linear_constraints.set_coefficients(
-                zip(A.row.tolist(), A.col.tolist(), A.data.tolist()))
+            self.linear_constraints.set_coefficients(zip(A.row.tolist(), A.col.tolist(), A.data.tolist()))
 
         # add indicator constraints
         if not indic_constr == None:
             # cast variables and translate coefficient matrix A to right input format for CPLEX
-            A = [[[int(i)
-                   for i in list(a.indices)], [float(i)
-                                               for i in list(a.data)]]
-                 for a in sparse.csr_matrix(indic_constr.A)]
+            A = [[[int(i) for i in list(a.indices)], [float(i) for i in list(a.data)]] for a in sparse.csr_matrix(indic_constr.A)]
             b = [float(i) for i in indic_constr.b]
             sense = [str(i) for i in indic_constr.sense]
             indvar = [int(i) for i in indic_constr.binv]
             complem = [1 - int(i) for i in indic_constr.indicval]
             # call CPLEX function to add indicators
-            self.indicator_constraints.add_batch(lin_expr=A,
-                                                 sense=sense,
-                                                 rhs=b,
-                                                 indvar=indvar,
-                                                 complemented=complem)
+            self.indicator_constraints.add_batch(lin_expr=A, sense=sense, rhs=b, indvar=indvar, complemented=complem)
         # set parameters
         self.set_log_stream(io.StringIO())  # don't show output stream
         self.set_error_stream(io.StringIO())
@@ -150,7 +142,7 @@ class Cplex_MILP_LP(Cplex):
 
         if 'B' in vtype or 'I' in vtype:
             # set usable working memory to 3/4 of the total available memory
-            self.parameters.workmem.set(round(virtual_memory().total/1024/1024*0.75))
+            self.parameters.workmem.set(round(virtual_memory().total / 1024 / 1024 * 0.75))
             # self.parameters.threads.set(cpu_count())
             # yield only optimal solutions in pool
             seed = randint(0, _const.CPX_BIGINT)
@@ -174,11 +166,9 @@ class Cplex_MILP_LP(Cplex):
             solution_vector, optimal_value, optimization_status
         """
         try:
-            super().solve(
-            )  # call parent solve function (that was overwritten in this class)
+            super().solve()  # call parent solve function (that was overwritten in this class)
             status = self.solution.get_status()
-            if status in [1, 101, 102, 115, 128, 129,
-                          130]:  # solution integer optimal
+            if status in [1, 101, 102, 115, 128, 129, 130]:  # solution integer optimal
                 min_cx = self.solution.get_objective_value()
                 status = OPTIMAL
             elif status == 108:  # timeout without solution
@@ -225,11 +215,9 @@ class Cplex_MILP_LP(Cplex):
             Optimum value of the objective function.
         """
         try:
-            super().solve(
-            )  # call parent solve function (that was overwritten in this class)
+            super().solve()  # call parent solve function (that was overwritten in this class)
             status = self.solution.get_status()
-            if status in [1, 101, 102, 107, 115, 128, 129,
-                          130]:  # solution integer optimal (tolerance)
+            if status in [1, 101, 102, 107, 115, 128, 129, 130]:  # solution integer optimal (tolerance)
                 opt = self.solution.get_objective_value()
             elif status in [118, 119]:  # solution unbounded (or inf or unbdd)
                 opt = -inf
@@ -256,15 +244,12 @@ class Cplex_MILP_LP(Cplex):
         """
         try:
             if isinf(n):
-                self.parameters.mip.pool.capacity.set(
-                    self.parameters.mip.pool.capacity.max())
+                self.parameters.mip.pool.capacity.set(self.parameters.mip.pool.capacity.max())
             else:
                 self.parameters.mip.pool.capacity.set(n)
-            self.populate_solution_pool(
-            )  # call parent solve function (that was overwritten in this class)
+            self.populate_solution_pool()  # call parent solve function (that was overwritten in this class)
             status = self.solution.get_status()
-            if status in [101, 102, 115, 128, 129,
-                          130]:  # solution integer optimal
+            if status in [101, 102, 115, 128, 129, 130]:  # solution integer optimal
                 min_cx = self.solution.get_objective_value()
                 status = OPTIMAL
             elif status == 108:  # timeout without solution
@@ -287,10 +272,7 @@ class Cplex_MILP_LP(Cplex):
                 logging.exception(status)
                 logging.exception(self.solution.get_status_string())
                 raise Exception("Case not yet handeld")
-            x = [
-                self.solution.pool.get_values(i)
-                for i in range(self.solution.pool.get_num())
-            ]
+            x = [self.solution.pool.get_values(i) for i in range(self.solution.pool.get_num())]
             return x, min_cx, status
 
         except CplexError as exc:
@@ -392,6 +374,5 @@ class Cplex_MILP_LP(Cplex):
         """
         if isinf(b_ineq):
             b_ineq = infinity
-        self.linear_constraints.set_coefficients(
-            zip([idx] * len(a_ineq), range(len(a_ineq)), a_ineq))
+        self.linear_constraints.set_coefficients(zip([idx] * len(a_ineq), range(len(a_ineq)), a_ineq))
         self.linear_constraints.set_rhs([[idx, b_ineq]])

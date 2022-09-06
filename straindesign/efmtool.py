@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 #
 # Copyright 2022 Max Planck Insitute Magdeburg
@@ -30,13 +29,11 @@ import subprocess
 import sympy
 import io
 from contextlib import redirect_stdout, redirect_stderr
-
 """Initialization of the java machine, since efmtool compression is done in java."""
 efmtool_jar = os.path.join(os.path.dirname(__file__), 'efmtool.jar')
 jpype.addClassPath(efmtool_jar)
 if not jpype.isJVMStarted():
-    with redirect_stdout(io.StringIO()), redirect_stderr(
-            io.StringIO()):  # suppress console output
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):  # suppress console output
         # mem_bytes = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')  # e.g. 4015976448
         # mem_mb = round(mem_bytes/(1024.**2)*0.75) # allow 75% of total memory for heap space
         # mem_mb = round(psutil.virtual_memory()[0]/(1024.**2)*0.75)
@@ -48,10 +45,8 @@ import ch.javasoft.smx.impl.DefaultBigIntegerRationalMatrix as DefaultBigInteger
 import ch.javasoft.smx.ops.Gauss as Gauss
 import ch.javasoft.metabolic.compress.CompressionMethod as CompressionMethod
 
-subset_compression = CompressionMethod[:]([
-    CompressionMethod.CoupledZero, CompressionMethod.CoupledCombine,
-    CompressionMethod.CoupledContradicting
-])
+subset_compression = CompressionMethod[:](
+    [CompressionMethod.CoupledZero, CompressionMethod.CoupledCombine, CompressionMethod.CoupledContradicting])
 import ch.javasoft.metabolic.compress.StoichMatrixCompressor as StoichMatrixCompressor
 import ch.javasoft.math.BigFraction as BigFraction
 import java.math.BigInteger as BigInteger
@@ -62,38 +57,29 @@ jSystem = jpype.JClass("java.lang.System")
 # try to find a working java executable
 _java_executable = 'java'
 try:
-    cp = subprocess.run([_java_executable, '-version'],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL)
+    cp = subprocess.run([_java_executable, '-version'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if cp.returncode != 0:
         _java_executable = ''
 except:
     _java_executable = ''
 if _java_executable == '':
-    _java_executable = os.path.join(os.environ.get('JAVA_HOME', ''), "bin",
-                                    "java")
+    _java_executable = os.path.join(os.environ.get('JAVA_HOME', ''), "bin", "java")
     try:
-        cp = subprocess.run([_java_executable, '-version'],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL)
+        cp = subprocess.run([_java_executable, '-version'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if cp.returncode != 0:
             _java_executable = ''
     except:
         _java_executable = ''
 if _java_executable == '':
     import efmtool_link.efmtool_intern  # just to find java executable via jpype
-    _java_executable = os.path.join(
-        str(efmtool_link.efmtool_intern.jSystem.getProperty("java.home")),
-        "bin", "java")
+    _java_executable = os.path.join(str(efmtool_link.efmtool_intern.jSystem.getProperty("java.home")), "bin", "java")
 
 
-def basic_columns_rat(mx,tolerance=0):  # mx is ch.javasoft.smx.impl.DefaultBigIntegerRationalMatrix
+def basic_columns_rat(mx, tolerance=0):  # mx is ch.javasoft.smx.impl.DefaultBigIntegerRationalMatrix
     """efmtool: Translate matrix coefficients to rational numbers"""
     if type(mx) is numpy.ndarray:
-        mx = DefaultBigIntegerRationalMatrix(numpy_mat2jpypeArrayOfArrays(mx),
-                                             jTrue, jTrue)
-    row_map = jpype.JInt[mx.getRowCount(
-    )]  # just a placeholder because we don't care about the row permutation here
+        mx = DefaultBigIntegerRationalMatrix(numpy_mat2jpypeArrayOfArrays(mx), jTrue, jTrue)
+    row_map = jpype.JInt[mx.getRowCount()]  # just a placeholder because we don't care about the row permutation here
     col_map = jpype.JInt[:](range(mx.getColumnCount()))
     rank = Gauss.getRationalInstance().rowEchelon(mx, False, row_map, col_map)
 

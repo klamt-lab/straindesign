@@ -69,24 +69,19 @@ class SDSolutions(object):
         Strain design solutions
         
     """
+
     def __init__(self, model, sd, status, sd_setup):
         self.status = status
         self.sd_setup = sd_setup
         if GKOCOST in sd_setup or GKICOST in sd_setup:
             self.gene_sd = [s.copy() for s in sd]
             self.is_gene_sd = True
-            logging.info(
-                '  Preparing (reaction-)phenotype prediction of gene intervention strategies.'
-            )
+            logging.info('  Preparing (reaction-)phenotype prediction of gene intervention strategies.')
             interventions = set()
             [[interventions.add(k) for k in s.keys()] for s in sd]
             # replace gene names with identifiers if necessary
             gene_name_id_dict = {}
-            [
-                gene_name_id_dict.update({g.name: g.id})
-                for g in model.genes
-                if interventions.intersection([g.name])
-            ]
+            [gene_name_id_dict.update({g.name: g.id}) for g in model.genes if interventions.intersection([g.name])]
             for g_name, g_id in gene_name_id_dict.items():
                 for s in sd:
                     if g_name in s:
@@ -94,17 +89,11 @@ class SDSolutions(object):
                 interventions.remove(g_name)
                 interventions.add(g_id)
             # get potential gene- and reaction interventions and potentially affected reactions
-            reac_itv = set(
-                v for v in interventions if model.reactions.has_id(v))
-            gene_itv = set(v for v in interventions
-                           if v in model.genes.list_attr('name') +
-                           model.genes.list_attr('id'))
-            regl_itv = set(v for v in interventions
-                           if v not in reac_itv and v not in gene_itv)
+            reac_itv = set(v for v in interventions if model.reactions.has_id(v))
+            gene_itv = set(v for v in interventions if v in model.genes.list_attr('name') + model.genes.list_attr('id'))
+            regl_itv = set(v for v in interventions if v not in reac_itv and v not in gene_itv)
             affected_reacs = set()
-            [[affected_reacs.add(r.id)
-              for r in g.reactions]
-             for g in model.genes]
+            [[affected_reacs.add(r.id) for r in g.reactions] for g in model.genes]
             gpr = {}
             for r in affected_reacs:
                 gpr_i = model.reactions.get_by_id(r).gene_reaction_rule
@@ -112,8 +101,7 @@ class SDSolutions(object):
                 for i, c in enumerate(cj_terms):
                     cj_terms[i] = c.split(' and ')
                     for j, g in enumerate(cj_terms[i]):
-                        cj_terms[i][j] = re.sub(
-                            r'^(\s|-|\+|\()*|(\s|-|\+|\))*$', '', g)
+                        cj_terms[i][j] = re.sub(r'^(\s|-|\+|\()*|(\s|-|\+|\))*$', '', g)
                 gpr.update({r: cj_terms})
 
             # # get gpr rules
@@ -122,47 +110,26 @@ class SDSolutions(object):
             # translate every cut set to reaction intervention sets
             self.reaction_sd = [{} for _ in range(len(sd))]
             for i, s in enumerate(sd):
-                reac_ko = set(
-                    k for k, v in s.items() if v < 0 and (k in reac_itv))
-                reac_ki = set(
-                    k for k, v in s.items() if v > 0 and (k in reac_itv))
-                reac_no_ki = set(
-                    k for k, v in s.items() if v == 0 and (k in reac_itv))
+                reac_ko = set(k for k, v in s.items() if v < 0 and (k in reac_itv))
+                reac_ki = set(k for k, v in s.items() if v > 0 and (k in reac_itv))
+                reac_no_ki = set(k for k, v in s.items() if v == 0 and (k in reac_itv))
                 reg_itv = set(k for k, v in s.items() if v and (k in regl_itv))
-                reg_no_itv = set(
-                    k for k, v in s.items() if not v and (k in regl_itv))
-                gene_ko = {
-                    k: False for k, v in s.items() if v < 0 and (k in gene_itv)
-                }
-                gene_ki = {
-                    k: True for k, v in s.items() if v > 0 and (k in gene_itv)
-                }
-                gene_no_ki = {
-                    k: False for k, v in s.items() if v == 0 and (k in gene_itv)
-                }
+                reg_no_itv = set(k for k, v in s.items() if not v and (k in regl_itv))
+                gene_ko = {k: False for k, v in s.items() if v < 0 and (k in gene_itv)}
+                gene_ki = {k: True for k, v in s.items() if v > 0 and (k in gene_itv)}
+                gene_no_ki = {k: False for k, v in s.items() if v == 0 and (k in gene_itv)}
                 gene_ki_inv = {k: False for k in gene_ki.keys()}
                 for r in affected_reacs:
                     # is_possible = gpr[r].subs({**gene_ko,**gene_ki,**gene_no_ki})
-                    is_possible = gpr_eval(gpr[r], {
-                        **gene_ko,
-                        **gene_ki,
-                        **gene_no_ki
-                    })
+                    is_possible = gpr_eval(gpr[r], {**gene_ko, **gene_ki, **gene_no_ki})
                     if is_possible != False:  # reaction is only feasible because of KIs
                         # is_possible_wo_ki = gpr[r].subs({**gene_ko,**gene_ki_inv,**gene_no_ki})
-                        is_possible_wo_ki = gpr_eval(gpr[r], {
-                            **gene_ko,
-                            **gene_ki_inv,
-                            **gene_no_ki
-                        })
+                        is_possible_wo_ki = gpr_eval(gpr[r], {**gene_ko, **gene_ki_inv, **gene_no_ki})
                         if is_possible_wo_ki == False:
                             reac_ki.add(r)
                     elif is_possible == False:
                         # is_possible_wo_ko = gpr[r].subs({**gene_ki,**gene_no_ki})
-                        is_possible_wo_ko = gpr_eval(gpr[r], {
-                            **gene_ki,
-                            **gene_no_ki
-                        })
+                        is_possible_wo_ko = gpr_eval(gpr[r], {**gene_ki, **gene_no_ki})
                         if is_possible_wo_ko != False:
                             reac_ko.add(r)
                         else:
@@ -177,7 +144,7 @@ class SDSolutions(object):
         else:
             self.reaction_sd = sd
             self.is_gene_sd = False
-            
+
         if GKOCOST in sd_setup or GKICOST in sd_setup:
             sd = [s.copy() for s in self.gene_sd]
 
@@ -217,15 +184,13 @@ class SDSolutions(object):
                     if v == -1:  # reaction was knocked out
                         self.itv_bounds[i].update({k: (0.0, 0.0)})
                     elif v == 1:  # reaction was added
-                        self.itv_bounds[i].update(
-                            {k: model.reactions.get_by_id(k).bounds})
+                        self.itv_bounds[i].update({k: model.reactions.get_by_id(k).bounds})
                     elif v == 0:  # reaction was not added
                         self.itv_bounds[i].update({k: (nan, nan)})
             for k, v in s.items():
                 if type(v) == bool and v:
                     try:
-                        lineq = lineq2list([k],
-                                           model.reactions.list_attr('id'))[0]
+                        lineq = lineq2list([k], model.reactions.list_attr('id'))[0]
                     except:
                         self.has_complex_regul_itv = True
                         continue
@@ -243,7 +208,7 @@ class SDSolutions(object):
                             bnds = model.reactions.get_by_id(reac).bounds
                         if eqsign == '=':
                             bnds = (rhs / coeff, rhs / coeff)
-                        elif (eqsign == '<=') == (sign(coeff)>0):
+                        elif (eqsign == '<=') == (sign(coeff) > 0):
                             bnds = (bnds[0], rhs / coeff)
                         else:
                             bnds = (rhs / coeff, bnds[1])
@@ -279,11 +244,7 @@ class SDSolutions(object):
         else:
             if type(i) == int:
                 i = [i]
-            return [
-                strip_non_ki(s)
-                for j, s in enumerate(self.reaction_sd)
-                if j in i
-            ]
+            return [strip_non_ki(s) for j, s in enumerate(self.reaction_sd) if j in i]
 
     def get_reaction_sd_bnds(self, i=None):
         """Get reaction-based strain design solutions represented by upper and lower bounds
@@ -295,23 +256,18 @@ class SDSolutions(object):
         else:
             if type(i) == int:
                 i = [i]
-            return [
-                self.itv_bounds for j, s in enumerate(self.itv_bounds) if j in i
-            ]
+            return [self.itv_bounds for j, s in enumerate(self.itv_bounds) if j in i]
 
     def get_gene_sd(self, i=None):
         """Get gene-based strain design solutions"""
         if not self.is_gene_sd:
-            raise Exception(
-                'The solutions are based on reaction interventions only.')
+            raise Exception('The solutions are based on reaction interventions only.')
         if i is None:
             return [strip_non_ki(s) for s in self.gene_sd]
         else:
             if type(i) == int:
                 i = [i]
-            return [
-                strip_non_ki(s) for j, s in enumerate(self.gene_sd) if j in i
-            ]
+            return [strip_non_ki(s) for j, s in enumerate(self.gene_sd) if j in i]
 
     def get_reaction_sd_mark_no_ki(self, i=None):
         """Get reaction-based strain design solutions, 
@@ -330,8 +286,7 @@ class SDSolutions(object):
         """Get gene-based strain design solutions, 
         but also tag knock-ins that were not made with a 0"""
         if not self.is_gene_sd:
-            raise Exception(
-                'The solutions are based on reaction interventions only.')
+            raise Exception('The solutions are based on reaction interventions only.')
         if i is None:
             return self.gene_sd
         else:
@@ -345,8 +300,7 @@ class SDSolutions(object):
         
         Often the association is not 1:1 but n:1."""
         if not self.is_gene_sd:
-            raise Exception(
-                'The solutions are based on reaction interventions only.')
+            raise Exception('The solutions are based on reaction interventions only.')
         if i is None:
             i = [j for j in range(len(self.gene_sd))]
         else:
@@ -355,14 +309,8 @@ class SDSolutions(object):
         reacs_sd_hash = []
         reacs_sd = []
         assoc = []
-        gene_sd = [
-            strip_non_ki(s) for j, s in enumerate(self.gene_sd) if j in i
-        ]
-        for s in [
-                strip_non_ki(t)
-                for j, t in enumerate(self.reaction_sd)
-                if j in i
-        ]:
+        gene_sd = [strip_non_ki(s) for j, s in enumerate(self.gene_sd) if j in i]
+        for s in [strip_non_ki(t) for j, t in enumerate(self.reaction_sd) if j in i]:
             hs = hash(json.dumps(s, sort_keys=True))
             if hs not in reacs_sd_hash:
                 reacs_sd_hash.append(hs)
@@ -376,8 +324,7 @@ class SDSolutions(object):
         
         Often the association is not 1:1 but n:1."""
         if not self.is_gene_sd:
-            raise Exception(
-                'The solutions are based on reaction interventions only.')
+            raise Exception('The solutions are based on reaction interventions only.')
         if i is None:
             i = [j for j in range(len(self.gene_sd))]
         else:

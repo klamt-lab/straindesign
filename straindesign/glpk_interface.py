@@ -25,6 +25,7 @@ from typing import Tuple, List
 from swiglpk import *
 import logging
 
+
 class GLPK_MILP_LP():
     """GLPK interface for MILP and LP
     
@@ -95,17 +96,8 @@ class GLPK_MILP_LP():
             
             A GLPK MILP/LP interface class.
     """
-    def __init__(self,
-                 c,
-                 A_ineq,
-                 b_ineq,
-                 A_eq,
-                 b_eq,
-                 lb,
-                 ub,
-                 vtype,
-                 indic_constr,
-                 M=None):
+
+    def __init__(self, c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype, indic_constr, M=None):
         self.glpk = glp_create_prob()
         # Careful with indexing! GLPK indexing starts with 1 and not with 0
         try:
@@ -161,12 +153,8 @@ class GLPK_MILP_LP():
         if not indic_constr == None:
             if not M:
                 M = 1e3
-            logging.warning(
-                'There is no native support of indicator constraints with GLPK.'
-            )
-            logging.warning(
-                'Indicator constraints are translated to big-M constraints with M='
-                + str(M) + '.')
+            logging.warning('There is no native support of indicator constraints with GLPK.')
+            logging.warning('Indicator constraints are translated to big-M constraints with M=' + str(M) + '.')
             num_ic = len(indic_constr.binv)
 
             eq_type_indic = []  # [GLP_UP]*len(b_ineq)+[GLP_FX]*len(b_eq)
@@ -192,14 +180,11 @@ class GLPK_MILP_LP():
 
         # stack all problem rows and add constraints
         if A_ineq.shape[0] + A_eq.shape[0] + A_indic.shape[0] > 0:
-            glp_add_rows(self.glpk,
-                         A_ineq.shape[0] + A_eq.shape[0] + A_indic.shape[0])
+            glp_add_rows(self.glpk, A_ineq.shape[0] + A_eq.shape[0] + A_indic.shape[0])
             b_ineq = [float(b) for b in b_ineq]
             b_eq = [float(b) for b in b_eq]
-            eq_type = [GLP_UP] * len(b_ineq) + [GLP_FX] * len(
-                b_eq) + [GLP_UP] * len(b_indic)
-            for i, t, b in zip(range(len(b_ineq + b_eq + b_indic)), eq_type,
-                               b_ineq + b_eq + b_indic):
+            eq_type = [GLP_UP] * len(b_ineq) + [GLP_FX] * len(b_eq) + [GLP_UP] * len(b_indic)
+            for i, t, b in zip(range(len(b_ineq + b_eq + b_indic)), eq_type, b_ineq + b_eq + b_indic):
                 glp_set_row_bnds(self.glpk, i + 1, t, b, b)
 
             A = sparse.vstack((A_ineq, A_eq, A_indic), 'coo')
@@ -263,8 +248,7 @@ class GLPK_MILP_LP():
                 status = UNBOUNDED
                 return x, min_cx, status
             else:
-                raise Exception('Status code ' + str(status) +
-                                " not yet handeld.")
+                raise Exception('Status code ' + str(status) + " not yet handeld.")
             x = self.getSolution(status)
             x = [round(y, 12) for y in x]  # workaround, round to 12 decimals
             min_cx = round(min_cx, 12)
@@ -289,18 +273,14 @@ class GLPK_MILP_LP():
         """
         try:
             opt, status, bool_tlim = self.solve_MILP_LP()
-            if status in [GLP_OPT,
-                          GLP_FEAS]:  # solution integer optimal (tolerance)
+            if status in [GLP_OPT, GLP_FEAS]:  # solution integer optimal (tolerance)
                 pass
-            elif status in [GLP_UNBND,
-                            GLP_UNDEF]:  # solution unbounded (or inf or unbdd)
+            elif status in [GLP_UNBND, GLP_UNDEF]:  # solution unbounded (or inf or unbdd)
                 opt = -inf
-            elif bool_tlim or status in [GLP_INFEAS, GLP_NOFEAS
-                                        ]:  # infeasible or timeout
+            elif bool_tlim or status in [GLP_INFEAS, GLP_NOFEAS]:  # infeasible or timeout
                 opt = nan
             else:
-                raise Exception('Status code ' + str(status) +
-                                " not yet handeld.")
+                raise Exception('Status code ' + str(status) + " not yet handeld.")
             opt = round(opt, 12)  # workaround, round to 12 decimals
             return opt
         except:
@@ -430,11 +410,9 @@ class GLPK_MILP_LP():
                 val[i + 1] = float(v)
             glp_set_mat_row(self.glpk, numrows + j + 1, numvars, col, val)
             if isinf(b_ineq[j]):
-                glp_set_row_bnds(self.glpk, numrows + j + 1, GLP_FR, -inf,
-                                 b_ineq[j])
+                glp_set_row_bnds(self.glpk, numrows + j + 1, GLP_FR, -inf, b_ineq[j])
             else:
-                glp_set_row_bnds(self.glpk, numrows + j + 1, GLP_UP, -inf,
-                                 b_ineq[j])
+                glp_set_row_bnds(self.glpk, numrows + j + 1, GLP_UP, -inf, b_ineq[j])
 
     def add_eq_constraints(self, A_eq, b_eq):
         """Add equality constraints to the model
@@ -461,8 +439,7 @@ class GLPK_MILP_LP():
                 col[i + 1] = i + 1
                 val[i + 1] = float(v)
             glp_set_mat_row(self.glpk, numrows + j + 1, numvars, col, val)
-            glp_set_row_bnds(self.glpk, numrows + j + 1, GLP_FX, b_eq[j],
-                             b_eq[j])
+            glp_set_row_bnds(self.glpk, numrows + j + 1, GLP_FX, b_eq[j], b_eq[j])
 
     def set_ineq_constraint(self, idx, a_ineq, b_ineq):
         """Replace a specific inequality constraint
@@ -494,15 +471,9 @@ class GLPK_MILP_LP():
     def getSolution(self, status) -> list:
         """Retrieve solution from GLPK backend"""
         if self.ismilp and status in [OPTIMAL, UNBOUNDED, TIME_LIMIT_W_SOL]:
-            x = [
-                glp_mip_col_val(self.glpk, i + 1)
-                for i in range(glp_get_num_cols(self.glpk))
-            ]
+            x = [glp_mip_col_val(self.glpk, i + 1) for i in range(glp_get_num_cols(self.glpk))]
         else:
-            x = [
-                glp_get_col_prim(self.glpk, i + 1)
-                for i in range(glp_get_num_cols(self.glpk))
-            ]
+            x = [glp_get_col_prim(self.glpk, i + 1) for i in range(glp_get_num_cols(self.glpk))]
         return x
 
     def solve_MILP_LP(self) -> Tuple[float, int, bool]:
@@ -519,8 +490,7 @@ class GLPK_MILP_LP():
             opt = glp_mip_obj_val(self.glpk)
         else:
             opt = glp_get_obj_val(self.glpk)
-        timelim_reached = glp_difftime(glp_time(),
-                                       starttime) >= self.lp_params.tm_lim
+        timelim_reached = glp_difftime(glp_time(), starttime) >= self.lp_params.tm_lim
         return opt, status, timelim_reached
 
     def addExclusionConstraintsIneq(self, x):
@@ -528,10 +498,7 @@ class GLPK_MILP_LP():
         numvars = glp_get_num_cols(self.glpk)
         # Here, we also need to take integer variables into account, because GLPK changes
         # variable type to integer when you lock a binary variable to zero
-        binvars = [
-            i for i in range(numvars)
-            if glp_get_col_kind(self.glpk, i + 1) in [GLP_BV, GLP_IV]
-        ]
+        binvars = [i for i in range(numvars) if glp_get_col_kind(self.glpk, i + 1) in [GLP_BV, GLP_IV]]
         data = [1.0 if x[i] else -1.0 for i in binvars]
         row = [0] * len(binvars)
         A_ineq = sparse.csr_matrix((data, (row, binvars)), (1, numvars))

@@ -83,24 +83,23 @@ class SDMILP(SDProblem, MILP_LP):
         (SDMILP):
             An instance of SDProblem containing the strain design MILP and providing several functions for its solution
     """
+
     def __init__(self, model: Model, sd_modules: List[SDModule], **kwargs):
         # Construct problem
-        SDProblem.__init__( self,
-                            model,
-                            sd_modules,**kwargs)
+        SDProblem.__init__(self, model, sd_modules, **kwargs)
         # Build MILP object from constructed problem
-        MILP_LP.__init__(   self,
-                            c=self.c,
-                            A_ineq=self.A_ineq,
-                            b_ineq=self.b_ineq,
-                            A_eq=self.A_eq,
-                            b_eq=self.b_eq,
-                            lb=self.lb,
-                            ub=self.ub,
-                            vtype=self.vtype,
-                            indic_constr=self.indic_constr,
-                            M=self.M,
-                            solver=self.solver)
+        MILP_LP.__init__(self,
+                         c=self.c,
+                         A_ineq=self.A_ineq,
+                         b_ineq=self.b_ineq,
+                         A_eq=self.A_eq,
+                         b_eq=self.b_eq,
+                         lb=self.lb,
+                         ub=self.ub,
+                         vtype=self.vtype,
+                         indic_constr=self.indic_constr,
+                         M=self.M,
+                         solver=self.solver)
 
     def add_exclusion_constraints(self, z):
         """Exclude binary solution in z and all supersets from MILP"""
@@ -155,9 +154,7 @@ class SDMILP(SDProblem, MILP_LP):
         """Populate MILP, and return only binary variables rounded to 5 decimals (should return ints)"""
         x, _, status = self.populate(n)
         if status in [OPTIMAL, TIME_LIMIT_W_SOL]:
-            z = sparse.csr_matrix([
-                [round(x[j][i], 5) for i in self.idx_z] for j in range(len(x))
-            ])
+            z = sparse.csr_matrix([[round(x[j][i], 5) for i in self.idx_z] for j in range(len(x))])
             z.resize((len(x), self.num_z))
             # remove duplicates
             unique_row_indices, unique_columns = [], []
@@ -182,14 +179,11 @@ class SDMILP(SDProblem, MILP_LP):
     def setMinIntvCostObjective(self):
         """Reset minimization of intervention costs as global objective"""
         self.clear_objective()
-        self.set_objective_idx([[i, self.cost[i]]
-                                for i in self.idx_z
-                                if i not in self.z_non_targetable])
+        self.set_objective_idx([[i, self.cost[i]] for i in self.idx_z if i not in self.z_non_targetable])
 
     def resetTargetableZ(self):
         """Reset targetable/switchable intervention indicators / allow all intervention candidates"""
-        self.set_ub(
-            [[i, 1.0] for i in self.idx_z if not self.z_non_targetable[i]])
+        self.set_ub([[i, 1.0] for i in self.idx_z if not self.z_non_targetable[i]])
 
     def setTargetableZ(self, sol):
         """Only allow a subset of intervention candidates"""
@@ -202,33 +196,23 @@ class SDMILP(SDProblem, MILP_LP):
             inactive_vars = [var for z_i,var,sense in \
                             zip(self.cont_MILP.z_map_vars.row,self.cont_MILP.z_map_vars.col,self.cont_MILP.z_map_vars.data)\
                             if np.logical_xor(sol[0,z_i],sense==-1)]
-            active_vars = [
-                i for i in range(self.cont_MILP.z_map_vars.shape[1])
-                if i not in inactive_vars
-            ]
+            active_vars = [i for i in range(self.cont_MILP.z_map_vars.shape[1]) if i not in inactive_vars]
             inactive_ineqs = [ineq for z_i,ineq,sense in \
                             zip(self.cont_MILP.z_map_constr_ineq.row,self.cont_MILP.z_map_constr_ineq.col,self.cont_MILP.z_map_constr_ineq.data)\
                             if np.logical_xor(sol[0,z_i],sense==-1) ]
-            active_ineqs = [
-                i for i in range(self.cont_MILP.z_map_constr_ineq.shape[1])
-                if i not in inactive_ineqs
-            ]
+            active_ineqs = [i for i in range(self.cont_MILP.z_map_constr_ineq.shape[1]) if i not in inactive_ineqs]
             inactive_eqs = [eq for z_i,eq,sense in \
                             zip(self.cont_MILP.z_map_constr_eq.row,self.cont_MILP.z_map_constr_eq.col,self.cont_MILP.z_map_constr_eq.data)\
                             if np.logical_xor(sol[0,z_i],sense==-1) ]
-            active_eqs = [
-                i for i in range(self.cont_MILP.z_map_constr_eq.shape[1])
-                if i not in inactive_eqs
-            ]
+            active_eqs = [i for i in range(self.cont_MILP.z_map_constr_eq.shape[1]) if i not in inactive_eqs]
 
-            lp = MILP_LP(
-                A_ineq=self.cont_MILP.A_ineq[active_ineqs, :][:, active_vars],
-                b_ineq=[self.cont_MILP.b_ineq[i] for i in active_ineqs],
-                A_eq=self.cont_MILP.A_eq[active_eqs, :][:, active_vars],
-                b_eq=[self.cont_MILP.b_eq[i] for i in active_eqs],
-                lb=[self.cont_MILP.lb[i] for i in active_vars],
-                ub=[self.cont_MILP.ub[i] for i in active_vars],
-                solver=self.solver)
+            lp = MILP_LP(A_ineq=self.cont_MILP.A_ineq[active_ineqs, :][:, active_vars],
+                         b_ineq=[self.cont_MILP.b_ineq[i] for i in active_ineqs],
+                         A_eq=self.cont_MILP.A_eq[active_eqs, :][:, active_vars],
+                         b_eq=[self.cont_MILP.b_eq[i] for i in active_eqs],
+                         lb=[self.cont_MILP.lb[i] for i in active_vars],
+                         ub=[self.cont_MILP.ub[i] for i in active_vars],
+                         solver=self.solver)
             valid[i] = not np.isnan(lp.slim_solve())
         return valid
 
@@ -265,8 +249,7 @@ class SDMILP(SDProblem, MILP_LP):
         if self.show_no_ki is None:
             self.show_no_ki = True
         # first check if strain doesn't already fulfill the strain design setup
-        if self.is_mcs_computation and self.verify_sd(
-                sparse.csr_matrix((1, self.num_z)))[0]:
+        if self.is_mcs_computation and self.verify_sd(sparse.csr_matrix((1, self.num_z)))[0]:
             logging.warning('The strain already meets the requirements defined in the strain design setup. ' \
                   'No interventions are needed.')
             return self.build_sd_solution([{}], OPTIMAL, BEST)
@@ -287,25 +270,19 @@ class SDMILP(SDProblem, MILP_LP):
                 break
             output = self.sd2dict(z)
             if self.is_mcs_computation:
-                if status in [OPTIMAL, TIME_LIMIT_W_SOL] and all(
-                        self.verify_sd(z)):
-                    logging.info('Strain design with cost ' +
-                                 str(round((z * self.cost)[0], 6)) + ': ' +
-                                 str(output))
+                if status in [OPTIMAL, TIME_LIMIT_W_SOL] and all(self.verify_sd(z)):
+                    logging.info('Strain design with cost ' + str(round((z * self.cost)[0], 6)) + ': ' + str(output))
                     self.add_exclusion_constraints(z)
                     sols = sparse.vstack((sols, z))
                 elif status in [OPTIMAL, TIME_LIMIT_W_SOL]:
-                    logging.info('Invalid (minimal) solution found: ' +
-                                 str(output))
+                    logging.info('Invalid (minimal) solution found: ' + str(output))
                     self.add_exclusion_constraints(z)
                 if status != OPTIMAL:
                     break
             else:
                 # Verify solution and explore subspace to get minimal intervention sets
                 logging.info('Found solution with objective value ' + str(-opt))
-                logging.info(
-                    'Minimizing number of interventions in subspace with ' +
-                    str(sum(z.toarray()[0])) + ' possible targets.')
+                logging.info('Minimizing number of interventions in subspace with ' + str(sum(z.toarray()[0])) + ' possible targets.')
                 self.fixObjective(self.c_bu, opt)
                 self.setMinIntvCostObjective()
                 self.setTargetableZ(z)
@@ -315,23 +292,18 @@ class SDMILP(SDProblem, MILP_LP):
                     self.set_time_limit(endtime - time.time())
                     z1, _, _, status1 = self.solveZ()
                     output = self.sd2dict(z1)
-                    if status1 in [OPTIMAL, TIME_LIMIT_W_SOL] and all(
-                            self.verify_sd(z1)):
-                        logging.info('Strain design with cost ' +
-                                     str(round((z1 * self.cost)[0], 6)) + ': ' +
-                                     str(output))
+                    if status1 in [OPTIMAL, TIME_LIMIT_W_SOL] and all(self.verify_sd(z1)):
+                        logging.info('Strain design with cost ' + str(round((z1 * self.cost)[0], 6)) + ': ' + str(output))
                         self.add_exclusion_constraints(z1)
                         sols = sparse.vstack((sols, z1))
                     elif status1 in [OPTIMAL, TIME_LIMIT_W_SOL]:
-                        logging.warning('Invalid minimal solution found: ' +
-                                        str(output))
+                        logging.warning('Invalid minimal solution found: ' + str(output))
                         self.add_exclusion_constraints(z)
                     else:  # return to outside loop
                         break
         if status == INFEASIBLE and sols.shape[0] > 0:  # all solutions found
             status = OPTIMAL
-        if status == TIME_LIMIT and sols.shape[
-                0] > 0:  # some solutions found, timelimit reached
+        if status == TIME_LIMIT and sols.shape[0] > 0:  # some solutions found, timelimit reached
             status = TIME_LIMIT_W_SOL
         if endtime - time.time() > 0 and sols.shape[0] > 0:
             logging.info('Finished solving strain design MILP. ')
@@ -408,37 +380,28 @@ class SDMILP(SDProblem, MILP_LP):
                 self.set_time_limit(endtime - time.time())
                 self.resetObjective()
                 self.setTargetableZ(z)
-                self.fixObjective(self.c_bu,
-                                  np.sum([c * x for c, x in zip(self.c_bu, x)]))
+                self.fixObjective(self.c_bu, np.sum([c * x for c, x in zip(self.c_bu, x)]))
                 z1, _, _, status1 = self.solveZ()
                 if status1 == OPTIMAL and not self.verify_sd(z1):
                     self.add_exclusion_constraints(z1)
                     output = self.sd2dict(z1)
-                    logging.warning('Invalid minimal solution found: ' +
-                                    str(output))
+                    logging.warning('Invalid minimal solution found: ' + str(output))
                     continue
                 if status1 != OPTIMAL and not self.verify_sd(z1):
                     self.add_exclusion_constraints_ineq(z)
                     output = self.sd2dict(z)
-                    logging.warning('Invalid minimal solution found: ' +
-                                    str(output))
+                    logging.warning('Invalid minimal solution found: ' + str(output))
                     continue
                 else:
                     output = self.sd2dict(z)
-                    logging.warning(
-                        'Warning: Solver first found the infeasible solution: '
-                        + str(output))
+                    logging.warning('Warning: Solver first found the infeasible solution: ' + str(output))
                     output = self.sd2dict(z1)
-                    logging.warning(
-                        'But a subset of this solution seems to be valid: ' +
-                        str(output))
+                    logging.warning('But a subset of this solution seems to be valid: ' + str(output))
             # Verify solution and explore subspace to get strain designs
             cx = np.sum([c * x for c, x in zip(self.c_bu, x)])
             if not self.is_mcs_computation:
                 logging.info('Found preliminary solution.')
-            logging.info(
-                'Minimizing number of interventions in subspace with ' +
-                str(sum(z.toarray()[0])) + ' possible targets.')
+            logging.info('Minimizing number of interventions in subspace with ' + str(sum(z.toarray()[0])) + ' possible targets.')
             self.setMinIntvCostObjective()
             self.setTargetableZ(z)
             self.fixObjective(self.c_bu, cx)
@@ -448,23 +411,18 @@ class SDMILP(SDProblem, MILP_LP):
                 self.set_time_limit(endtime - time.time())
                 z1, _, _, status1 = self.solveZ()
                 output = self.sd2dict(z1)
-                if status1 in [OPTIMAL, TIME_LIMIT_W_SOL] and all(
-                        self.verify_sd(z1)):
-                    logging.info('Strain design with cost ' +
-                                 str(round((z1 * self.cost)[0], 6)) + ': ' +
-                                 str(output))
+                if status1 in [OPTIMAL, TIME_LIMIT_W_SOL] and all(self.verify_sd(z1)):
+                    logging.info('Strain design with cost ' + str(round((z1 * self.cost)[0], 6)) + ': ' + str(output))
                     self.add_exclusion_constraints(z1)
                     sols = sparse.vstack((sols, z1))
                 elif status1 in [OPTIMAL, TIME_LIMIT_W_SOL]:
-                    logging.warning('Invalid minimal solution found: ' +
-                                    str(output))
+                    logging.warning('Invalid minimal solution found: ' + str(output))
                     self.add_exclusion_constraints(z)
                 else:  # return to outside loop
                     break
         if status == INFEASIBLE and sols.shape[0] > 0:  # all solutions found
             status = OPTIMAL
-        if status == TIME_LIMIT and sols.shape[
-                0] > 0:  # some solutions found, timelimit reached
+        if status == TIME_LIMIT and sols.shape[0] > 0:  # some solutions found, timelimit reached
             status = TIME_LIMIT_W_SOL
         if endtime - time.time() > 0 and sols.shape[0] > 0:
             logging.info('Finished solving strain design MILP. ')
@@ -517,8 +475,7 @@ class SDMILP(SDProblem, MILP_LP):
         if self.show_no_ki is None:
             self.show_no_ki = True
         # first check if strain doesn't already fulfill the strain design setup
-        if self.is_mcs_computation and self.verify_sd(
-                sparse.csr_matrix((1, self.num_z)))[0]:
+        if self.is_mcs_computation and self.verify_sd(sparse.csr_matrix((1, self.num_z)))[0]:
             logging.warning('The strain already meets the requirements defined in the strain design setup. ' \
                   'No interventions are needed.')
             return self.build_sd_solution([{}], OPTIMAL, POPULATE)
@@ -548,9 +505,7 @@ class SDMILP(SDProblem, MILP_LP):
                 z, _, opt, status = self.solveZ()
                 if status not in [OPTIMAL, TIME_LIMIT_W_SOL]:
                     break
-                logging.info(
-                    'Enumerating all solutions with the objective value: ' +
-                    str(-opt))
+                logging.info('Enumerating all solutions with the objective value: ' + str(-opt))
                 self.fixObjective(self.c_bu, opt)
                 self.setMinIntvCostObjective()
             z, status = self.populateZ(self.max_solutions - sols.shape[0])
@@ -558,22 +513,17 @@ class SDMILP(SDProblem, MILP_LP):
                 for i in range(z.shape[0]):
                     output = [self.sd2dict(z[i])]
                     if all(self.verify_sd(z[i])):
-                        logging.info('Strain designs with cost ' +
-                                     str(round((z[i] * self.cost)[0], 6)) +
-                                     ': ' + str(output))
+                        logging.info('Strain designs with cost ' + str(round((z[i] * self.cost)[0], 6)) + ': ' + str(output))
                         self.add_exclusion_constraints(z[i])
                         sols = sparse.vstack((sols, z[i]))
                     else:
-                        logging.warning('Invalid (minimal) solution found: ' +
-                                        str(output))
+                        logging.warning('Invalid (minimal) solution found: ' + str(output))
                         self.add_exclusion_constraints(z[i])
             if (status != OPTIMAL):  # or (z[i]*self.cost == self.max_cost):
                 break
-        if status == INFEASIBLE and sols.shape[
-                0] > 0:  # all solutions found or solution limit reached
+        if status == INFEASIBLE and sols.shape[0] > 0:  # all solutions found or solution limit reached
             status = OPTIMAL
-        if status == TIME_LIMIT and sols.shape[
-                0] > 0:  # some solutions found, timelimit reached
+        if status == TIME_LIMIT and sols.shape[0] > 0:  # some solutions found, timelimit reached
             status = TIME_LIMIT_W_SOL
         if endtime - time.time() > 0 and sols.shape[0] > 0:
             logging.info('Finished solving strain design MILP. ')

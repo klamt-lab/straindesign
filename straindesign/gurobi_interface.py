@@ -29,6 +29,7 @@ import logging
 
 gstatus = gp.StatusConstClass
 
+
 class Gurobi_MILP_LP(gp.Model):
     """Gurobi interface for MILP and LP
     
@@ -91,8 +92,8 @@ class Gurobi_MILP_LP(gp.Model):
             
             A Gurobi MILP/LP interface class.
     """
-    def __init__(self, c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype,
-                 indic_constr):
+
+    def __init__(self, c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype, indic_constr):
         super().__init__()
         try:
             numvars = A_ineq.shape[1]
@@ -153,28 +154,20 @@ class Gurobi_MILP_LP(gp.Model):
             solution_vector, optimal_value, optimization_status
         """
         try:
-            self.optimize(
-            )  # call parent solve function (that was overwritten in this class)
+            self.optimize()  # call parent solve function (that was overwritten in this class)
             status = self.Status
-            if status in [
-                    gstatus.OPTIMAL, gstatus.SOLUTION_LIMIT, gstatus.SUBOPTIMAL,
-                    gstatus.USER_OBJ_LIMIT
-            ]:  # solution
+            if status in [gstatus.OPTIMAL, gstatus.SOLUTION_LIMIT, gstatus.SUBOPTIMAL, gstatus.USER_OBJ_LIMIT]:  # solution
                 min_cx = self.ObjVal
                 status = OPTIMAL
-            elif status == gstatus.TIME_LIMIT and not hasattr(
-                    self._Model__vars[0], 'X'):  # timeout without solution
+            elif status == gstatus.TIME_LIMIT and not hasattr(self._Model__vars[0], 'X'):  # timeout without solution
                 x = [nan] * self.NumVars
                 min_cx = nan
                 status = TIME_LIMIT
                 return x, min_cx, status
-            elif status == gstatus.TIME_LIMIT and hasattr(
-                    self._Model__vars[0], 'X'):
+            elif status == gstatus.TIME_LIMIT and hasattr(self._Model__vars[0], 'X'):
                 min_cx = self.ObjVal
                 status = TIME_LIMIT_W_SOL
-            elif status in [
-                    gstatus.INF_OR_UNBD, gstatus.UNBOUNDED, gstatus.INFEASIBLE
-            ]:
+            elif status in [gstatus.INF_OR_UNBD, gstatus.UNBOUNDED, gstatus.INFEASIBLE]:
                 # solve problem again without objective to verify that problem is feasible
                 self.params.DualReductions = 0
                 self.optimize()
@@ -190,8 +183,7 @@ class Gurobi_MILP_LP(gp.Model):
                     status = UNBOUNDED
                     return x, min_cx, status
             else:
-                raise Exception('Status code ' + str(status) +
-                                " not yet handeld.")
+                raise Exception('Status code ' + str(status) + " not yet handeld.")
             x = self.getSolution()
             return x, min_cx, status
 
@@ -213,21 +205,17 @@ class Gurobi_MILP_LP(gp.Model):
             Optimum value of the objective function.
         """
         try:
-            self.optimize(
-            )  # call parent solve function (that was overwritten in this class)
+            self.optimize()  # call parent solve function (that was overwritten in this class)
             status = self.Status
-            if status in [
-                    gstatus.OPTIMAL, gstatus.SOLUTION_LIMIT, gstatus.SUBOPTIMAL,
-                    gstatus.USER_OBJ_LIMIT
-            ]:  # solution integer optimal (tolerance)
+            if status in [gstatus.OPTIMAL, gstatus.SOLUTION_LIMIT, gstatus.SUBOPTIMAL,
+                          gstatus.USER_OBJ_LIMIT]:  # solution integer optimal (tolerance)
                 opt = self.ObjVal
             elif status in [gstatus.INF_OR_UNBD, gstatus.UNBOUNDED]:
                 opt = -inf
             elif status in [gstatus.INFEASIBLE, gstatus.TIME_LIMIT]:
                 opt = nan
             else:
-                raise Exception('Status code ' + str(status) +
-                                " not yet handeld.")
+                raise Exception('Status code ' + str(status) + " not yet handeld.")
             return opt
         except gp.GurobiError as e:
             logging.error('Error code ' + str(e.errno) + ": " + str(e))
@@ -250,15 +238,13 @@ class Gurobi_MILP_LP(gp.Model):
             else:
                 self.params.PoolSolutions = n
             self.params.PoolSearchMode = 2
-            self.optimize(
-            )  # call parent solve function (that was overwritten in this class)
+            self.optimize()  # call parent solve function (that was overwritten in this class)
             self.params.PoolSearchMode = 0
             status = self.Status
             if status in [2, 10, 13, 15]:  # solution integer optimal
                 min_cx = self.ObjVal
                 status = OPTIMAL
-            elif status == 9 and not hasattr(self._Model__vars[0],
-                                             'X'):  # timeout without solution
+            elif status == 9 and not hasattr(self._Model__vars[0], 'X'):  # timeout without solution
                 x = [nan] * len(self._Model__vars)
                 min_cx = nan
                 status = TIME_LIMIT
@@ -268,8 +254,7 @@ class Gurobi_MILP_LP(gp.Model):
                 min_cx = nan
                 status = INFEASIBLE
                 return x, min_cx, status
-            elif status == 9 and hasattr(self._Model__vars[0],
-                                         'X'):  # timeout with solution
+            elif status == 9 and hasattr(self._Model__vars[0], 'X'):  # timeout with solution
                 min_cx = self.ObjVal
                 status = TIME_LIMIT_W_SOL
             elif status in [4, 5]:  # solution unbounded
@@ -278,8 +263,7 @@ class Gurobi_MILP_LP(gp.Model):
                 status = UNBOUNDED
                 return x, min_cx, status
             else:
-                raise Exception('Status code ' + str(status) +
-                                " not yet handeld.")
+                raise Exception('Status code ' + str(status) + " not yet handeld.")
             x = self.getSolutions()
             return x, min_cx, status
 
@@ -331,12 +315,7 @@ class Gurobi_MILP_LP(gp.Model):
         """
         vars = self._Model__vars
         for i in range(A_ineq.shape[0]):
-            self.addConstr(
-                sum([
-                    A_ineq[i, j] * vars[j]
-                    for j in range(len(vars))
-                    if not A_ineq[i, j] == 0.0
-                ]) <= b_ineq[i])
+            self.addConstr(sum([A_ineq[i, j] * vars[j] for j in range(len(vars)) if not A_ineq[i, j] == 0.0]) <= b_ineq[i])
         self.update()
 
     def add_eq_constraints(self, A_eq, b_eq):
@@ -355,12 +334,7 @@ class Gurobi_MILP_LP(gp.Model):
         """
         vars = self._Model__vars
         for i in range(A_eq.shape[0]):
-            self.addConstr(
-                sum([
-                    A_eq[i, j] * vars[j]
-                    for j in range(len(vars))
-                    if not A_eq[i, j] == 0.0
-                ]) == b_eq[i])
+            self.addConstr(sum([A_eq[i, j] * vars[j] for j in range(len(vars)) if not A_eq[i, j] == 0.0]) == b_eq[i])
         self.update()
 
     def set_ineq_constraint(self, idx, a_ineq, b_ineq):
@@ -379,10 +353,7 @@ class Gurobi_MILP_LP(gp.Model):
                 The right hand side value
         """
         constr = self._Model__constrs[idx]
-        [
-            self.chgCoeff(constr, x, val)
-            for x, val in zip(self._Model__vars, a_ineq)
-        ]
+        [self.chgCoeff(constr, x, val) for x, val in zip(self._Model__vars, a_ineq)]
         if isinf(b_ineq):
             constr.rhs = grb.INFINITY
         else:

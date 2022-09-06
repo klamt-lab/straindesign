@@ -89,6 +89,7 @@ class SDProblem:
         (SDProblem):
             An instance of SDProblem containing the strain design MILP
     """
+
     def __init__(self, model: Model, sd_modules: List[SDModule], *args, **kwargs):
         allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis'}
         # set all keys passed in kwargs
@@ -611,6 +612,7 @@ class ContMILP:
     This MILP can be used to verify computation results. Since this class also stores the relationship
     between intervention variables z and corresponding (in)equality constraints and variables in the 
     problem, it can be used to verify computed designs quickly and in a numerically stable manner."""
+
     def __init__(self, A_ineq, b_ineq, A_eq, b_eq, lb, ub, c, z_map_constr_ineq, z_map_constr_eq, z_map_vars):
         self.A_ineq = A_ineq
         self.b_ineq = b_ineq
@@ -677,7 +679,7 @@ def build_primal_from_cbm(model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None,
     z_map_constr_eq = sparse.csc_matrix((numr, A_eq.shape[0]))
     z_map_constr_ineq = sparse.csc_matrix((numr, A_ineq.shape[0]))
     A_ineq, b_ineq, lb, ub, z_map_constr_ineq = prevent_boundary_knockouts(A_ineq, b_ineq, lb.copy(), ub.copy(), z_map_constr_ineq,
-                                                                                z_map_vars)
+                                                                           z_map_vars)
     return A_ineq, b_ineq, A_eq, b_eq, lb, ub, c, z_map_constr_ineq, z_map_constr_eq, z_map_vars
 
 def LP_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p,
@@ -779,7 +781,7 @@ def LP_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p,
     lb = [-np.inf] * A_eq_p.shape[0] + [0.0] * A_ineq_p.shape[0]
     ub = [np.inf] * (A_eq_p.shape[0] + A_ineq_p.shape[0])
     c = b_eq_p + b_ineq_p
-    
+
     if numz:
         # translate mapping of z-variables to rows instead of columns
         z_map_constr_ineq = sparse.hstack((z_map_vars_p[:, x_geq0], z_map_vars_p[:, x_leq0])).tocsc()
@@ -793,7 +795,7 @@ def LP_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p,
         A_ineq, b_ineq, A_eq, b_eq, lb, ub = reassign_lb_ub_from_ineq(A_ineq, b_ineq, A_eq, b_eq, lb, ub)
         return A_ineq, b_ineq, A_eq, b_eq, lb, ub, c
 
-def farkas_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, 
+def farkas_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
                   z_map_constr_ineq_p=None, z_map_constr_eq_p=None, z_map_vars_p=None) -> \
         Tuple[sparse.csr_matrix, Tuple, sparse.csr_matrix, Tuple, Tuple, sparse.csr_matrix, sparse.csr_matrix, sparse.csr_matrix]:
     """Translate a primal system of linear (in)equality to its Farkas dual
@@ -836,15 +838,14 @@ def farkas_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
         The Farkas dual of the linear (in)equality system in the format: A_ineq, b_ineq, A_eq, b_eq, lb, ub
         and optionally also z_map_constr_ineq, z_map_constr_eq, z_map_vars
     """
-    numz = max([0]+[z.shape[0] for z in [z_map_vars_p, z_map_constr_eq_p, z_map_constr_ineq_p] if z is not None])
+    numz = max([0] + [z.shape[0] for z in [z_map_vars_p, z_map_constr_eq_p, z_map_constr_ineq_p] if z is not None])
     c_p = [0 for _ in range(A_ineq_p.shape[1])]
-    
+
     if numz:
         A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, lb_f, ub_f, c_d, z_map_constr_ineq_d, z_map_constr_eq_f, z_map_vars_f = LP_dualize(
             A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
     else:
-        A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, lb_f, ub_f, c_d = LP_dualize(
-            A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p)
+        A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, lb_f, ub_f, c_d = LP_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p)
     # add constraint b_prim'y or (c_dual'*y) <= -1;
     A_ineq_f = sparse.vstack((A_ineq_d, c_d)).tocsr()
     b_ineq_f = b_ineq_d + [-1]
@@ -859,7 +860,7 @@ def farkas_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
         return A_ineq_f, b_ineq_f, A_eq_f, b_eq_f, lb_f, ub_f, z_map_constr_ineq_f, z_map_constr_eq_f, z_map_vars_f
     else:
         return A_ineq_f, b_ineq_f, A_eq_f, b_eq_f, lb_f, ub_f, z_map_constr_ineq_f, z_map_constr_eq_f, z_map_vars_f
-    
+
 def reassign_lb_ub_from_ineq(A_ineq, b_ineq, A_eq, b_eq, lb, ub,
                              z_map_constr_ineq=None, z_map_constr_eq=None, z_map_vars=None) -> \
         Tuple[sparse.csr_matrix, Tuple, sparse.csr_matrix, Tuple, Tuple, Tuple, sparse.csr_matrix, sparse.csr_matrix]:
@@ -896,9 +897,9 @@ def reassign_lb_ub_from_ineq(A_ineq, b_ineq, A_eq, b_eq, lb, ub,
     """
     lb = [[l] for l in lb]
     ub = [[u] for u in ub]
-    numz = max([0]+[z.shape[0] for z in [z_map_vars, z_map_constr_eq, z_map_constr_ineq] if z is not None])
+    numz = max([0] + [z.shape[0] for z in [z_map_vars, z_map_constr_eq, z_map_constr_ineq] if z is not None])
     numr = A_ineq.shape[1]
-    
+
     if z_map_vars is None:
         z_map_vars = sparse.csc_matrix((numz, numr))
 
@@ -1005,11 +1006,11 @@ def prevent_boundary_knockouts(A_ineq, b_ineq, lb, ub, z_map_constr_ineq, z_map_
         and optionally also updated z_map_constr_ineq, z_map_constr_eq
     """
     numr = A_ineq.shape[1]
-    numz = max([0]+[z.shape[0] for z in [z_map_vars, z_map_constr_ineq] if z is not None])
-    
+    numz = max([0] + [z.shape[0] for z in [z_map_vars, z_map_constr_ineq] if z is not None])
+
     if z_map_vars is None:
         z_map_vars = sparse.csc_matrix((numz, numr))
-    
+
     for i in range(0, numr):
         if any(z_map_vars[:, i]) and lb[i] > 0:
             A_ineq = sparse.vstack((A_ineq, sparse.csr_matrix(([-1], ([0], [i])), shape=(1, numr))))
@@ -1021,7 +1022,7 @@ def prevent_boundary_knockouts(A_ineq, b_ineq, lb, ub, z_map_constr_ineq, z_map_
             b_ineq += [ub[i]]
             z_map_constr_ineq = sparse.hstack((z_map_constr_ineq, sparse.csc_matrix((numz, 1))))
             ub[i] = 0.0
-            
+
     return A_ineq, b_ineq, lb, ub, z_map_constr_ineq
 
 
@@ -1035,6 +1036,7 @@ def worker_init(A, A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver):
             lp_glob.backend.parameters.threads.set(2)
     lp_glob.solver = solver
     lp_glob.A = A
+
 
 def worker_compute(i) -> Tuple[int, float]:
     """Helper function for determining bounds on linear expressions"""

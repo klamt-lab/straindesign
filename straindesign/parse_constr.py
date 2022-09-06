@@ -124,9 +124,7 @@ def lineq2mat(equations, reaction_ids) -> Tuple[sparse.csr_matrix, Tuple, sparse
             eq_sign = re.search('<=|>=|=', equation)[0]
             rhs = float(rhs)
         except:
-            raise Exception(
-                "Equations must contain exactly one (in)equality sign: <=,=,>=. Right hand side must be a float number."
-            )
+            raise Exception("Equations must contain exactly one (in)equality sign: <=,=,>=. Right hand side must be a float number.")
         A = linexpr2mat(lhs, reaction_ids)
         if eq_sign == '=':
             A_eq = sparse.vstack((A_eq, A))
@@ -174,9 +172,7 @@ def lineq2list(equations, reaction_ids) -> List:
             eq_sign = re.search('<=|>=|=', equation)[0]
             rhs = float(rhs)
         except:
-            raise Exception(
-                "Equations must contain exactly one (in)equality sign: <=,=,>=. Right hand side must be a float number."
-            )
+            raise Exception("Equations must contain exactly one (in)equality sign: <=,=,>=. Right hand side must be a float number.")
         D.append((linexpr2dict(lhs, reaction_ids), eq_sign, rhs))
     return D
 
@@ -271,10 +267,7 @@ def linexpr2mat(expr, reaction_ids) -> sparse.csr_matrix:
     #
     A = sparse.lil_matrix((1, len(reaction_ids)))
     # split expression into parts and strip away special characters
-    expr_parts = [
-        re.sub(r'^(\s|-|\+|\()*|(\s|-|\+|\))*$', '', part)
-        for part in expr.split()
-    ]
+    expr_parts = [re.sub(r'^(\s|-|\+|\()*|(\s|-|\+|\))*$', '', part) for part in expr.split()]
     # identify reaction identifiers by comparing with models reaction list
     ridx = [r for r in expr_parts if r in reaction_ids]
     # verify syntax of expression
@@ -288,20 +281,15 @@ def linexpr2mat(expr, reaction_ids) -> sparse.csr_matrix:
             continue
         if re.match('^\d*\.{0,1}\d*$', part) is not None:
             if last_was_number:
-                raise Exception(
-                    "Expression invalid. The expression contains at least two numbers in a row."
-                )
+                raise Exception("Expression invalid. The expression contains at least two numbers in a row.")
             last_was_number = True
             continue
         raise Exception("Expression invalid. Unknown identifier " + part + ".")
     if not len(ridx) == len(set(ridx)):
-        raise Exception(
-            "Reaction identifiers may only occur once in each linear expression."
-        )
+        raise Exception("Reaction identifiers may only occur once in each linear expression.")
     # iterate through reaction identifiers and retrieve coefficients from linear expression
     for rid in ridx:
-        coeff = re.search(
-            '(\s|^)(\s|\d|-|\+|\.)*?(?=' + re.escape(rid) + '(\s|$))', expr)[0]
+        coeff = re.search('(\s|^)(\s|\d|-|\+|\.)*?(?=' + re.escape(rid) + '(\s|$))', expr)[0]
         coeff = re.sub('\s', '', coeff)
         if coeff in ['', '+']:
             coeff = 1.0
@@ -330,10 +318,7 @@ def linexpr2dict(expr, reaction_ids) -> dict:
         A dictionary that contains the variable names and the variable coefficients in the linear expression
     """
     # split expression into parts and strip away special characters
-    expr_parts = [
-        re.sub(r'^(\s|-|\+|\()*|(\s|-|\+|\))*$', '', part)
-        for part in expr.split()
-    ]
+    expr_parts = [re.sub(r'^(\s|-|\+|\()*|(\s|-|\+|\))*$', '', part) for part in expr.split()]
     expr_parts = [e for e in expr_parts if e != '']  # remove 'empty' entries
     # identify reaction identifiers by comparing with models reaction list
     ridx = [r for r in expr_parts if r in reaction_ids]
@@ -348,21 +333,16 @@ def linexpr2dict(expr, reaction_ids) -> dict:
             continue
         if re.match('^\d*\.{0,1}\d*$', part) is not None:
             if last_was_number:
-                raise Exception(
-                    "Expression invalid. The expression contains at least two numbers in a row."
-                )
+                raise Exception("Expression invalid. The expression contains at least two numbers in a row.")
             last_was_number = True
             continue
         raise Exception("Expression invalid. Unknown identifier " + part + ".")
     if not len(ridx) == len(set(ridx)):
-        raise Exception(
-            "Reaction identifiers may only occur once in each linear expression."
-        )
+        raise Exception("Reaction identifiers may only occur once in each linear expression.")
     D = {}
     # iterate through reaction identifiers and retrieve coefficients from linear expression
     for rid in ridx:
-        coeff = re.search(
-            '(\s|^)(\s|\d|-|\+|\.)*?(?=' + re.escape(rid) + '(\s|$))', expr)[0]
+        coeff = re.search('(\s|^)(\s|\d|-|\+|\.)*?(?=' + re.escape(rid) + '(\s|$))', expr)[0]
         coeff = re.sub('\s', '', coeff)
         if coeff in ['', '+']:
             coeff = 1.0
@@ -439,10 +419,7 @@ def get_rids(expr, reaction_ids):
         (list of str): 
         A list of strings containing the reaction/variable strings present in the input string
     """
-    expr_parts = [
-        re.sub(r'^(\s|-|\+|\()*|(\s|-|\+|\|<|\=|>)*$', '', part)
-        for part in expr.split()
-    ]
+    expr_parts = [re.sub(r'^(\s|-|\+|\()*|(\s|-|\+|\|<|\=|>)*$', '', part) for part in expr.split()]
     reacIDs = []
     for part in expr_parts:
         if part in reaction_ids:

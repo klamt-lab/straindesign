@@ -35,6 +35,7 @@ from straindesign.networktools import   remove_ext_mets, remove_dummy_bounds, bo
                                         remove_irrelevant_genes, extend_model_gpr, extend_model_regulatory, \
                                         compress_model, compress_modules, compress_ki_ko_cost, expand_sd, filter_sd_maxcost
 
+
 def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """Computes strain designs for a user-defined strain design problem
 
@@ -154,9 +155,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             that facilitate the analysis of the computed strain designs with COBRA methods.
     """
     allowed_keys = {
-        MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress',
-        'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST, SOLUTION_APPROACH,
-        'advanced', 'use_scenario', T_LIMIT
+        MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
+        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT
     }
     logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
@@ -168,7 +168,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
 
     if MODULES in kwargs:
         sd_modules = kwargs.pop(MODULES)
-        if isinstance(sd_modules,SDModule):
+        if isinstance(sd_modules, SDModule):
             sd_modules = [sd_modules]
         orig_sd_modules = [m.copy() for m in sd_modules]
         sd_modules = [m.copy() for m in sd_modules]
@@ -210,40 +210,22 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         if key == REGCOST:
             uncmp_reg_cost = value
     if (GKOCOST in kwargs or GKICOST in kwargs or
-        ('gene_kos' in kwargs and kwargs['gene_kos'])) and hasattr(
-            model, 'genes') and model.genes:
+        ('gene_kos' in kwargs and kwargs['gene_kos'])) and hasattr(model, 'genes') and model.genes:
         kwargs['gene_kos'] = True
-        used_g_ids = set(
-            kwargs[GKOCOST] if GKOCOST in kwargs and kwargs[GKOCOST] else set())
-        used_g_ids.update(
-            set(kwargs[GKICOST]
-                if GKICOST in kwargs and kwargs[GKICOST] else set()))
-        used_g_ids.update(
-            set(kwargs[REGCOST]
-                if REGCOST in kwargs and kwargs[REGCOST] else set()))
+        used_g_ids = set(kwargs[GKOCOST] if GKOCOST in kwargs and kwargs[GKOCOST] else set())
+        used_g_ids.update(set(kwargs[GKICOST] if GKICOST in kwargs and kwargs[GKICOST] else set()))
+        used_g_ids.update(set(kwargs[REGCOST] if REGCOST in kwargs and kwargs[REGCOST] else set()))
         # genes must not begin with number, put a 'g' in front of genes that start with a number
         if any([True for g in model.genes if g.id[0].isdigit()]):
-            logging.warning(
-                "Gene IDs must not start with a digit. Inserting prefix 'g' where necessary."
-            )
-            rename_genes(
-                model,
-                {g.id: 'g' + g.id for g in model.genes if g.id[0].isdigit()})
-        if np.all([len(g.name) for g in model.genes]) and (np.any(
-            [g.name in used_g_ids for g in model.genes]) or not used_g_ids):
+            logging.warning("Gene IDs must not start with a digit. Inserting prefix 'g' where necessary.")
+            rename_genes(model, {g.id: 'g' + g.id for g in model.genes if g.id[0].isdigit()})
+        if np.all([len(g.name) for g in model.genes]) and (np.any([g.name in used_g_ids for g in model.genes]) or not used_g_ids):
             has_gene_names = True
         else:
             has_gene_names = False
-        if has_gene_names and any(
-            [True for g in model.genes if g.name[0].isdigit()]):
-            logging.warning(
-                "Gene names must not start with a digit. Inserting prefix 'g' where necessary."
-            )
-            for g, v in {
-                    g.id: 'g' + g.name
-                    for g in model.genes
-                    if g.name[0].isdigit()
-            }.items():
+        if has_gene_names and any([True for g in model.genes if g.name[0].isdigit()]):
+            logging.warning("Gene names must not start with a digit. Inserting prefix 'g' where necessary.")
+            for g, v in {g.id: 'g' + g.name for g in model.genes if g.name[0].isdigit()}.items():
                 model.genes.get_by_id(g).name = v
         if GKOCOST not in kwargs or not kwargs[GKOCOST]:
             if has_gene_names:  # if gene names are defined, use them instead of ids
@@ -269,12 +251,10 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     if len(bilvl_modules) > 1:
         raise Exception("Only one of the module types 'OptKnock', 'RobustKnock' and 'OptCouple' can be defined per "\
                             "strain design setup.")
-    logging.info('  Using ' + kwargs[SOLVER] +
-                 ' for solving LPs during preprocessing.')
-    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO(
-    )), DisableLogger():  # suppress standard output from copying model
-        orig_model  = model
-        model       = model.copy()
+    logging.info('  Using ' + kwargs[SOLVER] + ' for solving LPs during preprocessing.')
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), DisableLogger():  # suppress standard output from copying model
+        orig_model = model
+        model = model.copy()
         uncmp_model = model.copy()
     orig_ko_cost = deepcopy(uncmp_ko_cost)
     orig_ki_cost = deepcopy(uncmp_ki_cost)
@@ -286,12 +266,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         orig_gko_cost = uncmp_gko_cost
         orig_gki_cost = uncmp_gki_cost
         # ensure that gene and reaction kos/kis do not overlap
-        g_itv = {
-            g for g in list(uncmp_gko_cost.keys()) + list(uncmp_gki_cost.keys())
-        }
-        r_itv = {
-            r for r in list(uncmp_ko_cost.keys()) + list(uncmp_ki_cost.keys())
-        }
+        g_itv = {g for g in list(uncmp_gko_cost.keys()) + list(uncmp_gki_cost.keys())}
+        r_itv = {r for r in list(uncmp_ko_cost.keys()) + list(uncmp_ki_cost.keys())}
         if np.any([np.any([True for g in uncmp_model.reactions.get_by_id(r).genes if g in g_itv]) for r in r_itv]) or \
             np.any(set(uncmp_gko_cost.keys()).intersection(set(uncmp_gki_cost.keys()))) or \
             np.any(set(uncmp_ko_cost.keys()).intersection(set(uncmp_ki_cost.keys()))):
@@ -299,8 +275,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                             'Make sure that metabolic interventions are enabled either through reaction or '\
                             'through gene interventions and are defined either as knock-ins or as knock-outs.')
     # 1) Preprocess Model
-    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO(
-    )), DisableLogger():  # suppress standard output from copying model
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), DisableLogger():  # suppress standard output from copying model
         cmp_model = uncmp_model.copy()
     # remove external metabolites
     remove_ext_mets(cmp_model)
@@ -314,12 +289,9 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     for m in sd_modules:
         if m[MODULE_TYPE] != SUPPRESS:  # Essential reactions can only be determined from desired
             # or opt-/robustknock modules
-            flux_limits = fva(cmp_model,
-                              solver=kwargs[SOLVER],
-                              constraints=m[CONSTRAINTS])
+            flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS])
             for (reac_id, limits) in flux_limits.iterrows():
-                if np.min(abs(limits)) > 1e-10 and np.prod(
-                        np.sign(limits)) > 0:  # find essential
+                if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0:  # find essential
                     essential_reacs.add(reac_id)
     # remove ko-costs (and thus knockability) of essential reactions
     [uncmp_ko_cost.pop(er) for er in essential_reacs if er in uncmp_ko_cost]
@@ -327,20 +299,13 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     if kwargs['gene_kos']:
         if kwargs['compress'] is True or kwargs['compress'] is None:
             num_genes = len(cmp_model.genes)
-            num_gpr = len(
-                [True for r in model.reactions if r.gene_reaction_rule])
-            logging.info('Preprocessing GPR rules (' + str(num_genes) +
-                         ' genes, ' + str(num_gpr) + ' gpr rules).')
+            num_gpr = len([True for r in model.reactions if r.gene_reaction_rule])
+            logging.info('Preprocessing GPR rules (' + str(num_genes) + ' genes, ' + str(num_gpr) + ' gpr rules).')
             # removing irrelevant genes will also remove essential reactions from the list of knockable genes
-            uncmp_gko_cost = remove_irrelevant_genes(cmp_model, essential_reacs,
-                                                     uncmp_gki_cost,
-                                                     uncmp_gko_cost)
-            if len(cmp_model.genes) < num_genes or len([
-                    True for r in model.reactions if r.gene_reaction_rule
-            ]) < num_gpr:
+            uncmp_gko_cost = remove_irrelevant_genes(cmp_model, essential_reacs, uncmp_gki_cost, uncmp_gko_cost)
+            if len(cmp_model.genes) < num_genes or len([True for r in model.reactions if r.gene_reaction_rule]) < num_gpr:
                 num_genes = len(cmp_model.genes)
-                num_gpr = len(
-                    [True for r in cmp_model.reactions if r.gene_reaction_rule])
+                num_gpr = len([True for r in cmp_model.reactions if r.gene_reaction_rule])
                 logging.info('  Simplifyied to '+str(num_genes)+' genes and '+\
                     str(num_gpr)+' gpr rules.')
         logging.info('  Extending metabolic network with gpr associations.')
@@ -365,10 +330,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     cmp_ko_cost = uncmp_ko_cost
     cmp_ki_cost = uncmp_ki_cost
     # Compress model
-    if kwargs['compress'] is True or kwargs[
-            'compress'] is None:  # If compression is activated (or not defined)
-        logging.info('Compressing Network (' + str(len(cmp_model.reactions)) +
-                     ' reactions).')
+    if kwargs['compress'] is True or kwargs['compress'] is None:  # If compression is activated (or not defined)
+        logging.info('Compressing Network (' + str(len(cmp_model.reactions)) + ' reactions).')
         # compress network by lumping sequential and parallel reactions alternatingly.
         # Exclude reactions named in strain design modules from parallel compression
         no_par_compress_reacs = set()
@@ -387,29 +350,23 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         # compress information in strain design modules
         sd_modules = compress_modules(sd_modules, cmp_mapReac)
         # compress ko_cost and ki_cost
-        cmp_ko_cost, cmp_ki_cost, cmp_mapReac = compress_ki_ko_cost(
-            cmp_ko_cost, cmp_ki_cost, cmp_mapReac)
+        cmp_ko_cost, cmp_ki_cost, cmp_mapReac = compress_ki_ko_cost(cmp_ko_cost, cmp_ki_cost, cmp_mapReac)
     else:
         cmp_mapReac = []
 
     # An FVA to identify essentials before building and launching MILP (not sure if this has an effect)
-    logging.info(
-        '  FVA(s) in compressed model to identify essential reactions.')
+    logging.info('  FVA(s) in compressed model to identify essential reactions.')
     essential_reacs = set()
     for m in sd_modules:
         if m[MODULE_TYPE] != SUPPRESS:  # Essential reactions can only be determined from desired
             # or opt-/robustknock modules
-            flux_limits = fva(cmp_model,
-                              solver=kwargs[SOLVER],
-                              constraints=m[CONSTRAINTS])
+            flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS])
             for (reac_id, limits) in flux_limits.iterrows():
-                if np.min(abs(limits)) > 1e-10 and np.prod(
-                        np.sign(limits)) > 0:  # find essential
+                if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0:  # find essential
                     essential_reacs.add(reac_id)
     # remove ko-costs (and thus knockability) of essential reactions
     [cmp_ko_cost.pop(er) for er in essential_reacs if er in cmp_ko_cost]
-    essential_kis = set(
-        cmp_ki_cost[er] for er in essential_reacs if er in cmp_ki_cost)
+    essential_kis = set(cmp_ki_cost[er] for er in essential_reacs if er in cmp_ki_cost)
     # Build MILP
     kwargs1 = kwargs
     kwargs1[KOCOST] = cmp_ko_cost
@@ -423,26 +380,19 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     if REGCOST in kwargs1:
         kwargs1.pop(REGCOST)
 
-    kwargs_milp = {
-        k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M']
-    }
+    kwargs_milp = {k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M']}
     kwargs_milp.update({KOCOST: cmp_ko_cost})
     kwargs_milp.update({KICOST: cmp_ki_cost})
     kwargs_milp.update({'essential_kis': essential_kis})
     logging.info("Finished preprocessing:")
-    logging.info("  Model size: " + str(len(cmp_model.reactions)) +
-                 " reactions, " + str(len(cmp_model.metabolites)) +
-                 " metabolites")
-    logging.info("  " +
-                 str(len(cmp_ko_cost) + len(cmp_ki_cost) - len(essential_kis)) +
-                 " targetable reactions")
+    logging.info("  Model size: " + str(len(cmp_model.reactions)) + " reactions, " + str(len(cmp_model.metabolites)) + " metabolites")
+    logging.info("  " + str(len(cmp_ko_cost) + len(cmp_ki_cost) - len(essential_kis)) + " targetable reactions")
 
     sd_milp = SDMILP(cmp_model, sd_modules, **kwargs_milp)
 
     kwargs_computation = {}
     if MAX_SOLUTIONS in kwargs:
-        kwargs_computation.update(
-            {MAX_SOLUTIONS: float(kwargs.pop(MAX_SOLUTIONS))})
+        kwargs_computation.update({MAX_SOLUTIONS: float(kwargs.pop(MAX_SOLUTIONS))})
     if T_LIMIT in kwargs:
         kwargs_computation.update({T_LIMIT: float(kwargs.pop(T_LIMIT))})
     kwargs_computation.update({'show_no_ki': True})
@@ -462,21 +412,14 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
 
     logging.info('  Decompressing.')
     if cmp_sd_solution.status in [OPTIMAL, TIME_LIMIT_W_SOL]:
-        sd = expand_sd(cmp_sd_solution.get_reaction_sd_mark_no_ki(),
-                       cmp_mapReac)
-        sd = filter_sd_maxcost(sd, kwargs[MAX_COST], uncmp_ko_cost,
-                               uncmp_ki_cost)
+        sd = expand_sd(cmp_sd_solution.get_reaction_sd_mark_no_ki(), cmp_mapReac)
+        sd = filter_sd_maxcost(sd, kwargs[MAX_COST], uncmp_ko_cost, uncmp_ki_cost)
         sd = postprocess_reg_sd(uncmp_reg_cost, sd)
     else:
         sd = []
 
     setup = deepcopy(cmp_sd_solution.sd_setup)
-    setup.update({
-        MODULES: orig_sd_modules,
-        KOCOST: orig_ko_cost,
-        KICOST: orig_ki_cost,
-        REGCOST: orig_reg_cost
-    })
+    setup.update({MODULES: orig_sd_modules, KOCOST: orig_ko_cost, KICOST: orig_ki_cost, REGCOST: orig_reg_cost})
     if kwargs['gene_kos']:
         setup.update({GKOCOST: orig_gko_cost, GKICOST: orig_gki_cost})
     sd_solutions = SDSolutions(orig_model, sd, cmp_sd_solution.status, setup)

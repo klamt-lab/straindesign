@@ -25,6 +25,7 @@ from straindesign import avail_solvers
 from straindesign.names import *
 import logging
 
+
 class MILP_LP(object):
     """Unified MILP and LP interface
     
@@ -98,11 +99,9 @@ class MILP_LP(object):
             
             A MILP/LP solver interface class.
     """
+
     def __init__(self, **kwargs):
-        allowed_keys = {
-            'c', 'A_ineq', 'b_ineq', 'A_eq', 'b_eq', 'lb', 'ub', 'vtype',
-            'indic_constr', 'M', 'solver', 'skip_checks', 'tlim'
-        }
+        allowed_keys = {'c', 'A_ineq', 'b_ineq', 'A_eq', 'b_eq', 'lb', 'ub', 'vtype', 'indic_constr', 'M', 'solver', 'skip_checks', 'tlim'}
         # set all keys passed in kwargs
         for key, value in kwargs.items():
             if key in allowed_keys:
@@ -121,8 +120,7 @@ class MILP_LP(object):
                 raise Exception('No solver available. Please ensure that one of the following '\
                     'solvers is avaialable in your Python environment: CPLEX, Gurobi, SCIP, GLPK')
         elif self.solver not in avail_solvers:
-            raise Exception("Selected solver '" + self.solver +
-                            "' is not installed / set up correctly.")
+            raise Exception("Selected solver '" + self.solver + "' is not installed / set up correctly.")
         # Copy parameters to object
         if self.A_ineq is not None:
             numvars = self.A_ineq.shape[1]
@@ -151,27 +149,20 @@ class MILP_LP(object):
         # check dimensions
         if not self.skip_checks == True:
             if not (self.A_ineq.shape[0] == len(self.b_ineq)):
-                raise Exception(
-                    "A_ineq and b_ineq must have the same number of rows/elements"
-                )
+                raise Exception("A_ineq and b_ineq must have the same number of rows/elements")
             if not (self.A_eq.shape[0] == len(self.b_eq)):
-                raise Exception(
-                    "A_eq and b_eq must have the same number of rows/elements")
+                raise Exception("A_eq and b_eq must have the same number of rows/elements")
             if not (self.A_ineq.shape[1]==numvars and self.A_eq.shape[1]==numvars and len(self.c)==numvars and \
                     len(self.lb)==numvars and len(self.ub)==numvars and len(self.vtype)==numvars):
-                raise Exception(
-                    "A_eq, A_ineq, c, lb, ub, vtype must have the same number of columns/elements"
-                )
+                raise Exception("A_eq, A_ineq, c, lb, ub, vtype must have the same number of columns/elements")
             # if (not self.indic_constr==None) and (not self.solver in [CPLEX, GUROBI, SCIP]):
             #     raise Exception("In order to use indicator constraints, you need to set up CPLEX, Gurobi or SCIP.")
-            elif (not self.indic_constr
-                  == None):  # check dimensions of indicator constraints
+            elif (not self.indic_constr == None):  # check dimensions of indicator constraints
                 num_ic = self.indic_constr.A.shape[0]
                 if not (self.indic_constr.A.shape[1] == numvars and \
                         len(self.indic_constr.b)==num_ic and len(self.indic_constr.binv)==num_ic and \
                         len(self.indic_constr.sense)==num_ic and len(self.indic_constr.indicval)==num_ic):
-                    raise Exception(
-                        "Check dimensions of indicator constraints.")
+                    raise Exception("Check dimensions of indicator constraints.")
         # Cast variables as float
         self.A_ineq = self.A_ineq.astype(float)
         self.A_eq = self.A_eq.astype(float)
@@ -185,36 +176,29 @@ class MILP_LP(object):
             self.indic_constr.b = [float(v) for v in self.indic_constr.b]
         if not self.solver == GLPK and self.M and not (isnan(self.M) or isinf(self.M)) and \
            self.indic_constr and self.indic_constr.A.shape[0]:
-            logging.warning(
-                'Provided big M value is ignored unless glpk is used.')
+            logging.warning('Provided big M value is ignored unless glpk is used.')
         # Create backend
         if self.solver == CPLEX:
             from straindesign.cplex_interface import Cplex_MILP_LP
-            self.backend = Cplex_MILP_LP(self.c, self.A_ineq, self.b_ineq,
-                                         self.A_eq, self.b_eq, self.lb, self.ub,
-                                         self.vtype, self.indic_constr)
+            self.backend = Cplex_MILP_LP(self.c, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq, self.lb, self.ub, self.vtype,
+                                         self.indic_constr)
         elif self.solver == GUROBI:
             from straindesign.gurobi_interface import Gurobi_MILP_LP
-            self.backend = Gurobi_MILP_LP(self.c, self.A_ineq, self.b_ineq,
-                                          self.A_eq, self.b_eq, self.lb,
-                                          self.ub, self.vtype,
+            self.backend = Gurobi_MILP_LP(self.c, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq, self.lb, self.ub, self.vtype,
                                           self.indic_constr)
         elif self.solver == SCIP:
             from straindesign.scip_interface import SCIP_MILP, SCIP_LP
             self.isLP = all(v == 'C' for v in self.vtype)
             if self.isLP:
-                self.backend = SCIP_LP(self.c, self.A_ineq, self.b_ineq,
-                                       self.A_eq, self.b_eq, self.lb, self.ub)
+                self.backend = SCIP_LP(self.c, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq, self.lb, self.ub)
                 return
             else:
-                self.backend = SCIP_MILP(self.c, self.A_ineq, self.b_ineq,
-                                         self.A_eq, self.b_eq, self.lb, self.ub,
-                                         self.vtype, self.indic_constr)
+                self.backend = SCIP_MILP(self.c, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq, self.lb, self.ub, self.vtype,
+                                         self.indic_constr)
         elif self.solver == GLPK:
             from straindesign.glpk_interface import GLPK_MILP_LP
-            self.backend = GLPK_MILP_LP(self.c, self.A_ineq, self.b_ineq,
-                                        self.A_eq, self.b_eq, self.lb, self.ub,
-                                        self.vtype, self.indic_constr, self.M)
+            self.backend = GLPK_MILP_LP(self.c, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq, self.lb, self.ub, self.vtype,
+                                        self.indic_constr, self.M)
         if self.tlim is None:
             self.set_time_limit(inf)
         else:
@@ -232,12 +216,8 @@ class MILP_LP(object):
             solution_vector, optimal_value, optimization_status
         """
         x, min_cx, status = self.backend.solve()
-        if status not in [INFEASIBLE, UNBOUNDED, TIME_LIMIT
-                         ]:  # if solution exists (is not nan), round integers
-            x = [
-                x[i] if self.vtype[i] == 'C' else int(round(x[i]))
-                for i in range(len(x))
-            ]
+        if status not in [INFEASIBLE, UNBOUNDED, TIME_LIMIT]:  # if solution exists (is not nan), round integers
+            x = [x[i] if self.vtype[i] == 'C' else int(round(x[i])) for i in range(len(x))]
         return x, min_cx, status
 
     def slim_solve(self) -> float:
@@ -288,12 +268,12 @@ class MILP_LP(object):
         """Set the upper bounds to a given vector"""
         self.ub = ub
         self.backend.set_ub(ub)
-        
+
     def set_time_limit(self, t):
         """Set the computation time limit (in seconds)"""
         self.tlim = t
         self.backend.set_time_limit(t)
-        
+
     def add_ineq_constraints(self, A_ineq, b_ineq):
         """Add inequality constraints to the model
         
