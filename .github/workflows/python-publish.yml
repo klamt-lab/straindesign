@@ -37,7 +37,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install yapf
     - name: format repository with yapf in google-python format
-      run: yapf -i -r --style .github\style.yapf .
+      run: yapf -i -r --style ./.github/style.yapf .
     - name: retrieve name and E-Mail configuration
       run: |
         git config --global user.name ${{ secrets.NAME_GITHUB }}
