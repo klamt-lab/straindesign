@@ -1,0 +1,8 @@
+# For documentation of these options see
+[style]
+based_on_style = google
+indent_dictionary_value = true
+join_multiple_lines = true
+split_before_first_argument = false
+column_limit = 140
+indent_width = 4
