@@ -173,6 +173,12 @@ CNApy, a GUI-featured toolbox for metabolic modeling offers a graphical user int
   :width: 354
   :alt: CNApy screenshot
   
+How to cite:
+============
+
+StrainDesign: a comprehensive Python package for computational design of metabolic networks, P. Schneider, P. S. Bekiaris, A. von Kamp, S. Klamp
+*Bioinformatics 2022*
+
 References:
 ===========
 

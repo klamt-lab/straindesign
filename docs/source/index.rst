@@ -119,6 +119,11 @@ in the main folder. Through the installation with -e, updates from a 'git pull' 
 
 Computation examples are provided in the different chapters of this documentation. The original Jupyer notebook files are located in the StrainDesign package at `docs/source/examples <https://github.com/klamt-lab/straindesign/tree/main/docs/source/examples>`_.
 
+How to cite:
+============
+
+StrainDesign: a comprehensive Python package for computational design of metabolic networks, P. Schneider, P. S. Bekiaris, A. von Kamp, S. Klamp
+*Bioinformatics 2022*
 
 References:
 ===========
