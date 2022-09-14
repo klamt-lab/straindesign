@@ -122,7 +122,7 @@ Computation examples are provided in the different chapters of this documentatio
 How to cite:
 ============
 
-StrainDesign: a comprehensive Python package for computational design of metabolic networks, P. Schneider, P. S. Bekiaris, A. von Kamp, S. Klamp
+StrainDesign: a comprehensive Python package for computational design of metabolic networks, P. Schneider, P. S. Bekiaris, A. von Kamp, S. Klamt,
 *Bioinformatics 2022*
 
 References:
