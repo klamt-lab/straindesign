@@ -81,6 +81,7 @@ Parts of the compression routine is done by efmtool's compression function (http
    :maxdepth: 4
    :caption: Contents:
 
+   index
    examples/JN_01_solver.ipynb
    examples/JN_02_analysis.ipynb
    examples/JN_03_plotting.ipynb
@@ -122,8 +123,7 @@ Computation examples are provided in the different chapters of this documentatio
 How to cite:
 ============
 
-StrainDesign: a comprehensive Python package for computational design of metabolic networks, P. Schneider, P. S. Bekiaris, A. von Kamp, S. Klamt,
-*Bioinformatics 2022*
+:html:`<a id="ref0">[0]</a>` `Schneider P., Bekiaris P. S., von Kamp A., Klamt S. - StrainDesign: a comprehensive Python package for computational design of metabolic networks. Bioinformatics, btac632 (2022)  <https://doi.org/10.1093/bioinformatics/btac632>`_
 
 References:
 ===========
