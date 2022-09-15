@@ -176,7 +176,7 @@ CNApy, a GUI-featured toolbox for metabolic modeling offers a graphical user int
 How to cite:
 ============
 
-:html:`<a id="ref0">[0]</a>` `Schneider P., Bekiaris P. S., von Kamp A., Klamt S. - StrainDesign: a comprehensive Python package for computational design of metabolic networks. Bioinformatics, btac632 (2022)  <https://doi.org/10.1093/bioinformatics/btac632>`_
+:html:`<a id="ref0"></a>` `Schneider P., Bekiaris P. S., von Kamp A., Klamt S. - StrainDesign: a comprehensive Python package for computational design of metabolic networks. Bioinformatics, btac632 (2022)  <https://doi.org/10.1093/bioinformatics/btac632>`_
 
 References:
 ===========
