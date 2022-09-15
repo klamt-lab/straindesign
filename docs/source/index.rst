@@ -77,24 +77,6 @@ The comprehensive StrainDesign package for MILP-based strain design computation 
 
 Parts of the compression routine is done by efmtool's compression function (https://csb.ethz.ch/tools/software/efmtool.html\ :html:`<a href="#ref6"><sup>[6]</sup></a>`).
 
-.. toctree::
-   :maxdepth: 4
-   :caption: Contents:
-
-   index
-   examples/JN_01_solver.ipynb
-   examples/JN_02_analysis.ipynb
-   examples/JN_03_plotting.ipynb
-   examples/JN_04_strain_design_introduction.ipynb
-   examples/JN_05_strain_design_mcs.ipynb
-   examples/JN_06_strain_design_nested.ipynb
-   examples/JN_08_compression.ipynb
-   9_cnapy_integration
-   api_reference
-   
-.. 
-   examples/JN_07_network_design.ipynb
-
 :html:`<a id="installation"></a>`\ Installation:
 ================================================
 
@@ -123,7 +105,25 @@ Computation examples are provided in the different chapters of this documentatio
 How to cite:
 ============
 
-:html:`<a id="ref0">[0]</a>` `Schneider P., Bekiaris P. S., von Kamp A., Klamt S. - StrainDesign: a comprehensive Python package for computational design of metabolic networks. Bioinformatics, btac632 (2022)  <https://doi.org/10.1093/bioinformatics/btac632>`_
+:html:`<a id="ref0"></a>` `Schneider P., Bekiaris P. S., von Kamp A., Klamt S. - StrainDesign: a comprehensive Python package for computational design of metabolic networks. Bioinformatics, btac632 (2022)  <https://doi.org/10.1093/bioinformatics/btac632>`_
+
+
+.. toctree::
+   :maxdepth: 4
+   :caption: Contents:
+
+   examples/JN_01_solver.ipynb
+   examples/JN_02_analysis.ipynb
+   examples/JN_03_plotting.ipynb
+   examples/JN_04_strain_design_introduction.ipynb
+   examples/JN_05_strain_design_mcs.ipynb
+   examples/JN_06_strain_design_nested.ipynb
+   examples/JN_08_compression.ipynb
+   9_cnapy_integration
+   api_reference
+   
+.. 
+   examples/JN_07_network_design.ipynb
 
 References:
 ===========
