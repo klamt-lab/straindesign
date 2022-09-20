@@ -181,8 +181,6 @@ class GLPK_MILP_LP():
         # stack all problem rows and add constraints
         if A_ineq.shape[0] + A_eq.shape[0] + A_indic.shape[0] > 0:
             glp_add_rows(self.glpk, A_ineq.shape[0] + A_eq.shape[0] + A_indic.shape[0])
-            b_ineq = [float(b) for b in b_ineq]
-            b_eq = [float(b) for b in b_eq]
             eq_type = [GLP_UP] * len(b_ineq) + [GLP_FX] * len(b_eq) + [GLP_UP] * len(b_indic)
             for i, t, b in zip(range(len(b_ineq + b_eq + b_indic)), eq_type, b_ineq + b_eq + b_indic):
                 glp_set_row_bnds(self.glpk, i + 1, t, b, b)
@@ -199,18 +197,19 @@ class GLPK_MILP_LP():
                 glp_load_matrix(self.glpk, A.nnz, ia, ja, ar)
 
         # not sure if the parameter setup is okay
-        self.milp_params = glp_iocp()
+        if self.ismilp:
+            self.milp_params = glp_iocp()
+            glp_init_iocp(self.milp_params)
+            self.milp_params.presolve = 1
+            self.milp_params.tol_int = 1e-12
+            self.milp_params.tol_obj = 1e-9
+            self.milp_params.msg_lev = 0
         self.lp_params = glp_smcp()
-        glp_init_iocp(self.milp_params)
         glp_init_smcp(self.lp_params)
         self.max_tlim = self.lp_params.tm_lim
-
-        self.milp_params.presolve = 1
-        self.milp_params.tol_int = 1e-12
-        self.milp_params.tol_obj = 1e-9
         self.lp_params.tol_bnd = 1e-9
         self.lp_params.msg_lev = 0
-        self.milp_params.msg_lev = 0
+        
         # ideally, one would generate random seeds here, but glpk does not seem to
         # offer this function
 
@@ -378,10 +377,12 @@ class GLPK_MILP_LP():
     def set_time_limit(self, t):
         """Set the computation time limit (in seconds)"""
         if t * 1000 > self.max_tlim:
-            self.milp_params.tm_lim = self.max_tlim
+            if self.ismilp:
+                self.milp_params.tm_lim = self.max_tlim
             self.lp_params.tm_lim = self.max_tlim
         else:
-            self.milp_params.tm_lim = int(t * 1000)
+            if self.ismilp:
+                self.milp_params.tm_lim = int(t * 1000)
             self.lp_params.tm_lim = int(t * 1000)
 
     def add_ineq_constraints(self, A_ineq, b_ineq):
