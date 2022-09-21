@@ -16,7 +16,7 @@
 #
 #
 #
-"""Provide a process pool with enhanced performance on Windowsn copied and slightly adapted from cobra."""
+"""Provide a process pool with enhanced performance on Windows, copied and slightly adapted from cobra."""
 
 from multiprocessing.pool import Pool
 from multiprocessing import get_context
