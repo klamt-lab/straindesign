@@ -197,6 +197,11 @@ class GLPK_MILP_LP():
                 glp_load_matrix(self.glpk, A.nnz, ia, ja, ar)
 
         # not sure if the parameter setup is okay
+        self.lp_params = glp_smcp()
+        glp_init_smcp(self.lp_params)
+        self.max_tlim = self.lp_params.tm_lim
+        self.lp_params.tol_bnd = 1e-9
+        self.lp_params.msg_lev = 0
         if self.ismilp:
             self.milp_params = glp_iocp()
             glp_init_iocp(self.milp_params)
@@ -204,11 +209,6 @@ class GLPK_MILP_LP():
             self.milp_params.tol_int = 1e-12
             self.milp_params.tol_obj = 1e-9
             self.milp_params.msg_lev = 0
-        self.lp_params = glp_smcp()
-        glp_init_smcp(self.lp_params)
-        self.max_tlim = self.lp_params.tm_lim
-        self.lp_params.tol_bnd = 1e-9
-        self.lp_params.msg_lev = 0
         
         # ideally, one would generate random seeds here, but glpk does not seem to
         # offer this function
@@ -483,7 +483,14 @@ class GLPK_MILP_LP():
         # MILP solving needs prior solution of the LP-relaxed problem, because occasionally
         # the MILP solver interface crashes when a problem is infesible, which, in turn,
         # crashes the python program. This connection-loss to the solver can not be captured.
-        glp_simplex(self.glpk, self.lp_params)
+        prelim_status = glp_simplex(self.glpk, self.lp_params)
+        # There is a GLPK bug where feasible LPs fail initialy but can complete when presolved
+        # in these cases, glp_simplex returns GLP_EFAIL. We capture these cases and solve again
+        # with prior resolve.
+        if prelim_status == GLP_EFAIL:
+            self.lp_params.presolve = 1
+            glp_simplex(self.glpk, self.lp_params)
+            self.lp_params.presolve = 0
         status = glp_get_status(self.glpk)
         if self.ismilp and status not in [GLP_INFEAS, GLP_NOFEAS]:
             glp_intopt(self.glpk, self.milp_params)
