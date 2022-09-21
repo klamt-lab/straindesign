@@ -197,11 +197,13 @@ class GLPK_MILP_LP():
                 glp_load_matrix(self.glpk, A.nnz, ia, ja, ar)
 
         # not sure if the parameter setup is okay
+        # LP simplex parameters
         self.lp_params = glp_smcp()
         glp_init_smcp(self.lp_params)
         self.max_tlim = self.lp_params.tm_lim
         self.lp_params.tol_bnd = 1e-9
         self.lp_params.msg_lev = 0
+        # MILP parameters
         if self.ismilp:
             self.milp_params = glp_iocp()
             glp_init_iocp(self.milp_params)
@@ -489,8 +491,10 @@ class GLPK_MILP_LP():
         # with prior resolve.
         if prelim_status == GLP_EFAIL:
             self.lp_params.presolve = 1
-            glp_simplex(self.glpk, self.lp_params)
+            self.lp_params.meth = 3
+            prelim_status = glp_simplex(self.glpk, self.lp_params)
             self.lp_params.presolve = 0
+            self.lp_params.meth = 1
         status = glp_get_status(self.glpk)
         if self.ismilp and status not in [GLP_INFEAS, GLP_NOFEAS]:
             glp_intopt(self.glpk, self.milp_params)

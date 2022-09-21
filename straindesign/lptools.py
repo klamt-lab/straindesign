@@ -872,9 +872,12 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
         for i in range(len(x_space) - 1):
             temp_points = [datapoints_bottom[i], datapoints_top[i], datapoints_bottom[i + 1], datapoints_top[i + 1]]
             pts = [array(datapoints[idx_p]) for idx_p in temp_points]
-            if matrix_rank(pts - pts[0]) > 1:
-                triang_temp = Delaunay(pts).simplices
-                triang += [[temp_points[idx] for idx in p] for p in triang_temp]
+            try:
+                if matrix_rank(pts - pts[0]) > 1:
+                    triang_temp = Delaunay(pts).simplices
+                    triang += [[temp_points[idx] for idx in p] for p in triang_temp]
+            except:
+                logging.warning('Computing matrix rank or Delaunay simplices failed.')
         # Plot
         x = [v for v in x_space] + [v for v in reversed(x_space)]
         y = [v for v in lb] + [v for v in reversed(ub)]
