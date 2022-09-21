@@ -209,7 +209,7 @@ class GLPK_MILP_LP():
             self.milp_params.tol_int = 1e-12
             self.milp_params.tol_obj = 1e-9
             self.milp_params.msg_lev = 0
-        
+
         # ideally, one would generate random seeds here, but glpk does not seem to
         # offer this function
 
