@@ -841,7 +841,7 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
             inval = [i + 1 for i, v in enumerate([sol_min, sol_max]) if v.status == UNBOUNDED or v.status == INFEASIBLE]
             if any(inval):
                 raise Exception('One of the specified yields is unbounded or undefined or problem is infeasible. Plot cannot be generated.')
-        val_limits[i] = [ceil_dec(sol_min.objective_value, 9), floor_dec(sol_max.objective_value, 9)]
+        val_limits[i] = [ceil_dec(sol_min.objective_value, 8), floor_dec(sol_max.objective_value, 8)]
         ax_limits[i] = [min((0, val_limits[i][0])), max((0, val_limits[i][1]))]
 
     # compute points
