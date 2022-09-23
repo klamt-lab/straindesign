@@ -92,8 +92,8 @@ Download the repository and run
 
 in the main folder. Through the installation with -e, updates from a 'git pull' are at once available in your Python envrionment without the need for a reinstallation.
 
-JAVA_HOME path
---------------
+JAVA_HOME path:
+---------------
 
 In some cases, installing the StrainDesign python package may fail with the error:
 
