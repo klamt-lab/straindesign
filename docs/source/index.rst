@@ -97,6 +97,15 @@ Download the repository and run
 
 in the main folder. Through the installation with -e, updates from a 'git pull' are at once available in your Python envrionment without the need for a reinstallation.
 
+JAVA_HOME path:
+---------------
+
+In some cases, installing the StrainDesign python package may fail with the error:
+
+``JVMNotFoundException: No JVM shared library file (libjli.dylib) found. Try setting up the JAVA_HOME environment variable.``
+
+In this case you need to set your `JAVA_HOME environment variable <https://www.baeldung.com/java-home-on-windows-7-8-10-mac-os-x-linux>`_
+
 :html:`<a id="examples"></a>`\ Examples:
 ================================================
 
