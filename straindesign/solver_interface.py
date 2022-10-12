@@ -21,7 +21,7 @@
 from numpy import inf, isinf, isnan, unique
 from scipy import sparse
 from typing import List, Tuple
-from straindesign import avail_solvers
+from straindesign import avail_solvers, GLPK
 from straindesign.names import *
 import logging
 
@@ -115,7 +115,7 @@ class MILP_LP(object):
         # Select solver (either by choice or automatically cplex > gurobi > glpk)
         if self.solver is None:
             if len(avail_solvers) > 0:
-                self.solver = avail_solvers[0]
+                self.solver = list(avail_solvers)[0]
             else:
                 raise Exception('No solver available. Please ensure that one of the following '\
                     'solvers is avaialable in your Python environment: CPLEX, Gurobi, SCIP, GLPK')

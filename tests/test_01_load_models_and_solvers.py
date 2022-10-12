@@ -47,6 +47,10 @@ def test_load_solvers(model_small_example):
     solver1 = sd.select_solver()
     assert (solver1 in [CPLEX, GUROBI, GLPK, SCIP])
 
+    # solver selection with unknown solver specified
+    solver1 = sd.select_solver('notasolver')
+    assert (solver1 in [CPLEX, GUROBI, GLPK, SCIP])
+
     # with solver specified
     solver2 = sd.select_solver('scip')
     assert (solver2 == SCIP)

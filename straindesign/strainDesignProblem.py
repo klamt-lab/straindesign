@@ -108,7 +108,7 @@ class SDProblem:
 
         if self.solver is None:
             if len(avail_solvers) > 0:
-                self.solver = avail_solvers[0]
+                self.solver = list(avail_solvers)[0]
             else:
                 raise Exception('No solver available. Please ensure that one of the following '\
                     'solvers is avaialable in your Python environment: CPLEX, Gurobi, SCIP, GLPK')
