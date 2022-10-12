@@ -80,7 +80,7 @@ def select_solver(solver=None, model=None) -> str:
         if solver in avail_solvers:
             return solver
         else:
-            logging.warning('Selected solver ' + solver + ' not available. Using ' + avail_solvers[0] + " instead.")
+            logging.warning('Selected solver ' + solver + ' not available. Using ' + list(avail_solvers)[0] + " instead.")
     try:
         # if no solver was defined, use solver specified in model
         if hasattr(model, 'solver') and hasattr(model.solver, 'interface'):
@@ -101,7 +101,7 @@ def select_solver(solver=None, model=None) -> str:
         pass
     # if no solver is specified in cobra, fall back to list of available solvers and return the
     # first one available.
-    return avail_solvers[0]
+    return list(avail_solvers)[0]
 
 
 def idx2c(i, prev) -> 'list':
