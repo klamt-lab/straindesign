@@ -99,7 +99,13 @@ In some cases, installing the StrainDesign python package may fail with the erro
 
 ``JVMNotFoundException: No JVM shared library file (libjli.dylib) found. Try setting up the JAVA_HOME environment variable.``
 
-In this case you need to set your `JAVA_HOME environment variable <https://www.baeldung.com/java-home-on-windows-7-8-10-mac-os-x-linux>`_
+In this case you need to set your `JAVA_HOME environment variable <https://www.baeldung.com/java-home-on-windows-7-8-10-mac-os-x-linux>`_.
+
+If you're on OS X and get the error
+
+``OSError: [Errno 0] JVM DLL not found``
+
+check that your `Java and the JPype library is set up correctly <https://github.com/jpype-project/jpype/issues/994>`_.
 
 Install additional solvers:
 ===========================
