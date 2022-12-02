@@ -106,6 +106,12 @@ In some cases, installing the StrainDesign python package may fail with the erro
 
 In this case you need to set your `JAVA_HOME environment variable <https://www.baeldung.com/java-home-on-windows-7-8-10-mac-os-x-linux>`_
 
+If you're on OS X and get the error
+
+``OSError: [Errno 0] JVM DLL not found``
+
+check that your `Java and the JPype library is set up correctly <https://github.com/jpype-project/jpype/issues/994>`_.
+
 :html:`<a id="examples"></a>`\ Examples:
 ================================================
 
