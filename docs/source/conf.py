@@ -17,7 +17,7 @@
 # -- Project information -----------------------------------------------------
 
 project = "StrainDesign"
-copyright = "2022, Philipp Schneider"
+copyright = "2023, Philipp Schneider"
 author = "Philipp Schneider"
 
 # The full version, including alpha/beta/rc tags
@@ -70,7 +70,7 @@ source_suffix = [".rst", ".md"]  # , '.ipynb' (not required for nbsphinx)
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
 #
-html_theme = "default"
+html_theme = "sphinx_rtd_theme"
 html_theme_options = {'bgcolor': 'white'}
 html_logo = "../logo.png"
 
