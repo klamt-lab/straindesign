@@ -4,3 +4,4 @@ nbsphinx
 pandoc
 ipython
 ipykernel
+sphinx-rtd-theme
