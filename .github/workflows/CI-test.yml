@@ -40,10 +40,6 @@ jobs:
         uses: mamba-org/setup-micromamba@v1
         with:
           environment-file: environment.yml
-          init-shell: >-
-            bash
-            powershell
-          cache-environment: true
           post-cleanup: 'all'
       - name: Install dependencies
         run: |
@@ -52,7 +48,7 @@ jobs:
 #          pip install flake8 wheel pytest setuptools
       - name: Install solvers
         run: |
-         micromamba install -c conda-forge pyscipopt scip -c ibmdecisionoptimization cplex -c gurobi gurobi
+         micromamba install -c conda-forge pyscipopt scip=8.0.0 -c ibmdecisionoptimization cplex -c gurobi gurobi
 #          pip install cplex gurobipy
 #          mamba install -c conda-forge pyscipopt scip=8.0.0
       - name: Install straindesign
