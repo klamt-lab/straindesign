@@ -28,14 +28,6 @@ jobs:
         uses: actions/setup-python@v3
         with:
           python-version: ${{ matrix.python-version }}
-#      - uses: conda-incubator/setup-miniconda@v2
-#        with:
-#          mamba-version: "*"
-#          activate-environment: test
-#          environment-file: environment.yml
-#          auto-activate-base: false
-#          auto-update-conda: true
-#          python-version: ${{ matrix.python-version }}
       - name: Set up Environment
         uses: mamba-org/setup-micromamba@v1
         with:
@@ -44,13 +36,9 @@ jobs:
       - name: Install dependencies
         run: |
           micromamba install flake8 wheel pytest setuptools
-#          python -m pip install --upgrade pip
-#          pip install flake8 wheel pytest setuptools
       - name: Install solvers
         run: |
          micromamba install -c conda-forge pyscipopt scip=8.0.0 -c ibmdecisionoptimization cplex -c gurobi gurobi
-#          pip install cplex gurobipy
-#          mamba install -c conda-forge pyscipopt scip=8.0.0
       - name: Install straindesign
         run: | 
           pip install -e .
