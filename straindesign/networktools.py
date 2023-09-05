@@ -879,8 +879,8 @@ def stoichmat_coeff2rational(model):
     num_reac = len(model.reactions)
     for i in range(num_reac):
         for k, v in model.reactions[i]._metabolites.items():
-            if type(v) is float or type(v) is int:
-                if type(v) is int or v.is_integer():
+            if isinstance(v,float) or isinstance(v,int):
+                if isinstance(v,int):
                     # v = int(v)
                     # n = int2jBigInteger(v)
                     # d = BigInteger.ONE
@@ -900,7 +900,7 @@ def stoichmat_coeff2float(model):
     num_reac = len(model.reactions)
     for i in range(num_reac):
         for k, v in model.reactions[i]._metabolites.items():
-            if v.is_Float or v.is_Rational or v.is_Integer:
+            if isinstance(v,float) or isinstance(v,int) or isinstance(v, Rational):
                 model.reactions[i]._metabolites[k] = float(v)
             else:
                 raise Exception('unknown data type')
