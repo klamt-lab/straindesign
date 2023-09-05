@@ -551,9 +551,9 @@ class SDMILP(SDProblem, MILP_LP):
         sd_setup[TIME_LIMIT] = self.time_limit
         sd_setup[SOLVER] = self.solver
         sd_setup[SOLUTION_APPROACH] = solution_approach
-        sd_setup[KOCOST] = {k:float(v) for k,v in \
+        sd_setup[KOCOST] = {k: float(v) for k,v in \
             zip(self.model.reactions.list_attr('id'),self.ko_cost) if not np.isnan(v)}
-        sd_setup[KICOST] = {k:float(v) for k,v in \
+        sd_setup[KICOST] = {k: float(v) for k,v in \
             zip(self.model.reactions.list_attr('id'),self.ki_cost) if not np.isnan(v)}
         sd_setup[MODULES] = self.sd_modules
         return SDSolutions(self.model, sd_dict, status, sd_setup)
