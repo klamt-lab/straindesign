@@ -30,6 +30,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - uses: conda-incubator/setup-miniconda@v2
         with:
+          mamba-version: "*"
           activate-environment: test
           environment-file: environment.yml
           auto-activate-base: false
@@ -39,7 +40,7 @@ jobs:
           pip install flake8 wheel pytest setuptools
       - name: Install solvers
         run: |
-          conda install -c conda-forge pyscipopt scip=8.0.0
+          mamba install -c conda-forge pyscipopt scip=8.0.0
           pip install cplex gurobipy
       - name: Install straindesign
         run: | 
