@@ -68,13 +68,17 @@ jobs:
         pip install build setuptools wheel twine
     - name: Clean PyPi build directories
       run: rm -rf dist
-    - name: Build and publish on PyPi
-      env:
-        TWINE_USERNAME: ${{ secrets.PYPI_USERNAME }}
-        TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
+    - name: Build for PyPi
+#      env:
+#        TWINE_USERNAME: ${{ secrets.PYPI_USERNAME }}
+#        TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
       run: |
         python setup.py sdist bdist_wheel
-        twine upload dist/*
+    - name: Publish to PyPI
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        password: ${{ secrets.PYPI_API_TOKEN }}
+#        twine upload dist/*
     - name: Install conda dependencies
       run: conda install anaconda-client conda-build
     - name: Clean Anaconda build directories
