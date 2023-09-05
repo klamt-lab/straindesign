@@ -47,13 +47,13 @@ jobs:
           post-cleanup: 'all'
       - name: Install dependencies
         run: |
-          mamba install flake8 wheel pytest setuptools
+          micromamba install flake8 wheel pytest setuptools
 #          python -m pip install --upgrade pip
 #          pip install flake8 wheel pytest setuptools
         shell: micromamba-shell {0}
       - name: Install solvers
         run: |
-         mamba install -c conda-forge pyscipopt scip=8.0.0 -c ibmdecisionoptimization cplex -c gurobi gurobi
+         micromamba install -c conda-forge pyscipopt scip=8.0.0 -c ibmdecisionoptimization cplex -c gurobi gurobi
 #          pip install cplex gurobipy
 #          mamba install -c conda-forge pyscipopt scip=8.0.0
         shell: micromamba-shell {0}
