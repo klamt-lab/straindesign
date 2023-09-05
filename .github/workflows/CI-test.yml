@@ -50,18 +50,14 @@ jobs:
           micromamba install flake8 wheel pytest setuptools
 #          python -m pip install --upgrade pip
 #          pip install flake8 wheel pytest setuptools
-        shell: micromamba-shell {0}
       - name: Install solvers
         run: |
-         micromamba install -c conda-forge pyscipopt scip=8.0.0 -c ibmdecisionoptimization cplex -c gurobi gurobi
+         micromamba install -c conda-forge pyscipopt scip -c ibmdecisionoptimization cplex -c gurobi gurobi
 #          pip install cplex gurobipy
 #          mamba install -c conda-forge pyscipopt scip=8.0.0
-        shell: micromamba-shell {0}
       - name: Install straindesign
         run: | 
           pip install -e .
-        shell: micromamba-shell {0}
       - name: Test with pytest
         run: pytest tests
-        shell: micromamba-shell {0}
         
