@@ -178,7 +178,7 @@ def extend_model_gpr(model, use_names=False):
                         "solver or consider simplifying GPR rules or gene names in your model.")
 
     def truncate(id):
-        return id[0:MAX_NAME_LEN]
+        return id[0:MAX_NAME_LEN-16]+hex(abs(hash(id)))[2:] # hash id to make sure it's unique
 
     solver = search('(' + '|'.join(avail_solvers) + ')', model.solver.interface.__name__)[0]
 
