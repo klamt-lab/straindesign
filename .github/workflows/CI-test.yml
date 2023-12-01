@@ -69,10 +69,15 @@ jobs:
         with:
           environment-file: environment.yml
           post-cleanup: 'all'
-      - name: Install solvers
+      - name: Install solvers (conda)
+        if: matrix.package-manager == 'conda'
         run: |
-         micromamba install -c conda-forge pyscipopt scip=8.0.0 -c ibmdecisionoptimization cplex -c gurobi gurobi
+          micromamba install -c conda-forge pyscipopt scip=8.0.0 -c ibmdecisionoptimization cplex -c gurobi gurobi
+      - name: Install solvers (pip)
+        if: matrix.package-manager == 'pip'
+        run: |
+          pip install pyscipopt scip==8.0.0 cplex gurobi
       - name: Test with pytest
-        if: matrix.package-manager == 'conda' && matrix.package-manager == 'pip'
+        if: matrix.package-manager == 'conda' || matrix.package-manager == 'pip'
         run: pytest tests
         
