@@ -212,7 +212,7 @@ class SDProblem:
             self.A_ineq = self.A_ineq.tocsr()
 
         # backup objective function
-        self.c_bu = self.c.copy()
+        self.c_bu = [float(i) for i in self.c.copy()]
 
         # # for debugging
         # A = sparse.vstack(( self.A_ineq,sparse.csr_matrix([np.nan]*len(self.c)),\
@@ -463,7 +463,7 @@ class SDProblem:
 
         # 3. Use LP to identify M-values for knockable constraints
         #    For this purpose, first construct a most relaxed LP-model (use all possible constraint-KOs, no possible var-KOs)
-        knockable_constr_ineq = set(self.z_map_constr_ineq.nonzero()[1])
+        knockable_constr_ineq = np.sort(self.z_map_constr_ineq.nonzero()[1])
 
         cont_vars = [False if i in self.idx_z else True for i in range(0, numvars)]
         M_A_ineq = self.A_ineq[[False if i in knockable_constr_ineq else True for i in range(0, self.A_ineq.shape[0])], :][:, cont_vars]
@@ -479,7 +479,7 @@ class SDProblem:
         # M_A(i)*x + z*M <= b + M
         # b is the right hand side value
         M_A = self.A_ineq[[True if i in knockable_constr_ineq else False for i in range(0, self.A_ineq.shape[0])], :][:, cont_vars]
-        M_A = [(-M_A[i, :])[0].toarray()[0] for i in range(len(knockable_constr_ineq))]
+        M_A = [(M_A[i, :])[0].toarray()[0] for i in range(M_A.shape[0])]
         M_b = [self.b_ineq[i] for i in range(0, self.A_ineq.shape[0]) if i in knockable_constr_ineq]
 
         processes = Configuration().processes
@@ -504,8 +504,8 @@ class SDProblem:
             for i in range(num_Ms):
                 _, max_Ax[i] = worker_compute(i)
 
-        # round Ms up to 3 digits
-        Ms = [np.ceil((M - b) * 1e3) / 1e3 if not np.isinf(M) else self.M for M, b in zip(max_Ax, M_b)]
+        # round Ms up to 5 digits
+        Ms = [np.ceil(M* 1e5) / 1e5 if not np.isinf(M) else self.M for M in max_Ax]
         # fill up M-vector also for notknockable reactions
         Ms = [
             Ms[np.array([i == j
@@ -523,11 +523,11 @@ class SDProblem:
                 sense = self.z_map_constr_ineq[z_i, row]
                 if sense > 0:  # This means z_i = 1 knocks out ineq:
                     #     a_ineq*x - M*z <= b
-                    self.A_ineq[row, z_i] = -Ms[row]
+                    self.A_ineq[row, z_i] = -Ms[row] + self.b_ineq[row]
                 else:  # This means z_i = 0 knocks out ineq:
-                    #     a_ineq*x + M*z <= b + M
-                    self.A_ineq[row, z_i] = Ms[row]
-                    self.b_ineq[row] = self.b_ineq[row] + Ms[row]
+                    #     a_ineq*x + (M-b)*z <= M  (from a_ineq*x + M*z <= M + b)
+                    self.A_ineq[row, z_i] = Ms[row] - self.b_ineq[row]
+                    self.b_ineq[row] = Ms[row]
         self.z_map_constr_ineq = self.z_map_constr_ineq.tocsc()
 
         # 5. Translate back remaining inequalities to equations if applicable and link via indicator constraints
@@ -1041,6 +1041,7 @@ def worker_init(A, A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver):
 def worker_compute(i) -> Tuple[int, float]:
     """Helper function for determining bounds on linear expressions"""
     global lp_glob
-    lp_glob.set_objective(lp_glob.A[i])
+    # maximize by minimizing negative objective and negating result
+    lp_glob.set_objective(-lp_glob.A[i])
     min_cx = -lp_glob.slim_solve()
     return i, min_cx
