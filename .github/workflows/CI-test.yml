@@ -50,45 +50,53 @@ jobs:
         run: |
           pip install setuptools wheel
           python setup.py sdist bdist_wheel
-      - name: Build for Conda (if conda)
-        if: matrix.package-manager == 'conda'
-        run: |
-          conda install anaconda-client conda-build
-          run: rm -rf conda-bld
-          conda build conda-recipe/. -c conda-forge --croot conda-bld
       - name: Install package using pip
         if: matrix.package-manager == 'pip'
         run: pip install ./dist/*.whl
-      - name: Install package using conda
-        if: matrix.package-manager == 'conda'
-        run: |
-          conda install --use-local straindesign
       - name: Set up Conda Environment with Micromamba
         if: matrix.package-manager == 'conda_env'
         uses: mamba-org/setup-micromamba@v1
         with:
           environment-file: environment.yml
           post-cleanup: 'all'
-      - name: Install gurobi (conda)
-        if: matrix.package-manager == 'conda'
-        run: |
-          micromamba install -c gurobi gurobi
       - name: Install gurobi (pip)
         if: matrix.package-manager == 'pip'
         run: |
           pip install gurobipy
-      - name: Install cplex (conda)
-        if: matrix.package-manager == 'conda'
-        run: |
-          micromamba install -c ibmdecisionoptimization cplex
       - name: Install cplex (pip)
         if: matrix.package-manager == 'pip'
         run: |
           pip install cplex
+      - name: Install pytest (pip)
+        if: matrix.package-manager == 'pip'
+        run: |
+          pip install pytest
+      - name: Build for Conda (if conda)
+        if: matrix.package-manager == 'conda'
+        run: |
+          conda install anaconda-client conda-build
+          run: rm -rf conda-bld
+          conda build conda-recipe/. -c conda-forge --croot conda-bld
+      - name: Install package using conda
+        if: matrix.package-manager == 'conda'
+        run: |
+          conda install --use-local straindesign
+      - name: Install gurobi (conda)
+        if: matrix.package-manager == 'conda'
+        run: |
+          micromamba install -c gurobi gurobi
+      - name: Install cplex (conda)
+        if: matrix.package-manager == 'conda'
+        run: |
+          micromamba install -c ibmdecisionoptimization cplex
       - name: Install scip (conda)
         if: matrix.package-manager == 'conda'
         run: |
           micromamba install -c conda-forge pyscipopt scip=8.0.0
+      - name: Install pytest (conda)
+        if: matrix.package-manager == 'conda'
+        run: |
+          micromamba install pytest
       - name: Test with pytest
         if: matrix.package-manager == 'conda' || matrix.package-manager == 'pip'
         run: pytest tests
