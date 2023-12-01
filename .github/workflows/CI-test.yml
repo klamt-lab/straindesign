@@ -76,7 +76,7 @@ jobs:
       - name: Install gurobi (pip)
         if: matrix.package-manager == 'pip'
         run: |
-          pip install gurobi
+          pip install gurobipy
       - name: Install cplex (conda)
         if: matrix.package-manager == 'conda'
         run: |
