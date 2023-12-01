@@ -6,7 +6,9 @@ channels:
 dependencies:
   - python<=3.11
   - pip
-  - pip:
-    - -r requirements
+  - cobra
+  - jpype1
+  - scipy
+  - psutil
   - straindesign
 prefix: /home/user/miniconda3/envs/cnapy
