@@ -86,7 +86,6 @@ jobs:
       - name: Activate Micromamba environment
         if: matrix.package-manager == 'conda'
         run: |
-          echo "source $(micromamba shell hook --shell bash)" >> $GITHUB_ENV
           micromamba activate straindesign
       - name: Build for Conda (if conda)
         if: matrix.package-manager == 'conda'
