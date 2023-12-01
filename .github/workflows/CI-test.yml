@@ -22,7 +22,7 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         python-version: ['3.10']
-        package-manager: ['pip', 'conda']
+        package-manager: ['pip', 'conda', 'conda_env']
     steps:
       - uses: actions/checkout@v3
       - name: Cache Conda packages
@@ -63,20 +63,16 @@ jobs:
         if: matrix.package-manager == 'conda'
         run: |
           conda install --use-local straindesign
-      - name: Set up Environment
+      - name: Set up Conda Environment with Micromamba
+        if: matrix.package-manager == 'conda_env'
         uses: mamba-org/setup-micromamba@v1
         with:
           environment-file: environment.yml
           post-cleanup: 'all'
-      - name: Install dependencies
-        run: |
-          micromamba install flake8 wheel pytest setuptools
       - name: Install solvers
         run: |
          micromamba install -c conda-forge pyscipopt scip=8.0.0 -c ibmdecisionoptimization cplex -c gurobi gurobi
-      - name: Install straindesign
-        run: | 
-          pip install -e .
       - name: Test with pytest
+        if: matrix.package-manager == 'conda' && matrix.package-manager == 'pip'
         run: pytest tests
         

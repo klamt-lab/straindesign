@@ -11,6 +11,8 @@ source:
 requirements:
   build:
     - setuptools
+    - flake8
+    - wheel
     - pip
     - python>=3.7
   run:

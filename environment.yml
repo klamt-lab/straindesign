@@ -4,7 +4,7 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - python<=3.11
+  - python
   - pip
   - cobra
   - jpype1
