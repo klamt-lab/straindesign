@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  build_and_test:
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -21,13 +21,48 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ['3.7', '3.8', '3.9', '3.10']
+        python-version: ['3.7', '3.8', '3.9', '3.10', '3.11']
+        package-manager: ['pip', 'conda']
     steps:
       - uses: actions/checkout@v3
+      - name: Cache Conda packages
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~/conda_pkgs_dir
+          key: ${{ runner.os }}-conda-${{ hashFiles('**/environment.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-conda-
+      - name: Cache pip packages
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
       - name: Set up Python
         uses: actions/setup-python@v3
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Build for PyPI (if pip)
+        if: matrix.package-manager == 'pip'
+        run: |
+          pip install setuptools wheel
+          python setup.py sdist bdist_wheel
+      - name: Build for Conda (if conda)
+        if: matrix.package-manager == 'conda'
+        run: |
+          conda install anaconda-client conda-build
+          run: rm -rf conda-bld
+          conda build conda-recipe/. -c conda-forge --croot conda-bld
+      - name: Install package using pip
+        if: matrix.package-manager == 'pip'
+        run: pip install ./dist/*.whl
+      - name: Install package using conda
+        if: matrix.package-manager == 'conda'
+        run: |
+          conda install --use-local straindesign
       - name: Set up Environment
         uses: mamba-org/setup-micromamba@v1
         with:
