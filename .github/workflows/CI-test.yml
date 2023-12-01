@@ -71,6 +71,11 @@ jobs:
         if: matrix.package-manager == 'pip'
         run: |
           pip install pytest
+      - name: Set up Conda Environment with Micromamba
+        if: matrix.package-manager == 'conda'
+        uses: mamba-org/setup-micromamba@v1
+        with:
+          post-cleanup: 'all'
       - name: Build for Conda (if conda)
         if: matrix.package-manager == 'conda'
         run: |
