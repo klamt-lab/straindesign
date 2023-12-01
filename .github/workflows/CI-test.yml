@@ -74,13 +74,13 @@ jobs:
       - name: Build for Conda (if conda)
         if: matrix.package-manager == 'conda'
         run: |
-          conda install anaconda-client conda-build
+          conda install anaconda-client conda-build conda-verify
           run: rm -rf conda-bld
           conda build conda-recipe/. -c conda-forge --croot conda-bld
       - name: Install package using conda
         if: matrix.package-manager == 'conda'
         run: |
-          conda install --use-local straindesign
+          conda install --use-local /home/runner/work/straindesign/straindesign/conda-bld/noarch/straindesign-*.tar.bz2
       - name: Install gurobi (conda)
         if: matrix.package-manager == 'conda'
         run: |
