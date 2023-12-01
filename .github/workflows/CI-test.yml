@@ -45,10 +45,10 @@ jobs:
         uses: actions/setup-python@v3
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Set up Conda Environment with Micromamba
+      - name: Edit environment file to fix python version (conda environment test)
         if: matrix.package-manager == 'conda_env'
         run: sed -i "s/python/python=${{ matrix.python-version }}/g" environment.yml
-      - name: Set up Conda Environment with Micromamba
+      - name: Set up Conda Environment with Micromamba (conda environment test)
         if: matrix.package-manager == 'conda_env'
         uses: mamba-org/setup-micromamba@v1
         with:
@@ -83,16 +83,21 @@ jobs:
           micromamba-version: latest
           package-specs: python=${{ matrix.python-version }} 
           post-cleanup: 'all'
+      - name: Activate Micromamba environment
+        if: matrix.package-manager == 'conda'
+        run: |
+          echo "source $(micromamba shell hook --shell bash)" >> $GITHUB_ENV
+          micromamba activate straindesign
       - name: Build for Conda (if conda)
         if: matrix.package-manager == 'conda'
         run: |
-          conda install anaconda-client conda-build conda-verify
+          micromamba install anaconda-client conda-build conda-verify
           run: rm -rf conda-bld
-          conda build conda-recipe/. -c conda-forge --croot conda-bld
+          micromamba build conda-recipe/. -c conda-forge --croot conda-bld
       - name: Install package using conda
         if: matrix.package-manager == 'conda'
         run: |
-          conda install --use-local /home/runner/work/straindesign/straindesign/conda-bld/noarch/straindesign-*.tar.bz2
+          micromamba install --use-local /home/runner/work/straindesign/straindesign/conda-bld/noarch/straindesign-*.tar.bz2
       - name: Install gurobi (conda)
         if: matrix.package-manager == 'conda'
         run: |
