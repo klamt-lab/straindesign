@@ -6,26 +6,26 @@ cobra_conf = Configuration()
 bound_thres = max((abs(cobra_conf.lower_bound), abs(cobra_conf.upper_bound)))
 
 # Initialize an empty list for solvers
-solvers = ['GLPK']
+solvers = [GLPK]
 
 # Add GRUOBI to the list if the cplex package is installed
 try:
     import gurobi
-    solvers.append('GUROBI')
+    solvers.append(GUROBI)
 except ImportError:
     pass  # GUROBI is not installed
 
 # Add CPLEX to the list if the cplex package is installed
 try:
     import cplex
-    solvers.append('CPLEX')
+    solvers.append(CPLEX)
 except ImportError:
     pass  # CPLEX is not installed
 
 # Add SCIP to the list if the pyscipopt package is installed
 try:
     import pyscipopt
-    solvers.append('SCIP')
+    solvers.append(SCIP)
 except ImportError:
     pass  # SCIP is not installed
 
