@@ -27,9 +27,6 @@ jobs:
         exclude:
         - os: macos-latest
           package-manager: 'pip'
-        - os: ubuntu-latest
-          version: '3.7'
-          package-manager: 'pip'
     steps:
       - uses: actions/checkout@v4
       - name: Cache Conda packages
