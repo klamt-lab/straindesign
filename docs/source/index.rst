@@ -110,7 +110,7 @@ If you're on OS X and get the error
 
 ``OSError: [Errno 0] JVM DLL not found``
 
-check that your `Java and the JPype library is set up correctly <https://github.com/jpype-project/jpype/issues/994>`_.
+check that your `Java and the JPype library is set up correctly <https://github.com/jpype-project/jpype/issues/994>`_. The easiest way to avoid this error is to use conda to install StrainDesign.
 
 :html:`<a id="examples"></a>`\ Examples:
 ================================================
