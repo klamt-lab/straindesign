@@ -1,20 +1,5 @@
 from setuptools import setup, find_packages
-import pkg_resources
-from setuptools.command.install import install
-import subprocess
-import sys
 
-# This is ugly but necessary, because jpype wouldn't install from conda on macos
-class CustomInstall(install):
-    def run(self):
-        # Ensure jpype1 is installed via pip
-        try:
-            pkg_resources.get_distribution('jpype1')
-        except pkg_resources.DistributionNotFound:
-            subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'jpype1'])
-        
-        # Continue with the standard install
-        install.run(self)
 setup(
     name="straindesign",
     version="1.10",
@@ -29,9 +14,6 @@ setup(
     python_requires=">=3.7",
     package_data={"straindesign": ["efmtool.jar"]},
     packages=find_packages(),
-    cmdclass={
-        'install': CustomInstall,
-    },
     install_requires=["cobra", "jpype1", "scipy", "matplotlib", "psutil"],
     project_urls={
         "Bug Reports": "https://github.com/klamt-lab/straindesign/issues",
