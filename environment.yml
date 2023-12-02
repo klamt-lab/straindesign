@@ -7,8 +7,7 @@ dependencies:
   - python
   - pip
   - cobra
-  - pip:
-      - jpype1
+  - jpype1
   - scipy
   - psutil
   - straindesign
