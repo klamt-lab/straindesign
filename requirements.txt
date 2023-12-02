@@ -1,4 +1,4 @@
 cobra
 scipy
-jpype1
+JPype1
 psutil
