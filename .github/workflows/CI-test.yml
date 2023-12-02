@@ -102,7 +102,7 @@ jobs:
         run: |
           micromamba install -c gurobi gurobi
       - name: Install cplex (conda)
-        if: matrix.package-manager == 'conda' && python-version != '3.11'
+        if: matrix.package-manager == 'conda' && matrix.python-version != '3.11'
         run: |
           micromamba install -c ibmdecisionoptimization cplex
       - name: Install scip (conda)
