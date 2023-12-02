@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="straindesign",
-    version="1.10",
+    version="3.11",
     url="https://github.com/klamt-lab/straindesign.git",
     description="Computational strain design package for the COBRApy framework",
     long_description=
@@ -23,8 +23,8 @@ setup(
     classifiers=[
         "Intended Audience :: Science/Research", "Development Status :: 3 - Alpha", "Programming Language :: Python :: 3.7",
         "Programming Language :: Python :: 3.8", "Programming Language :: Python :: 3.9", "Programming Language :: Python :: 3.10",
-        "Programming Language :: Python :: 3.11", "Natural Language :: English", 
-        "Operating System :: OS Independent", "Topic :: Scientific/Engineering :: Bio-Informatics"
+        "Programming Language :: Python :: 3.11", "Natural Language :: English", "Operating System :: OS Independent",
+        "Topic :: Scientific/Engineering :: Bio-Informatics"
     ],
     keywords=["metabolism", "constraint-based", "mixed-integer", "strain design"],
     zip_safe=False,

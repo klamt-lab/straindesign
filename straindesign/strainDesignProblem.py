@@ -505,7 +505,7 @@ class SDProblem:
                 _, max_Ax[i] = worker_compute(i)
 
         # round Ms up to 5 digits
-        Ms = [np.ceil(M* 1e5) / 1e5 if not np.isinf(M) else self.M for M in max_Ax]
+        Ms = [np.ceil(M * 1e5) / 1e5 if not np.isinf(M) else self.M for M in max_Ax]
         # fill up M-vector also for notknockable reactions
         Ms = [
             Ms[np.array([i == j

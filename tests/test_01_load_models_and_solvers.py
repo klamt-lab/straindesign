@@ -40,7 +40,7 @@ def test_solver_loading(curr_solver):
     assert (milp.solve() == ([], 0.0, OPTIMAL))
 
 
-def test_load_solvers(model_small_example,curr_solver):
+def test_load_solvers(model_small_example, curr_solver):
     """Test solver choice."""
 
     # solver selection with no solver specified
