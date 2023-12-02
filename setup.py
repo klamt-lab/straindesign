@@ -1,7 +1,3 @@
-import os
-import subprocess
-import sys
-import platform
 from setuptools import setup, find_packages
 import pkg_resources
 from setuptools.command.install import install
@@ -19,23 +15,6 @@ class CustomInstall(install):
         
         # Continue with the standard install
         install.run(self)
-
-def set_java_home():
-    if platform.system() == 'Darwin':  # Check if OS is macOS
-        try:
-            # Attempt to find Java home
-            java_home_output = subprocess.check_output(['/usr/libexec/java_home'], universal_newlines=True)
-            java_home_path = java_home_output.strip()
-            os.environ['JAVA_HOME'] = java_home_path  # Set for the current process
-            print(f"JAVA_HOME set to {java_home_path}")
-        except subprocess.CalledProcessError:
-            sys.exit("Java not found. Please install Java and set JAVA_HOME.")
-    else:
-        # Handle other OS or assume JAVA_HOME is set
-        if not os.environ.get('JAVA_HOME'):
-            sys.exit("JAVA_HOME environment variable is not set. Please set JAVA_HOME.")
-
-set_java_home()
 
 setup(
     name="straindesign",
