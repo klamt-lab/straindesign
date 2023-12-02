@@ -25,7 +25,7 @@ jobs:
         python-version: ['3.7', '3.8', '3.9', '3.10', '3.11']
         package-manager: ['pip','conda','conda_env']
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Cache Conda packages
         uses: actions/cache@v2
         with:
@@ -43,7 +43,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
       - name: Set up Python
-        uses: actions/setup-python@v3
+        uses: actions/setup-python@v4
         with:
           python-version: ${{ matrix.python-version }}
       - name: Java Setup
