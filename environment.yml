@@ -4,8 +4,11 @@ channels:
   - conda-forge
   - defaults
 dependencies:
+  - python
+  - pip
   - cobra
-  - jpype1
   - scipy
+  - jpype1
+  - psutil
   - straindesign
 prefix: /home/user/miniconda3/envs/cnapy

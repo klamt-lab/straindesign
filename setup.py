@@ -1,20 +1,4 @@
 from setuptools import setup, find_packages
-import pkg_resources
-from setuptools.command.install import install
-import subprocess
-import sys
-
-# This is ugly but necessary, because jpype wouldn't install from conda on macos
-class CustomInstall(install):
-    def run(self):
-        # Ensure jpype1 is installed via pip
-        try:
-            pkg_resources.get_distribution('jpype1')
-        except pkg_resources.DistributionNotFound:
-            subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'jpype1'])
-        
-        # Continue with the standard install
-        install.run(self)
 
 setup(
     name="straindesign",
