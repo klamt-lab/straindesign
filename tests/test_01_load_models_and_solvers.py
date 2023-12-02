@@ -56,20 +56,20 @@ def test_load_solvers(model_small_example,curr_solver):
     assert (solver2 == curr_solver)
 
     # with model-specified solver
-    if curr_solver != SCIP
+    if curr_solver != SCIP:
         model_small_example.solver = curr_solver
         solver3 = sd.select_solver(None, model_small_example)
         assert (solver3 == curr_solver)
 
     # with cobrapy-specified solver
-    if curr_solver != SCIP
+    if curr_solver != SCIP:
         conf = Configuration()
         conf.solver = curr_solver
         solver4 = sd.select_solver()
         assert (solver4 == curr_solver)
 
     # with solver in model that overwrites the global specification
-    if curr_solver != SCIP
+    if curr_solver != SCIP:
         model_small_example.solver = curr_solver
         solver5 = sd.select_solver(None, model_small_example)
         assert (solver5 == curr_solver)
