@@ -26,6 +26,11 @@ jobs:
         package-manager: ['pip','conda','conda_env']
     steps:
       - uses: actions/checkout@v3
+      - name: Java Setup
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin' # See 'Supported distributions' for available options
+          java-version: '17'
       - name: Cache Conda packages
         uses: actions/cache@v2
         with:
