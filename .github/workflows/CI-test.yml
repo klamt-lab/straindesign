@@ -25,12 +25,7 @@ jobs:
         python-version: ['3.7', '3.8', '3.9', '3.10', '3.11']
         package-manager: ['pip','conda','conda_env']
     steps:
-      - uses: actions/checkout@v4
-      - name: Java Setup
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin' # See 'Supported distributions' for available options
-          java-version: '17'
+      - uses: actions/checkout@v3
       - name: Cache Conda packages
         uses: actions/cache@v2
         with:
@@ -51,6 +46,11 @@ jobs:
         uses: actions/setup-python@v3
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Java Setup
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin' # See 'Supported distributions' for available options
+          java-version: '17'
       - name: Set up Conda Environment with Micromamba (conda environment test)
         if: matrix.package-manager == 'conda_env'
         uses: mamba-org/setup-micromamba@v1
