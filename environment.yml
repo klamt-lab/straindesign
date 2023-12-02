@@ -7,8 +7,6 @@ dependencies:
   - python
   - pip
   - cobra
-  - JPype1
-  - conda-forge:gcc
   - scipy
   - psutil
   - straindesign
