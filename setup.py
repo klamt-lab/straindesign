@@ -15,7 +15,6 @@ class CustomInstall(install):
         
         # Continue with the standard install
         install.run(self)
-
 setup(
     name="straindesign",
     version="1.10",
