@@ -40,7 +40,7 @@ def test_solver_loading(curr_solver):
     assert (milp.solve() == ([], 0.0, OPTIMAL))
 
 
-def test_load_solvers(model_small_example):
+def test_load_solvers(model_small_example,curr_solver):
     """Test solver choice."""
 
     # solver selection with no solver specified
@@ -52,21 +52,21 @@ def test_load_solvers(model_small_example):
     assert (solver1 in [CPLEX, GUROBI, GLPK, SCIP])
 
     # with solver specified
-    solver2 = sd.select_solver('scip')
-    assert (solver2 == SCIP)
+    solver2 = sd.select_solver(curr_solver)
+    assert (solver2 == curr_solver)
 
     # with model-specified solver
-    model_small_example.solver = 'glpk'
+    model_small_example.solver = curr_solver
     solver3 = sd.select_solver(None, model_small_example)
-    assert (solver3 == GLPK)
+    assert (solver3 == curr_solver)
 
     # with cobrapy-specified solver
     conf = Configuration()
-    conf.solver = 'cplex'
+    conf.solver = curr_solver
     solver4 = sd.select_solver()
-    assert (solver4 == CPLEX)
+    assert (solver4 == curr_solver)
 
     # with solver in model that overwrites the global specification
-    model_small_example.solver = 'gurobi'
+    model_small_example.solver = curr_solver
     solver5 = sd.select_solver(None, model_small_example)
-    assert (solver5 == GUROBI)
+    assert (solver5 == curr_solver)
