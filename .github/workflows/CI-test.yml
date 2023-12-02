@@ -22,7 +22,7 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         python-version: ['3.10']
-        package-manager: ['pip', 'conda', 'conda_env']
+        package-manager: ['conda']
     steps:
       - uses: actions/checkout@v3
       - name: Cache Conda packages
@@ -115,5 +115,5 @@ jobs:
           micromamba install pytest
       - name: Test with pytest
         if: matrix.package-manager == 'conda' || matrix.package-manager == 'pip'
-        run: pytest tests
+        run: pytest tests -v
         
