@@ -10,7 +10,7 @@ solvers = [GLPK]
 
 # Add GRUOBI to the list if the cplex package is installed
 try:
-    import gurobi
+    import gurobipy
     solvers.append(GUROBI)
 except ImportError:
     pass  # GUROBI is not installed
