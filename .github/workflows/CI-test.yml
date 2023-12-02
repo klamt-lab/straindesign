@@ -80,7 +80,8 @@ jobs:
         with:
           environment-name: straindesign
           micromamba-version: latest
-          package-specs: python=${{ matrix.python-version }}*
+          create-args: >-
+            python=${{ matrix.python-version }}*
           post-cleanup: 'all'
       - name: Activate Micromamba environment
         if: matrix.package-manager == 'conda'
