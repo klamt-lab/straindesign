@@ -64,7 +64,7 @@ jobs:
           environment-file: environment.yml
           create-args: >-
             python=${{ matrix.python-version }}
-          post-cleanup: 'all'
+          post-cleanup: 'none'
       - name: Build for PyPI (if pip)
         if: matrix.package-manager == 'pip'
         run: |
@@ -93,7 +93,7 @@ jobs:
           micromamba-version: latest
           create-args: >-
             python=${{ matrix.python-version }}
-          post-cleanup: 'all'
+          post-cleanup: 'none'
       - name: Activate Micromamba environment
         if: matrix.package-manager == 'conda'
         run: |
