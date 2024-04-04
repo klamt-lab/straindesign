@@ -95,11 +95,11 @@ in the main folder. Through the installation with -e, updates from a 'git pull' 
 JAVA_HOME path:
 ---------------
 
-In some cases, installing the StrainDesign python package may fail with the error:
+In some cases, installing or using the StrainDesign python package may fail with the error:
 
 ``JVMNotFoundException: No JVM shared library file (libjli.dylib) found. Try setting up the JAVA_HOME environment variable.``
 
-In this case you need to set your `JAVA_HOME environment variable <https://www.baeldung.com/java-home-on-windows-7-8-10-mac-os-x-linux>`_.
+In this case, ensure you have java (JRE or JDK) installed and your `JAVA_HOME environment variable is set <https://www.baeldung.com/java-home-on-windows-7-8-10-mac-os-x-linux>`_.
 
 If you're on OS X and get the error
 
