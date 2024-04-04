@@ -59,15 +59,15 @@ Guides and examples are provided as `Jupyter notebooks at docs/source/examples <
 |pic1| |pic2| |pic3| 
 
 .. |pic1| image:: docs/puzzle.svg
-  :width: 250px
+  :width: 200px
   :alt: Network interventions
    
 .. |pic2| image:: https://github.com/klamt-lab/straindesign/blob/host_gifs/docs/network.svg
-  :width: 250px
+  :width: 200px
   :alt: Network interventions
   
 .. |pic3| image:: https://github.com/klamt-lab/straindesign/blob/host_gifs/docs/plot.gif
-  :width: 250px
+  :width: 200px
   :alt: Plot animation
 
 Parts of the compression routine is done by efmtool's compression function (https://csb.ethz.ch/tools/software/efmtool.html\ :html:`<a href="#ref2"><sup>[2]</sup></a>`). Therefore some source code from the `efmtool_link <https://github.com/cnapy-org/efmtool_link>`_ package was adopted.
