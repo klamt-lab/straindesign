@@ -259,6 +259,8 @@ class SDModule(Dict):
                 self[INNER_OPT_SENSE] = MAXIMIZE
             if self[INNER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE]:
                 raise Exception('Inner optimization sense must be "' + MINIMIZE + '" or "' + MAXIMIZE + '" (default).')
+            if self[MIN_GCP] is None:
+                self[MIN_GCP] = 0.0
             if self[INNER_OBJECTIVE] == None:
                 raise Exception('When module type is "' + OPTCOUPLE + '", an inner objective function must be provided.')
             if self[PROD_ID] == None:
