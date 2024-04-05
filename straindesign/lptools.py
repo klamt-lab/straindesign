@@ -855,11 +855,11 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
         elif ax_type[0] == 'yield':
             constr += [[{**axes[0][0], **{k: -v * x for k, v in axes[0][1].items()}}, '=', 0]]
         if ax_type[1] == 'rate':
-            sol_vmin = fba(model, constraints=constr, obj=axes[1][0], obj_sense='minimize')
-            sol_vmax = fba(model, constraints=constr, obj=axes[1][0], obj_sense='maximize')
+            sol_vmin = fba(model, constraints=constr, obj=axes[1][0], solver=solver, obj_sense='minimize')
+            sol_vmax = fba(model, constraints=constr, obj=axes[1][0], solver=solver, obj_sense='maximize')
         elif ax_type[1] == 'yield':
-            sol_vmin = yopt(model, constraints=constr, obj_num=axes[1][0], obj_den=axes[1][1], obj_sense='minimize')
-            sol_vmax = yopt(model, constraints=constr, obj_num=axes[1][0], obj_den=axes[1][1], obj_sense='maximize')
+            sol_vmin = yopt(model, constraints=constr, obj_num=axes[1][0], obj_den=axes[1][1], solver=solver, obj_sense='minimize')
+            sol_vmax = yopt(model, constraints=constr, obj_num=axes[1][0], obj_den=axes[1][1], solver=solver, obj_sense='maximize')
         lb[i] = ceil_dec(sol_vmin.objective_value, 9)
         ub[i] = floor_dec(sol_vmax.objective_value, 9)
 

@@ -183,7 +183,7 @@ class GLPK_MILP_LP():
             glp_add_rows(self.glpk, A_ineq.shape[0] + A_eq.shape[0] + A_indic.shape[0])
             eq_type = [GLP_UP] * len(b_ineq) + [GLP_FX] * len(b_eq) + [GLP_UP] * len(b_indic)
             for i, t, b in zip(range(len(b_ineq + b_eq + b_indic)), eq_type, b_ineq + b_eq + b_indic):
-                glp_set_row_bnds(self.glpk, i + 1, t, b, b)
+                glp_set_row_bnds(self.glpk, i + 1, t, float(b), float(b))
 
             A = sparse.vstack((A_ineq, A_eq, A_indic), 'coo')
             ia = intArray(A.nnz + 1)
@@ -201,7 +201,7 @@ class GLPK_MILP_LP():
         self.lp_params = glp_smcp()
         glp_init_smcp(self.lp_params)
         self.max_tlim = self.lp_params.tm_lim
-        self.lp_params.tol_bnd = 1e-9
+        # self.lp_params.tol_bnd = 1e-9
         self.lp_params.msg_lev = 0
         # MILP parameters
         if self.ismilp:
@@ -368,13 +368,13 @@ class GLPK_MILP_LP():
         type = [glp_get_col_type(self.glpk, i + 1) for i in setvars]
         for i, l, u, t in zip(setvars, lb, ub, type):
             if t in [GLP_FR, GLP_LO] and isinf(u):
-                glp_set_col_bnds(self.glpk, i + 1, t, l, u)
+                glp_set_col_bnds(self.glpk, i + 1, t, float(l), float(u))
             elif t == GLP_UP and isinf(u):
-                glp_set_col_bnds(self.glpk, i + 1, GLP_FR, l, u)
+                glp_set_col_bnds(self.glpk, i + 1, GLP_FR, float(l), float(u))
             elif t in [GLP_LO, GLP_DB, GLP_FX] and not isinf(u) and l < u:
-                glp_set_col_bnds(self.glpk, i + 1, GLP_DB, l, u)
+                glp_set_col_bnds(self.glpk, i + 1, GLP_DB, float(l), float(u))
             elif t in [GLP_LO, GLP_DB, GLP_FX] and not isinf(u) and l == u:
-                glp_set_col_bnds(self.glpk, i + 1, GLP_FX, l, u)
+                glp_set_col_bnds(self.glpk, i + 1, GLP_FX, float(l), float(u))
 
     def set_time_limit(self, t):
         """Set the computation time limit (in seconds)"""
@@ -413,9 +413,9 @@ class GLPK_MILP_LP():
                 val[i + 1] = float(v)
             glp_set_mat_row(self.glpk, numrows + j + 1, numvars, col, val)
             if isinf(b_ineq[j]):
-                glp_set_row_bnds(self.glpk, numrows + j + 1, GLP_FR, -inf, b_ineq[j])
+                glp_set_row_bnds(self.glpk, numrows + j + 1, GLP_FR, -inf, float(b_ineq[j]))
             else:
-                glp_set_row_bnds(self.glpk, numrows + j + 1, GLP_UP, -inf, b_ineq[j])
+                glp_set_row_bnds(self.glpk, numrows + j + 1, GLP_UP, -inf, float(b_ineq[j]))
 
     def add_eq_constraints(self, A_eq, b_eq):
         """Add equality constraints to the model
@@ -442,7 +442,7 @@ class GLPK_MILP_LP():
                 col[i + 1] = i + 1
                 val[i + 1] = float(v)
             glp_set_mat_row(self.glpk, numrows + j + 1, numvars, col, val)
-            glp_set_row_bnds(self.glpk, numrows + j + 1, GLP_FX, b_eq[j], b_eq[j])
+            glp_set_row_bnds(self.glpk, numrows + j + 1, GLP_FX, float(b_eq[j]), float(b_eq[j]))
 
     def set_ineq_constraint(self, idx, a_ineq, b_ineq):
         """Replace a specific inequality constraint
@@ -467,9 +467,9 @@ class GLPK_MILP_LP():
             val[i + 1] = float(v)
         glp_set_mat_row(self.glpk, idx + 1, numvars, col, val)
         if isinf(b_ineq):
-            glp_set_row_bnds(self.glpk, idx + 1, GLP_FR, -inf, b_ineq)
+            glp_set_row_bnds(self.glpk, idx + 1, GLP_FR, -inf, float(b_ineq))
         else:
-            glp_set_row_bnds(self.glpk, idx + 1, GLP_UP, -inf, b_ineq)
+            glp_set_row_bnds(self.glpk, idx + 1, GLP_UP, -inf, float(b_ineq))
 
     def getSolution(self, status) -> list:
         """Retrieve solution from GLPK backend"""
