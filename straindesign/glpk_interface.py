@@ -201,7 +201,7 @@ class GLPK_MILP_LP():
         self.lp_params = glp_smcp()
         glp_init_smcp(self.lp_params)
         self.max_tlim = self.lp_params.tm_lim
-        # self.lp_params.tol_bnd = 1e-9
+        self.lp_params.tol_bnd = 1e-9
         self.lp_params.msg_lev = 0
         # MILP parameters
         if self.ismilp:
