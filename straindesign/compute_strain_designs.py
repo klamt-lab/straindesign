@@ -156,7 +156,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
-        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT
+        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, "myseed"
     }
     logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
@@ -262,6 +262,9 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     if 'compress' not in kwargs:
         kwargs['compress'] = True
 
+    if 'myseed' not in kwargs:
+        kwargs['myseed'] = 1
+        
     if kwargs['gene_kos']:
         orig_gko_cost = uncmp_gko_cost
         orig_gki_cost = uncmp_gki_cost
@@ -380,14 +383,17 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     if REGCOST in kwargs1:
         kwargs1.pop(REGCOST)
 
-    kwargs_milp = {k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M']}
+    kwargs_milp = {k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M', 'myseed']}
     kwargs_milp.update({KOCOST: cmp_ko_cost})
     kwargs_milp.update({KICOST: cmp_ki_cost})
     kwargs_milp.update({'essential_kis': essential_kis})
     logging.info("Finished preprocessing:")
     logging.info("  Model size: " + str(len(cmp_model.reactions)) + " reactions, " + str(len(cmp_model.metabolites)) + " metabolites")
     logging.info("  " + str(len(cmp_ko_cost) + len(cmp_ki_cost) - len(essential_kis)) + " targetable reactions")
+    logging.info("  " + str(kwargs['myseed']) + " seed ")
 
+    
+    
     sd_milp = SDMILP(cmp_model, sd_modules, **kwargs_milp)
 
     kwargs_computation = {}
@@ -402,6 +408,9 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         solution_approach = kwargs.pop(SOLUTION_APPROACH)
     else:
         solution_approach = BEST
+    
+
+    
     # solve MILP
     if solution_approach == ANY:
         cmp_sd_solution = sd_milp.compute(**kwargs_computation)
@@ -425,6 +434,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     sd_solutions = SDSolutions(orig_model, sd, cmp_sd_solution.status, setup)
     logging.info(str(len(sd)) + ' solutions found.')
 
+
+    
     return sd_solutions
 
 

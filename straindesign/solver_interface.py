@@ -101,7 +101,7 @@ class MILP_LP(object):
     """
 
     def __init__(self, **kwargs):
-        allowed_keys = {'c', 'A_ineq', 'b_ineq', 'A_eq', 'b_eq', 'lb', 'ub', 'vtype', 'indic_constr', 'M', 'solver', 'skip_checks', 'tlim'}
+        allowed_keys = {'c', 'A_ineq', 'b_ineq', 'A_eq', 'b_eq', 'lb', 'ub', 'vtype', 'indic_constr', 'M', 'solver', 'skip_checks', 'tlim', 'myseed'}
         # set all keys passed in kwargs
         for key, value in kwargs.items():
             if key in allowed_keys:
@@ -181,7 +181,7 @@ class MILP_LP(object):
         if self.solver == CPLEX:
             from straindesign.cplex_interface import Cplex_MILP_LP
             self.backend = Cplex_MILP_LP(self.c, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq, self.lb, self.ub, self.vtype,
-                                         self.indic_constr)
+                                         self.indic_constr,self.myseed)
         elif self.solver == GUROBI:
             from straindesign.gurobi_interface import Gurobi_MILP_LP
             self.backend = Gurobi_MILP_LP(self.c, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq, self.lb, self.ub, self.vtype,
