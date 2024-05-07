@@ -93,7 +93,7 @@ class Cplex_MILP_LP(Cplex):
             A CPLEX MILP/LP interface class.
     """
 
-    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None):
+    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None, myseed=1):
         super().__init__()
         self.objective.set_sense(self.objective.sense.minimize)
         try:
@@ -143,11 +143,12 @@ class Cplex_MILP_LP(Cplex):
         if 'B' in vtype or 'I' in vtype:
             # set usable working memory to 3/4 of the total available memory
             self.parameters.workmem.set(round(virtual_memory().total / 1024 / 1024 * 0.75))
-            # self.parameters.threads.set(cpu_count())
+            #self.parameters.threads.set(16)
             # yield only optimal solutions in pool
-            seed = randint(0, _const.CPX_BIGINT)
-            # logging.info('  MILP Seed: '+str(seed))
-            self.parameters.randomseed = seed
+            #seed = randint(0, _const.CPX_BIGINT)
+           
+            logging.info('  MILP Seed: '+str(myseed))
+            self.parameters.randomseed = myseed
             self.parameters.mip.pool.absgap.set(0.0)
             self.parameters.mip.pool.relgap.set(0.0)
             self.parameters.mip.pool.intensity.set(4)

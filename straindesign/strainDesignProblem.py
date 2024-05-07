@@ -91,7 +91,7 @@ class SDProblem:
     """
 
     def __init__(self, model: Model, sd_modules: List[SDModule], *args, **kwargs):
-        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis'}
+        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis', "myseed"}
         # set all keys passed in kwargs
         for key, value in dict(kwargs).items():
             if key in allowed_keys:
@@ -136,6 +136,8 @@ class SDProblem:
             self.ki_cost = {}
         if self.essential_kis is None:
             self.essential_kis = set()
+        if self.myseed is None:
+            self.myseed = 1
         self.ko_cost = [float(self.ko_cost.get(key)) if (key in self.ko_cost.keys()) else np.nan for key in reac_ids]
         self.ki_cost = [float(self.ki_cost.get(key)) if (key in self.ki_cost.keys()) else np.nan for key in reac_ids]
         self.ko_cost = [self.ko_cost[i] if np.isnan(self.ki_cost[i]) else np.nan for i in range(numr)]
@@ -500,7 +502,7 @@ class SDProblem:
                 for i, value in pool.imap_unordered(worker_compute, range(num_Ms), chunksize=chunk_size):
                     max_Ax[i] = value
         else:
-            worker_init(M_A, M_A_ineq, M_b_ineq, M_A_eq, M_b_eq, M_lb, M_ub, self.solver)
+            worker_init(M_A, M_A_ineq, M_b_ineq, M_A_eq, M_b_eq, M_lb, M_ub, self.solver, self.myseed)
             for i in range(num_Ms):
                 _, max_Ax[i] = worker_compute(i)
 
@@ -1026,10 +1028,10 @@ def prevent_boundary_knockouts(A_ineq, b_ineq, lb, ub, z_map_constr_ineq, z_map_
     return A_ineq, b_ineq, lb, ub, z_map_constr_ineq
 
 
-def worker_init(A, A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver):
+def worker_init(A, A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver, myseed):
     """Helper function for determining bounds on linear expressions"""
     global lp_glob
-    lp_glob = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb, ub=ub, solver=solver)
+    lp_glob = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb, ub=ub, solver=solver, myseed=myseed)
     if lp_glob == CPLEX:
         lp_glob.backend.parameters.lpmethod.set(1)
         if Configuration().processes > 1:
