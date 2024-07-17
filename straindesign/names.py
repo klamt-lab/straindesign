@@ -106,6 +106,8 @@
         
         POPULATE = 'populate'
         
+        SEED = 'seed'
+        
     Analysis
     
         MAXIMIZE = 'maximize'
@@ -160,6 +162,7 @@ SOLUTION_APPROACH = 'solution_approach'
 ANY = 'any'
 BEST = 'best'
 POPULATE = 'populate'
+SEED = 'seed'
 
 # Analysis
 MAXIMIZE = 'maximize'

@@ -91,7 +91,7 @@ class SDProblem:
     """
 
     def __init__(self, model: Model, sd_modules: List[SDModule], *args, **kwargs):
-        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis'}
+        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis', SEED}
         # set all keys passed in kwargs
         for key, value in dict(kwargs).items():
             if key in allowed_keys:
@@ -263,7 +263,7 @@ class SDProblem:
             # 4. connect primal w/ undesired region and dual w/o undesired region (i.e. biomass) via c = c_inner.
             A_ineq_p = sparse.block_diag((A_ineq_v, A_ineq_dual)).tocsr()
             b_ineq_p = b_ineq_v + b_ineq_dual
-            A_eq_p = sparse.vstack((sparse.block_diag((A_eq_v, A_eq_dual)), sparse.hstack((c_v, c_inner_dual)))).tocsr()
+            A_eq_p = sparse.vstack((sparse.block_diag((A_eq_v, A_eq_dual)), sparse.hstack((sparse.csr_matrix(c_v), sparse.csr_matrix(c_inner_dual))))).tocsr()
             b_eq_p = b_eq_v + b_eq_dual + [0.0]
             lb_p = lb_v + lb_dual
             ub_p = ub_v + ub_dual
@@ -299,7 +299,7 @@ class SDProblem:
             # 5. connect primal w/ undesired region and dual w/o undesired region (i.e. biomass) via c = c_inner.
             A_ineq_p = sparse.block_diag((A_ineq_v, A_ineq_dual)).tocsr()
             b_ineq_p = b_ineq_v + b_ineq_dual
-            A_eq_p = sparse.vstack((sparse.block_diag((A_eq_v, A_eq_dual)), sparse.hstack((c_v, c_inner_dual)))).tocsr()
+            A_eq_p = sparse.vstack((sparse.block_diag((A_eq_v, A_eq_dual)), sparse.hstack((sparse.csr_matrix(c_v), sparse.csr_matrix(c_inner_dual))))).tocsr()
             b_eq_p = b_eq_v + b_eq_dual + [0.0]
             lb_p = lb_v + lb_dual
             ub_p = ub_v + ub_dual
@@ -316,7 +316,7 @@ class SDProblem:
             # 8. Connect outer problem to the dualized combined inner problem to construct min-max problem.
             A_ineq_q = sparse.block_diag((A_ineq_r, A_ineq_dl_mmx)).tocsr()
             b_ineq_q = b_ineq_r + b_ineq_dl_mmx
-            A_eq_q = sparse.vstack((sparse.block_diag((A_eq_r, A_eq_dl_mmx)), sparse.hstack((c_r, c_dl_mmx)))).tocsr()
+            A_eq_q = sparse.vstack((sparse.block_diag((A_eq_r, A_eq_dl_mmx)), sparse.hstack((sparse.csr_matrix(c_r), sparse.csr_matrix(c_dl_mmx))))).tocsr()
             b_eq_q = b_eq_r + b_eq_dl_mmx + [0.0]
             lb_q = lb_r + lb_dl_mmx
             ub_q = ub_r + ub_dl_mmx
@@ -344,7 +344,7 @@ class SDProblem:
             # 8. Create no-production bi-level system.
             A_ineq_b = sparse.block_diag((A_ineq_r, A_ineq_r_dl), format='csr')
             b_ineq_b = b_ineq_r + b_ineq_dl_r_dl
-            A_eq_b = sparse.vstack((sparse.block_diag((A_eq_r, A_eq_dl_r_dl)), sparse.hstack((c_r, c_r_dl))), format='csr')
+            A_eq_b = sparse.vstack((sparse.block_diag((A_eq_r, A_eq_dl_r_dl)), sparse.hstack((sparse.csr_matrix(c_r), sparse.csr_matrix(c_r_dl)))), format='csr')
             b_eq_b = b_eq_r + b_eq_r_dl + [0.0]
             lb_b = lb_r + lb_r_dl
             ub_b = ub_r + ub_r_dl
@@ -500,7 +500,7 @@ class SDProblem:
                 for i, value in pool.imap_unordered(worker_compute, range(num_Ms), chunksize=chunk_size):
                     max_Ax[i] = value
         else:
-            worker_init(M_A, M_A_ineq, M_b_ineq, M_A_eq, M_b_eq, M_lb, M_ub, self.solver)
+            worker_init(M_A, M_A_ineq, M_b_ineq, M_A_eq, M_b_eq, M_lb, M_ub, self.solver, self.seed)
             for i in range(num_Ms):
                 _, max_Ax[i] = worker_compute(i)
 
@@ -847,7 +847,7 @@ def farkas_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
     else:
         A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, lb_f, ub_f, c_d = LP_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p)
     # add constraint b_prim'y or (c_dual'*y) <= -1;
-    A_ineq_f = sparse.vstack((A_ineq_d, c_d)).tocsr()
+    A_ineq_f = sparse.vstack((A_ineq_d,sparse.csr_matrix(c_d))).tocsr()
     b_ineq_f = b_ineq_d + [-1]
     A_eq_f = A_eq_d
     b_eq_f = b_eq_d
@@ -1026,10 +1026,10 @@ def prevent_boundary_knockouts(A_ineq, b_ineq, lb, ub, z_map_constr_ineq, z_map_
     return A_ineq, b_ineq, lb, ub, z_map_constr_ineq
 
 
-def worker_init(A, A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver):
+def worker_init(A, A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver, seed):
     """Helper function for determining bounds on linear expressions"""
     global lp_glob
-    lp_glob = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb, ub=ub, solver=solver)
+    lp_glob = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb, ub=ub, solver=solver, seed=seed)
     if lp_glob == CPLEX:
         lp_glob.backend.parameters.lpmethod.set(1)
         if Configuration().processes > 1:

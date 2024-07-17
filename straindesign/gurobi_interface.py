@@ -18,9 +18,8 @@
 #
 """Gurobi solver interface for LP and MILP"""
 
-from random import randint
 from scipy import sparse
-from numpy import nan, inf, isinf, sum, array
+from numpy import nan, inf, isinf, sum, array, random
 import gurobipy as gp
 from gurobipy import GRB as grb
 from straindesign.names import *
@@ -87,13 +86,16 @@ class Gurobi_MILP_LP(gp.Model):
             A set of indicator constraints stored in an object of IndicatorConstraints
             (see reference manual or docstring).
             
+        seed (int16): (Default: None)
+            An integer value serving as a seed to make MILP solving reproducible.
+            
         Returns:
             (Gurobi_MILP_LP):
             
             A Gurobi MILP/LP interface class.
     """
 
-    def __init__(self, c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype, indic_constr):
+    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None, seed=None):
         super().__init__()
         try:
             numvars = A_ineq.shape[1]
@@ -134,8 +136,10 @@ class Gurobi_MILP_LP(gp.Model):
         self.params.OptimalityTol = 1e-9
         self.params.FeasibilityTol = 1e-9
         if 'B' in vtype or 'I' in vtype:
-            seed = randint(0, grb.MAXINT)
-            # logging.info('  MILP Seed: '+str(seed))
+            if seed is None:
+                # seed = random(0, grb.MAXINT)
+                seed = random.randint(0, 2**16-1)
+                logging.info('  MILP Seed: '+str(seed))
             self.params.Seed = seed
             self.params.IntFeasTol = 1e-9  # (0 is not allowed by Gurobi)
             # yield only optimal solutions in pool

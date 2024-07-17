@@ -18,9 +18,8 @@
 #
 """CPLEX solver interface for LP and MILP"""
 
-from random import randint
 from scipy import sparse
-from numpy import nan, inf, isinf
+from numpy import nan, inf, isinf, random
 from cplex import Cplex, infinity, _const
 from cplex.exceptions import CplexError
 from typing import Tuple, List
@@ -86,14 +85,17 @@ class Cplex_MILP_LP(Cplex):
         indic_constr (IndicatorConstraints): (Default: None)
             A set of indicator constraints stored in an object of IndicatorConstraints
             (see reference manual or docstring).
-            
+        
+        seed (int16): (Default: None)
+            An integer value serving as a seed to make MILP solving reproducible.
+        
         Returns:
             (Cplex_MILP_LP):
             
             A CPLEX MILP/LP interface class.
     """
 
-    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None):
+    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None, seed=None):
         super().__init__()
         self.objective.set_sense(self.objective.sense.minimize)
         try:
@@ -143,11 +145,12 @@ class Cplex_MILP_LP(Cplex):
         if 'B' in vtype or 'I' in vtype:
             # set usable working memory to 3/4 of the total available memory
             self.parameters.workmem.set(round(virtual_memory().total / 1024 / 1024 * 0.75))
-            # self.parameters.threads.set(cpu_count())
+            #self.parameters.threads.set(16)
             # yield only optimal solutions in pool
-            seed = randint(0, _const.CPX_BIGINT)
-            # logging.info('  MILP Seed: '+str(seed))
-            self.parameters.randomseed = seed
+            if seed is None:
+                # seed = random.randint(0, _const.CPX_BIGINT)
+                seed = random.randint(0, 2**16-1)
+            self.parameters.randomseed.set(seed)
             self.parameters.mip.pool.absgap.set(0.0)
             self.parameters.mip.pool.relgap.set(0.0)
             self.parameters.mip.pool.intensity.set(4)

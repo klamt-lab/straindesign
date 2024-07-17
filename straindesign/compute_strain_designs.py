@@ -156,7 +156,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
-        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT
+        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED
     }
     logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
@@ -194,6 +194,12 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         model_id = kwargs.pop('advanced')
     if 'use_scenario' in kwargs:
         model_id = kwargs.pop('use_scenario')
+
+    if SEED not in kwargs:
+        kwargs[SEED] = np.random.default_rng().integers(1, 2**16 - 1)
+        logging.info("  Using random seed " + str(kwargs[SEED]))
+    else:
+        logging.info("  Using seed " + str(kwargs[SEED]))
 
     # check all keys passed in kwargs
     for key, value in dict(kwargs).items():
@@ -261,7 +267,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     orig_reg_cost = deepcopy(uncmp_reg_cost)
     if 'compress' not in kwargs:
         kwargs['compress'] = True
-
     if kwargs['gene_kos']:
         orig_gko_cost = uncmp_gko_cost
         orig_gki_cost = uncmp_gki_cost
@@ -380,7 +385,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     if REGCOST in kwargs1:
         kwargs1.pop(REGCOST)
 
-    kwargs_milp = {k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M']}
+    kwargs_milp = {k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M', SEED]}
     kwargs_milp.update({KOCOST: cmp_ko_cost})
     kwargs_milp.update({KICOST: cmp_ki_cost})
     kwargs_milp.update({'essential_kis': essential_kis})
@@ -402,6 +407,9 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         solution_approach = kwargs.pop(SOLUTION_APPROACH)
     else:
         solution_approach = BEST
+    
+
+    
     # solve MILP
     if solution_approach == ANY:
         cmp_sd_solution = sd_milp.compute(**kwargs_computation)
@@ -425,6 +433,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     sd_solutions = SDSolutions(orig_model, sd, cmp_sd_solution.status, setup)
     logging.info(str(len(sd)) + ' solutions found.')
 
+
+    
     return sd_solutions
 
 
