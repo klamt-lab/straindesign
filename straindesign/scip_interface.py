@@ -18,9 +18,8 @@
 #
 """SCIP and SoPlex solver interface for LP and MILP"""
 
-from random import randint
 from scipy import sparse
-from numpy import isnan, nan, inf, isinf, sum, nonzero
+from numpy import isnan, nan, inf, isinf, sum, nonzero, random
 import pyscipopt as pso
 from straindesign.names import *
 from typing import Tuple, List
@@ -85,14 +84,17 @@ class SCIP_MILP(pso.Model):
         indic_constr (IndicatorConstraints): (Default: None)
             A set of indicator constraints stored in an object of IndicatorConstraints
             (see reference manual or docstring).
-            
+        
+        seed (int16): (Default: None)
+            An integer value serving as a seed to make MILP solving reproducible.
+        
         Returns:
             (SCIP_MILP):
             
             A SCIP MILP interface class.
     """
 
-    def __init__(self, c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype, indic_constr):
+    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None, seed = None):
         super().__init__()
         # uncomment to forward SCIP output to python terminal
         # self.redirectOutput()
@@ -160,8 +162,10 @@ class SCIP_MILP(pso.Model):
         self.max_tlim = self.getParam('limits/time')
         self.setParam('display/verblevel', 0)
         if 'B' in vtype or 'I' in vtype:
-            seed = seed = randint(0, 2**31 - 1)
-            # logging.info('  MILP Seed: '+str(seed))
+            if seed is None:
+                # seed = randint(0, 2**31 - 1)
+                seed = random.randint(2**16 - 1)
+                logging.info('  MILP Seed: '+str(seed))
             self.setParam('randomization/randomseedshift', seed)
         # self.enableReoptimization()
         # self.setParam('display/lpinfo',False)

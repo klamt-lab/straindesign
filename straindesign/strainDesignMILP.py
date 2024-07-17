@@ -100,7 +100,7 @@ class SDMILP(SDProblem, MILP_LP):
                          indic_constr=self.indic_constr,
                          M=self.M,
                          solver=self.solver,
-                         myseed=self.myseed)
+                         seed=self.seed)
 
     def add_exclusion_constraints(self, z):
         """Exclude binary solution in z and all supersets from MILP"""
@@ -214,7 +214,7 @@ class SDMILP(SDProblem, MILP_LP):
                          lb=[self.cont_MILP.lb[i] for i in active_vars],
                          ub=[self.cont_MILP.ub[i] for i in active_vars],
                          solver=self.solver,
-                         myseed=self.myseed)
+                         seed=self.seed)
             valid[i] = not np.isnan(lp.slim_solve())
         return valid
 

@@ -96,8 +96,8 @@ class GLPK_MILP_LP():
             
             A GLPK MILP/LP interface class.
     """
-
-    def __init__(self, c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype, indic_constr, M=None):
+    
+    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None, M=None):
         self.glpk = glp_create_prob()
         # Careful with indexing! GLPK indexing starts with 1 and not with 0
         try:

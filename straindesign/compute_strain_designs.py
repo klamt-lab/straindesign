@@ -156,7 +156,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
-        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, "myseed"
+        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED
     }
     logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
@@ -194,6 +194,12 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         model_id = kwargs.pop('advanced')
     if 'use_scenario' in kwargs:
         model_id = kwargs.pop('use_scenario')
+
+    if SEED not in kwargs:
+        kwargs[SEED] = np.random.default_rng().integers(1, 2**16 - 1)
+        logging.info("  Using random seed " + str(kwargs[SEED]))
+    else:
+        logging.info("  Using seed " + str(kwargs[SEED]))
 
     # check all keys passed in kwargs
     for key, value in dict(kwargs).items():
@@ -261,10 +267,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     orig_reg_cost = deepcopy(uncmp_reg_cost)
     if 'compress' not in kwargs:
         kwargs['compress'] = True
-
-    if 'myseed' not in kwargs:
-        kwargs['myseed'] = 1
-        
     if kwargs['gene_kos']:
         orig_gko_cost = uncmp_gko_cost
         orig_gki_cost = uncmp_gki_cost
@@ -383,17 +385,14 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     if REGCOST in kwargs1:
         kwargs1.pop(REGCOST)
 
-    kwargs_milp = {k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M', 'myseed']}
+    kwargs_milp = {k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M', SEED]}
     kwargs_milp.update({KOCOST: cmp_ko_cost})
     kwargs_milp.update({KICOST: cmp_ki_cost})
     kwargs_milp.update({'essential_kis': essential_kis})
     logging.info("Finished preprocessing:")
     logging.info("  Model size: " + str(len(cmp_model.reactions)) + " reactions, " + str(len(cmp_model.metabolites)) + " metabolites")
     logging.info("  " + str(len(cmp_ko_cost) + len(cmp_ki_cost) - len(essential_kis)) + " targetable reactions")
-    logging.info("  " + str(kwargs['myseed']) + " seed ")
 
-    
-    
     sd_milp = SDMILP(cmp_model, sd_modules, **kwargs_milp)
 
     kwargs_computation = {}
