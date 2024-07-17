@@ -641,7 +641,7 @@ def yopt(model, **kwargs) -> Solution:
     A_ineq_lfp = sparse.hstack((A_ineq, sparse.csr_matrix([-b for b in b_ineq]).transpose()), 'csr')
     b_ineq_lfp = [0 for _ in b_ineq]
     A_eq_lfp = sparse.vstack((  sparse.hstack((A_eq,sparse.csr_matrix([-b for b in b_eq]).transpose())),\
-                            sparse.hstack((obj_den,0))),'csr')
+                            sparse.hstack((obj_den,sparse.csr_matrix((1, 1))))),'csr')
     opt_cx = inf
     for d in den_sign:
         b_eq_lfp = [0 for _ in b_eq] + [d]

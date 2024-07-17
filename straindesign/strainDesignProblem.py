@@ -263,7 +263,7 @@ class SDProblem:
             # 4. connect primal w/ undesired region and dual w/o undesired region (i.e. biomass) via c = c_inner.
             A_ineq_p = sparse.block_diag((A_ineq_v, A_ineq_dual)).tocsr()
             b_ineq_p = b_ineq_v + b_ineq_dual
-            A_eq_p = sparse.vstack((sparse.block_diag((A_eq_v, A_eq_dual)), sparse.hstack((c_v, c_inner_dual)))).tocsr()
+            A_eq_p = sparse.vstack((sparse.block_diag((A_eq_v, A_eq_dual)), sparse.hstack((sparse.csr_matrix(c_v), sparse.csr_matrix(c_inner_dual))))).tocsr()
             b_eq_p = b_eq_v + b_eq_dual + [0.0]
             lb_p = lb_v + lb_dual
             ub_p = ub_v + ub_dual
@@ -847,7 +847,7 @@ def farkas_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
     else:
         A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, lb_f, ub_f, c_d = LP_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p)
     # add constraint b_prim'y or (c_dual'*y) <= -1;
-    A_ineq_f = sparse.vstack((A_ineq_d, c_d)).tocsr()
+    A_ineq_f = sparse.vstack((A_ineq_d,sparse.csr_matrix(c_d))).tocsr()
     b_ineq_f = b_ineq_d + [-1]
     A_eq_f = A_eq_d
     b_eq_f = b_eq_d
