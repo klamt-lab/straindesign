@@ -113,11 +113,11 @@ jobs:
         run: |
           micromamba install -c gurobi gurobi
       - name: Install cplex (conda)
-        if: matrix.package-manager == 'conda' && matrix.python-version != '3.11' && matrix.python-version != '3.12' && matrix.python-version != '3.13'
+        if: matrix.package-manager == 'conda' && matrix.python-version != '3.12' && matrix.python-version != '3.13'
         run: |
           micromamba install -c ibmdecisionoptimization cplex
       - name: Install scip (conda)
-        if: matrix.package-manager == 'conda' && matrix.python-version != '3.11' && matrix.python-version != '3.12' && matrix.python-version != '3.13'
+        if: matrix.package-manager == 'conda' && matrix.python-version != '3.12' && matrix.python-version != '3.13'
         run: |
           micromamba install -c conda-forge pyscipopt scip=8.0.0
       - name: Install pytest (conda)
