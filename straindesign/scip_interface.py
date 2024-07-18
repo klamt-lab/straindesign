@@ -164,9 +164,15 @@ class SCIP_MILP(pso.Model):
         if 'B' in vtype or 'I' in vtype:
             if seed is None:
                 # seed = randint(0, 2**31 - 1)
-                seed = random.randint(2**16 - 1)
+                seed = int(random.randint(2**16 - 1))
                 logging.info('  MILP Seed: '+str(seed))
             self.setParam('randomization/randomseedshift', seed)
+            # Probably all seeds are set by the randomseedshift??
+            # self.setParam('branching/random/seed', seed)
+            # self.setParam('branching/relpscost/startrandseed', seed)
+            # self.setParam('heuristics/alns/seed', seed)
+            # self.setParam('heuristics/scheduler/seed', seed)
+            # self.setParam('separating/zerohalf/initseed', seed)
         # self.enableReoptimization()
         # self.setParam('display/lpinfo',False)
         # self.setParam('reoptimization/enable',True)

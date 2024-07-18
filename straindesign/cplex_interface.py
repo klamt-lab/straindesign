@@ -149,7 +149,7 @@ class Cplex_MILP_LP(Cplex):
             # yield only optimal solutions in pool
             if seed is None:
                 # seed = random.randint(0, _const.CPX_BIGINT)
-                seed = random.randint(0, 2**16-1)
+                seed = int(random.randint(0, 2**16-1))
             self.parameters.randomseed.set(seed)
             self.parameters.mip.pool.absgap.set(0.0)
             self.parameters.mip.pool.relgap.set(0.0)

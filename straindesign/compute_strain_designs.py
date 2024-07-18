@@ -196,7 +196,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         model_id = kwargs.pop('use_scenario')
 
     if SEED not in kwargs:
-        kwargs[SEED] = np.random.default_rng().integers(1, 2**16 - 1)
+        kwargs[SEED] = int(np.random.default_rng().integers(1, 2**16 - 1))
         logging.info("  Using random seed " + str(kwargs[SEED]))
     else:
         logging.info("  Using seed " + str(kwargs[SEED]))

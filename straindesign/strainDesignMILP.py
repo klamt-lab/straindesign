@@ -25,7 +25,6 @@ import time
 from typing import Dict, List, Tuple
 from straindesign import SDProblem, SDSolutions, MILP_LP, SDModule, Model
 from straindesign.names import *
-from warnings import warn
 import logging
 
 
@@ -483,12 +482,12 @@ class SDMILP(SDProblem, MILP_LP):
             return self.build_sd_solution([{}], OPTIMAL, POPULATE)
         # otherwise continue
         if self.solver == 'scip':
-            warn("SCIP does not natively support solution pool generation. "+ \
+            logging.warning("SCIP does not natively support solution pool generation. "+ \
                 "An high-level implementation of populate is used. " + \
                 "Consider using compute_optimal instead of enumerate, as " + \
                 "it returns the same results but faster.")
         if self.solver == 'glpk':
-            warn("GLPK does not natively support solution pool generation. "+ \
+            logging.warning("GLPK does not natively support solution pool generation. "+ \
                 "An instable high-level implementation of populate is used. "
                 "Consider using compute_optimal instead of enumerate, as " + \
                 "it returns the same results but faster." )
