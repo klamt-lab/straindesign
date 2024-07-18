@@ -35,7 +35,6 @@ from numpy.linalg import matrix_rank
 from contextlib import redirect_stdout, redirect_stderr
 from io import StringIO
 import matplotlib.pyplot as plt
-from matplotlib.cm import get_cmap
 from matplotlib import use as set_matplotlib_backend
 import logging
 
@@ -765,8 +764,8 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
             
         show (optional (bool)): (Default: True)
             Should matplotlib show the plot or should it stop after plot generation. show=False can
-            be useful if multiple flux spaces should be plotted at once or the plot should be modified
-            before been shown.
+            be useful if flux spaces should be plotted and saved in a non-interactive environment, 
+            multiple flux spaces should be plotted at once or the plot should be modified before been shown.
         
         points (optional (int)): (Default: 25 (3D) or 40 (2D))
             The number of intervals in which the flux space should be sampled along each axis. A higher
@@ -901,7 +900,11 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
         plot1.axes.set_xlim(ax_limits[0][0] * 1.05, ax_limits[0][1] * 1.05)
         plot1.axes.set_ylim(ax_limits[1][0] * 1.05, ax_limits[1][1] * 1.05)
         if show:
-            plt.show()
+            try:
+                plt.show()
+            except UserWarning as e:
+                if 'FigureCanvasTemplate is non-interactive' in str(e):
+                    logging.warning('warning: Interactive plot not supported in current execution environment.')
         return datapoints, triang, plot1
 
     elif num_axes == 3:
@@ -1016,10 +1019,14 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
         plot1 = ax.plot_trisurf(x, y, z, triangles=triang, linewidth=lw, edgecolors='black', antialiased=True,
                                 alpha=0.90)  #  array=colors, cmap=plt.cm.winter
         colors = colors / max(colors)
-        colors = get_cmap("Spectral")(colors)
+        colors = plt.get_cmap("Spectral")(colors)
         plot1.set_fc(colors)
         if show:
-            plt.show()
+            try:
+                plt.show()
+            except UserWarning as e:
+                if 'FigureCanvasTemplate is non-interactive' in str(e):
+                    logging.warning('warning: Interactive plot not supported in current execution environment.')
         return datapoints, triang, plot1
 
 

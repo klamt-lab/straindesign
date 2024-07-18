@@ -138,7 +138,7 @@ class Gurobi_MILP_LP(gp.Model):
         if 'B' in vtype or 'I' in vtype:
             if seed is None:
                 # seed = random(0, grb.MAXINT)
-                seed = random.randint(0, 2**16-1)
+                seed = int(random.randint(0, 2**16-1))
                 logging.info('  MILP Seed: '+str(seed))
             self.params.Seed = seed
             self.params.IntFeasTol = 1e-9  # (0 is not allowed by Gurobi)
