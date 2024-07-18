@@ -22,7 +22,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ['3.7', '3.8', '3.9', '3.10', '3.11']
+        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
         package-manager: ['pip','conda','conda_env']
         exclude:
         - os: macos-latest
@@ -113,11 +113,11 @@ jobs:
         run: |
           micromamba install -c gurobi gurobi
       - name: Install cplex (conda)
-        if: matrix.package-manager == 'conda' && matrix.python-version != '3.11' && matrix.python-version != '3.12'
+        if: matrix.package-manager == 'conda' && matrix.python-version != '3.11' && matrix.python-version != '3.12' && matrix.python-version != '3.13'
         run: |
           micromamba install -c ibmdecisionoptimization cplex
       - name: Install scip (conda)
-        if: matrix.package-manager == 'conda' && matrix.python-version != '3.11' && matrix.python-version != '3.12'
+        if: matrix.package-manager == 'conda' && matrix.python-version != '3.11' && matrix.python-version != '3.12' && matrix.python-version != '3.13'
         run: |
           micromamba install -c conda-forge pyscipopt scip=8.0.0
       - name: Install pytest (conda)
