@@ -121,14 +121,14 @@ class SCIP_MILP(pso.Model):
 
         self.constr = []
         # add inequality constraints
-        ineqs = [self.addCons(pso.Expr() <= b_i) for b_i in b_ineq]
+        ineqs = [self.addCons(pso.Expr() <= b_i, modifiable=True) for b_i in b_ineq]
         for row, a_ineq in zip(ineqs, A_ineq):
             X = [x[i] for i in a_ineq.indices]
             for col, coeff in zip(X, a_ineq.data):
                 self.addConsCoeff(row, col, coeff)
         self.constr += ineqs
         # add equality constraints
-        eqs = [self.addCons(pso.Expr() == b_i) for b_i in b_eq]
+        eqs = [self.addCons(pso.Expr() == b_i, modifiable=True) for b_i in b_eq]
         for row, a_eq in zip(eqs, A_eq):
             X = [x[i] for i in a_eq.indices]
             for col, coeff in zip(X, a_eq.data):
@@ -160,13 +160,14 @@ class SCIP_MILP(pso.Model):
 
         # set parameters
         self.max_tlim = self.getParam('limits/time')
-        self.setParam('display/verblevel', 0)
         if 'B' in vtype or 'I' in vtype:
             if seed is None:
                 # seed = randint(0, 2**31 - 1)
                 seed = int(random.randint(2**16 - 1))
                 logging.info('  MILP Seed: '+str(seed))
             self.setParam('randomization/randomseedshift', seed)
+            self.setEmphasis(0)
+            # self.setParam('constraints/indicator/forcerestart',True)
             # Probably all seeds are set by the randomseedshift??
             # self.setParam('branching/random/seed', seed)
             # self.setParam('branching/relpscost/startrandseed', seed)
@@ -176,6 +177,18 @@ class SCIP_MILP(pso.Model):
         # self.enableReoptimization()
         # self.setParam('display/lpinfo',False)
         # self.setParam('reoptimization/enable',True)
+        self.setParam('display/verblevel', 0)
+        
+        # SCIP_PARAMEMPHASIS_DEFAULT     = 0,        /**< use default values */
+        # SCIP_PARAMEMPHASIS_CPSOLVER    = 1,        /**< get CP like search (e.g. no LP relaxation) */
+        # SCIP_PARAMEMPHASIS_EASYCIP     = 2,        /**< solve easy problems fast */
+        # SCIP_PARAMEMPHASIS_FEASIBILITY = 3,        /**< detect feasibility fast */
+        # SCIP_PARAMEMPHASIS_HARDLP      = 4,        /**< be capable to handle hard LPs */
+        # SCIP_PARAMEMPHASIS_OPTIMALITY  = 5,        /**< prove optimality fast */
+        # SCIP_PARAMEMPHASIS_COUNTER     = 6,        /**< get a feasible and "fast" counting process */
+        # SCIP_PARAMEMPHASIS_PHASEFEAS   = 7,        /**< feasibility phase settings during 3-phase solving approach */
+        # SCIP_PARAMEMPHASIS_PHASEIMPROVE= 8,        /**< improvement phase settings during 3-phase solving approach */
+        # SCIP_PARAMEMPHASIS_PHASEPROOF  = 9         /**< proof phase settings during 3-phase solving approach */
 
     def solve(self) -> Tuple[List, float, float]:
         """Solve the MILP
@@ -315,6 +328,12 @@ class SCIP_MILP(pso.Model):
         else:
             self.freeTransform()
             self.setObjective(pso.Expr({self.trms[i]: c[i] for i in nonzero(c)[0]}))
+        if all(value == 0 for value in c):
+            self.setEmphasis(1)
+        else:
+            self.setEmphasis(0)
+            self.setParam('display/verblevel', 0)
+        
 
     def set_objective_idx(self, C):
         """Set the objective function with index-value pairs
@@ -326,7 +345,13 @@ class SCIP_MILP(pso.Model):
         else:
             self.freeTransform()
             self.setObjective(pso.Expr({self.trms[c[0]]: c[1] for c in C}))
-
+        if all(value[1] == 0 for value in C):
+            self.setEmphasis(1)
+        else:
+            self.setEmphasis(0)
+            self.setParam('display/verblevel', 0)
+        
+        
     def set_ub(self, ub):
         """Set the upper bounds to a given vector"""
         self.freeTransform()
@@ -358,7 +383,7 @@ class SCIP_MILP(pso.Model):
                 The right hand side vector
         """
         self.freeTransform()
-        ineqs = [self.addCons(pso.Expr() <= b_i) for b_i in b_ineq]
+        ineqs = [self.addCons(pso.Expr() <= b_i, modifiable=True) for b_i in b_ineq]
         for row, a_ineq in zip(ineqs, A_ineq):
             X = [self.vars[i] for i in a_ineq.indices]
             for col, coeff in zip(X, a_ineq.data):
@@ -380,7 +405,7 @@ class SCIP_MILP(pso.Model):
                 The right hand side vector
         """
         self.freeTransform()
-        eqs = [self.addCons(pso.Expr() == b_i) for b_i in b_eq]
+        eqs = [self.addCons(pso.Expr() == b_i,modifiable=True) for b_i in b_eq]
         for row, a_eq in zip(eqs, A_eq):
             X = [self.vars[i] for i in a_eq.indices]
             for col, coeff in zip(X, a_eq.data):
@@ -407,7 +432,7 @@ class SCIP_MILP(pso.Model):
         # changing old constraints would be better but doesn't work
         self.chgRhs(self.constr[idx], None)
         # add new constraint and replace constraint pointer in list
-        self.constr[idx] = self.addCons(pso.Expr() <= 0)
+        self.constr[idx] = self.addCons(pso.Expr() <= 0, modifiable=True)
         for i, a in enumerate(a_ineq):
             self.addConsCoeff(self.constr[idx], self.vars[i], a)
         if isinf(b_ineq):
