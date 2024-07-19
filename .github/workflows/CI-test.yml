@@ -87,7 +87,7 @@ jobs:
       - name: Install pytest (pip)
         if: matrix.package-manager == 'pip'
         run: |
-          pip install pytest
+          pip install pytest pytest-timeout
       - name: Set up Conda Environment with Micromamba
         if: matrix.package-manager == 'conda'
         uses: mamba-org/setup-micromamba@v1
@@ -126,7 +126,7 @@ jobs:
       - name: Install pytest (conda)
         if: matrix.package-manager == 'conda'
         run: |
-          micromamba install pytest
+          micromamba install pytest pytest-timeout
       - name: Test with pytest
         if: matrix.package-manager == 'conda' || matrix.package-manager == 'pip'
         run: pytest tests -v
