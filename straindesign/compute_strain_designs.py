@@ -407,7 +407,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         solution_approach = kwargs.pop(SOLUTION_APPROACH)
     else:
         solution_approach = BEST
-    
+
     # solve MILP
     if solution_approach == ANY:
         cmp_sd_solution = sd_milp.compute(**kwargs_computation)
@@ -431,8 +431,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     sd_solutions = SDSolutions(orig_model, sd, cmp_sd_solution.status, setup)
     logging.info(str(len(sd)) + ' solutions found.')
 
-
-    
     return sd_solutions
 
 

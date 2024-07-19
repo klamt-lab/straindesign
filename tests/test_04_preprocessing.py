@@ -3,6 +3,7 @@ from .test_01_load_models_and_solvers import *
 import straindesign as sd
 from numpy import inf
 
+
 @pytest.mark.timeout(15)
 def test_gpr_extension_compression1(model_gpr):
     gkocost = {
@@ -20,6 +21,7 @@ def test_gpr_extension_compression1(model_gpr):
     gkocost, gkicost, cmp_map = sd.compress_ki_ko_cost(gkocost, gkicost, cmp_map)
     assert (len(gkocost) == 4)
     assert (len(gkicost) == 3)
+
 
 @pytest.mark.timeout(15)
 def test_gpr_extension_compression2(model_gpr):

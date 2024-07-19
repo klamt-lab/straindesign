@@ -119,7 +119,7 @@ class Gurobi_MILP_LP(gp.Model):
         if A_ineq.shape[0]:
             self.addMConstr(A_ineq, x, grb.LESS_EQUAL, array(b_ineq))
         if A_eq.shape[0]:
-            self.addMConstr(A_eq, x,   grb.EQUAL,      array(b_eq))
+            self.addMConstr(A_eq, x, grb.EQUAL, array(b_eq))
 
         # add indicator constraints
         if not indic_constr == None:
@@ -138,8 +138,8 @@ class Gurobi_MILP_LP(gp.Model):
         if 'B' in vtype or 'I' in vtype:
             if seed is None:
                 # seed = random(0, grb.MAXINT)
-                seed = int(random.randint(0, 2**16-1))
-                logging.info('  MILP Seed: '+str(seed))
+                seed = int(random.randint(0, 2**16 - 1))
+                logging.info('  MILP Seed: ' + str(seed))
             self.params.Seed = seed
             self.params.IntFeasTol = 1e-9  # (0 is not allowed by Gurobi)
             # yield only optimal solutions in pool

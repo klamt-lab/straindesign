@@ -94,7 +94,7 @@ class SCIP_MILP(pso.Model):
             A SCIP MILP interface class.
     """
 
-    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None, seed = None):
+    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None, seed=None):
         super().__init__()
         # uncomment to forward SCIP output to python terminal
         # self.redirectOutput()
@@ -164,7 +164,7 @@ class SCIP_MILP(pso.Model):
             if seed is None:
                 # seed = randint(0, 2**31 - 1)
                 seed = int(random.randint(2**16 - 1))
-                logging.info('  MILP Seed: '+str(seed))
+                logging.info('  MILP Seed: ' + str(seed))
             self.setParam('randomization/randomseedshift', seed)
             self.setEmphasis(0)
             # self.setParam('constraints/indicator/forcerestart',True)
@@ -178,7 +178,7 @@ class SCIP_MILP(pso.Model):
         # self.setParam('display/lpinfo',False)
         # self.setParam('reoptimization/enable',True)
         self.setParam('display/verblevel', 0)
-        
+
         # SCIP_PARAMEMPHASIS_DEFAULT     = 0,        /**< use default values */
         # SCIP_PARAMEMPHASIS_CPSOLVER    = 1,        /**< get CP like search (e.g. no LP relaxation) */
         # SCIP_PARAMEMPHASIS_EASYCIP     = 2,        /**< solve easy problems fast */
@@ -333,7 +333,7 @@ class SCIP_MILP(pso.Model):
             self.setParam('display/verblevel', 0)
         else:
             self.setEmphasis(1)
-        
+
     def set_objective_idx(self, C):
         """Set the objective function with index-value pairs
         
@@ -349,7 +349,7 @@ class SCIP_MILP(pso.Model):
             self.setParam('display/verblevel', 0)
         else:
             self.setEmphasis(1)
-        
+
     def set_ub(self, ub):
         """Set the upper bounds to a given vector"""
         self.freeTransform()
@@ -403,7 +403,7 @@ class SCIP_MILP(pso.Model):
                 The right hand side vector
         """
         self.freeTransform()
-        eqs = [self.addCons(pso.Expr() == b_i,modifiable=True) for b_i in b_eq]
+        eqs = [self.addCons(pso.Expr() == b_i, modifiable=True) for b_i in b_eq]
         for row, a_eq in zip(eqs, A_eq):
             X = [self.vars[i] for i in a_eq.indices]
             for col, coeff in zip(X, a_eq.data):

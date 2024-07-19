@@ -3,6 +3,7 @@ from .test_01_load_models_and_solvers import *
 import straindesign as sd
 from numpy import inf
 
+
 @pytest.mark.timeout(15)
 def test_mcs(curr_solver, model_small_example, comp_approach, bigM, compression):
     modules = [sd.SDModule(model_small_example, SUPPRESS, constraints=["R3 - 0.5 R1 <= 0.0", "R2 <= 0", "R1 >= 0.1"])]
@@ -31,6 +32,7 @@ def test_mcs(curr_solver, model_small_example, comp_approach, bigM, compression)
     assert ({'R7': -1.0} in sols)
     assert ({'R10': -1.0} in sols)
 
+
 @pytest.mark.timeout(15)
 def test_mcs_opt(curr_solver, model_weak_coupling, comp_approach, bigM, compression):
     """Test MCS computation with nested optimization constraints."""
@@ -56,6 +58,7 @@ def test_mcs_opt(curr_solver, model_weak_coupling, comp_approach, bigM, compress
     }
     solution = sd.compute_strain_designs(model_weak_coupling, sd_setup=sd_setup)
     assert (len(solution.reaction_sd) == 3)
+
 
 @pytest.mark.timeout(15)
 def test_mcs_gpr(model_gpr, comp_approach):
@@ -90,6 +93,7 @@ def test_mcs_gpr(model_gpr, comp_approach):
     }
     solution = sd.compute_strain_designs(model_gpr, sd_setup=sd_setup)
     assert (len(solution.gene_sd) == 4)
+
 
 @pytest.mark.timeout(15)
 def test_mcs_gpr2(model_gpr, comp_approach):
@@ -126,6 +130,7 @@ def test_mcs_gpr2(model_gpr, comp_approach):
     assert (len(solution.gene_sd) == 4)
     assert (any(['G_g4 <= 0.4' in sol for sol in solution.get_gene_sd()]))
 
+
 @pytest.mark.timeout(15)
 def test_optknock(curr_solver, model_weak_coupling, comp_approach_best_populate, bigM, compression):
     """Test OptKnock computation."""
@@ -151,6 +156,7 @@ def test_optknock(curr_solver, model_weak_coupling, comp_approach_best_populate,
     }
     solution = sd.compute_strain_designs(model_weak_coupling, sd_setup=sd_setup)
     assert (len(solution.reaction_sd) == 3)
+
 
 @pytest.mark.timeout(15)
 def test_robustknock(curr_solver, model_weak_coupling, comp_approach_best_populate, bigM, compression):
@@ -191,6 +197,7 @@ def test_robustknock(curr_solver, model_weak_coupling, comp_approach_best_popula
         sol_max_BM = sd.fba(m, obj='r_BM')
         sol_min_P = sd.fba(m, obj_sense='minimize', obj='r_P', constraints="r_BM >= " + str(sol_max_BM.objective_value))
         assert (sol_min_P.objective_value > 0)
+
 
 @pytest.mark.timeout(15)
 def test_optcouple(curr_solver, model_weak_coupling, comp_approach_best_populate, bigM, compression):
