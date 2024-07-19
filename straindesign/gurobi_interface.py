@@ -244,8 +244,10 @@ class Gurobi_MILP_LP(gp.Model):
             else:
                 self.params.PoolSolutions = n
             self.params.PoolSearchMode = 2
+            self.params.NumericFocus = 2
             self.optimize()  # call parent solve function (that was overwritten in this class)
             self.params.PoolSearchMode = 0
+            self.params.NumericFocus = 0
             status = self.Status
             if status in [2, 10, 13, 15]:  # solution integer optimal
                 min_cx = self.ObjVal
