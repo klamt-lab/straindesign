@@ -80,7 +80,7 @@ jobs:
         run: |
           pip install gurobipy
       - name: Install cplex (pip)
-        if: matrix.package-manager == 'pip'
+        if: matrix.package-manager == 'pip' && runner.os != 'macOS'
         run: |
           pip install cplex
       - name: Install pytest (pip)
@@ -115,7 +115,7 @@ jobs:
         run: |
           micromamba install -c gurobi gurobi
       - name: Install cplex (conda)
-        if: matrix.package-manager == 'conda' && matrix.python-version != '3.12' && matrix.python-version != '3.13'
+        if: matrix.package-manager == 'conda' && matrix.python-version != '3.13'
         run: |
           micromamba install -c ibmdecisionoptimization cplex
       - name: Install scip (conda)
