@@ -117,9 +117,9 @@ class Gurobi_MILP_LP(gp.Model):
         x = self.addMVar(len(c), obj=c, lb=lb, ub=ub, vtype=[k for k in vtype])
         self.setObjective(array(c) @ x, grb.MINIMIZE)
         if A_ineq.shape[0]:
-            self.addConstr(A_ineq @ x <= array(b_ineq))
+            self.addMConstr(A_ineq, x, grb.LESS_EQUAL, array(b_ineq))
         if A_eq.shape[0]:
-            self.addConstr(A_eq @ x == array(b_eq))
+            self.addMConstr(A_eq, x,   grb.EQUAL,      array(b_eq))
 
         # add indicator constraints
         if not indic_constr == None:
@@ -146,6 +146,7 @@ class Gurobi_MILP_LP(gp.Model):
             self.params.PoolGap = 0.0
             self.params.PoolGapAbs = 0.0
             self.params.MIPFocus = 0
+        self.update()
 
     def solve(self) -> Tuple[List, float, float]:
         """Solve the MILP or LP
@@ -330,7 +331,7 @@ class Gurobi_MILP_LP(gp.Model):
         """
         vars = self._Model__vars
         for i in range(A_ineq.shape[0]):
-            self.addConstr(sum([A_ineq[i, j] * vars[j] for j in range(len(vars)) if not A_ineq[i, j] == 0.0]) <= b_ineq[i])
+            self.addLConstr(sum([A_ineq[i, j] * vars[j] for j in range(len(vars)) if not A_ineq[i, j] == 0.0]), grb.LESS_EQUAL, b_ineq[i])
         self.update()
 
     def add_eq_constraints(self, A_eq, b_eq):
@@ -349,7 +350,7 @@ class Gurobi_MILP_LP(gp.Model):
         """
         vars = self._Model__vars
         for i in range(A_eq.shape[0]):
-            self.addConstr(sum([A_eq[i, j] * vars[j] for j in range(len(vars)) if not A_eq[i, j] == 0.0]) == b_eq[i])
+            self.addLConstr(sum([A_eq[i, j] * vars[j] for j in range(len(vars)) if not A_eq[i, j] == 0.0]), grb.EQUAL, b_eq[i])
         self.update()
 
     def set_ineq_constraint(self, idx, a_ineq, b_ineq):
