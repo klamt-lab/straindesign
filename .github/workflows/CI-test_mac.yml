@@ -58,9 +58,6 @@ jobs:
       - name: Set JAVA_HOME for mac OS
         if: matrix.os == 'macos-latest'
         run: export JAVA_HOME=$(/usr/libexec/java_home)
-      - name: Install libsbml from pip for mac OS
-        if: matrix.os == 'macos-latest'
-        run: pip install python-libsbml
       - name: Set up Conda Environment with Micromamba (conda environment test)
         if: matrix.package-manager == 'conda_env'
         uses: mamba-org/setup-micromamba@v1
