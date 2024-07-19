@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest, macos-13]
+        os: [ubuntu-latest, windows-latest, macos-13] # macos-latest should be added later as soon as libsbml support is back up
         python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
         package-manager: ['pip','conda','conda_env']
 #        exclude:
