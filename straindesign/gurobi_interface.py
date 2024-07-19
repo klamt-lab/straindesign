@@ -242,8 +242,10 @@ class Gurobi_MILP_LP(gp.Model):
                 self.params.PoolSolutions = grb.MAXINT
             else:
                 self.params.PoolSolutions = n
+            self.params.MIPFocus = 1
             self.params.PoolSearchMode = 2
             self.optimize()  # call parent solve function (that was overwritten in this class)
+            self.params.MIPFocus = 0
             self.params.PoolSearchMode = 0
             status = self.Status
             if status in [2, 10, 13, 15]:  # solution integer optimal
