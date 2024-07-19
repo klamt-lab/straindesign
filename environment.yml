@@ -10,7 +10,6 @@ dependencies:
   - psutil
   - pip
   - pip:
-    - python-libsbml
     - cobra
   - straindesign
 prefix: /home/user/miniconda3/envs/cnapy
