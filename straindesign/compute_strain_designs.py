@@ -408,8 +408,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     else:
         solution_approach = BEST
     
-
-    
     # solve MILP
     if solution_approach == ANY:
         cmp_sd_solution = sd_milp.compute(**kwargs_computation)
