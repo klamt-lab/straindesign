@@ -1,0 +1,135 @@
+
+# This workflow will reformat all python files with yapf
+
+name: CI-test-mac
+
+on:
+#  push:
+#    branches:
+#      - main
+  workflow_dispatch:
+
+
+permissions:
+  contents: read
+
+jobs:
+  build_and_test:
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash -l {0}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest]
+        python-version: ['3.10']
+        package-manager: ['pip','conda','conda_env']
+#        exclude:
+#        - os: macos-latest
+#          package-manager: 'pip'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Conda packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/conda_pkgs_dir
+          key: ${{ runner.os }}-conda-${{ hashFiles('**/environment.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-conda-
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Java Setup
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin' # See 'Supported distributions' for available options
+          java-version: '17'
+      - name: Set JAVA_HOME for mac OS
+        if: matrix.os == 'macos-latest'
+        run: export JAVA_HOME=$(/usr/libexec/java_home)
+      - name: Install libsbml from pip for mac OS
+        if: matrix.os == 'macos-latest'
+        run: pip install libsbml
+      - name: Set up Conda Environment with Micromamba (conda environment test)
+        if: matrix.package-manager == 'conda_env'
+        uses: mamba-org/setup-micromamba@v1
+        with:
+          micromamba-version: '1.5.8-0'
+          environment-file: environment.yml
+          create-args: >-
+            python=${{ matrix.python-version }}
+          post-cleanup: 'none'
+      - name: Build for PyPI (if pip)
+        if: matrix.package-manager == 'pip'
+        run: |
+          pip install setuptools wheel
+          python setup.py sdist bdist_wheel
+      - name: Install package using pip
+        if: matrix.package-manager == 'pip'
+        run: pip install ./dist/*.whl
+      - name: Install gurobi (pip)
+        if: matrix.package-manager == 'pip'
+        run: |
+          pip install gurobipy
+      - name: Install cplex (pip)
+        if: matrix.package-manager == 'pip'
+        run: |
+          pip install cplex
+      - name: Install pytest (pip)
+        if: matrix.package-manager == 'pip'
+        run: |
+          pip install pytest
+      - name: Set up Conda Environment with Micromamba
+        if: matrix.package-manager == 'conda'
+        uses: mamba-org/setup-micromamba@v1
+        with:
+          environment-name: straindesign
+          micromamba-version: latest
+          create-args: >-
+            python=${{ matrix.python-version }}
+          post-cleanup: 'none'
+      - name: Activate Micromamba environment
+        if: matrix.package-manager == 'conda'
+        run: |
+          micromamba activate straindesign
+      - name: Build for Conda (if conda)
+        if: matrix.package-manager == 'conda'
+        run: |
+          micromamba install anaconda-client conda-build
+          run: rm -rf conda-bld
+          conda build conda-recipe/. -c conda-forge --croot conda-bld --output-folder ./build
+      - name: Install package using conda
+        if: matrix.package-manager == 'conda'
+        run: |
+          conda install straindesign -c ./build
+      - name: Install gurobi (conda)
+        if: matrix.package-manager == 'conda'
+        run: |
+          micromamba install -c gurobi gurobi
+      - name: Install cplex (conda)
+        if: matrix.package-manager == 'conda' && matrix.python-version != '3.12' && matrix.python-version != '3.13'
+        run: |
+          micromamba install -c ibmdecisionoptimization cplex
+      - name: Install scip (conda)
+        if: matrix.package-manager == 'conda' && matrix.python-version != '3.12' && matrix.python-version != '3.13'
+        run: |
+          micromamba install -c conda-forge pyscipopt scip
+      - name: Install pytest (conda)
+        if: matrix.package-manager == 'conda'
+        run: |
+          micromamba install pytest
+      - name: Test with pytest
+        if: matrix.package-manager == 'conda' || matrix.package-manager == 'pip'
+        run: pytest tests -v
+        
