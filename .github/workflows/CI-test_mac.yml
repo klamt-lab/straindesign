@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest]
+        os: [macos-12]
         python-version: ['3.10']
         package-manager: ['pip','conda','conda_env']
 #        exclude:
