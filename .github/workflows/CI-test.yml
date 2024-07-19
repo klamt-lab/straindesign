@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest, macos-13]
         python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
         package-manager: ['pip','conda','conda_env']
 #        exclude:
@@ -55,7 +55,7 @@ jobs:
           distribution: 'temurin' # See 'Supported distributions' for available options
           java-version: '17'
       - name: Set JAVA_HOME for mac OS
-        if: matrix.os == 'macos-latest'
+        if: runner.os == 'macOS'
         run: export JAVA_HOME=$(/usr/libexec/java_home)
       - name: Set up Conda Environment with Micromamba (conda environment test)
         if: matrix.package-manager == 'conda_env'
@@ -79,7 +79,7 @@ jobs:
         run: |
           pip install gurobipy
       - name: Install cplex (pip)
-        if: matrix.package-manager == 'pip'
+        if: matrix.package-manager == 'pip' && runner.os != 'macOS'
         run: |
           pip install cplex
       - name: Install pytest (pip)
@@ -114,7 +114,7 @@ jobs:
         run: |
           micromamba install -c gurobi gurobi
       - name: Install cplex (conda)
-        if: matrix.package-manager == 'conda' && matrix.python-version != '3.12' && matrix.python-version != '3.13'
+        if: matrix.package-manager == 'conda' && matrix.python-version != '3.13'
         run: |
           micromamba install -c ibmdecisionoptimization cplex
       - name: Install scip (conda)
