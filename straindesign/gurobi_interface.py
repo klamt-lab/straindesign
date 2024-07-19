@@ -143,8 +143,8 @@ class Gurobi_MILP_LP(gp.Model):
             self.params.Seed = seed
             self.params.IntFeasTol = 1e-9  # (0 is not allowed by Gurobi)
             # yield only optimal solutions in pool
-            self.params.PoolGap = 0.0
-            self.params.PoolGapAbs = 0.0
+            self.params.PoolGap = 1e-9
+            self.params.PoolGapAbs = 1e-9
             self.params.MIPFocus = 0
         self.update()
 
@@ -243,10 +243,8 @@ class Gurobi_MILP_LP(gp.Model):
                 self.params.PoolSolutions = grb.MAXINT
             else:
                 self.params.PoolSolutions = n
-            self.params.MIPFocus = 1
             self.params.PoolSearchMode = 2
             self.optimize()  # call parent solve function (that was overwritten in this class)
-            self.params.MIPFocus = 0
             self.params.PoolSearchMode = 0
             status = self.Status
             if status in [2, 10, 13, 15]:  # solution integer optimal
