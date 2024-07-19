@@ -120,7 +120,7 @@ jobs:
       - name: Install scip (conda)
         if: matrix.package-manager == 'conda' && matrix.python-version != '3.12' && matrix.python-version != '3.13'
         run: |
-          micromamba install -c conda-forge pyscipopt scip=8.0.0
+          micromamba install -c conda-forge pyscipopt scip
       - name: Install pytest (conda)
         if: matrix.package-manager == 'conda'
         run: |
