@@ -169,7 +169,7 @@ or
 
 .. warning::
     If you encounter program crashes with SCIP (a dependency of pyscipopt), make sure you use a version different from 8.0.1. 
-    You can, for instance manually install version 8.0.0 through ``conda install -c conda-forge scip=8.0.0``
+    You can, for instance manually install version 8.0.0 through ``conda install -c conda-forge scip=8.0.0``. Version 9.1.0 has been tested with StrainDesign successfully.
 
 Official website: https://github.com/scipopt/PySCIPOpt
 
