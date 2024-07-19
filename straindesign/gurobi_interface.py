@@ -145,6 +145,7 @@ class Gurobi_MILP_LP(gp.Model):
             # yield only optimal solutions in pool
             self.params.PoolGap = 0.0
             self.params.PoolGapAbs = 0.0
+            self.params.MIPFocus = 0
 
     def solve(self) -> Tuple[List, float, float]:
         """Solve the MILP or LP
@@ -283,6 +284,10 @@ class Gurobi_MILP_LP(gp.Model):
         for i in range(len(self._Model__vars)):
             self._Model__vars[i].Obj = c[i]
         self.update()
+        if any([self._Model__vars[i].Obj for i in range(len(self._Model__vars))]):
+            self.params.MIPFocus = 0
+        else:
+            self.params.MIPFocus = 1
 
     def set_objective_idx(self, C):
         """Set the objective function with index-value pairs
@@ -291,6 +296,10 @@ class Gurobi_MILP_LP(gp.Model):
         for c in C:
             self._Model__vars[c[0]].Obj = c[1]
         self.update()
+        if any([self._Model__vars[i].Obj for i in range(len(self._Model__vars))]):
+            self.params.MIPFocus = 0
+        else:
+            self.params.MIPFocus = 1
 
     def set_ub(self, ub):
         """Set the upper bounds to a given vector"""

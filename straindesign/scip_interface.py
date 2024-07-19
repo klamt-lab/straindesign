@@ -328,13 +328,12 @@ class SCIP_MILP(pso.Model):
         else:
             self.freeTransform()
             self.setObjective(pso.Expr({self.trms[i]: c[i] for i in nonzero(c)[0]}))
-        if all(value == 0 for value in c):
-            self.setEmphasis(1)
-        else:
+        if any(self.getObjective()):
             self.setEmphasis(0)
             self.setParam('display/verblevel', 0)
+        else:
+            self.setEmphasis(1)
         
-
     def set_objective_idx(self, C):
         """Set the objective function with index-value pairs
         
@@ -345,12 +344,11 @@ class SCIP_MILP(pso.Model):
         else:
             self.freeTransform()
             self.setObjective(pso.Expr({self.trms[c[0]]: c[1] for c in C}))
-        if all(value[1] == 0 for value in C):
-            self.setEmphasis(1)
-        else:
+        if any(self.getObjective()):
             self.setEmphasis(0)
             self.setParam('display/verblevel', 0)
-        
+        else:
+            self.setEmphasis(1)
         
     def set_ub(self, ub):
         """Set the upper bounds to a given vector"""
