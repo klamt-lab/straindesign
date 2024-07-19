@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Cache Conda packages
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: |
             ~/conda_pkgs_dir
@@ -38,7 +38,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-conda-
       - name: Cache pip packages
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cache/pip
