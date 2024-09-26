@@ -500,12 +500,12 @@ class SDProblem:
         logging.info('  Bounding MILP.')
         if processes > 1 and num_Ms > 1000:
             with SDPool(processes, initializer=worker_init,
-                        initargs=(M_A, M_A_ineq, M_b_ineq, M_A_eq, M_b_eq, M_lb, M_ub, self.solver)) as pool:
+                        initargs=(M_A, M_A_ineq, M_b_ineq, M_A_eq, M_b_eq, M_lb, M_ub, getattr(self,SOLVER), getattr(self,SEED))) as pool:
                 chunk_size = num_Ms // processes
                 for i, value in pool.imap_unordered(worker_compute, range(num_Ms), chunksize=chunk_size):
                     max_Ax[i] = value
         else:
-            worker_init(M_A, M_A_ineq, M_b_ineq, M_A_eq, M_b_eq, M_lb, M_ub, self.solver, self.seed)
+            worker_init(M_A, M_A_ineq, M_b_ineq, M_A_eq, M_b_eq, M_lb, M_ub, getattr(self,SOLVER), getattr(self,SEED))
             for i in range(num_Ms):
                 _, max_Ax[i] = worker_compute(i)
 

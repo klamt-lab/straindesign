@@ -101,8 +101,8 @@ class MILP_LP(object):
     """
 
     def __init__(self, **kwargs):
-        allowed_keys = {
-            'c', 'A_ineq', 'b_ineq', 'A_eq', 'b_eq', 'lb', 'ub', 'vtype', 'indic_constr', 'M', 'solver', 'skip_checks', 'tlim', SEED
+        allowed_keys = { 
+            'c', 'A_ineq', 'b_ineq', 'A_eq', 'b_eq', 'lb', 'ub', 'vtype', 'indic_constr', 'M', SOLVER, 'skip_checks', 'tlim', SEED
         }
         # set all keys passed in kwargs
         for key, value in kwargs.items():
@@ -115,14 +115,14 @@ class MILP_LP(object):
             if key not in kwargs.keys():
                 setattr(self, key, None)
         # Select solver (either by choice or automatically cplex > gurobi > glpk)
-        if self.solver is None:
+        if getattr(self,SOLVER) is None:
             if len(avail_solvers) > 0:
-                self.solver = list(avail_solvers)[0]
+                setattr(self,SOLVER,list(avail_solvers)[0])
             else:
                 raise Exception('No solver available. Please ensure that one of the following '\
                     'solvers is avaialable in your Python environment: CPLEX, Gurobi, SCIP, GLPK')
-        elif self.solver not in avail_solvers:
-            raise Exception("Selected solver '" + self.solver + "' is not installed / set up correctly.")
+        elif getattr(self,SOLVER) not in avail_solvers:
+            raise Exception("Selected solver '" + getattr(self,SOLVER) + "' is not installed / set up correctly.")
         # Copy parameters to object
         if self.A_ineq is not None:
             numvars = self.A_ineq.shape[1]
