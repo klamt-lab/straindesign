@@ -128,5 +128,5 @@ jobs:
           micromamba install pytest pytest-timeout
       - name: Test with pytest
         if: matrix.package-manager == 'conda' || matrix.package-manager == 'pip'
-        run: pytest tests -v
+        run: pytest tests -v --log-cli-level=INFO
         
