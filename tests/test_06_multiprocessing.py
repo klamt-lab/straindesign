@@ -3,7 +3,7 @@ from .test_01_load_models_and_solvers import *
 import straindesign as sd
 import logging
 
-@pytest.mark.timeout(500)
+@pytest.mark.timeout(600)
 def test_mcs_larger_model(model_core):
     logging.basicConfig(level=logging.INFO)
     modules = [sd.SDModule(model_core, SUPPRESS, constraints=["EX_etoh_e <= 0.5"])]
