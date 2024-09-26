@@ -63,6 +63,8 @@ try:
 except:
     _java_executable = ''
 if _java_executable == '':
+    _java_executable = os.path.join(str(jpype.jSystem.getProperty("java.home")), "bin", "java")
+if _java_executable == '':
     _java_executable = os.path.join(os.environ.get('JAVA_HOME', ''), "bin", "java")
     try:
         cp = subprocess.run([_java_executable, '-version'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -70,10 +72,6 @@ if _java_executable == '':
             _java_executable = ''
     except:
         _java_executable = ''
-if _java_executable == '':
-    import efmtool_link.efmtool_intern  # just to find java executable via jpype
-    _java_executable = os.path.join(str(efmtool_link.efmtool_intern.jSystem.getProperty("java.home")), "bin", "java")
-
 
 def basic_columns_rat(mx, tolerance=0):  # mx is ch.javasoft.smx.impl.DefaultBigIntegerRationalMatrix
     """efmtool: Translate matrix coefficients to rational numbers"""
