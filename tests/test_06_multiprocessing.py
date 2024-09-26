@@ -21,5 +21,4 @@ def test_mcs_larger_model(model_core):
         'compress': True
     }
     solution = sd.compute_strain_designs(model_core, sd_setup=sd_setup)
-    sols = solution.get_reaction_sd()
-    assert (len(sols.get_reaction_sd()) == 0 and sols.sd_setup['model_id'] == 'CNA_iMLcore')
+    assert (len(solution.get_reaction_sd()) == 0 and solution.sd_setup['model_id'] == 'CNA_iMLcore')
