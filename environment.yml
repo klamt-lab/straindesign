@@ -8,6 +8,7 @@ dependencies:
   - scipy
   - jpype1
   - psutil
+  - efmtool_link
   - pip
   - pip:
     - cobra
