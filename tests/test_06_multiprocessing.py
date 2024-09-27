@@ -4,7 +4,7 @@ import straindesign as sd
 import logging
 
 @pytest.mark.timeout(600)
-def test_mcs_larger_model(model_core):
+def test_mcs_larger_model(curr_solver,model_core):
     logging.basicConfig(level=logging.INFO)
     modules = [sd.SDModule(model_core, SUPPRESS, constraints=["EX_etoh_e <= 0.5"])]
     modules += [sd.SDModule(model_core, SUPPRESS, constraints=["EX_etoh_e <= 0.5"])]
@@ -16,7 +16,7 @@ def test_mcs_larger_model(model_core):
         MAX_COST: 4,
         MAX_SOLUTIONS: 0,
         SOLUTION_APPROACH: ANY,
-        SOLVER: SCIP,
+        SOLVER: curr_solver,
         'compress': False
     }
     solution = sd.compute_strain_designs(model_core, sd_setup=sd_setup)
