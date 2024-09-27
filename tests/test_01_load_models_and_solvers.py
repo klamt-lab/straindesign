@@ -24,13 +24,16 @@ def model_small_example():
     """Load example model with two substrates."""
     return read_sbml_model(dirname(abspath(__file__)) + "/model_small_example.xml")
 
+
 @pytest.fixture
 def model_core():
     """Load example core model. Large enough to test strain design with multiprocessing"""
     return read_sbml_model(dirname(abspath(__file__)) + "/iMLcore.xml")
 
+
 def test_import_sd():
     import straindesign
+
 
 def test_solver_availability(curr_solver):
     """Test solver availability."""

@@ -21,7 +21,7 @@ copyright = "2023, Philipp Schneider"
 author = "Philipp Schneider"
 
 # The full version, including alpha/beta/rc tags
-release = "1.12"
+release = "1.13"
 
 # -- General configuration ---------------------------------------------------
 
