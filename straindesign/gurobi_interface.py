@@ -26,11 +26,7 @@ from straindesign.names import *
 from typing import Tuple, List
 import logging
 
-try:
-    gstatus = gp.StatusConstClass ## Gurobi version<11
-except:
-    gstatus = grb.Status ## Gurobi version >=12
-
+gstatus = grb.Status
 
 class Gurobi_MILP_LP(gp.Model):
     """Gurobi interface for MILP and LP
