@@ -14,15 +14,13 @@ requirements:
     - flake8
     - wheel
     - pip
-    - python>=3.7
+    - python
   run:
-    - openjdk=8
-    - matplotlib
-    - python>=3.7
+    - python
     - scipy
-    - conda-forge:cobra
-    - conda-forge:jpype1
     - psutil
+    - conda-forge:jpype1
+    - conda-forge:cobra
 
 build:
   noarch: python
