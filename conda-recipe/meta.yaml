@@ -18,6 +18,7 @@ requirements:
   run:
     - python
     - scipy
+    - matplotlib
     - psutil
     - conda-forge:jpype1
     - conda-forge:cobra
