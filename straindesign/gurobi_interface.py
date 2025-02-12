@@ -19,14 +19,17 @@
 """Gurobi solver interface for LP and MILP"""
 
 from scipy import sparse
-from numpy import nan, inf, isinf, sum, array, random
+from numpy import nan, inf, isinf, array, random
 import gurobipy as gp
 from gurobipy import GRB as grb
 from straindesign.names import *
 from typing import Tuple, List
 import logging
 
-gstatus = gp.StatusConstClass
+try:
+    gstatus = gp.StatusConstClass ## Gurobi version<11
+except:
+    gstatus = grb.Status ## Gurobi version >=12
 
 
 class Gurobi_MILP_LP(gp.Model):
@@ -122,14 +125,13 @@ class Gurobi_MILP_LP(gp.Model):
             self.addMConstr(A_eq, x, grb.EQUAL, array(b_eq))
 
         # add indicator constraints
-        if not indic_constr == None:
+        if indic_constr is not None:
             for i in range(len(indic_constr.sense)):
                 self.addGenConstrIndicator(x[indic_constr.binv[i]],
-                                        bool(indic_constr.indicval[i]),
-                                        sum([indic_constr.A[i,j] * x[j] \
-                                            for j in range(len(c)) if not indic_constr.A[i,j] == 0.0]),
-                                        '=' if indic_constr.sense[i] =='E' else '<',
-                                        indic_constr.b[i])
+                                           bool(indic_constr.indicval[i]),
+                                           gp.quicksum(indic_constr.A[i, j] * x[j] for j in range(len(c)) if indic_constr.A[i, j] != 0.0),
+                                           '=' if indic_constr.sense[i] == 'E' else '<',
+                                           indic_constr.b[i])
 
         # set parameters
         self.params.OutputFlag = 0
@@ -165,12 +167,12 @@ class Gurobi_MILP_LP(gp.Model):
             if status in [gstatus.OPTIMAL, gstatus.SOLUTION_LIMIT, gstatus.SUBOPTIMAL, gstatus.USER_OBJ_LIMIT]:  # solution
                 min_cx = self.ObjVal
                 status = OPTIMAL
-            elif status == gstatus.TIME_LIMIT and not hasattr(self._Model__vars[0], 'X'):  # timeout without solution
+            elif status == gstatus.TIME_LIMIT and not hasattr(self.getVars()[0], 'X'):  # timeout without solution
                 x = [nan] * self.NumVars
                 min_cx = nan
                 status = TIME_LIMIT
                 return x, min_cx, status
-            elif status == gstatus.TIME_LIMIT and hasattr(self._Model__vars[0], 'X'):
+            elif status == gstatus.TIME_LIMIT and hasattr(self.getVars()[0], 'X'):
                 min_cx = self.ObjVal
                 status = TIME_LIMIT_W_SOL
             elif status in [gstatus.INF_OR_UNBD, gstatus.UNBOUNDED, gstatus.INFEASIBLE]:
@@ -252,22 +254,22 @@ class Gurobi_MILP_LP(gp.Model):
             if status in [2, 10, 13, 15]:  # solution integer optimal
                 min_cx = self.ObjVal
                 status = OPTIMAL
-            elif status == 9 and not hasattr(self._Model__vars[0], 'X'):  # timeout without solution
-                x = [nan] * len(self._Model__vars)
+            elif status == 9 and not hasattr(self.getVars()[0], 'X'):  # timeout without solution
+                x = [nan] * len(self.getVars())
                 min_cx = nan
                 status = TIME_LIMIT
                 return x, min_cx, status
             elif status == 3:  # infeasible
-                x = [nan] * len(self._Model__vars)
+                x = [nan] * len(self.getVars())
                 min_cx = nan
                 status = INFEASIBLE
                 return x, min_cx, status
-            elif status == 9 and hasattr(self._Model__vars[0], 'X'):  # timeout with solution
+            elif status == 9 and hasattr(self.getVars()[0], 'X'):  # timeout with solution
                 min_cx = self.ObjVal
                 status = TIME_LIMIT_W_SOL
             elif status in [4, 5]:  # solution unbounded
                 min_cx = -inf
-                x = [nan] * len(self._Model__vars)
+                x = [nan] * len(self.getVars())
                 status = UNBOUNDED
                 return x, min_cx, status
             else:
@@ -279,15 +281,15 @@ class Gurobi_MILP_LP(gp.Model):
             self.params.PoolSearchMode = 0
             logging.error('Error code ' + str(e.errno) + ": " + str(e))
             min_cx = nan
-            x = [nan] * len(self._Model__vars)
+            x = [nan] * len(self.getVars())
             return x, min_cx, ERROR
 
     def set_objective(self, c):
         """Set the objective function with a vector"""
-        for i in range(len(self._Model__vars)):
-            self._Model__vars[i].Obj = c[i]
+        for i in range(len(self.getVars())):
+            self.getVars()[i].Obj = c[i]
         self.update()
-        if any([self._Model__vars[i].Obj for i in range(len(self._Model__vars))]):
+        if any([self.getVars()[i].Obj for i in range(len(self.getVars()))]):
             self.params.MIPFocus = 0
         else:
             self.params.MIPFocus = 1
@@ -297,9 +299,9 @@ class Gurobi_MILP_LP(gp.Model):
         
         e.g.: C=[[1, 1.0], [4,-0.2]]"""
         for c in C:
-            self._Model__vars[c[0]].Obj = c[1]
+            self.getVars()[c[0]].Obj = c[1]
         self.update()
-        if any([self._Model__vars[i].Obj for i in range(len(self._Model__vars))]):
+        if any([self.getVars()[i].Obj for i in range(len(self.getVars()))]):
             self.params.MIPFocus = 0
         else:
             self.params.MIPFocus = 1
@@ -307,7 +309,7 @@ class Gurobi_MILP_LP(gp.Model):
     def set_ub(self, ub):
         """Set the upper bounds to a given vector"""
         for i in range(len(ub)):
-            self._Model__vars[ub[i][0]].ub = ub[i][1]
+            self.getVars()[ub[i][0]].ub = ub[i][1]
         self.update()
 
     def set_time_limit(self, t):
@@ -329,7 +331,7 @@ class Gurobi_MILP_LP(gp.Model):
             b_ineq (list of float):
                 The right hand side vector
         """
-        vars = self._Model__vars
+        vars = self.getVars()
         for i in range(A_ineq.shape[0]):
             self.addLConstr(sum([A_ineq[i, j] * vars[j] for j in range(len(vars)) if not A_ineq[i, j] == 0.0]), grb.LESS_EQUAL, b_ineq[i])
         self.update()
@@ -348,7 +350,7 @@ class Gurobi_MILP_LP(gp.Model):
             b_eq (list of float):
                 The right hand side vector
         """
-        vars = self._Model__vars
+        vars = self.getVars()
         for i in range(A_eq.shape[0]):
             self.addLConstr(sum([A_eq[i, j] * vars[j] for j in range(len(vars)) if not A_eq[i, j] == 0.0]), grb.EQUAL, b_eq[i])
         self.update()
@@ -368,8 +370,8 @@ class Gurobi_MILP_LP(gp.Model):
             b_ineq (float):
                 The right hand side value
         """
-        constr = self._Model__constrs[idx]
-        [self.chgCoeff(constr, x, val) for x, val in zip(self._Model__vars, a_ineq)]
+        constr = self.getConstrs()[idx]
+        [self.chgCoeff(constr, x, val) for x, val in zip(self.getVars(), a_ineq)]
         if isinf(b_ineq):
             constr.rhs = grb.INFINITY
         else:
@@ -378,7 +380,7 @@ class Gurobi_MILP_LP(gp.Model):
 
     def getSolution(self) -> list:
         """Retrieve solution from Gurobi backend"""
-        return [x.X for x in self._Model__vars]
+        return [x.X for x in self.getVars()]
 
     def getSolutions(self) -> list:
         """Retrieve solution pool from Gurobi backend"""
@@ -387,5 +389,5 @@ class Gurobi_MILP_LP(gp.Model):
         for i in range(nSols):
             self.setParam(grb.Param.SolutionNumber, i)
             if self.PoolObjVal == self.ObjVal:
-                x += [[x.Xn for x in self._Model__vars]]
+                x += [[x.Xn for x in self.getVars()]]
         return x

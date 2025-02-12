@@ -26,7 +26,6 @@ from typing import Tuple, List
 import time as t
 import logging
 
-
 class SCIP_MILP(pso.Model):
     """SCIP interface for MILP
     
@@ -167,6 +166,8 @@ class SCIP_MILP(pso.Model):
                 logging.info('  MILP Seed: ' + str(seed))
             self.setParam('randomization/randomseedshift', seed)
             self.setEmphasis(0)
+            # self.setParam('numerics/feastol', 1e-9)
+            # self.setParam('numerics/dualfeastol', 1e-9)
             # self.setParam('constraints/indicator/forcerestart',True)
             # Probably all seeds are set by the randomseedshift??
             # self.setParam('branching/random/seed', seed)
@@ -178,7 +179,6 @@ class SCIP_MILP(pso.Model):
         # self.setParam('display/lpinfo',False)
         # self.setParam('reoptimization/enable',True)
         self.setParam('display/verblevel', 0)
-
         # SCIP_PARAMEMPHASIS_DEFAULT     = 0,        /**< use default values */
         # SCIP_PARAMEMPHASIS_CPSOLVER    = 1,        /**< get CP like search (e.g. no LP relaxation) */
         # SCIP_PARAMEMPHASIS_EASYCIP     = 2,        /**< solve easy problems fast */
@@ -225,6 +225,8 @@ class SCIP_MILP(pso.Model):
                 min_cx = -inf
                 status = UNBOUNDED
                 return x, min_cx, status
+            elif status == 'unknown':
+                raise Exception('Status code ' + str(status) + " not yet handeld.")
             else:
                 raise Exception('Status code ' + str(status) + " not yet handeld.")
             x = self.getSolution()
@@ -264,7 +266,7 @@ class SCIP_MILP(pso.Model):
             logging.error('Error while running SCIP.')
             return nan
 
-    def populate(self, pool_limit) -> Tuple[List, float, float]:
+    def populate(self, n) -> Tuple[List, float, float]:
         numrows = len(self.constr)
         """Generate a solution pool for MILPs
         
@@ -280,7 +282,7 @@ class SCIP_MILP(pso.Model):
             solution_vectors, optimal_value, optimization_status
         """
         try:
-            if pool_limit > 0:
+            if n > 0:
                 sols = []
                 stoptime = t.time() + self.getParam('limits/time')
                 # 1. find optimal solution
@@ -297,7 +299,7 @@ class SCIP_MILP(pso.Model):
                 self.addExclusionConstraintIneq(x)
                 # 4. loop solve and exclude until problem becomes infeasible
                 while status in [OPTIMAL,UNBOUNDED] and not isnan(x[0]) \
-                    and stoptime-t.time() > 0 and pool_limit > len(sols):
+                    and stoptime-t.time() > 0 and n > len(sols):
                     self.set_time_limit(stoptime - t.time())
                     x, _, status = self.solve()
                     if status in [OPTIMAL, UNBOUNDED]:
@@ -328,11 +330,6 @@ class SCIP_MILP(pso.Model):
         else:
             self.freeTransform()
             self.setObjective(pso.Expr({self.trms[i]: c[i] for i in nonzero(c)[0]}))
-        if any(self.getObjective()):
-            self.setEmphasis(0)
-            self.setParam('display/verblevel', 0)
-        else:
-            self.setEmphasis(1)
 
     def set_objective_idx(self, C):
         """Set the objective function with index-value pairs
@@ -344,11 +341,6 @@ class SCIP_MILP(pso.Model):
         else:
             self.freeTransform()
             self.setObjective(pso.Expr({self.trms[c[0]]: c[1] for c in C}))
-        if any(self.getObjective()):
-            self.setEmphasis(0)
-            self.setParam('display/verblevel', 0)
-        else:
-            self.setEmphasis(1)
 
     def set_ub(self, ub):
         """Set the upper bounds to a given vector"""

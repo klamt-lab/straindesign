@@ -30,25 +30,20 @@ def model_core():
     """Load example core model. Large enough to test strain design with multiprocessing"""
     return read_sbml_model(dirname(abspath(__file__)) + "/iMLcore.xml")
 
-
 def test_import_sd():
     import straindesign
-
 
 def test_solver_availability(curr_solver):
     """Test solver availability."""
     assert (curr_solver in sd.avail_solvers)
-
 
 def test_solver_loading(curr_solver):
     """Test that solvers interfaces can be loaded."""
     milp = sd.MILP_LP(solver=curr_solver)
     assert (milp.solve() == ([], 0.0, OPTIMAL))
 
-
 def test_load_solvers(model_small_example, curr_solver):
     """Test solver choice."""
-
     # solver selection with no solver specified
     solver1 = sd.select_solver()
     assert (solver1 in [CPLEX, GUROBI, GLPK, SCIP])
