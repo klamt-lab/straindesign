@@ -28,17 +28,43 @@ import os
 import subprocess
 import sympy
 import io
+import sys  # added for relative path lookup
 from contextlib import redirect_stdout, redirect_stderr
+
+def search_for_jvm():
+    common_java_paths = [
+        "C:\\Program Files\\Java",  # Windows
+        "/usr/lib/jvm",             # Linux
+        "/Library/Java/JavaVirtualMachines",  # macOS
+        os.path.dirname(sys.executable)
+    ]
+    for base in common_java_paths:
+        if os.path.exists(base):
+            for root, _dirs, files in os.walk(base):
+                if any(lib in files for lib in ["jvm.dll", "libjvm.so", "libjvm.dylib"]):
+                    return root
+    return None
+
 """Initialization of the java machine, since efmtool compression is done in java."""
 efmtool_jar = os.path.join(os.path.dirname(__file__), 'efmtool.jar')
 jpype.addClassPath(efmtool_jar)
 if not jpype.isJVMStarted():
-    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):  # suppress console output
-        # mem_bytes = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')  # e.g. 4015976448
-        # mem_mb = round(mem_bytes/(1024.**2)*0.75) # allow 75% of total memory for heap space
-        # mem_mb = round(psutil.virtual_memory()[0]/(1024.**2)*0.75)
-        # jpype.startJVM( jpype.getDefaultJVMPath() , f"-Xmx{mem_mb}m" )
-        jpype.startJVM()
+    # Look up JVM at different locations
+    if not os.environ.get("JAVA_HOME"):
+        candidate = search_for_jvm()
+        if candidate:
+            os.environ["JAVA_HOME"] = candidate
+    try:
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):  # suppress console output
+            jpype.startJVM()
+    except Exception as e:
+        extra_info = ""
+        if not os.environ.get("JAVA_HOME"):
+            extra_info = " JAVA_HOME is not defined."
+        raise RuntimeError(
+            "Failed to start JVM. Please ensure that Java (OpenJDK) is installed." + extra_info +
+            " If using conda, install openjdk from conda-forge and set JAVA_HOME to the OpenJDK installation path."
+        ) from e
 import jpype.imports
 
 import ch.javasoft.smx.impl.DefaultBigIntegerRationalMatrix as DefaultBigIntegerRationalMatrix
@@ -54,26 +80,28 @@ import java.math.BigInteger as BigInteger
 jTrue = jpype.JBoolean(True)
 jSystem = jpype.JClass("java.lang.System")
 
-# try to find a working java executable
-_java_executable = 'java'
-try:
-    cp = subprocess.run([_java_executable, '-version'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if cp.returncode != 0:
-        _java_executable = ''
-except:
-    _java_executable = ''
+# # try to find a working java executable
+# _java_executable = 'java'
+# try:
+#     cp = subprocess.run([_java_executable, '-version'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+#     if cp.returncode != 0:
+#         _java_executable = ''
+# except:
+#     _java_executable = ''
 
-if _java_executable == '':
-    _java_executable = os.path.join(os.environ.get('JAVA_HOME', ''), "bin", "java")
-    try:
-        cp = subprocess.run([_java_executable, '-version'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if cp.returncode != 0:
-            _java_executable = ''
-    except:
-        _java_executable = ''
-if _java_executable == '':
-    _java_executable = os.path.join(str(jpype.jSystem.getProperty("java.home")), "bin", "java")
-
+# if _java_executable == '':
+#     _java_executable = os.path.join(os.environ.get('JAVA_HOME', ''), "bin", "java")
+#     try:
+#         cp = subprocess.run([_java_executable, '-version'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+#         if cp.returncode != 0:
+#             _java_executable = ''
+#     except:
+#         _java_executable = ''
+# if _java_executable == '':
+#     _java_executable = os.path.join(str(jpype.jSystem.getProperty("java.home")), "bin", "java")
+# if _java_executable == '':
+#     import shutil
+#     _java_executable = shutil.which("java")
 
 def basic_columns_rat(mx, tolerance=0):  # mx is ch.javasoft.smx.impl.DefaultBigIntegerRationalMatrix
     """efmtool: Translate matrix coefficients to rational numbers"""

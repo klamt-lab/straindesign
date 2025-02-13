@@ -1,6 +1,5 @@
 name: straindesign
 channels:
-  - cnapy
   - conda-forge
   - defaults
 dependencies:
@@ -9,5 +8,4 @@ dependencies:
   - matplotlib
   - jpype1
   - psutil
-  - cobra
-  - straindesign
+  - conda-forge::cobra
