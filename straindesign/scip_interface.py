@@ -26,6 +26,7 @@ from typing import Tuple, List
 import time as t
 import logging
 
+
 class SCIP_MILP(pso.Model):
     """SCIP interface for MILP
     

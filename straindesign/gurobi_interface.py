@@ -28,6 +28,7 @@ import logging
 
 gstatus = grb.Status
 
+
 class Gurobi_MILP_LP(gp.Model):
     """Gurobi interface for MILP and LP
     
@@ -123,11 +124,9 @@ class Gurobi_MILP_LP(gp.Model):
         # add indicator constraints
         if indic_constr is not None:
             for i in range(len(indic_constr.sense)):
-                self.addGenConstrIndicator(x[indic_constr.binv[i]],
-                                           bool(indic_constr.indicval[i]),
+                self.addGenConstrIndicator(x[indic_constr.binv[i]], bool(indic_constr.indicval[i]),
                                            gp.quicksum(indic_constr.A[i, j] * x[j] for j in range(len(c)) if indic_constr.A[i, j] != 0.0),
-                                           '=' if indic_constr.sense[i] == 'E' else '<',
-                                           indic_constr.b[i])
+                                           '=' if indic_constr.sense[i] == 'E' else '<', indic_constr.b[i])
 
         # set parameters
         self.params.OutputFlag = 0

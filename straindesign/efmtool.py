@@ -31,10 +31,11 @@ import io
 import sys  # added for relative path lookup
 from contextlib import redirect_stdout, redirect_stderr
 
+
 def search_for_jvm():
     common_java_paths = [
         "C:\\Program Files\\Java",  # Windows
-        "/usr/lib/jvm",             # Linux
+        "/usr/lib/jvm",  # Linux
         "/Library/Java/JavaVirtualMachines",  # macOS
         os.path.dirname(sys.executable)
     ]
@@ -44,6 +45,7 @@ def search_for_jvm():
                 if any(lib in files for lib in ["jvm.dll", "libjvm.so", "libjvm.dylib"]):
                     return root
     return None
+
 
 """Initialization of the java machine, since efmtool compression is done in java."""
 efmtool_jar = os.path.join(os.path.dirname(__file__), 'efmtool.jar')
@@ -61,10 +63,8 @@ if not jpype.isJVMStarted():
         extra_info = ""
         if not os.environ.get("JAVA_HOME"):
             extra_info = " JAVA_HOME is not defined."
-        raise RuntimeError(
-            "Failed to start JVM. Please ensure that Java (OpenJDK) is installed." + extra_info +
-            " If using conda, install openjdk from conda-forge and set JAVA_HOME to the OpenJDK installation path."
-        ) from e
+        raise RuntimeError("Failed to start JVM. Please ensure that Java (OpenJDK) is installed." + extra_info +
+                           " If using conda, install openjdk from conda-forge and set JAVA_HOME to the OpenJDK installation path.") from e
 import jpype.imports
 
 import ch.javasoft.smx.impl.DefaultBigIntegerRationalMatrix as DefaultBigIntegerRationalMatrix
@@ -102,6 +102,7 @@ jSystem = jpype.JClass("java.lang.System")
 # if _java_executable == '':
 #     import shutil
 #     _java_executable = shutil.which("java")
+
 
 def basic_columns_rat(mx, tolerance=0):  # mx is ch.javasoft.smx.impl.DefaultBigIntegerRationalMatrix
     """efmtool: Translate matrix coefficients to rational numbers"""
