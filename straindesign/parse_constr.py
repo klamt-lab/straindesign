@@ -31,8 +31,8 @@ def parse_constraints(constr, reaction_ids) -> list:
     Args:
         constr (str or list of str): 
             (List of) constraints in string form.
-            E.g.: ['r1 + 3*r2 = 0.3', '-5*r3 -r4 <= -0.5'] or
-            '1.0 r1 + 3.0*r2 =0.3,-r4-5*r3<=-0.5' or ...
+            E.g.: ["r1 + 3*r2 = 0.3", "-5*r3 -r4 <= -0.5"] or
+            "1.0 r1 + 3.0*r2 =0.3,-r4-5*r3<=-0.5" or ...
             
         reaction_ids (list of str): 
             List of reaction identifiers.
@@ -40,7 +40,7 @@ def parse_constraints(constr, reaction_ids) -> list:
     Returns:
         (List of dicts): 
         List of constraints. Each constraint is a list of three elements.
-        E.g.: [[{'r1':1.0,'r2':3.0},'=',0.3],[{'r3':-5.0,'r4':-1.0},'<=',-0.5],...]
+        E.g.: [[{"r1":1.0,"r2":3.0},"=",0.3],[{"r3":-5.0,"r4":-1.0},"<=",-0.5],...]
     """
     if not constr:
         return []
@@ -65,8 +65,8 @@ def parse_linexpr(expr, reaction_ids) -> List:
     Args:
         expr (str or list of str): 
             (List of) expressions in string form.
-            E.g.: ['r1 + 3*r2', '-5*r3 -r4'] or
-            '1.0 r1 + 3.0*r2,-r4-5*r3' or ...
+            E.g.: ["r1 + 3*r2", "-5*r3 -r4"] or
+            "1.0 r1 + 3.0*r2,-r4-5*r3" or ...
             
         reaction_ids (list of str): 
             List of reaction identifiers.
@@ -74,7 +74,7 @@ def parse_linexpr(expr, reaction_ids) -> List:
     Returns:
         (List of dicts): 
         List of expressions. Each expression is a dictionary.
-        E.g.: [{'r1':1.0,'r2':3.0},{'r3':-5.0,'r4':-1.0},...]
+        E.g.: [{"r1":1.0,"r2":3.0},{"r3":-5.0,"r4":-1.0},...]
     """
     if not expr:
         return []
@@ -93,7 +93,7 @@ def lineq2mat(equations, reaction_ids) -> Tuple[sparse.csr_matrix, Tuple, sparse
     list defines the order of variables and thus the columns of the resulting matrices, the order
     of (in)equalities will be preserved in the output matrices. As an example, take the input:
     
-    equations = ['2*c - b +3*a <= 2','c - b = 0','2*b -a >=-2'], reaction_ids = ['a','b','c']
+    equations = ["2*c - b +3*a <= 2","c - b = 0","2*b -a >=-2"], reaction_ids = ["a","b","c"]
     
     This will be translated to the form A_ineq * x <= b_ineq, A_eq * x = b_eq and hence to
     
@@ -102,7 +102,7 @@ def lineq2mat(equations, reaction_ids) -> Tuple[sparse.csr_matrix, Tuple, sparse
     
     Args:
         equations (list of str): 
-            (List of) (in)equalities in string form equations=['r1 + 3*r2 = 0.3', '-5*r3 -r4 <= -0.5']
+            (List of) (in)equalities in string form equations=["r1 + 3*r2 = 0.3", "-5*r3 -r4 <= -0.5"]
             
         reaction_ids (list of str): 
             List of reaction identifiers or variable names that are used to recognize variables in
@@ -120,19 +120,19 @@ def lineq2mat(equations, reaction_ids) -> Tuple[sparse.csr_matrix, Tuple, sparse
     b_eq = []
     for equation in equations:
         try:
-            lhs, rhs = re.split('<=|=|>=', equation)
-            eq_sign = re.search('<=|>=|=', equation)[0]
+            lhs, rhs = re.split(r"<=|=|>=", equation)
+            eq_sign = re.search(r"<=|>=|=", equation)[0]
             rhs = float(rhs)
         except:
             raise Exception("Equations must contain exactly one (in)equality sign: <=,=,>=. Right hand side must be a float number.")
         A = linexpr2mat(lhs, reaction_ids)
-        if eq_sign == '=':
+        if eq_sign == "=":
             A_eq = sparse.vstack((A_eq, A))
             b_eq += [rhs]
-        elif eq_sign == '<=':
+        elif eq_sign == "<=":
             A_ineq = sparse.vstack((A_ineq, A))
             b_ineq += [rhs]
-        elif eq_sign == '>=':
+        elif eq_sign == ">=":
             A_ineq = sparse.vstack((A_ineq, -A))
             b_ineq += [-rhs]
     return A_ineq, b_ineq, A_eq, b_eq
@@ -144,13 +144,13 @@ def lineq2list(equations, reaction_ids) -> List:
     Input inequalities in the form of strings are translated into a specific list format that
     facilitates the readout of left-hand-side, equality sign and right-hand-side of the inequality.
     
-    equations = ['2*c - b +3*a <= 2','c - b = 0','2*b -5...], reaction_ids = ['a','b','c']
+    equations = ["2*c - b +3*a <= 2","c - b = 0","2*b -5...], reaction_ids = ["a","b","c"]
     
-    This will be translated to the [[{'a':3.0,'b':-1.0,'c':2.0},'<=',2.0],[{'b':-1.0,'c':1.0},'=',0.0], ...]
+    This will be translated to the [[{"a":3.0,"b":-1.0,"c":2.0},"<=",2.0],[{"b":-1.0,"c":1.0},"=",0.0], ...]
     
     Args:
         equations (list of str): 
-            (List of) (in)equalities in string form equations=['r1 + 3*r2 = 0.3', '-5*r3 -r4 <= -0.5']
+            (List of) (in)equalities in string form equations=["r1 + 3*r2 = 0.3", "-5*r3 -r4 <= -0.5"]
             
         reaction_ids (list of str): 
             List of reaction identifiers or variable names that are used to recognize variables in
@@ -159,8 +159,8 @@ def lineq2list(equations, reaction_ids) -> List:
     Returns:
         (list of lists): 
         (In)equalities presented in the form:
-        [[{'a':3.0,'b':-1.0,'c':2.0},'<=',2.0], # e1
-         [{'b':-1.0,'c':1.0},'=',0.0],          # e2
+        [[{"a":3.0,"b":-1.0,"c":2.0},"<=",2.0], # e1
+         [{"b":-1.0,"c":1.0},"=",0.0],          # e2
          ...]                                   # ...
     """
     D = []
@@ -168,8 +168,8 @@ def lineq2list(equations, reaction_ids) -> List:
         if not equation:
             continue
         try:
-            lhs, rhs = re.split('<=|=|>=', equation)
-            eq_sign = re.search('<=|>=|=', equation)[0]
+            lhs, rhs = re.split("<=|=|>=", equation)
+            eq_sign = re.search("<=|>=|=", equation)[0]
             rhs = float(rhs)
         except:
             raise Exception("Equations must contain exactly one (in)equality sign: <=,=,>=. Right hand side must be a float number.")
@@ -180,11 +180,11 @@ def lineq2list(equations, reaction_ids) -> List:
 def lineqlist2str(D):
     """Translates a *linear* (in)equality from the list format [lhs,sign,rhs] to a string
     
-    E.g. input: D=[{'a':3.0,'b':-1.0,'c':2.0},'<=',2.0]] is translated to: out='3.0 a - 1.0 b + 2.0 c <= 2'
+    E.g. input: D=[{"a":3.0,"b":-1.0,"c":2.0},"<=",2.0]] is translated to: out="3.0 a - 1.0 b + 2.0 c <= 2"
     
     Args:
         D (list): 
-            (In)equality in list form, e.g.: D=[{'a':3.0,'b':-1.0,'c':2.0},'<=',2.0]]
+            (In)equality in list form, e.g.: D=[{"a":3.0,"b":-1.0,"c":2.0},"<=",2.0]]
 
     Returns:
         (str): 
@@ -206,7 +206,7 @@ def lineqlist2mat(D, reaction_ids) -> Tuple[sparse.csr_matrix, Tuple, sparse.csr
     list defines the order of variables and thus the columns of the resulting matrices, the order
     of (in)equalities will be preserved in the output matrices. As an example, take the input:
     
-    D = [[{'a':3.0,'b':-1.0,'c':2.0},'<=',2.0],[{'b':-1.0,'c':1.0},'=',0.0], [{'a':-1,'b':2.0},'>=',-2.0]]
+    D = [[{"a":3.0,"b":-1.0,"c":2.0},"<=",2.0],[{"b":-1.0,"c":1.0},"=",0.0], [{"a":-1,"b":2.0},">=",-2.0]]
     
     This will be translated to the form A_ineq * x <= b_ineq, A_eq * x = b_eq and hence to
     
@@ -216,7 +216,7 @@ def lineqlist2mat(D, reaction_ids) -> Tuple[sparse.csr_matrix, Tuple, sparse.csr
     Args:
         D (list of dict): 
             (List of) (in)equalities in the list of list form: 
-            [[{'a':3.0,'b':-1.0,'c':2.0},'<=',2.0],[{'b':-1.0,'c':1.0},'=',0.0], ...]
+            [[{"a":3.0,"b":-1.0,"c":2.0},"<=",2.0],[{"b":-1.0,"c":1.0},"=",0.0], ...]
             
         reaction_ids (list of str): 
             List of reaction identifiers or variable names that are used to recognize variables in
@@ -236,13 +236,13 @@ def lineqlist2mat(D, reaction_ids) -> Tuple[sparse.csr_matrix, Tuple, sparse.csr
         d_expr = linexprdict2mat(d[0], reaction_ids)
         eq_sign = d[1]
         rhs = d[2]
-        if eq_sign == '=':
+        if eq_sign == "=":
             A_eq = sparse.vstack((A_eq, d_expr))
             b_eq += [rhs]
-        elif eq_sign == '<=':
+        elif eq_sign == "<=":
             A_ineq = sparse.vstack((A_ineq, d_expr))
             b_ineq += [rhs]
-        elif eq_sign == '>=':
+        elif eq_sign == ">=":
             A_ineq = sparse.vstack((A_ineq, -d_expr))
             b_ineq += [-rhs]
     return A_ineq, b_ineq, A_eq, b_eq
@@ -251,11 +251,11 @@ def lineqlist2mat(D, reaction_ids) -> Tuple[sparse.csr_matrix, Tuple, sparse.csr
 def linexpr2mat(expr, reaction_ids) -> sparse.csr_matrix:
     """Translates a linear expression into a vector
     
-    E.g.: input: expr='2 R3 - R1', reaction_ids=['R1', 'R2', 'R3', 'R4'] translates into sparse matrix:  A = [-1 0 2 0]
+    E.g.: input: expr="2 R3 - R1", reaction_ids=["R1", "R2", "R3", "R4"] translates into sparse matrix:  A = [-1 0 2 0]
     
     Args:
         expr (str): 
-            (In)equality as a character string: e.g., expr='2 R3 - R1'
+            (In)equality as a character string: e.g., expr="2 R3 - R1"
                         
         reaction_ids (list of str): 
             List of reaction identifiers or variable names that are used to recognize variables in the input
@@ -267,7 +267,7 @@ def linexpr2mat(expr, reaction_ids) -> sparse.csr_matrix:
     #
     A = sparse.lil_matrix((1, len(reaction_ids)))
     # split expression into parts and strip away special characters
-    expr_parts = [re.sub(r'^(\s|-|\+|\()*|(\s|-|\+|\))*$', '', part) for part in expr.split()]
+    expr_parts = [re.sub(r"^(\s|-|\+|\()*|(\s|-|\+|\))*$", "", part) for part in expr.split()]
     # identify reaction identifiers by comparing with models reaction list
     ridx = [r for r in expr_parts if r in reaction_ids]
     # verify syntax of expression
@@ -279,7 +279,7 @@ def linexpr2mat(expr, reaction_ids) -> sparse.csr_matrix:
         if part in ridx:
             last_was_number = False
             continue
-        if re.match('^\d*\.{0,1}\d*$', part) is not None:
+        if re.match(r"^\d*\.{0,1}\d*$", part) is not None:
             if last_was_number:
                 raise Exception("Expression invalid. The expression contains at least two numbers in a row.")
             last_was_number = True
@@ -289,11 +289,11 @@ def linexpr2mat(expr, reaction_ids) -> sparse.csr_matrix:
         raise Exception("Reaction identifiers may only occur once in each linear expression.")
     # iterate through reaction identifiers and retrieve coefficients from linear expression
     for rid in ridx:
-        coeff = re.search('(\s|^)(\s|\d|-|\+|\.)*?(?=' + re.escape(rid) + '(\s|$))', expr)[0]
-        coeff = re.sub('\s', '', coeff)
-        if coeff in ['', '+']:
+        coeff = re.search(r"(\s|^)(\s|\d|-|\+|\.)*?(?=" + re.escape(rid) + r"(\s|$))", expr)[0]
+        coeff = re.sub(r"\s", "", coeff)
+        if coeff in ["", "+"]:
             coeff = 1.0
-        if coeff == '-':
+        if coeff == "-":
             coeff = -1.0
         else:
             coeff = float(coeff)
@@ -304,11 +304,11 @@ def linexpr2mat(expr, reaction_ids) -> sparse.csr_matrix:
 def linexpr2dict(expr, reaction_ids) -> dict:
     """Translates a linear expression into a dictionary
     
-    E.g.: input: expr='2 R3 - R1', reaction_ids=['R1', 'R2', 'R3', 'R4'] translates to a dict D={'R1':-1.0, 'R3': 2.0}
+    E.g.: input: expr="2 R3 - R1", reaction_ids=["R1", "R2", "R3", "R4"] translates to a dict D={"R1":-1.0, "R3": 2.0}
     
     Args:
         expr (str): 
-            (In)equalities as a character string, e.g.: expr='2 R3 - R1'
+            (In)equalities as a character string, e.g.: expr="2 R3 - R1"
             
         reaction_ids (list of str): 
             List of reaction identifiers or variable names that are used to recognize variables in the input
@@ -318,8 +318,8 @@ def linexpr2dict(expr, reaction_ids) -> dict:
         A dictionary that contains the variable names and the variable coefficients in the linear expression
     """
     # split expression into parts and strip away special characters
-    expr_parts = [re.sub(r'^(\s|-|\+|\()*|(\s|-|\+|\))*$', '', part) for part in expr.split()]
-    expr_parts = [e for e in expr_parts if e != '']  # remove 'empty' entries
+    expr_parts = [re.sub(r"^(\s|-|\+|\()*|(\s|-|\+|\))*$", "", part) for part in expr.split()]
+    expr_parts = [e for e in expr_parts if e != ""]  # remove "empty" entries
     # identify reaction identifiers by comparing with models reaction list
     ridx = [r for r in expr_parts if r in reaction_ids]
     # verify syntax of expression
@@ -331,7 +331,7 @@ def linexpr2dict(expr, reaction_ids) -> dict:
         if part in ridx:
             last_was_number = False
             continue
-        if re.match('^\d*\.{0,1}\d*$', part) is not None:
+        if re.match(r"^\d*\.{0,1}\d*$", part) is not None:
             if last_was_number:
                 raise Exception("Expression invalid. The expression contains at least two numbers in a row.")
             last_was_number = True
@@ -342,11 +342,11 @@ def linexpr2dict(expr, reaction_ids) -> dict:
     D = {}
     # iterate through reaction identifiers and retrieve coefficients from linear expression
     for rid in ridx:
-        coeff = re.search('(\s|^)(\s|\d|-|\+|\.)*?(?=' + re.escape(rid) + '(\s|$))', expr)[0]
-        coeff = re.sub('\s', '', coeff)
-        if coeff in ['', '+']:
+        coeff = re.search(r"(\s|^)(\s|\d|-|\+|\.)*?(?=" + re.escape(rid) + r"(\s|$))", expr)[0]
+        coeff = re.sub(r"\s", "", coeff)
+        if coeff in ["", "+"]:
             coeff = 1.0
-        elif coeff == '-':
+        elif coeff == "-":
             coeff = -1.0
         else:
             coeff = float(coeff)
@@ -357,7 +357,7 @@ def linexpr2dict(expr, reaction_ids) -> dict:
 def linexprdict2mat(D, reaction_ids) -> sparse.csr_matrix:
     """Translates a linear expression from dict into a matrix
     
-    E.g.: input: D={'R1':-1.0, 'R3': 2.0}, reaction_ids=['R1', 'R2', 'R3', 'R4'] translates into sparse matrix:  A = [-1 0 2 0]
+    E.g.: input: D={"R1":-1.0, "R3": 2.0}, reaction_ids=["R1", "R2", "R3", "R4"] translates into sparse matrix:  A = [-1 0 2 0]
     
     Args:
         D (dict): 
@@ -380,7 +380,7 @@ def linexprdict2mat(D, reaction_ids) -> sparse.csr_matrix:
 def linexprdict2str(D):
     """Translates a linear expression from dict into a caracter string
     
-    E.g.: input: D={'R1':-1.0, 'R3': 2.0}, translates to the string:  '- 1.0 R1 + 2.0 R3'
+    E.g.: input: D={"R1":-1.0, "R3": 2.0}, translates to the string:  "- 1.0 R1 + 2.0 R3"
     
     Args:
         D (dict): 
@@ -394,10 +394,10 @@ def linexprdict2str(D):
         expr_parts = [str(v) + " " + k for k, v in D.items()]
         expr = expr_parts[0]
         for ep in expr_parts[1:]:
-            if ep[0] == '-':
-                expr += ' - ' + ep[1:]
+            if ep[0] == "-":
+                expr += " - " + ep[1:]
             else:
-                expr += ' + ' + ep
+                expr += " + " + ep
         return expr
     else:
         return ""
@@ -406,7 +406,7 @@ def linexprdict2str(D):
 def get_rids(expr, reaction_ids):
     """Get reaction identifiers that are present in string
     
-    E.g.: input: D={'R1':-1.0, 'R3': 2.0}, translates to the string:  '- 1.0 R1 + 2.0 R3'
+    E.g.: input: D={"R1":-1.0, "R3": 2.0}, translates to the string:  "- 1.0 R1 + 2.0 R3"
     
     Args:
         expr (str): 
@@ -419,13 +419,13 @@ def get_rids(expr, reaction_ids):
         (list of str): 
         A list of strings containing the reaction/variable strings present in the input string
     """
-    expr_parts = [re.sub(r'^(\s|-|\+|\()*|(\s|-|\+|\|<|\=|>)*$', '', part) for part in expr.split()]
+    expr_parts = [re.sub(r"^(\s|-|\+|\()*|(\s|-|\+|\|<|\=|>)*$", "", part) for part in expr.split()]
     reacIDs = []
     for part in expr_parts:
         if part in reaction_ids:
             reacIDs += [part]
             continue
-        if re.match('^\d*\.{0,1}\d*$', part) is not None:
+        if re.match(r"^\d*\.{0,1}\d*$", part) is not None:
             continue
         raise Exception("Expression invalid. Unknown identifier " + part + ".")
     return reacIDs
