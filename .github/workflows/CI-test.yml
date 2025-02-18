@@ -109,7 +109,7 @@ jobs:
       - name: Install package using conda
         if: matrix.package-manager == 'conda'
         run: |
-          conda install straindesign -c ./build
+          conda install straindesign -c ./build -c conda-forge
       - name: Install gurobi (conda)
         if: matrix.package-manager == 'conda'
         run: |
