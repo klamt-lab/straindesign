@@ -21,8 +21,8 @@ requirements:
     - scipy
     - matplotlib
     - psutil
-    - conda-forge::jpype1
-    - conda-forge::cobra
+    - conda-forge:jpype1
+    - conda-forge:cobra
 
 build:
   noarch: python
@@ -33,8 +33,6 @@ build:
 test:
   imports:
     - straindesign
-  channels:
-    - conda-forge
 
 about:
   home:  https://github.com/klamt-lab/straindesign
@@ -45,8 +43,3 @@ about:
   doc_url: https://github.com/klamt-lab/straindesign
   dev_url: https://github.com/klamt-lab/straindesign
 
-# New extra section to include additional channels during install:
-extra:
-  channels:
-    - defaults
-    - conda-forge
