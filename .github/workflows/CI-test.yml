@@ -63,9 +63,8 @@ jobs:
         run: export JAVA_HOME=$(/usr/libexec/java_home)
       - name: Set up Conda Environment with Micromamba (conda environment test)
         if: matrix.package-manager == 'conda_env'
-        uses: mamba-org/setup-micromamba@v1
+        uses: mamba-org/setup-micromamba@v2
         with:
-          micromamba-version: '1.5.8-0'
           environment-file: environment.yml
           create-args: >-
             python=${{ matrix.python-version }}
