@@ -35,8 +35,9 @@ jobs:
         with:
           path: |
             ~/conda_pkgs_dir
-          key: ${{ runner.os }}-conda-${{ hashFiles('**/environment.yml') }}
+          key: ${{ runner.os }}-conda-${{ matrix.python-version }}-${{ hashFiles('**/environment.yml') }}
           restore-keys: |
+            ${{ runner.os }}-conda-${{ matrix.python-version }}-
             ${{ runner.os }}-conda-
       - name: Cache pip packages
         uses: actions/cache@v4
