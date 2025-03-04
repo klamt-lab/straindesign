@@ -1,0 +1,1 @@
+﻿# straindesign package

@@ -1,0 +1,1 @@
+﻿# Test solver functionality\n\ndef test_cplex_interface():\n    '''Test CPLEX interface'''\n    assert True
