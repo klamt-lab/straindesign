@@ -111,7 +111,7 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
 
 
 def extend_model_gpr(model, use_names=False):
-    """Integrate GPR-rules into a metabolic model as pseudo metabolites and reactions
+    """Integrate GPR-rules into a metabolic model as pseudo metabolites and reactions using AST parsing
     
     COBRA modules often have gene-protein-reaction (GPR) rules associated with each reaction. 
     These can be integrated into the metabolic network structure through pseudo reactions
@@ -122,10 +122,9 @@ def extend_model_gpr(model, use_names=False):
     
     GPR-rule integration enables the computation of strain designs based on genetic interventions.
     
-    This function requires all GPR-rules to be provided in DNF (disjunctive normal form).
-    (e.g. g1 and g2 or g1 and g3, NOT g1 and (g2 or g3)). Brackets are allowed but not required.
-    If reversible reactions are associated with GPR-rules, these reactions are spit during
-    GPR-integration. The function returns a mapping of old and new reaction identifiers.
+    This function now uses AST parsing to handle both DNF (disjunctive normal form) and non-DNF
+    GPR rules. It processes the reaction.gpr.body AST structure directly, enabling proper handling
+    of complex nested boolean expressions.
         
     Example:
         reac_map = extend_model_gpr(model):
@@ -133,7 +132,6 @@ def extend_model_gpr(model, use_names=False):
     Args:
         model (cobra.Model):
             A metabolic model that is an instance of the cobra.Model class containing GPR rules 
-            in DNF
                       
         use_names (bool): (Default: False)
             If set to True, the gene pseudoreactions will carry the gene name as reaction
@@ -147,6 +145,8 @@ def extend_model_gpr(model, use_names=False):
         {'Reaction1' : {'Reaction1' : 1, 'Reaction1_reverse_a59c' : -1}}
             
     """
+    import ast
+    
     # Check if reaction names and gene names/IDs overlap. If yes, throw Error
     reac_ids = {r.id for r in model.reactions}
     if (not use_names) and any([g.id in reac_ids for g in model.genes]):
@@ -182,6 +182,117 @@ def extend_model_gpr(model, use_names=False):
 
     solver = search('(' + '|'.join(avail_solvers) + ')', model.solver.interface.__name__)[0]
 
+    # Track created metabolites to avoid duplicates
+    created_metabolites = set()
+
+    def create_gene_pseudoreaction(gene_id):
+        """Create a gene pseudoreaction and return the corresponding metabolite ID."""
+        gene_met_id = f'g_{gene_id}'
+        
+        # Check name length and truncate if necessary
+        if len(gene_met_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
+            if truncate(gene_met_id) not in [m.id for m in model.metabolites]:
+                warning_name_too_long(gene_met_id, gene_id)
+            gene_met_id = truncate(gene_met_id)
+        
+        # Create metabolite and reaction if they don't exist
+        if gene_met_id not in created_metabolites and gene_met_id not in model.metabolites.list_attr('id'):
+            model.add_metabolites(Metabolite(gene_met_id))
+            created_metabolites.add(gene_met_id)
+            
+            gene = model.genes.get_by_id(gene_id)
+            if use_names and gene.name:
+                reaction_id = gene.name
+            else:
+                reaction_id = gene.id
+            
+            # Check name length and truncate if necessary
+            if len(reaction_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
+                warning_name_too_long(reaction_id, gene_id)
+                reaction_id = truncate(reaction_id)
+            
+            w = Reaction(reaction_id)
+            model.add_reactions([w])
+            w.reaction = f'--> {gene_met_id}'
+            w._upper_bound = np.inf
+        
+        return gene_met_id
+
+    def create_and_metabolite(child_metabolites):
+        """Create an AND pseudometabolite that combines multiple child metabolites."""
+        and_met_id = "_and_".join(sorted(child_metabolites))
+        
+        # Check name length and truncate if necessary
+        if len(and_met_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
+            if truncate(and_met_id) not in [m.id for m in model.metabolites]:
+                warning_name_too_long(and_met_id, "AND combination")
+            and_met_id = truncate(and_met_id)
+        
+        # Create metabolite and reaction if they don't exist
+        if and_met_id not in created_metabolites and and_met_id not in model.metabolites.list_attr('id'):
+            model.add_metabolites(Metabolite(and_met_id))
+            created_metabolites.add(and_met_id)
+            
+            reaction_id = f"R_{and_met_id}"
+            
+            # Check name length and truncate if necessary
+            if len(reaction_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
+                warning_name_too_long(reaction_id, "AND combination")
+                reaction_id = truncate(reaction_id)
+            
+            w = Reaction(reaction_id)
+            model.add_reactions([w])
+            w.reaction = f'{" + ".join(child_metabolites)} --> {and_met_id}'
+            w._upper_bound = np.inf
+        
+        return and_met_id
+
+    def create_or_metabolite(child_metabolites):
+        """Create an OR pseudometabolite with separate reactions for each child."""
+        or_met_id = "_or_".join(sorted(child_metabolites))
+        
+        # Check name length and truncate if necessary
+        if len(or_met_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
+            if truncate(or_met_id) not in [m.id for m in model.metabolites]:
+                warning_name_too_long(or_met_id, "OR combination")
+            or_met_id = truncate(or_met_id)
+        
+        # Create metabolite and reactions if they don't exist
+        if or_met_id not in created_metabolites and or_met_id not in model.metabolites.list_attr('id'):
+            model.add_metabolites(Metabolite(or_met_id))
+            created_metabolites.add(or_met_id)
+            
+            # Create separate reactions for each child metabolite
+            for i, child_met in enumerate(child_metabolites):
+                reaction_id = f"R{i}_{or_met_id}"
+                
+                # Check name length and truncate if necessary
+                if len(reaction_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
+                    warning_name_too_long(reaction_id, "OR combination")
+                    reaction_id = truncate(reaction_id)
+                
+                w = Reaction(reaction_id)
+                model.add_reactions([w])
+                w.reaction = f'{child_met} --> {or_met_id}'
+                w._upper_bound = np.inf
+        
+        return or_met_id
+
+    def process_ast_node(node):
+        """Recursively process AST nodes to build GPR network."""
+        if isinstance(node, ast.Name):
+            # Leaf node: create gene pseudoreaction
+            return create_gene_pseudoreaction(node.id)
+        elif isinstance(node, ast.BoolOp):
+            # Branch node: process children and create appropriate metabolite
+            child_metabolites = [process_ast_node(child) for child in node.values]
+            if isinstance(node.op, ast.And):
+                return create_and_metabolite(child_metabolites)
+            elif isinstance(node.op, ast.Or):
+                return create_or_metabolite(child_metabolites)
+        else:
+            raise ValueError(f"Unsupported AST node type: {type(node)}")
+
     # Split reactions when necessary
     reac_map = {}
     rev_reac = set()
@@ -209,76 +320,34 @@ def extend_model_gpr(model, use_names=False):
     model.remove_reactions(del_reac)
     model.add_reactions(rev_reac)
 
-    # All reaction rules are provided in dnf.
+    # Process GPR rules using AST parsing
     for r in model.reactions:
-        if r.gene_reaction_rule:  # if reaction has a gpr rule
-            dt = [s.strip() for s in r.gene_reaction_rule.split(' or ')]
-            for i, p in enumerate(dt.copy()):
-                ct = [s.strip() for s in p.replace('(', '').replace(')', '').split(' and ')]
-                for j, g in enumerate(ct.copy()):
-                    gene_met_id = 'g_' + g
-                    # Check name length of new metabolite
-                    if len(gene_met_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
-                        if truncate(gene_met_id) not in [m.id for m in model.metabolites]:
-                            warning_name_too_long(gene_met_id, r.id)
-                        gene_met_id = truncate(gene_met_id)
-                    # if gene is not in model, add gene pseudoreaction and metabolite
-                    if gene_met_id not in model.metabolites.list_attr('id'):
-                        model.add_metabolites(Metabolite(gene_met_id))
-                        gene = model.genes.get_by_id(g)
-                        w = Reaction(gene.id)
-                        if use_names:  # if gene name is available and used in gki_cost and gko_cost
-                            w.id = gene.name
-                        # Check name length of new reaction
-                        if len(w.id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
-                            warning_name_too_long(w.id, r.id)
-                            w.id = truncate(w.id)
-                        model.add_reactions([w])
-                        w.reaction = '--> ' + gene_met_id
-                        w._upper_bound = np.inf
-                    ct[j] = gene_met_id
-                if len(ct) > 1:
-                    ct_met_id = "_and_".join(ct)
-                    # Check name length of new metabolite
-                    if len(ct_met_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
-                        if truncate(ct_met_id) not in [m.id for m in model.metabolites]:
-                            warning_name_too_long(ct_met_id, r.id)
-                        ct_met_id = truncate(ct_met_id)
-                    if ct_met_id not in model.metabolites.list_attr('id'):
-                        # if conjunct term is not in model, add pseudoreaction and metabolite
-                        model.add_metabolites(Metabolite(ct_met_id))
-                        w = Reaction("R_" + ct_met_id)
-                        # Check name length of new reaction
-                        if len(w.id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
-                            warning_name_too_long(w.id, r.id)
-                            w.id = truncate(w.id)
-                        model.add_reactions([w])
-                        w.reaction = ' + '.join(ct) + '--> ' + ct_met_id
-                        w._upper_bound = np.inf
-                    dt[i] = ct_met_id
+        if r.gene_reaction_rule and r.gpr and r.gpr.body:
+            try:
+                # Process the GPR AST and get the final metabolite ID
+                final_metabolite_id = process_ast_node(r.gpr.body)
+                # Connect the final metabolite to the reaction
+                r.add_metabolites({model.metabolites.get_by_id(final_metabolite_id): -1.0})
+            except Exception as e:
+                logging.warning(f"Failed to process GPR rule for reaction {r.id}: {e}")
+                # Fallback to string parsing for compatibility
+                dt = [s.strip() for s in r.gene_reaction_rule.split(' or ')]
+                for i, p in enumerate(dt.copy()):
+                    ct = [s.strip() for s in p.replace('(', '').replace(')', '').split(' and ')]
+                    for j, g in enumerate(ct.copy()):
+                        gene_met_id = create_gene_pseudoreaction(g)
+                        ct[j] = gene_met_id
+                    if len(ct) > 1:
+                        ct_met_id = create_and_metabolite(ct)
+                        dt[i] = ct_met_id
+                    else:
+                        dt[i] = gene_met_id
+                if len(dt) > 1:
+                    dt_met_id = create_or_metabolite(dt)
                 else:
-                    dt[i] = gene_met_id
-            if len(dt) > 1:
-                dt_met_id = "_or_".join(dt)
-                # Check name length of new metabolite
-                if len(dt_met_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
-                    if truncate(dt_met_id) not in [m.id for m in model.metabolites]:
-                        warning_name_too_long(dt_met_id, r.id)
-                    dt_met_id = truncate(dt_met_id)
-                if dt_met_id not in model.metabolites.list_attr('id'):
-                    model.add_metabolites(Metabolite(dt_met_id))
-                    for k, d in enumerate(dt):
-                        w = Reaction("R" + str(k) + "_" + dt_met_id)
-                        # Check name length of new reaction
-                        if len(w.id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
-                            warning_name_too_long(w.id, r.id)
-                            w.id = truncate(w.id)
-                        model.add_reactions([w])
-                        w.reaction = d + ' --> ' + dt_met_id
-                        w._upper_bound = np.inf
-            else:
-                dt_met_id = dt[0]
-            r.add_metabolites({model.metabolites.get_by_id(dt_met_id): -1.0})
+                    dt_met_id = dt[0]
+                r.add_metabolites({model.metabolites.get_by_id(dt_met_id): -1.0})
+                
     return reac_map
 
 

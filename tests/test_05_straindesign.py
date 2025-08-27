@@ -61,7 +61,7 @@ def test_mcs_opt(curr_solver, model_weak_coupling, comp_approach, bigM, compress
 
 
 @pytest.mark.timeout(15)
-def test_mcs_gpr(model_gpr, comp_approach):
+def test_mcs_gpr(curr_solver, model_gpr, comp_approach):
     """Test MCS computation with gpr rules."""
     modules = [sd.SDModule(model_gpr, SUPPRESS, constraints=["1.0 rd_ex >= 1.0 "])]
     modules += [sd.SDModule(model_gpr, PROTECT, constraints=[[{'r_bm': 1.0}, '>=', 1.0]])]
@@ -89,7 +89,7 @@ def test_mcs_gpr(model_gpr, comp_approach):
         GKOCOST: gkocost,
         GKICOST: gkicost,
         REGCOST: regcost,
-        SOLVER: 'gurobi'
+        SOLVER: curr_solver
     }
     solution = sd.compute_strain_designs(model_gpr, sd_setup=sd_setup)
     assert (len(solution.gene_sd) == 4)
