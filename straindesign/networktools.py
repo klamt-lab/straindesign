@@ -21,7 +21,7 @@
 import numpy as np
 from scipy import sparse
 from sympy.core.numbers import One
-from sympy import Rational, nsimplify, parse_expr, to_dnf
+from sympy import Rational, nsimplify
 from typing import Dict, List
 from re import search
 import jpype
@@ -31,10 +31,11 @@ import straindesign.efmtool as efm
 from straindesign import fva, select_solver, parse_constraints, avail_solvers
 from straindesign.names import *
 import logging
+import ast
 
 
 def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
-    """Remove genes whose that do not affect the flux space of the model
+    """Remove genes whose that do not affect the flux space of the model using AST-based GPR parsing
     
     This function is used in preprocessing of computational strain design computations. Often,
     certain reactions, for instance, reactions essential for microbial growth can/must not be
@@ -44,7 +45,7 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
     Given a set of essential reactions that is to be maintained operational, some genes can be 
     removed from a metabolic model, either because they only affect only blocked reactions or 
     essential reactions, or because they are essential reactions and must not be removed. As a
-    consequence, the GPR rules of a model can be simplified. 
+    consequence, the GPR rules of a model can be simplified using AST parsing for both DNF and non-DNF rules.
     
         
     Example:
@@ -65,6 +66,120 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
         (dict):
         An updated dictionary of the knockout costs in which irrelevant genes are removed.
     """
+
+    def evaluate_gpr_ast(node, gene_states):
+        """
+        Evaluate GPR AST with given gene states.
+        gene_states: dict of {gene_id: True/False/None}
+        Returns True, False, or None (undetermined)
+        """
+        if isinstance(node, ast.Name):
+            return gene_states.get(node.id, None)
+        elif isinstance(node, ast.BoolOp):
+            if isinstance(node.op, ast.And):
+                # AND: all children must be True, any False makes it False
+                results = [evaluate_gpr_ast(child, gene_states) for child in node.values]
+                if any(r is False for r in results):
+                    return False
+                elif all(r is True for r in results):
+                    return True
+                else:
+                    return None  # undetermined
+            elif isinstance(node.op, ast.Or):
+                # OR: any child True makes it True, all False makes it False
+                results = [evaluate_gpr_ast(child, gene_states) for child in node.values]
+                if any(r is True for r in results):
+                    return True
+                elif all(r is False for r in results):
+                    return False
+                else:
+                    return None  # undetermined
+        else:
+            raise ValueError(f"Unsupported AST node type: {type(node)}")
+
+    def ast_to_gene_reaction_rule(node):
+        """
+        Convert an AST node back to gene reaction rule string format.
+        """
+        if isinstance(node, ast.Name):
+            return node.id
+        elif isinstance(node, ast.BoolOp):
+            child_strings = [ast_to_gene_reaction_rule(child) for child in node.values]
+            if isinstance(node.op, ast.And):
+                return ' and '.join(f'({s})' if ' or ' in s else s for s in child_strings)
+            elif isinstance(node.op, ast.Or):
+                return ' or '.join(f'({s})' if ' and ' in s else s for s in child_strings)
+        else:
+            raise ValueError(f"Unsupported AST node type: {type(node)}")
+    
+    def simplify_gpr_ast(node, protected_genes_dict):
+        """
+        Simplify GPR AST by setting protected genes to True and evaluating the result.
+        Returns simplified AST node or boolean values.
+        """
+        if isinstance(node, ast.Name):
+            # If this gene is protected (cannot be knocked out), it's always True
+            if node.id in protected_genes_dict:
+                return True
+            else:
+                return node  # Gene can be knocked out, keep as is
+        elif isinstance(node, ast.BoolOp):
+            # Recursively simplify children
+            simplified_children = [simplify_gpr_ast(child, protected_genes_dict) for child in node.values]
+            
+            if isinstance(node.op, ast.And):
+                # Filter out True values (protected genes don't constrain AND)
+                remaining = [child for child in simplified_children if child is not True]
+                if not remaining:  # All children are True
+                    return True
+                elif any(child is False for child in remaining):  # Any child is False
+                    return False
+                elif len(remaining) == 1:
+                    return remaining[0]
+                else:
+                    # Create new AND node with remaining children
+                    new_node = ast.BoolOp(op=ast.And(), values=remaining)
+                    return new_node
+                    
+            elif isinstance(node.op, ast.Or):
+                # If any child is True (protected gene), the whole OR is True
+                if any(child is True for child in simplified_children):
+                    return True
+                # Filter out False values
+                remaining = [child for child in simplified_children if child is not False]
+                if not remaining:  # All children are False
+                    return False
+                elif len(remaining) == 1:
+                    return remaining[0]
+                else:
+                    # Create new OR node with remaining children
+                    new_node = ast.BoolOp(op=ast.Or(), values=remaining)
+                    return new_node
+        else:
+            raise ValueError(f"Unsupported AST node type: {type(node)}")
+
+    def is_gene_essential_to_reaction_ast(reaction, gene_id):
+        """
+        Check if a gene is essential to a reaction using AST analysis.
+        A gene is essential if knocking it out makes the reaction impossible (False).
+        """
+        if not reaction.gene_reaction_rule:
+            return False
+        
+        # Skip reactions without gene associations
+        if not reaction.gpr or not reaction.gpr.body:
+            return False
+        
+        try:
+            # Test what happens if we knock out this gene using AST
+            gene_states = {gene_id: False}
+            result = evaluate_gpr_ast(reaction.gpr.body, gene_states)
+            return result is False
+        except Exception as e:
+            # Catch unsupported AST node types but don't fall back to string parsing
+            logging.warning(f'Unsupported AST node type in reaction {reaction.id} for gene {gene_id}: {e}')
+            return False
+
     # 1) Remove gpr rules from blocked reactions
     blocked_reactions = [reac.id for reac in model.reactions if reac.bounds == (0, 0)]
     for rid in blocked_reactions:
@@ -72,41 +187,60 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
     for g in model.genes[::-1]:  # iterate in reverse order to avoid mixing up the order of the list when removing genes
         if not g.reactions:
             model.genes.remove(g)
+    
     protected_genes = set()
-    # 1. Protect genes that only occur in essential reactions
+    
+    # 2. Protect genes that only occur in essential reactions
     for g in model.genes:
         if not g.reactions or {r.id for r in g.reactions}.issubset(essential_reacs):
             protected_genes.add(g)
-    # 2. Protect genes that are essential to essential reactions
+    
+    # 3. Protect genes that are essential to essential reactions (using AST only)
     for r in [model.reactions.get_by_id(s) for s in essential_reacs]:
         for g in r.genes:
-            exp = r.gene_reaction_rule.replace(' or ', ' | ').replace(' and ', ' & ')
-            exp = to_dnf(parse_expr(exp, {g.id: False}), force=True)
-            if exp == False:
+            if is_gene_essential_to_reaction_ast(r, g.id):
                 protected_genes.add(g)
-    # 3. Remove essential genes, and knockouts without impact from gko_costs
+    
+    # 4. Remove essential genes, and knockouts without impact from gko_costs
     [gkos.pop(pg.id) for pg in protected_genes if pg.id in gkos]
-    # 4. Add all notknockable genes to the protected list
+    
+    # 5. Add all not-knockable genes to the protected list
     [protected_genes.add(g) for g in model.genes if (g.id not in gkos) and (g.name not in gkos)]  # support names or ids in gkos
-    # genes with kiCosts are kept
+    
+    # 6. genes with kiCosts are kept (remove from protected list so they can be targeted)
     gki_ids = [g.id for g in model.genes if (g.id in gkis) or (g.name in gkis)]  # support names or ids in gkis
     protected_genes = protected_genes.difference({model.genes.get_by_id(g) for g in gki_ids})
     protected_genes_dict = {pg.id: True for pg in protected_genes}
-    # 5. Simplify gpr rules and discard rules that cannot be knocked out
+    
+    # 7. Simplify gpr rules and discard rules that cannot be knocked out (using AST only)
     for r in model.reactions:
         if r.gene_reaction_rule:
-            exp = r.gene_reaction_rule.replace(' or ', ' | ').replace(' and ', ' & ')
-            exp = to_dnf(parse_expr(exp, protected_genes_dict), simplify=True, force=True)
-            if exp == True:
-                model.reactions.get_by_id(r.id).gene_reaction_rule = ''
-            elif exp == False:
-                logging.error('Something went wrong during gpr rule simplification.')
-            else:
-                model.reactions.get_by_id(r.id).gene_reaction_rule = str(exp).replace(' & ', ' and ').replace(' | ', ' or ')
-    # 6. Remove obsolete genes and protected genes
+            # Skip reactions without proper AST structure
+            if not r.gpr or not r.gpr.body:
+                continue
+            
+            try:
+                simplified = simplify_gpr_ast(r.gpr.body, protected_genes_dict)
+                
+                if simplified is True:
+                    # Rule is always satisfied (cannot be knocked out)
+                    model.reactions.get_by_id(r.id).gene_reaction_rule = ''
+                elif simplified is False:
+                    # Rule is impossible - should not happen with proper protection
+                    logging.error(f'Something went wrong during gpr rule simplification for {r.id}.')
+                elif isinstance(simplified, (ast.Name, ast.BoolOp)):
+                    # Convert simplified AST back to string
+                    new_rule = ast_to_gene_reaction_rule(simplified)
+                    model.reactions.get_by_id(r.id).gene_reaction_rule = new_rule
+                # If simplified is original node, keep original rule
+            except Exception as e:
+                logging.warning(f'Failed to simplify GPR rule for reaction {r.id}: {e}')
+    
+    # 8. Remove obsolete genes and protected genes
     for g in model.genes[::-1]:
         if not g.reactions or g in protected_genes:
             model.genes.remove(g)
+    
     return gkos
 
 
@@ -145,7 +279,6 @@ def extend_model_gpr(model, use_names=False):
         {'Reaction1' : {'Reaction1' : 1, 'Reaction1_reverse_a59c' : -1}}
             
     """
-    import ast
     
     # Check if reaction names and gene names/IDs overlap. If yes, throw Error
     reac_ids = {r.id for r in model.reactions}
