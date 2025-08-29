@@ -22,7 +22,7 @@ import numpy as np
 from scipy import sparse
 from sympy.core.numbers import One
 from sympy import Rational, nsimplify
-from typing import Dict, List
+from typing import List
 from re import search
 import jpype
 from cobra import Model, Metabolite, Reaction, Configuration
@@ -114,54 +114,138 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
     
     def simplify_gpr_ast(node, protected_genes_dict):
         """
-        Simplify GPR AST by setting protected genes to True and evaluating the result.
-        Returns simplified AST node or boolean values.
+        Simplify GPR AST by setting protected genes to True and applying boolean simplification.
+        This is equivalent to the original string-based approach but operates purely on AST.
+        """
+        return apply_gene_protection_to_ast(node, protected_genes_dict)
+    
+    def apply_gene_protection_to_ast(node, protected_genes_dict):
+        """
+        Apply gene protection to AST by setting protected genes to True and simplifying boolean expressions.
+        Returns a simplified AST node with redundant terms removed and consistent gene ordering.
         """
         if isinstance(node, ast.Name):
-            # If this gene is protected (cannot be knocked out), it's always True
             if node.id in protected_genes_dict:
                 return True
             else:
-                return node  # Gene can be knocked out, keep as is
+                return node
         elif isinstance(node, ast.BoolOp):
-            # Recursively simplify children
-            simplified_children = [simplify_gpr_ast(child, protected_genes_dict) for child in node.values]
+            # Recursively apply to children
+            new_children = []
+            for child in node.values:
+                simplified_child = apply_gene_protection_to_ast(child, protected_genes_dict)
+                
+                if isinstance(node.op, ast.And):
+                    if simplified_child is False:
+                        return False
+                    elif simplified_child is not True:
+                        new_children.append(simplified_child)
+                elif isinstance(node.op, ast.Or):
+                    if simplified_child is True:
+                        return True
+                    elif simplified_child is not False:
+                        new_children.append(simplified_child)
             
-            if isinstance(node.op, ast.And):
-                # Filter out True values (protected genes don't constrain AND)
-                remaining = [child for child in simplified_children if child is not True]
-                if not remaining:  # All children are True
-                    return True
-                elif any(child is False for child in remaining):  # Any child is False
-                    return False
-                elif len(remaining) == 1:
-                    return remaining[0]
-                else:
-                    # Create new AND node with remaining children
-                    new_node = ast.BoolOp(op=ast.And(), values=remaining)
-                    return new_node
-                    
-            elif isinstance(node.op, ast.Or):
-                # If any child is True (protected gene), the whole OR is True
-                if any(child is True for child in simplified_children):
-                    return True
-                # Filter out False values
-                remaining = [child for child in simplified_children if child is not False]
-                if not remaining:  # All children are False
-                    return False
-                elif len(remaining) == 1:
-                    return remaining[0]
-                else:
-                    # Create new OR node with remaining children
-                    new_node = ast.BoolOp(op=ast.Or(), values=remaining)
-                    return new_node
+            # Handle results
+            if not new_children:
+                return True if isinstance(node.op, ast.And) else False
+            elif len(new_children) == 1:
+                return new_children[0]
+            else:
+                # Apply additional simplifications for OR nodes
+                if isinstance(node.op, ast.Or):
+                    new_children = remove_redundant_or_terms(new_children)
+                    if len(new_children) == 1:
+                        return new_children[0]
+                
+                # Sort children for consistent ordering (like string approach does)
+                sorted_children = sort_ast_nodes(new_children)
+                new_node = ast.BoolOp(op=node.op, values=sorted_children)
+                return new_node
         else:
             raise ValueError(f"Unsupported AST node type: {type(node)}")
+    
+    def remove_redundant_or_terms(children):
+        """
+        Remove redundant terms from OR expressions using boolean logic simplification.
+        Example: (a and b and c) or (a and b) simplifies to (a and b)
+        since (a and b) is logically sufficient when both terms are present.
+        """
+        # Convert AST nodes to comparable forms
+        simplified = []
+        for child in children:
+            # Check if this child makes any other child redundant
+            is_redundant = False
+            for other in children:
+                if child is not other and is_subset_of(child, other):
+                    # child is a subset of other, so other is redundant
+                    is_redundant = False  # Keep child, remove other later
+                elif child is not other and is_subset_of(other, child):
+                    # other is a subset of child, so child is redundant
+                    is_redundant = True
+                    break
+            if not is_redundant:
+                simplified.append(child)
+        
+        # Remove duplicates
+        unique = []
+        for child in simplified:
+            if not any(ast_nodes_equal(child, existing) for existing in unique):
+                unique.append(child)
+        
+        return unique if unique else children
+    
+    def is_subset_of(node1, node2):
+        """Check if node1 is a logical subset of node2 (i.e., node2 implies node1)"""
+        # Simple case: (a and b) is subset of (a and b and c)
+        if isinstance(node1, ast.BoolOp) and isinstance(node2, ast.BoolOp):
+            if isinstance(node1.op, ast.And) and isinstance(node2.op, ast.And):
+                # Get gene sets
+                genes1 = get_genes_from_ast(node1)
+                genes2 = get_genes_from_ast(node2)
+                return genes1.issubset(genes2) and genes1 != genes2
+        return False
+    
+    def get_genes_from_ast(node):
+        """Extract set of genes from AST node"""
+        if isinstance(node, ast.Name):
+            return {node.id}
+        elif isinstance(node, ast.BoolOp):
+            genes = set()
+            for child in node.values:
+                genes.update(get_genes_from_ast(child))
+            return genes
+        return set()
+    
+    def ast_nodes_equal(node1, node2):
+        """Check if two AST nodes are equivalent"""
+        if type(node1) != type(node2):
+            return False
+        if isinstance(node1, ast.Name):
+            return node1.id == node2.id
+        elif isinstance(node1, ast.BoolOp):
+            if type(node1.op) != type(node2.op):
+                return False
+            return (len(node1.values) == len(node2.values) and
+                    all(ast_nodes_equal(a, b) for a, b in zip(node1.values, node2.values)))
+        return False
+    
+    def sort_ast_nodes(nodes):
+        """Sort AST nodes for consistent ordering"""
+        def node_sort_key(node):
+            if isinstance(node, ast.Name):
+                return (0, node.id)
+            elif isinstance(node, ast.BoolOp):
+                return (1, len(node.values), str(type(node.op)))
+            return (2, str(node))
+        
+        return sorted(nodes, key=node_sort_key)
 
     def is_gene_essential_to_reaction_ast(reaction, gene_id):
         """
-        Check if a gene is essential to a reaction using AST analysis.
-        A gene is essential if knocking it out makes the reaction impossible (False).
+        Determine if a gene is essential for a reaction using AST-based GPR analysis.
+        A gene is considered essential if removing it (setting it to False) makes 
+        the entire GPR expression evaluate to False, rendering the reaction impossible.
         """
         if not reaction.gene_reaction_rule:
             return False
@@ -195,7 +279,7 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
         if not g.reactions or {r.id for r in g.reactions}.issubset(essential_reacs):
             protected_genes.add(g)
     
-    # 3. Protect genes that are essential to essential reactions (using AST only)
+    # 3. Protect genes that are essential to essential reactions (AST-based analysis)
     for r in [model.reactions.get_by_id(s) for s in essential_reacs]:
         for g in r.genes:
             if is_gene_essential_to_reaction_ast(r, g.id):
@@ -212,13 +296,9 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
     protected_genes = protected_genes.difference({model.genes.get_by_id(g) for g in gki_ids})
     protected_genes_dict = {pg.id: True for pg in protected_genes}
     
-    # 7. Simplify gpr rules and discard rules that cannot be knocked out (using AST only)
+    # 7. Simplify GPR rules using AST-based boolean logic and remove non-targetable rules
     for r in model.reactions:
-        if r.gene_reaction_rule:
-            # Skip reactions without proper AST structure
-            if not r.gpr or not r.gpr.body:
-                continue
-            
+        if r.gene_reaction_rule and r.gpr and r.gpr.body:
             try:
                 simplified = simplify_gpr_ast(r.gpr.body, protected_genes_dict)
                 
@@ -232,7 +312,7 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
                     # Convert simplified AST back to string
                     new_rule = ast_to_gene_reaction_rule(simplified)
                     model.reactions.get_by_id(r.id).gene_reaction_rule = new_rule
-                # If simplified is original node, keep original rule
+                # If simplified is the original node, keep original rule
             except Exception as e:
                 logging.warning(f'Failed to simplify GPR rule for reaction {r.id}: {e}')
     
