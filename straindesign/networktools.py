@@ -196,14 +196,32 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
         return unique if unique else children
     
     def is_subset_of(node1, node2):
-        """Check if node1 is a logical subset of node2 (i.e., node2 implies node1)"""
-        # Simple case: (a and b) is subset of (a and b and c)
-        if isinstance(node1, ast.BoolOp) and isinstance(node2, ast.BoolOp):
-            if isinstance(node1.op, ast.And) and isinstance(node2.op, ast.And):
-                # Get gene sets
-                genes1 = get_genes_from_ast(node1)
-                genes2 = get_genes_from_ast(node2)
-                return genes1.issubset(genes2) and genes1 != genes2
+        """
+        Check if node1 logically absorbs node2 in boolean algebra.
+        
+        In OR expressions: A or (A and B) = A
+        This means A absorbs (A and B) because A is simpler/more general.
+        
+        For absorption to work: node1 must be "simpler" than node2,
+        meaning node2 implies node1 (node2 is more restrictive).
+        
+        Examples:
+        - mobA absorbs (mobA and mobB) 
+        - (a and b) absorbs (a and b and c)
+        """
+        # Case 1: Single gene absorbs AND expression containing that gene
+        if isinstance(node1, ast.Name) and isinstance(node2, ast.BoolOp) and isinstance(node2.op, ast.And):
+            genes_in_and = get_genes_from_ast(node2)
+            return node1.id in genes_in_and
+            
+        # Case 2: Shorter AND expression absorbs longer AND expression with same genes
+        if (isinstance(node1, ast.BoolOp) and isinstance(node1.op, ast.And) and 
+            isinstance(node2, ast.BoolOp) and isinstance(node2.op, ast.And)):
+            genes1 = get_genes_from_ast(node1)
+            genes2 = get_genes_from_ast(node2)
+            # node1 absorbs node2 if node1's genes are a proper subset of node2's genes
+            return genes1.issubset(genes2) and len(genes1) < len(genes2)
+            
         return False
     
     def get_genes_from_ast(node):
