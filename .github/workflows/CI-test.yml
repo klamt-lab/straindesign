@@ -106,7 +106,7 @@ jobs:
         if: matrix.package-manager == 'conda'
         run: |
           micromamba install anaconda-client conda-build
-          run: rm -rf conda-bld
+          rm -rf conda-bld
           conda build conda-recipe/. -c conda-forge --croot conda-bld --output-folder ./build
       - name: Install package using conda
         if: matrix.package-manager == 'conda'
