@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest]
         # macos-latest should be added later as soon as libsbml support is back up
         python-version: ['3.9', '3.10', '3.11', '3.12']
         package-manager: ['pip','conda','conda_env']
@@ -82,7 +82,7 @@ jobs:
         run: |
           pip install gurobipy
       - name: Install cplex (pip)
-        if: matrix.package-manager == 'pip' && runner.os != 'macOS' && matrix.python-version != '3.12' && matrix.python-version != '3.13'
+        if: matrix.package-manager == 'pip' && runner.os != 'macOS'
         run: |
           pip install cplex
       - name: Install pytest (pip)
@@ -117,11 +117,11 @@ jobs:
         run: |
           micromamba install -c gurobi gurobi
       - name: Install cplex (conda)
-        if: matrix.package-manager == 'conda' && matrix.python-version != '3.12' && matrix.python-version != '3.13'
+        if: matrix.package-manager == 'conda'
         run: |
           micromamba install -c ibmdecisionoptimization cplex
       - name: Install scip (conda)
-        if: matrix.package-manager == 'conda' && matrix.python-version != '3.12' && matrix.python-version != '3.13'
+        if: matrix.package-manager == 'conda'
         run: |
           micromamba install -c conda-forge pyscipopt scip
       - name: Install pytest (conda)
