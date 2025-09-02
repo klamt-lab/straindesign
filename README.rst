@@ -75,13 +75,15 @@ Parts of the compression routine is done by efmtool's compression function (http
 Installation:
 =============
 
-The straindesign package is available on pip and Anaconda. To install the latest release, run:
+The StrainDesign package is available on pip and Anaconda. To install the latest release, run:
 
 ``pip install straindesign``
 
 or
 
 ``conda install -c cnapy straindesign``
+
+The StrainDesign package installation and operability is tested regularly in the most recent Windows, Ubuntu and Mac-OS distributions through continuous integration testing. Currently, these test fail in Mac-OS due to conflicts within the cobrapy package in Mac-OS. If a workable cobrapy version is installed under Mac-OS, StrainDesign should work as well.
 
 Developer Installation:
 -----------------------
