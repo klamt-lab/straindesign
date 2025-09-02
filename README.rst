@@ -130,7 +130,7 @@ Make sure to activate the same Python/conda environment where `cobra` and `strai
 
 Now CPLEX should be available for your computations.
 
-The official instructions can be found here: https://www.ibm.com/docs/en/icos/22.1.0?topic=cplex-setting-up-python-api
+The official instructions can be found here: https://www.ibm.com/docs/en/icos/22.1.2?topic=cplex-setting-up-python-api
 
 Gurobi
 ------
