@@ -78,7 +78,7 @@ class CustomDevelopCommand(develop):
 
 setup(
     name="straindesign",
-    version="1.14",
+    version="1.15",
     url="https://github.com/klamt-lab/straindesign.git",
     description="Computational strain design package for the COBRApy framework",
     long_description=("Computational strain design package for the COBRApy framework, offering standard and advanced "

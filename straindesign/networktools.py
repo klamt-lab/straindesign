@@ -111,14 +111,14 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
                 return ' or '.join(f'({s})' if ' and ' in s else s for s in child_strings)
         else:
             raise ValueError(f"Unsupported AST node type: {type(node)}")
-    
+
     def simplify_gpr_ast(node, protected_genes_dict):
         """
         Simplify GPR AST by setting protected genes to True and applying boolean simplification.
         This is equivalent to the original string-based approach but operates purely on AST.
         """
         return apply_gene_protection_to_ast(node, protected_genes_dict)
-    
+
     def apply_gene_protection_to_ast(node, protected_genes_dict):
         """
         Apply gene protection to AST by setting protected genes to True and simplifying boolean expressions.
@@ -134,7 +134,7 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
             new_children = []
             for child in node.values:
                 simplified_child = apply_gene_protection_to_ast(child, protected_genes_dict)
-                
+
                 if isinstance(node.op, ast.And):
                     if simplified_child is False:
                         return False
@@ -145,7 +145,7 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
                         return True
                     elif simplified_child is not False:
                         new_children.append(simplified_child)
-            
+
             # Handle results
             if not new_children:
                 return True if isinstance(node.op, ast.And) else False
@@ -157,14 +157,14 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
                     new_children = remove_redundant_or_terms(new_children)
                     if len(new_children) == 1:
                         return new_children[0]
-                
+
                 # Sort children for consistent ordering (like string approach does)
                 sorted_children = sort_ast_nodes(new_children)
                 new_node = ast.BoolOp(op=node.op, values=sorted_children)
                 return new_node
         else:
             raise ValueError(f"Unsupported AST node type: {type(node)}")
-    
+
     def remove_redundant_or_terms(children):
         """
         Remove redundant terms from OR expressions using boolean logic simplification.
@@ -186,15 +186,15 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
                     break
             if not is_redundant:
                 simplified.append(child)
-        
+
         # Remove duplicates
         unique = []
         for child in simplified:
             if not any(ast_nodes_equal(child, existing) for existing in unique):
                 unique.append(child)
-        
+
         return unique if unique else children
-    
+
     def is_subset_of(node1, node2):
         """
         Check if node1 logically absorbs node2 in boolean algebra.
@@ -213,17 +213,17 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
         if isinstance(node1, ast.Name) and isinstance(node2, ast.BoolOp) and isinstance(node2.op, ast.And):
             genes_in_and = get_genes_from_ast(node2)
             return node1.id in genes_in_and
-            
+
         # Case 2: Shorter AND expression absorbs longer AND expression with same genes
-        if (isinstance(node1, ast.BoolOp) and isinstance(node1.op, ast.And) and 
-            isinstance(node2, ast.BoolOp) and isinstance(node2.op, ast.And)):
+        if (isinstance(node1, ast.BoolOp) and isinstance(node1.op, ast.And) and isinstance(node2, ast.BoolOp) and
+                isinstance(node2.op, ast.And)):
             genes1 = get_genes_from_ast(node1)
             genes2 = get_genes_from_ast(node2)
             # node1 absorbs node2 if node1's genes are a proper subset of node2's genes
             return genes1.issubset(genes2) and len(genes1) < len(genes2)
-            
+
         return False
-    
+
     def get_genes_from_ast(node):
         """Extract set of genes from AST node"""
         if isinstance(node, ast.Name):
@@ -234,7 +234,7 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
                 genes.update(get_genes_from_ast(child))
             return genes
         return set()
-    
+
     def ast_nodes_equal(node1, node2):
         """Check if two AST nodes are equivalent"""
         if type(node1) != type(node2):
@@ -244,19 +244,19 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
         elif isinstance(node1, ast.BoolOp):
             if type(node1.op) != type(node2.op):
                 return False
-            return (len(node1.values) == len(node2.values) and
-                    all(ast_nodes_equal(a, b) for a, b in zip(node1.values, node2.values)))
+            return (len(node1.values) == len(node2.values) and all(ast_nodes_equal(a, b) for a, b in zip(node1.values, node2.values)))
         return False
-    
+
     def sort_ast_nodes(nodes):
         """Sort AST nodes for consistent ordering"""
+
         def node_sort_key(node):
             if isinstance(node, ast.Name):
                 return (0, node.id)
             elif isinstance(node, ast.BoolOp):
                 return (1, len(node.values), str(type(node.op)))
             return (2, str(node))
-        
+
         return sorted(nodes, key=node_sort_key)
 
     def is_gene_essential_to_reaction_ast(reaction, gene_id):
@@ -267,11 +267,11 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
         """
         if not reaction.gene_reaction_rule:
             return False
-        
+
         # Skip reactions without gene associations
         if not reaction.gpr or not reaction.gpr.body:
             return False
-        
+
         try:
             # Test what happens if we knock out this gene using AST
             gene_states = {gene_id: False}
@@ -289,37 +289,37 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
     for g in model.genes[::-1]:  # iterate in reverse order to avoid mixing up the order of the list when removing genes
         if not g.reactions:
             model.genes.remove(g)
-    
+
     protected_genes = set()
-    
+
     # 2. Protect genes that only occur in essential reactions
     for g in model.genes:
         if not g.reactions or {r.id for r in g.reactions}.issubset(essential_reacs):
             protected_genes.add(g)
-    
+
     # 3. Protect genes that are essential to essential reactions (AST-based analysis)
     for r in [model.reactions.get_by_id(s) for s in essential_reacs]:
         for g in r.genes:
             if is_gene_essential_to_reaction_ast(r, g.id):
                 protected_genes.add(g)
-    
+
     # 4. Remove essential genes, and knockouts without impact from gko_costs
     [gkos.pop(pg.id) for pg in protected_genes if pg.id in gkos]
-    
+
     # 5. Add all not-knockable genes to the protected list
     [protected_genes.add(g) for g in model.genes if (g.id not in gkos) and (g.name not in gkos)]  # support names or ids in gkos
-    
+
     # 6. genes with kiCosts are kept (remove from protected list so they can be targeted)
     gki_ids = [g.id for g in model.genes if (g.id in gkis) or (g.name in gkis)]  # support names or ids in gkis
     protected_genes = protected_genes.difference({model.genes.get_by_id(g) for g in gki_ids})
     protected_genes_dict = {pg.id: True for pg in protected_genes}
-    
+
     # 7. Simplify GPR rules using AST-based boolean logic and remove non-targetable rules
     for r in model.reactions:
         if r.gene_reaction_rule and r.gpr and r.gpr.body:
             try:
                 simplified = simplify_gpr_ast(r.gpr.body, protected_genes_dict)
-                
+
                 if simplified is True:
                     # Rule is always satisfied (cannot be knocked out)
                     model.reactions.get_by_id(r.id).gene_reaction_rule = ''
@@ -333,12 +333,12 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
                 # If simplified is the original node, keep original rule
             except Exception as e:
                 logging.warning(f'Failed to simplify GPR rule for reaction {r.id}: {e}')
-    
+
     # 8. Remove obsolete genes and protected genes
     for g in model.genes[::-1]:
         if not g.reactions or g in protected_genes:
             model.genes.remove(g)
-    
+
     return gkos
 
 
@@ -377,7 +377,7 @@ def extend_model_gpr(model, use_names=False):
         {'Reaction1' : {'Reaction1' : 1, 'Reaction1_reverse_a59c' : -1}}
             
     """
-    
+
     # Check if reaction names and gene names/IDs overlap. If yes, throw Error
     reac_ids = {r.id for r in model.reactions}
     if (not use_names) and any([g.id in reac_ids for g in model.genes]):
@@ -419,94 +419,94 @@ def extend_model_gpr(model, use_names=False):
     def create_gene_pseudoreaction(gene_id):
         """Create a gene pseudoreaction and return the corresponding metabolite ID."""
         gene_met_id = f'g_{gene_id}'
-        
+
         # Check name length and truncate if necessary
         if len(gene_met_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
             if truncate(gene_met_id) not in [m.id for m in model.metabolites]:
                 warning_name_too_long(gene_met_id, gene_id)
             gene_met_id = truncate(gene_met_id)
-        
+
         # Create metabolite and reaction if they don't exist
         if gene_met_id not in created_metabolites and gene_met_id not in model.metabolites.list_attr('id'):
             model.add_metabolites(Metabolite(gene_met_id))
             created_metabolites.add(gene_met_id)
-            
+
             gene = model.genes.get_by_id(gene_id)
             if use_names and gene.name:
                 reaction_id = gene.name
             else:
                 reaction_id = gene.id
-            
+
             # Check name length and truncate if necessary
             if len(reaction_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
                 warning_name_too_long(reaction_id, gene_id)
                 reaction_id = truncate(reaction_id)
-            
+
             w = Reaction(reaction_id)
             model.add_reactions([w])
             w.reaction = f'--> {gene_met_id}'
             w._upper_bound = np.inf
-        
+
         return gene_met_id
 
     def create_and_metabolite(child_metabolites):
         """Create an AND pseudometabolite that combines multiple child metabolites."""
         and_met_id = "_and_".join(sorted(child_metabolites))
-        
+
         # Check name length and truncate if necessary
         if len(and_met_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
             if truncate(and_met_id) not in [m.id for m in model.metabolites]:
                 warning_name_too_long(and_met_id, "AND combination")
             and_met_id = truncate(and_met_id)
-        
+
         # Create metabolite and reaction if they don't exist
         if and_met_id not in created_metabolites and and_met_id not in model.metabolites.list_attr('id'):
             model.add_metabolites(Metabolite(and_met_id))
             created_metabolites.add(and_met_id)
-            
+
             reaction_id = f"R_{and_met_id}"
-            
+
             # Check name length and truncate if necessary
             if len(reaction_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
                 warning_name_too_long(reaction_id, "AND combination")
                 reaction_id = truncate(reaction_id)
-            
+
             w = Reaction(reaction_id)
             model.add_reactions([w])
             w.reaction = f'{" + ".join(child_metabolites)} --> {and_met_id}'
             w._upper_bound = np.inf
-        
+
         return and_met_id
 
     def create_or_metabolite(child_metabolites):
         """Create an OR pseudometabolite with separate reactions for each child."""
         or_met_id = "_or_".join(sorted(child_metabolites))
-        
+
         # Check name length and truncate if necessary
         if len(or_met_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
             if truncate(or_met_id) not in [m.id for m in model.metabolites]:
                 warning_name_too_long(or_met_id, "OR combination")
             or_met_id = truncate(or_met_id)
-        
+
         # Create metabolite and reactions if they don't exist
         if or_met_id not in created_metabolites and or_met_id not in model.metabolites.list_attr('id'):
             model.add_metabolites(Metabolite(or_met_id))
             created_metabolites.add(or_met_id)
-            
+
             # Create separate reactions for each child metabolite
             for i, child_met in enumerate(child_metabolites):
                 reaction_id = f"R{i}_{or_met_id}"
-                
+
                 # Check name length and truncate if necessary
                 if len(reaction_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
                     warning_name_too_long(reaction_id, "OR combination")
                     reaction_id = truncate(reaction_id)
-                
+
                 w = Reaction(reaction_id)
                 model.add_reactions([w])
                 w.reaction = f'{child_met} --> {or_met_id}'
                 w._upper_bound = np.inf
-        
+
         return or_met_id
 
     def process_ast_node(node):
@@ -578,7 +578,7 @@ def extend_model_gpr(model, use_names=False):
                 else:
                     dt_met_id = dt[0]
                 r.add_metabolites({model.metabolites.get_by_id(dt_met_id): -1.0})
-                
+
     return reac_map
 
 
