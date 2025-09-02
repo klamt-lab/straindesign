@@ -97,8 +97,8 @@ setup(
         "Documentation": "https://straindesign.readthedocs.io/en/latest/index.html"
     },
     classifiers=[
-        "Intended Audience :: Science/Research", "Development Status :: 3 - Alpha", "Programming Language :: Python :: 3.10", 
-        "Programming Language :: Python :: 3.11", "Programming Language :: Python :: 3.12", "Programming Language :: Python :: 3.13",
+        "Intended Audience :: Science/Research", "Development Status :: 3 - Alpha", "Programming Language :: Python :: 3.9", 
+        "Programming Language :: Python :: 3.10", "Programming Language :: Python :: 3.11", "Programming Language :: Python :: 3.12",
         "Natural Language :: English", "Operating System :: OS Independent", "Topic :: Scientific/Engineering :: Bio-Informatics"
     ],
     keywords=["metabolism", "constraint-based", "mixed-integer", "strain design"],
