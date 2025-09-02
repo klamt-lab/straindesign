@@ -82,7 +82,7 @@ jobs:
         run: |
           pip install gurobipy
       - name: Install cplex (pip)
-        if: matrix.package-manager == 'pip' && runner.os != 'macOS'
+        if: matrix.package-manager == 'pip' && runner.os != 'macOS' && matrix.python-version != '3.13'
         run: |
           pip install cplex
       - name: Install pytest (pip)
