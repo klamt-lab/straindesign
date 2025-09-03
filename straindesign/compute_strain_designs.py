@@ -176,7 +176,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             that facilitate the analysis of the computed strain designs with COBRA methods.
     """
     allowed_keys = {
-        MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
+        MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'use_unified_compression', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
         SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED
     }
     logging.info('Preparing strain design computation.')
