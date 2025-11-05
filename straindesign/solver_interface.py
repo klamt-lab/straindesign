@@ -219,7 +219,7 @@ class MILP_LP(object):
         """
         x, min_cx, status = self.backend.solve()
         if status not in [INFEASIBLE, UNBOUNDED, TIME_LIMIT]:  # if solution exists (is not nan), round integers
-            x = [x[i] if self.vtype[i] == 'C' else int(round(x[i])) for i in range(len(x))]
+            x = [x[i] if self.vtype[i] == 'C' else int(round(x[i])) for i in range(len(x)) if not isnan(x[i])]
         return x, min_cx, status
 
     def slim_solve(self) -> float:
