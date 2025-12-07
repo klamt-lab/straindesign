@@ -128,3 +128,17 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# IDE settings
+.vscode/
+.idea/
+
+# Claude Code
+.claude/
+
+# EFMtool development artifacts
+efmtool_source.jar
+efmtool_port/
+
+# Tests directory
+tests/
