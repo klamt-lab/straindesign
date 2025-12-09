@@ -363,8 +363,8 @@ def fba(model, **kwargs) -> Solution:
         obj (optional (str) or (dict)):
             As a custom objective function, any linear expression can be used, either provided as a 
             single string or as a dict. Correct (and identical) inputs are, for instance:
-            obj='BIOMASS_Ecoli_core_w_GAM'
-            obj={'BIOMASS_Ecoli_core_w_GAM': 1}
+            inner_objective='BIOMASS_Ecoli_core_w_GAM'
+            inner_objective={'BIOMASS_Ecoli_core_w_GAM': 1}
             
         obj_sense (optional (str)): (Default: 'maximize')
             The optimization direction can be set either to 'maximize' (or 'max') or 'minimize' (or 'min').

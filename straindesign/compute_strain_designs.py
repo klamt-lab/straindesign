@@ -35,23 +35,6 @@ from straindesign.networktools import   remove_ext_mets, remove_dummy_bounds, bo
                                         remove_irrelevant_genes, extend_model_gpr, extend_model_regulatory, \
                                         compress_model, compress_modules, compress_ki_ko_cost, expand_sd, filter_sd_maxcost
 
-# Import unified compression capability
-try:
-    import os
-    import sys
-    # Add current directory to path to import unified_compression
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    parent_dir = os.path.dirname(current_dir)
-    if parent_dir not in sys.path:
-        sys.path.insert(0, parent_dir)
-    
-    from unified_compression import UnifiedMetabolicMatrix
-    UNIFIED_COMPRESSION_AVAILABLE = True
-    logging.info("Unified matrix compression available")
-except ImportError:
-    UNIFIED_COMPRESSION_AVAILABLE = False
-    logging.info("Unified matrix compression not available - using original method")
-
 
 def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """Computes strain designs for a user-defined strain design problem
@@ -111,10 +94,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
 
         compress (optional (bool)): (Default: True)
             If 'True', the interative network compressor is used.
-
-        use_unified_compression (optional (bool)): (Default: False)
-            If 'True', uses the new unified matrix compression method instead of the original EFMtool approach.
-            The unified method operates on a single matrix representation [A -b]*[v;w]≤0 and can be more efficient.
 
         gene_kos (optional (bool)): (Default: False)
             If 'True', strain designs are computed based on gene-knockouts instead of reaction knockouts. This
@@ -176,8 +155,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             that facilitate the analysis of the computed strain designs with COBRA methods.
     """
     allowed_keys = {
-        MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'use_unified_compression', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
-        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED
+        MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
+        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, 'legacy_java_compression'
     }
     logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
@@ -372,41 +351,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                     if p in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                         for k in param.keys():
                             no_par_compress_reacs.add(k)
-        # Choose compression method
-        use_unified = kwargs.get('use_unified_compression', False)
-        
-        if use_unified and UNIFIED_COMPRESSION_AVAILABLE:
-            logging.info('  Using unified matrix compression method.')
-            try:
-                # Create unified matrix representation
-                unified_matrix = UnifiedMetabolicMatrix(cmp_model)
-                
-                # Perform compression (matrix-level only for now)
-                M_compressed, compression_steps = unified_matrix.compress()
-                
-                # Log compression results
-                original_shape = unified_matrix.M.shape
-                compressed_shape = M_compressed.shape
-                
-                logging.info(f'    Matrix compression: {original_shape} → {compressed_shape}')
-                logging.info(f'    Constraints reduced: {original_shape[0] - compressed_shape[0]}')
-                logging.info(f'    Variables reduced: {original_shape[1] - compressed_shape[1]}')
-                logging.info(f'    Compression steps: {len(compression_steps)}')
-                
-                # Use the compression map from unified method
-                cmp_mapReac = compression_steps
-                
-                # Note: For now, we don't modify cmp_model structure 
-                # Full implementation would reconstruct compressed cobra model
-                
-            except Exception as e:
-                logging.warning(f'  Unified compression failed: {e}')
-                logging.info('  Falling back to original compression method.')
-                cmp_mapReac = compress_model(cmp_model, no_par_compress_reacs)
-        else:
-            if use_unified and not UNIFIED_COMPRESSION_AVAILABLE:
-                logging.warning('  Unified compression requested but not available - using original method.')
-            cmp_mapReac = compress_model(cmp_model, no_par_compress_reacs)
+        legacy_java = kwargs.get('legacy_java_compression', False)
+        cmp_mapReac = compress_model(cmp_model, no_par_compress_reacs, legacy_java_compression=legacy_java)
         # compress information in strain design modules
         sd_modules = compress_modules(sd_modules, cmp_mapReac)
         # compress ko_cost and ki_cost
