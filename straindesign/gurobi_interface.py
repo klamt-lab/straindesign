@@ -132,6 +132,11 @@ class Gurobi_MILP_LP(gp.Model):
         self.params.OutputFlag = 0
         self.params.OptimalityTol = 1e-9
         self.params.FeasibilityTol = 1e-9
+        # Crossover=1 ensures barrier-to-simplex crossover runs, which is required
+        # for ObjBound computation. Fixes Gurobi 13 regression where automatic
+        # crossover decision can fail during optimize() with error 10005.
+        # This is needed for both LPs and MILPs (MILPs solve LP relaxations internally).
+        self.params.Crossover = 1
         if 'B' in vtype or 'I' in vtype:
             if seed is None:
                 # seed = random(0, grb.MAXINT)

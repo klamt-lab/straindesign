@@ -274,16 +274,17 @@ def jpypeArrayOfArrays2numpy_mat(jmat):
 
 
 def sympyRat2jBigIntegerPair(val):
-    """Convert sympy Rational to Java BigInteger pair (requires Java init)."""
+    """Convert Fraction or sympy Rational to Java BigInteger pair (requires Java init)."""
     _init_java()
 
-    numer = val.p
+    # Support both fractions.Fraction (.numerator/.denominator) and sympy.Rational (.p/.q)
+    numer = val.numerator if hasattr(val, 'numerator') else val.p
     if numer.bit_length() <= 63:
         numer = BigInteger.valueOf(numer)
     else:
         numer = BigInteger(str(numer))
 
-    denom = val.q
+    denom = val.denominator if hasattr(val, 'denominator') else val.q
     if denom.bit_length() <= 63:
         denom = BigInteger.valueOf(denom)
     else:
