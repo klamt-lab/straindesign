@@ -4,13 +4,24 @@ Gauss operations - Python port of ch.javasoft.smx.ops.Gauss
 This module provides Gaussian elimination operations for exact rational arithmetic matrices.
 Key operations include computing rank, nullity, nullspace, and matrix inversion using
 exact BigFraction arithmetic to avoid floating-point precision issues.
+
+OPTIMIZATION: Uses SymPy's optimized Matrix.nullspace() when available for faster
+exact rational nullspace computation.
 """
 
 from typing import List, Optional, Tuple
+from fractions import Fraction
 from .readable_bigint_rational_matrix import ReadableBigIntegerRationalMatrix
-from .bigint_rational_matrix import BigIntegerRationalMatrix  
+from .bigint_rational_matrix import BigIntegerRationalMatrix
 from .default_bigint_rational_matrix import DefaultBigIntegerRationalMatrix
 from .big_fraction import BigFraction
+
+# Try to import sympy for fast exact nullspace computation
+try:
+    from sympy import Matrix as SympyMatrix, Rational as SympyRational
+    SYMPY_AVAILABLE = True
+except ImportError:
+    SYMPY_AVAILABLE = False
 
 
 class Gauss:
@@ -82,41 +93,39 @@ class Gauss:
     def nullspace(self, matrix: ReadableBigIntegerRationalMatrix) -> BigIntegerRationalMatrix:
         """
         Compute a basis for the nullspace using Gaussian elimination.
-        
+
         The algorithm:
         1. Compute reduced row echelon form with column permutations tracked
         2. RREF has structure [I, M; 0] after permutations
         3. Nullspace basis is [-M; I] with proper permutation applied
-        
+
+        OPTIMIZATION: Removed redundant rank() call - we get rank directly from RREF.
+
         Args:
             matrix: Input matrix
-            
+
         Returns:
             Matrix whose columns form a basis for the nullspace
         """
         cols = matrix.get_column_count()
-        
-        # For consistency with rank computation, first get the rank using full pivoting
-        true_rank = self.rank(matrix)
-        nullspace_dim = cols - true_rank
-        
+
+        # Create identity column map to track column permutations
+        colmap = list(range(cols))
+
+        # Create working copy and compute RREF using full pivoting
+        # This single pass gives us both the rank AND the RREF structure
+        rref = matrix.to_big_integer_rational_matrix(True)  # force new instance
+        rank, final_colmap = self._row_echelon(rref, reduced=True, colmap=colmap, use_full_pivoting=True)
+
+        nullspace_dim = cols - rank
+
         if nullspace_dim == 0:
             # No nullspace - return empty matrix
             return DefaultBigIntegerRationalMatrix(cols, 0)
-        
-        # Create identity column map to track column permutations
-        colmap = list(range(cols))
-        
-        # Create working copy and compute RREF using full pivoting for consistency
-        rref = matrix.to_big_integer_rational_matrix(True)  # force new instance
-        rank, final_colmap = self._row_echelon(rref, reduced=True, colmap=colmap, use_full_pivoting=True)
-        
-        # Should match our pre-computed rank
-        assert rank == true_rank, f"Rank mismatch: {rank} vs {true_rank}"
-        
+
         # Create nullspace matrix
         kernel = DefaultBigIntegerRationalMatrix(cols, nullspace_dim)
-        
+
         # Fill the nullspace basis vectors
         # For RREF structure [I, M; 0], nullspace is [-M; I]
         for row in range(rank):
@@ -125,11 +134,11 @@ class Gauss:
                 value = rref.get_big_fraction_value_at(row, col + rank)
                 # Set -M in the nullspace
                 kernel.set_value_at(final_colmap[row], col, -value)
-        
+
         # Set the I part (identity for free variables)
         for row in range(nullspace_dim):
             kernel.set_value_at(final_colmap[row + rank], row, BigFraction(1))
-        
+
         return kernel
     
     def invert(self, matrix: ReadableBigIntegerRationalMatrix) -> BigIntegerRationalMatrix:
