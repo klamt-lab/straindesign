@@ -30,6 +30,13 @@ import os
 import sys
 from fractions import Fraction
 
+# Try to import python-flint for fast exact rational operations
+try:
+    from flint import fmpq_mat as _FlintRationalMatrix, fmpq as _FlintRational
+    _FLINT_AVAILABLE = True
+except ImportError:
+    _FLINT_AVAILABLE = False
+
 
 # ============================================================================
 # Lazy Java Initialization
@@ -177,7 +184,8 @@ def basic_columns_rat(mx, tolerance=0):
     """
     Find basic columns using rational Gaussian elimination.
 
-    This is the default pure Python implementation using straindesign.compression.
+    Uses FLINT for fast exact rational arithmetic when available,
+    falls back to pure Python implementation otherwise.
 
     Args:
         mx: Matrix (numpy array or compatible type)
@@ -186,12 +194,82 @@ def basic_columns_rat(mx, tolerance=0):
     Returns:
         Array of indices of basic columns
     """
+    if not isinstance(mx, numpy.ndarray):
+        raise TypeError(f"Expected numpy.ndarray, got {type(mx)}")
+
+    # Use FLINT if available (much faster)
+    if _FLINT_AVAILABLE:
+        return _basic_columns_rat_flint(mx)
+    else:
+        return _basic_columns_rat_python(mx)
+
+
+def _basic_columns_rat_flint(mx):
+    """
+    Find basic columns using FLINT's fast rational RREF.
+
+    Args:
+        mx: Matrix (numpy array)
+
+    Returns:
+        List of indices of basic (pivot) columns
+    """
+    rows, cols = mx.shape
+
+    # Convert numpy to FLINT rational matrix
+    data = []
+    for i in range(rows):
+        row = []
+        for j in range(cols):
+            val = mx[i, j]
+            if val == 0:
+                row.append(0)
+            elif val == int(val):
+                row.append(int(val))
+            else:
+                # Convert float to exact rational
+                frac = Fraction(val).limit_denominator()
+                row.append(_FlintRational(frac.numerator, frac.denominator))
+        data.append(row)
+
+    flint_mat = _FlintRationalMatrix(data)
+
+    # Get RREF and rank
+    rref_mat, rank = flint_mat.rref()
+
+    # Find pivot columns from RREF structure
+    # A pivot column is where the leading coefficient appears in each row
+    rref_list = rref_mat.tolist()
+    pivot_cols = []
+    current_row = 0
+
+    for col in range(cols):
+        if current_row >= rank:
+            break
+        # Check if this column has a leading non-zero in the current row
+        val = rref_list[current_row][col]
+        if val != 0:
+            pivot_cols.append(col)
+            current_row += 1
+
+    return pivot_cols
+
+
+def _basic_columns_rat_python(mx):
+    """
+    Find basic columns using pure Python Gaussian elimination.
+
+    Fallback when FLINT is not available.
+
+    Args:
+        mx: Matrix (numpy array)
+
+    Returns:
+        List of indices of basic columns
+    """
     from .compression.math.default_bigint_rational_matrix import DefaultBigIntegerRationalMatrix as PyRationalMatrix
     from .compression.math.gauss import Gauss as PyGauss
     from .compression.math.big_fraction import BigFraction as PyBigFraction
-
-    if not isinstance(mx, numpy.ndarray):
-        raise TypeError(f"Expected numpy.ndarray, got {type(mx)}")
 
     rows, cols = mx.shape
     rational_matrix = PyRationalMatrix(rows, cols)

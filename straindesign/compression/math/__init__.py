@@ -3,10 +3,13 @@ Mathematical Infrastructure Module
 
 This module provides the mathematical foundation for the EFMTool compression algorithms:
 - Exact rational arithmetic with BigFraction
-- Matrix operations with exact precision  
+- Matrix operations with exact precision
 - Gaussian elimination and nullspace computation
 
 All operations maintain exact precision using rational arithmetic.
+
+When python-flint is available, FLINT-accelerated implementations are used
+for much faster O(n³) operations.
 """
 
 from .big_fraction import BigFraction
@@ -15,10 +18,22 @@ from .default_bigint_rational_matrix import DefaultBigIntegerRationalMatrix
 from .gauss import Gauss as GaussianElimination
 from .bigint_rational_matrix_operations import BigIntegerRationalMatrixOperations as MatrixOperations
 
+# Optional FLINT-accelerated components
+try:
+    from .flint_rational_matrix import FlintBigIntegerRationalMatrix, FLINT_AVAILABLE
+    from .flint_gauss import FlintGauss
+except ImportError:
+    FlintBigIntegerRationalMatrix = None
+    FlintGauss = None
+    FLINT_AVAILABLE = False
+
 __all__ = [
     'BigFraction',
     'BigIntegerRationalMatrix',
-    'DefaultBigIntegerRationalMatrix', 
+    'DefaultBigIntegerRationalMatrix',
     'GaussianElimination',
     'MatrixOperations',
+    'FlintBigIntegerRationalMatrix',
+    'FlintGauss',
+    'FLINT_AVAILABLE',
 ]

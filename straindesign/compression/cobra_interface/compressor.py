@@ -78,13 +78,14 @@ def compress_cobra_model(
         stoich_matrix, reversible, metabolite_names, reaction_names, suppressed_reactions
     )
     
-    # Build reaction and metabolite maps from transformation matrices
-    reaction_map, metabolite_map = _build_transformation_maps(
+    # Modify the model in-place based on compression results
+    # This returns the reaction_map with keys that match the actual model reaction IDs
+    reaction_map = _apply_compression_to_model(model, compression_record, reaction_names)
+
+    # Build metabolite map from transformation matrices
+    _, metabolite_map = _build_transformation_maps(
         compression_record, reaction_names, metabolite_names
     )
-    
-    # Modify the model in-place based on compression results
-    _apply_compression_to_model(model, compression_record, reaction_map)
     
     # Create numpy arrays for easy access
     pre_matrix = _matrix_to_numpy(compression_record.pre)
@@ -251,88 +252,153 @@ def _build_transformation_maps(compression_record, reaction_names, metabolite_na
     return reaction_map, metabolite_map
 
 
-def _apply_compression_to_model(model, compression_record, reaction_map):
-    """Apply compression results to the COBRA model in-place."""
+def _apply_compression_to_model(model, compression_record, reaction_names):
+    """Apply compression results to the COBRA model in-place.
+
+    Optimized version that avoids O(n²) complexity when merging many reactions.
+    Instead of incremental merging, computes final stoichiometry directly.
+
+    Returns:
+        reaction_map: Dictionary mapping compressed reaction IDs to original reactions with coefficients
+    """
     import numpy as np
-    from sympy import Rational
-    
+    from fractions import Fraction
+    from ..math import BigFraction
+
     # Convert post matrix to numpy for processing
-    post_matrix = _matrix_to_numpy(compression_record.post)
-    
-    # Safety check: if post matrix has no columns (no compressed reactions), 
+    post_matrix_np = _matrix_to_numpy(compression_record.post)
+    post_matrix = compression_record.post  # Keep original for exact coefficients
+
+    # Build reaction_map as we process
+    reaction_map = {}
+
+    # Safety check: if post matrix has no columns (no compressed reactions),
     # this means all reactions were eliminated - this is likely an error
-    if post_matrix.shape[1] == 0:
-        print(f"WARNING: All reactions eliminated during compression! Post matrix shape: {post_matrix.shape}")
+    if post_matrix_np.shape[1] == 0:
+        print(f"WARNING: All reactions eliminated during compression! Post matrix shape: {post_matrix_np.shape}")
         print("This suggests the model may be infeasible or the compression is too aggressive.")
-        # Don't apply any changes - keep the original model
         for reaction in model.reactions:
             reaction.notes['compression_applied'] = True
             reaction.notes['compression_warning'] = 'All reactions eliminated - compression not applied'
-        return
-    
+        return {}
+
     # Find reactions to delete (those with no contribution to any compressed reaction)
-    del_rxns = np.logical_not(np.any(post_matrix, axis=1))
-    
+    del_rxns = np.logical_not(np.any(post_matrix_np, axis=1))
+
+    # Build metabolite index map for fast lookups
+    met_to_idx = {m: i for i, m in enumerate(model.metabolites)}
+
     # Process each compressed reaction (column in post matrix)
-    for j in range(post_matrix.shape[1]):
-        rxn_indices = post_matrix[:, j].nonzero()[0]
+    for j in range(post_matrix_np.shape[1]):
+        rxn_indices = post_matrix_np[:, j].nonzero()[0]
         if len(rxn_indices) == 0:
             continue
-            
+
         # Main reaction (first in the group)
         main_idx = rxn_indices[0]
         main_reaction = model.reactions[main_idx]
-        
-        # Initialize compression tracking
-        main_reaction.subset_rxns = []
-        main_reaction.subset_stoich = []
-        
-        # Process all reactions in this compressed group
+
+        # Track compression info
+        main_reaction.subset_rxns = list(rxn_indices)
+        main_reaction.subset_stoich = [Fraction(float(post_matrix_np[r_idx, j])).limit_denominator()
+                                        for r_idx in rxn_indices]
+
+        if len(rxn_indices) == 1:
+            # Single reaction - just scale if needed
+            scaling = float(post_matrix_np[main_idx, j])
+            if scaling != 1.0:
+                for met, coeff in list(main_reaction.metabolites.items()):
+                    main_reaction.add_metabolites({met: coeff * (scaling - 1)})
+            # Build reaction_map entry for this single reaction
+            orig_name = reaction_names[main_idx]
+            coeff = post_matrix.get_big_fraction_value_at(main_idx, j)
+            reaction_map[orig_name] = {orig_name: coeff}
+            continue
+
+        # Multiple reactions to merge - compute final stoichiometry directly (O(n))
+        # This avoids COBRApy's slow incremental merge which is O(n²)
+        merged_stoich = {}
+        merged_lb = -float('inf')
+        merged_ub = float('inf')
+        name_parts = []
+        contributing_reactions = {}  # For reaction_map
+
         for r_idx in rxn_indices:
             reaction = model.reactions[r_idx]
-            # Get scaling factor from post matrix
-            scaling_factor = Rational(float(post_matrix[r_idx, j]))
-            
-            # Scale the reaction
-            reaction *= scaling_factor
-            
-            # Update bounds
-            if reaction.lower_bound not in (0, -float('inf')):
-                reaction.lower_bound /= abs(float(scaling_factor))
-            if reaction.upper_bound not in (0, float('inf')):
-                reaction.upper_bound /= abs(float(scaling_factor))
-                
-            # Track compression info
-            main_reaction.subset_rxns.append(r_idx)
-            main_reaction.subset_stoich.append(scaling_factor)
-        
-        # Merge additional reactions into the main reaction
-        for r_idx in rxn_indices[1:]:
-            reaction = model.reactions[r_idx]
-            
-            # Update main reaction name
-            if len(main_reaction.id) + len(reaction.id) < 220 and not main_reaction.id.endswith('...'):
-                main_reaction.id += '*' + reaction.id
-            elif not main_reaction.id.endswith('...'):
-                main_reaction.id += '...'
-            
-            # Merge stoichiometry
-            main_reaction += reaction
-            
-            # Update bounds (keep most restrictive)
-            if reaction.lower_bound > main_reaction.lower_bound:
-                main_reaction.lower_bound = reaction.lower_bound
-            if reaction.upper_bound < main_reaction.upper_bound:
-                main_reaction.upper_bound = reaction.upper_bound
-                
-            # Mark for deletion
-            del_rxns[r_idx] = True
-    
+            scaling = float(post_matrix_np[r_idx, j])
+
+            # Store exact coefficient for reaction_map
+            orig_name = reaction_names[r_idx]
+            exact_coeff = post_matrix.get_big_fraction_value_at(r_idx, j)
+            contributing_reactions[orig_name] = exact_coeff
+
+            # Accumulate scaled stoichiometry
+            for met, met_coeff in reaction.metabolites.items():
+                met_id = met.id
+                if met_id in merged_stoich:
+                    merged_stoich[met_id] += met_coeff * scaling
+                else:
+                    merged_stoich[met_id] = met_coeff * scaling
+
+            # Track most restrictive bounds (scaled)
+            # If v_merged = v_original / scaling, then:
+            #   lb_original <= v_original <= ub_original
+            #   lb_original / scaling <= v_merged <= ub_original / scaling (if scaling > 0)
+            #   ub_original / scaling <= v_merged <= lb_original / scaling (if scaling < 0)
+            if scaling > 0:
+                # Positive scaling: divide bounds by scale
+                lb_scaled = reaction.lower_bound / scaling
+                ub_scaled = reaction.upper_bound / scaling
+                merged_lb = max(merged_lb, lb_scaled)
+                merged_ub = min(merged_ub, ub_scaled)
+            elif scaling < 0:
+                # Negative scaling: divide and swap bounds
+                lb_scaled = reaction.upper_bound / scaling  # ub becomes lb
+                ub_scaled = reaction.lower_bound / scaling  # lb becomes ub
+                merged_lb = max(merged_lb, lb_scaled)
+                merged_ub = min(merged_ub, ub_scaled)
+
+            # Build name - use '::' separator to match efmtool convention
+            name_parts.append(reaction.id)
+
+            # Mark for deletion (except main)
+            if r_idx != main_idx:
+                del_rxns[r_idx] = True
+
+        # Update main reaction with merged stoichiometry
+        # First clear existing stoichiometry
+        main_reaction.subtract_metabolites(main_reaction.metabolites.copy())
+
+        # Add merged stoichiometry
+        new_metabolites = {}
+        for met_id, met_coeff in merged_stoich.items():
+            if abs(met_coeff) > 1e-12:  # Skip near-zero coefficients
+                met = model.metabolites.get_by_id(met_id)
+                new_metabolites[met] = met_coeff
+        main_reaction.add_metabolites(new_metabolites)
+
+        # Update bounds
+        if merged_lb > -float('inf'):
+            main_reaction.lower_bound = merged_lb
+        if merged_ub < float('inf'):
+            main_reaction.upper_bound = merged_ub
+
+        # Update name - use '::' separator to match efmtool convention
+        # Truncate to 240 chars max (Gurobi limit is 255, COBRApy adds _reverse suffix)
+        compressed_name = '::'.join(name_parts)
+        if len(compressed_name) > 240:
+            # Truncate and add ellipsis
+            compressed_name = compressed_name[:237] + '...'
+        main_reaction.id = compressed_name
+
+        # Add to reaction_map with the actual name that will be used in the model
+        reaction_map[compressed_name] = contributing_reactions
+
     # Remove reactions that were merged (in reverse order to maintain indices)
     del_indices = np.where(del_rxns)[0]
     for i in range(len(del_indices) - 1, -1, -1):
         model.reactions[del_indices[i]].remove_from_model(remove_orphans=True)
-    
+
     # Add compression metadata to remaining reactions
     for reaction in model.reactions:
         reaction.notes['compression_applied'] = True
@@ -342,6 +408,8 @@ def _apply_compression_to_model(model, compression_record, reaction_map):
             'total_reaction_compressions': stats.get_total_reaction_compressions(),
             'total_metabolite_compressions': stats.get_total_metabolite_compressions()
         }
+
+    return reaction_map
 
 
 def _matrix_to_numpy(matrix) -> np.ndarray:
@@ -398,57 +466,76 @@ def _remove_conservation_relations(model):
 
 
 def _basic_columns_rat(matrix, tolerance=0):
-    """Find basic columns using exact rational Gaussian elimination - ported from compression_python_port"""
-    from ..math.default_bigint_rational_matrix import DefaultBigIntegerRationalMatrix
+    """
+    Find basic columns using exact rational Gaussian elimination.
+
+    Uses FLINT when available for fast O(n³) operations, otherwise falls back
+    to pure Python implementation.
+    """
     from ..math.gauss import Gauss
     from ..math.big_fraction import BigFraction
-    from sympy import Rational, nsimplify
-    import numpy as np
-    
-    # Convert numpy array to rational matrix
+    from fractions import Fraction
+
+    # Check if FLINT is available for fast path
+    try:
+        from flint import fmpq_mat, fmpq
+        FLINT_AVAILABLE = True
+    except ImportError:
+        FLINT_AVAILABLE = False
+
     rows, cols = matrix.shape
-    rational_matrix = DefaultBigIntegerRationalMatrix(rows, cols)
-    
-    # Convert each element to exact rational
-    for i in range(rows):
-        for j in range(cols):
-            value = matrix[i, j]
-            
-            # Convert to exact rational
-            if value == 0:
-                continue  # Default is zero
-            elif isinstance(value, (int, float)):
-                if isinstance(value, int):
-                    rational_value = Rational(value)
-                else:
-                    # Convert float to exact rational
-                    rational_value = nsimplify(value, rational=True, rational_conversion='base10')
-                
-                # Convert to BigFraction
-                big_fraction = BigFraction(rational_value.p, rational_value.q)
-                rational_matrix.set_value_at(i, j, big_fraction)
-            else:
-                # Already rational, convert to BigFraction
-                if hasattr(value, 'p') and hasattr(value, 'q'):
-                    big_fraction = BigFraction(value.p, value.q)
+
+    if FLINT_AVAILABLE:
+        # Fast path: use FLINT directly
+        flint_mat = fmpq_mat(rows, cols)
+        for i in range(rows):
+            for j in range(cols):
+                value = matrix[i, j]
+                if value != 0:
+                    # Convert to exact rational using Python's Fraction
+                    if isinstance(value, float):
+                        frac = Fraction(value).limit_denominator()
+                        flint_mat[i, j] = fmpq(frac.numerator, frac.denominator)
+                    else:
+                        flint_mat[i, j] = fmpq(int(value))
+
+        # Use FLINT's native RREF to find pivot columns
+        rref, rank = flint_mat.rref()
+
+        # Find pivot columns
+        pivot_cols = []
+        for r in range(min(rows, rank)):
+            for c in range(cols):
+                if rref[r, c] != fmpq(0):
+                    pivot_cols.append(c)
+                    break
+
+        return pivot_cols
+
+    else:
+        # Slow path: use pure Python with BigFraction
+        from ..math.default_bigint_rational_matrix import DefaultBigIntegerRationalMatrix
+
+        rational_matrix = DefaultBigIntegerRationalMatrix(rows, cols)
+
+        for i in range(rows):
+            for j in range(cols):
+                value = matrix[i, j]
+                if value != 0:
+                    if isinstance(value, float):
+                        frac = Fraction(value).limit_denominator()
+                        big_fraction = BigFraction(frac.numerator, frac.denominator)
+                    else:
+                        big_fraction = BigFraction(int(value))
                     rational_matrix.set_value_at(i, j, big_fraction)
-                else:
-                    # Fallback - convert via sympy
-                    rational_value = nsimplify(float(value), rational=True, rational_conversion='base10')
-                    big_fraction = BigFraction(rational_value.p, rational_value.q)
-                    rational_matrix.set_value_at(i, j, big_fraction)
-    
-    # Prepare arrays for Gaussian elimination
-    row_count = rational_matrix.get_row_count()
-    col_count = rational_matrix.get_column_count()
-    
-    row_map = [0] * row_count  # Row permutation (we don't use this)
-    col_map = list(range(col_count))  # Column permutation
-    
-    # Perform row echelon form using exact rational arithmetic
-    gauss = Gauss.get_rational_instance()
-    # Use the private method directly since we need the column permutation
-    rank, updated_col_map = gauss._row_echelon(rational_matrix, False, row_map, col_map)
-    
-    # Return indices of basic columns (first 'rank' columns after permutation)
-    return updated_col_map[:rank]
+
+        # Use basic_columns method if available, otherwise fallback
+        gauss = Gauss.get_rational_instance()
+        if hasattr(gauss, 'basic_columns'):
+            return gauss.basic_columns(rational_matrix)
+        else:
+            # Fallback for pure Python Gauss
+            row_map = [0] * rows
+            col_map = list(range(cols))
+            rank, updated_col_map = gauss._row_echelon(rational_matrix, False, row_map, col_map)
+            return updated_col_map[:rank]

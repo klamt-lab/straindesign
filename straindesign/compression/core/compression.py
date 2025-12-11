@@ -204,85 +204,150 @@ class StoichMatrixCompressor:
             work_record.remove_unused_metabolites()
         
         return compressed_any
-    
-    
+
+    def _nullspace_zero_flux_reactions(self, nullspace_record: 'NullspaceRecord') -> bool:
+        """
+        Find and remove zero-flux reactions (CoupledZero method).
+
+        A reaction is zero-flux if it has zero coefficient in ALL nullspace vectors,
+        meaning it must have zero flux in any valid steady-state flux distribution.
+
+        Args:
+            nullspace_record: Nullspace computation record
+
+        Returns:
+            True if any zero-flux reactions were removed
+        """
+        kernel = nullspace_record.kernel
+        num_reactions = nullspace_record.size.reacs
+        kernel_cols = kernel.get_column_count()
+
+        # Find reactions with all-zero rows in the nullspace kernel
+        zero_flux_reactions = set()
+
+        for reac_idx in range(num_reactions):
+            is_zero_flux = True
+            for col in range(kernel_cols):
+                num = kernel.get_big_integer_numerator_at(reac_idx, col)
+                if not self._is_zero(num):
+                    is_zero_flux = False
+                    break
+
+            if is_zero_flux:
+                zero_flux_reactions.add(reac_idx)
+                reaction_name = nullspace_record.reac_names[reac_idx]
+                LOG.debug(f"found and removed zero-flux reaction: {reaction_name}")
+                nullspace_record.stats.inc_zero_flux_reactions()
+
+        if zero_flux_reactions:
+            nullspace_record.work_record.remove_reactions_by_indices(zero_flux_reactions)
+            return True
+
+        return False
+
     def _nullspace_coupled_reactions(self, nullspace_record: 'NullspaceRecord',
                                    include_compression: bool) -> bool:
         """
         Find and handle coupled reactions (CoupledContradicting and CoupledCombine methods).
-        
+
         Two reactions are coupled if they have a constant ratio in all nullspace vectors.
         Contradictory couplings (inconsistent with reversibility) are removed.
         Valid couplings can be combined into single reactions.
-        
+
+        Optimized algorithm using zero-pattern hashing:
+        1. Group reactions by their zero/nonzero pattern (O(n*k))
+        2. Only check ratio consistency within groups (O(sum of group sizes))
+        This reduces O(n²k) to approximately O(n*k) for typical sparse kernels.
+
         Args:
             nullspace_record: Nullspace computation record
             include_compression: Whether to combine coupled reactions (CoupledCombine)
-            
+
         Returns:
             True if any coupled reactions were processed
         """
         from ..math.big_fraction import BigFraction
-        
+
         # Determine compression options
         do_con = CompressionMethod.COUPLED_CONTRADICTING in self._compression_methods
         do_com = CompressionMethod.COUPLED_COMBINE in self._compression_methods
-        
+
         kernel = nullspace_record.kernel
         stoich = nullspace_record.cmp
         post = nullspace_record.post
         reversible = nullspace_record.reversible
         size = nullspace_record.size
-        
+
         kernel_cols = kernel.get_column_count()
         num_reactions = size.reacs
-        
-        # Find coupled reaction groups
-        groups = []  # List of reaction index groups (no single-element groups)
-        ratios = [None] * num_reactions  # ratios[reacB] = ratio of reacA/reacB for coupled reactions
-        
-        for reac_a in range(num_reactions):
-            if ratios[reac_a] is None:  # Not yet processed
-                group = None
-                
-                for reac_b in range(reac_a + 1, num_reactions):
-                    # Calculate ratio reac_a / reac_b across all kernel columns
-                    ratio = None
-                    
-                    for col in range(kernel_cols):
-                        val_a_num = kernel.get_big_integer_numerator_at(reac_a, col)
-                        val_b_num = kernel.get_big_integer_numerator_at(reac_b, col)
-                        is_zero_a = self._is_zero(val_a_num)
-                        is_zero_b = self._is_zero(val_b_num)
-                        
-                        if is_zero_a != is_zero_b:
-                            # Different zero patterns - not coupled
-                            ratio = BigFraction.ZERO
-                            break
-                        elif not is_zero_a:
-                            # Both non-zero - check ratio consistency
-                            val_a = kernel.get_big_fraction_value_at(reac_a, col)
-                            val_b = kernel.get_big_fraction_value_at(reac_b, col)
-                            current_ratio = val_a.divide(val_b).reduce()
-                            
-                            if ratio is None:
-                                ratio = current_ratio
-                            elif not (ratio == current_ratio):
-                                # Inconsistent ratio - not coupled
-                                ratio = BigFraction.ZERO
-                                break
-                    
-                    if ratio is None:
-                        raise RuntimeError("no zero rows expected here")
-                    elif not self._is_zero(ratio.get_numerator()):
-                        # Found coupled reactions
-                        ratios[reac_b] = ratio
-                        if group is None:
-                            group = [reac_a]
-                        group.append(reac_b)
-                
-                if group is not None:
+
+        # Step 1: Group reactions by zero-pattern signature (exact arithmetic)
+        # This is O(n*k) and dramatically reduces the search space
+        patterns = {}
+        for reac_idx in range(num_reactions):
+            pattern = tuple(
+                kernel.get_big_integer_numerator_at(reac_idx, col) == 0
+                for col in range(kernel_cols)
+            )
+            if pattern not in patterns:
+                patterns[pattern] = []
+            patterns[pattern].append(reac_idx)
+
+        # Filter to patterns with multiple reactions (potential couplings)
+        potential_groups = [indices for indices in patterns.values() if len(indices) > 1]
+
+        # Step 2: Within each pattern group, find coupled reactions using exact ratios
+        groups = []  # List of coupled reaction groups
+        ratios = [None] * num_reactions  # ratios[reacB] = ratio of reacA/reacB
+
+        for potential_group in potential_groups:
+            # Find first non-zero column for this group's pattern
+            ref_reac = potential_group[0]
+            nonzero_cols = [col for col in range(kernel_cols)
+                           if kernel.get_big_integer_numerator_at(ref_reac, col) != 0]
+
+            if not nonzero_cols:
+                continue  # All zeros - skip (shouldn't happen with proper nullspace)
+
+            # Compute ratio of each reaction to reference, verify consistency
+            # Reactions with same ratio to reference are coupled to each other
+            ratio_groups = {}  # ratio -> list of reaction indices
+
+            for reac_idx in potential_group:
+                # Compute ratio at first non-zero column
+                ref_val = kernel.get_big_fraction_value_at(ref_reac, nonzero_cols[0])
+                this_val = kernel.get_big_fraction_value_at(reac_idx, nonzero_cols[0])
+                ratio = this_val.divide(ref_val).reduce()
+
+                # Verify ratio is consistent across ALL non-zero columns
+                is_consistent = True
+                for col in nonzero_cols[1:]:
+                    ref_val_col = kernel.get_big_fraction_value_at(ref_reac, col)
+                    this_val_col = kernel.get_big_fraction_value_at(reac_idx, col)
+                    expected = ref_val_col.multiply(ratio)
+                    if not (expected == this_val_col):
+                        is_consistent = False
+                        break
+
+                if is_consistent:
+                    # Use ratio as hashable key (convert to tuple of num/denom)
+                    ratio_key = (ratio.get_numerator(), ratio.get_denominator())
+                    if ratio_key not in ratio_groups:
+                        ratio_groups[ratio_key] = []
+                    ratio_groups[ratio_key].append((reac_idx, ratio))
+
+            # Each ratio_group with >1 reaction forms a coupled group
+            for ratio_key, members in ratio_groups.items():
+                if len(members) > 1:
+                    group = [m[0] for m in members]
                     groups.append(group)
+
+                    # Store ratios: ratio of first/each = 1/ratio_to_ref
+                    master = group[0]
+                    master_ratio = members[0][1]
+                    for reac_idx, reac_ratio in members[1:]:
+                        # ratio of master/slave
+                        ratios[reac_idx] = master_ratio.divide(reac_ratio).reduce()
         
         # Process each coupled group
         reactions_to_remove = set()
