@@ -1006,8 +1006,7 @@ def compress_model_efmtool(model, legacy_java_compression=False):
 
 def _compress_model_efmtool_python(model):
     """Pure Python compression using straindesign.compression."""
-    from straindesign.compression import compress_cobra_model
-    from straindesign.compression.core import CompressionMethod
+    from straindesign.compression import compress_cobra_model, CompressionMethod
 
     # Clear gene rules to match Java behavior
     for r in model.reactions:
@@ -1016,16 +1015,18 @@ def _compress_model_efmtool_python(model):
     result = compress_cobra_model(
         model,
         methods=CompressionMethod.standard(),
-        in_place=True,
-        preprocessing=False  # Handled separately by straindesign
+        in_place=True
     )
 
-    # Extract fractions.Fraction from BigFraction wrapper
-    # This format is compatible with the downstream processing
+    # Build set of flipped reactions for coefficient adjustment
+    flipped = set(result.flipped_reactions)
+
+    # Extract fractions.Fraction from result
+    # Account for flipped reactions: negate coefficient to map back to original
     rational_map = {}
     for cmp_id, orig_map in result.reaction_map.items():
         rational_map[cmp_id] = {
-            orig_id: Fraction(c.numerator, c.denominator)
+            orig_id: Fraction(c.numerator, c.denominator) * (-1 if orig_id in flipped else 1)
             for orig_id, c in orig_map.items()
         }
     return rational_map
