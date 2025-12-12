@@ -28,7 +28,6 @@ refer to the networktools module.
 import numpy
 import os
 import sys
-from fractions import Fraction
 
 # Try to import python-flint for fast exact rational operations
 try:

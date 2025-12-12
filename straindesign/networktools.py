@@ -20,7 +20,7 @@
 
 import numpy as np
 from scipy import sparse
-from fractions import Fraction
+from sympy import Rational, nsimplify
 from typing import List
 from re import search
 from cobra import Model, Metabolite, Reaction, Configuration
@@ -1021,12 +1021,11 @@ def _compress_model_efmtool_python(model):
     # Build set of flipped reactions for coefficient adjustment
     flipped = set(result.flipped_reactions)
 
-    # Extract fractions.Fraction from result
     # Account for flipped reactions: negate coefficient to map back to original
     rational_map = {}
     for cmp_id, orig_map in result.reaction_map.items():
         rational_map[cmp_id] = {
-            orig_id: Fraction(c.numerator, c.denominator) * (-1 if orig_id in flipped else 1)
+            orig_id: c * (-1 if orig_id in flipped else 1)
             for orig_id, c in orig_map.items()
         }
     return rational_map
@@ -1174,7 +1173,7 @@ def compress_model_parallel(model, protected_rxns=set()):
         for j in subset_list[i]:
             subT[j, i] = 1
         # rational_map is a dictionary that associates the new reaction with a dict of its original reactions and its scaling factors
-        rational_map.update({model.reactions[i].id: {old_reac_ids[j]: Fraction(1) for j in subset_list[i]}})
+        rational_map.update({model.reactions[i].id: {old_reac_ids[j]: Rational(1) for j in subset_list[i]}})
 
     new_objective = old_objective @ subT
     for r, c in zip(model.reactions, new_objective):
@@ -1220,15 +1219,18 @@ def remove_conservation_relations(model, legacy_java_compression=False):
 
 # replace all stoichiometric coefficients with rationals.
 def stoichmat_coeff2rational(model):
-    """Convert coefficients to rational numbers using fractions.Fraction"""
+    """Convert coefficients to rational numbers using sympy.Rational"""
     num_reac = len(model.reactions)
     for i in range(num_reac):
         for k, v in model.reactions[i]._metabolites.items():
             if isinstance(v, (float, int)):
-                # Use Fraction.limit_denominator() for float-to-rational conversion
-                model.reactions[i]._metabolites[k] = Fraction(v).limit_denominator()
-            elif not hasattr(v, 'numerator'):  # Not a rational type
-                raise TypeError(f"Unsupported coefficient type: {type(v)}")
+                # Use nsimplify for nice float-to-rational conversion
+                model.reactions[i]._metabolites[k] = nsimplify(v, rational=True)
+            elif not hasattr(v, 'p'):  # Not a sympy.Rational
+                if hasattr(v, 'numerator'):  # fractions.Fraction or similar
+                    model.reactions[i]._metabolites[k] = Rational(v.numerator, v.denominator)
+                else:
+                    raise TypeError(f"Unsupported coefficient type: {type(v)}")
 
 
 # replace all stoichiometric coefficients with ints and floats
@@ -1242,17 +1244,17 @@ def stoichmat_coeff2float(model):
 
 
 def modules_coeff2rational(sd_modules):
-    """Convert coefficients to rational numbers using fractions.Fraction"""
+    """Convert coefficients to rational numbers using sympy.Rational"""
     for i, module in enumerate(sd_modules):
         for param in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
             if param in module and module[param] is not None:
                 if param == CONSTRAINTS:
                     for constr in module[CONSTRAINTS]:
                         for reac in constr[0].keys():
-                            constr[0][reac] = Fraction(constr[0][reac]).limit_denominator()
+                            constr[0][reac] = nsimplify(constr[0][reac], rational=True)
                 if param in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                     for reac in module[param].keys():
-                        module[param][reac] = Fraction(module[param][reac]).limit_denominator()
+                        module[param][reac] = nsimplify(module[param][reac], rational=True)
     return sd_modules
 
 

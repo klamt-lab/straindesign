@@ -19,6 +19,7 @@ setup(
         "scipy",
         "matplotlib",
         "psutil",
+        "python-flint",  # Fast exact rational arithmetic for compression
     ],
     extras_require={
         "java": [

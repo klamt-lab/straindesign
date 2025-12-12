@@ -19,15 +19,16 @@ import copy
 import logging
 import numpy as np
 from enum import Enum
-from fractions import Fraction
 from typing import Dict, List, Optional, Set, Tuple, Union, Any
+
+from sympy import Rational
 
 # ALL math imports from flint_interface - NO flint imports in this module
 from .flint_interface import (
     FLINT_AVAILABLE,
-    Rational,
     RationalMatrix,
     nullspace,
+    float_to_rational,
 )
 
 LOG = logging.getLogger(__name__)
@@ -501,8 +502,8 @@ class CompressionResult:
 class CompressionConverter:
     """Bidirectional transformer for expressions between original and compressed spaces."""
 
-    def __init__(self, reaction_map: Dict[str, Dict[str, Union[float, Fraction]]],
-                 metabolite_map: Dict[str, Dict[str, Union[float, Fraction]]],
+    def __init__(self, reaction_map: Dict[str, Dict[str, Union[float, Rational]]],
+                 metabolite_map: Dict[str, Dict[str, Union[float, Rational]]],
                  flipped_reactions: List[str]):
         self.reaction_map = reaction_map
         self.metabolite_map = metabolite_map
@@ -614,11 +615,13 @@ def _build_stoich_matrix(model) -> RationalMatrix:
     for j, rxn in enumerate(model.reactions):
         for met, coeff in rxn.metabolites.items():
             i = model.metabolites.index(met.id)
-            if hasattr(coeff, 'numerator'):
+            if hasattr(coeff, 'p'):  # sympy.Rational
+                matrix.set_rational(i, j, int(coeff.p), int(coeff.q))
+            elif hasattr(coeff, 'numerator'):  # fractions.Fraction or similar
                 matrix.set_rational(i, j, coeff.numerator, coeff.denominator)
             else:
-                frac = Fraction(coeff).limit_denominator()
-                matrix.set_rational(i, j, frac.numerator, frac.denominator)
+                rat = float_to_rational(coeff)
+                matrix.set_rational(i, j, int(rat.p), int(rat.q))
 
     return matrix
 
@@ -644,7 +647,7 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
 
         main_rxn.subset_rxns = list(rxn_indices)
         main_rxn.subset_stoich = [
-            Fraction(float(post_matrix_np[r_idx, j])).limit_denominator()
+            float_to_rational(post_matrix_np[r_idx, j])
             for r_idx in rxn_indices
         ]
 
@@ -652,7 +655,7 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
             factor_float = post_matrix_np[r_idx, j]
             if factor_float == 0:
                 continue
-            factor = Fraction(factor_float).limit_denominator()
+            factor = float_to_rational(factor_float)
             rxn = model.reactions[r_idx]
             rxn *= factor
             if rxn.lower_bound not in (0, -float('inf')):
