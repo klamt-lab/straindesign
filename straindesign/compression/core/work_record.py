@@ -16,6 +16,13 @@ from ..math.bigint_rational_matrix import BigIntegerRationalMatrix
 from ..math.default_bigint_rational_matrix import DefaultBigIntegerRationalMatrix
 from ..math.big_fraction import BigFraction
 
+# Try to import FLINT for accelerated matrix operations
+try:
+    from ..math.flint_rational_matrix import FlintBigIntegerRationalMatrix, FLINT_AVAILABLE
+except ImportError:
+    FlintBigIntegerRationalMatrix = None
+    FLINT_AVAILABLE = False
+
 
 class Size:
     """
@@ -145,33 +152,47 @@ class WorkRecord(CompressionRecord):
     def _create_identity_matrix(self, size: int) -> BigIntegerRationalMatrix:
         """
         Create an identity matrix of given size.
-        
+
+        Uses FLINT matrices when available for faster operations.
+
         Args:
             size: Size of identity matrix (size x size)
-            
+
         Returns:
             Identity matrix with 1's on diagonal
         """
-        identity = DefaultBigIntegerRationalMatrix(size, size)
-        for i in range(size):
-            identity.set_value_at(i, i, BigFraction.ONE)
+        if FLINT_AVAILABLE:
+            from flint import fmpq
+            identity = FlintBigIntegerRationalMatrix(size, size)
+            for i in range(size):
+                identity.set_flint_value_at(i, i, fmpq(1))
+        else:
+            identity = DefaultBigIntegerRationalMatrix(size, size)
+            for i in range(size):
+                identity.set_value_at(i, i, BigFraction.ONE)
         return identity
-    
+
     def _cancel_matrix(self, matrix: ReadableBigIntegerRationalMatrix) -> BigIntegerRationalMatrix:
         """
         Cancel (reduce) a matrix by creating a mutable copy and reducing it.
-        
+
+        Uses FLINT matrices when available for faster operations.
+
         Args:
             matrix: Matrix to cancel/reduce
-            
+
         Returns:
             Reduced mutable matrix
         """
-        # Create mutable copy
-        mutable_matrix = matrix.to_big_integer_rational_matrix(True)  # New instance
-        # Reduce the matrix (GCD reduction)
-        mutable_matrix.reduce()
-        return mutable_matrix
+        if FLINT_AVAILABLE:
+            # Convert to FLINT matrix (auto-reduces)
+            return FlintBigIntegerRationalMatrix(matrix)
+        else:
+            # Create mutable copy
+            mutable_matrix = matrix.to_big_integer_rational_matrix(True)  # New instance
+            # Reduce the matrix (GCD reduction)
+            mutable_matrix.reduce()
+            return mutable_matrix
     
     def get_truncated(self) -> CompressionRecord:
         """
@@ -299,23 +320,34 @@ class WorkRecord(CompressionRecord):
     def remove_unused_metabolites(self) -> bool:
         """
         Remove unused metabolites from the working record.
-        
+
         This method scans for metabolites (rows) that have all zero coefficients
         in the active reaction columns and removes them.
-        
+
         Returns:
             True if any metabolites were removed
         """
         removed_any = False
         meta = 0
+
+        # Use FLINT-optimized path if available (avoid creating BigFraction objects)
+        use_flint = hasattr(self.cmp, 'get_signum_at')
+
         while meta < self.size.metas:
             # Check if metabolite has any non-zero coefficients
             has_nonzero = False
             for reac in range(self.size.reacs):
-                if not self.cmp.get_big_fraction_value_at(meta, reac).is_zero():
-                    has_nonzero = True
-                    break
-            
+                if use_flint:
+                    # FLINT path: use signum check (no BigFraction creation)
+                    if self.cmp.get_signum_at(meta, reac) != 0:
+                        has_nonzero = True
+                        break
+                else:
+                    # Pure Python path
+                    if not self.cmp.get_big_fraction_value_at(meta, reac).is_zero():
+                        has_nonzero = True
+                        break
+
             if not has_nonzero:
                 # Remove unused metabolite
                 self.remove_metabolite(meta)
@@ -324,7 +356,7 @@ class WorkRecord(CompressionRecord):
                 removed_any = True
             else:
                 meta += 1
-        
+
         return removed_any
     
     def remove_metabolite(self, meta: int) -> None:

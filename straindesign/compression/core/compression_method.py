@@ -22,229 +22,35 @@ class CompressionMethod(Enum):
     Maps exactly to Java CompressionMethod enum values.
     """
     
-    # Primary compression methods
-    COUPLED_ZERO = "CoupledZero"
-    COUPLED_CONTRADICTING = "CoupledContradicting"  
-    COUPLED_COMBINE = "CoupledCombine"
-    UNIQUE_FLOWS = "UniqueFlows"
-    DEAD_END = "DeadEnd"
-    DUPLICATE_GENE = "DuplicateGene"
-    DUPLICATE_GENE_EXTENDED = "DuplicateGeneExtended"
-    INTERCHANGEABLE_METABOLITE = "InterchangeableMetabolite"
-    RECURSIVE = "Recursive"
+    # Compression methods
+    NULLSPACE = "Nullspace"  # Full nullspace-based compression (zero-flux, contradicting, combine)
+    RECURSIVE = "Recursive"  # Iterate until no more compression possible
 
-    # Static method collections (translated to class properties)
-    
-    @classmethod 
+    @classmethod
     def all(cls) -> List['CompressionMethod']:
         """All compression methods"""
         return list(cls)
-    
+
     @classmethod
     def none(cls) -> List['CompressionMethod']:
         """Empty list of compression methods"""
         return []
-    
+
     @classmethod
     def standard(cls) -> List['CompressionMethod']:
         """
-        Standard compression methods - matches Java EFMTool behavior
-        (omitting UniqueFlows due to over-compression bugs)
+        Standard compression methods for metabolic network compression.
+        Uses nullspace-based detection of zero-flux, contradicting, and coupled reactions.
+        Iterates until no more compression is possible.
         """
-        return [cls.COUPLED_ZERO, cls.COUPLED_CONTRADICTING, cls.COUPLED_COMBINE, 
-                cls.DEAD_END, cls.RECURSIVE, cls.DUPLICATE_GENE]
-    
-    @classmethod
-    def standard_no_duplicate(cls) -> List['CompressionMethod']:
-        """
-        Like standard, but without duplicate gene removal - currently using only safe methods
-        (temporarily omitting CoupledZero, CoupledCombine, UniqueFlows due to over-compression bugs)
-        """
-        return [cls.COUPLED_CONTRADICTING, cls.DEAD_END, cls.RECURSIVE]
-    
-    @classmethod
-    def standard_no_combine(cls) -> List['CompressionMethod']:
-        """
-        Like standard, but without compression, i.e. only removal of inconsistencies and duplicate genes. 
-        Uses CoupledZero, CoupledContradicting, DeadEnd, DuplicateGene, Recursive compression
-        """
-        return [cls.COUPLED_ZERO, cls.COUPLED_CONTRADICTING, cls.DEAD_END, 
-                cls.DUPLICATE_GENE, cls.RECURSIVE]
-    
-    @classmethod
-    def standard_no_null(cls) -> List['CompressionMethod']:
-        """
-        Like standard, but without nullspace compression. 
-        Uses DeadEnd, DuplicateGene, Recursive compression
-        (temporarily omitting UniqueFlows due to over-compression bug)
-        """
-        return [cls.DEAD_END, cls.DUPLICATE_GENE, cls.RECURSIVE]
-    
-    @classmethod
-    def standard_no_null_combine(cls) -> List['CompressionMethod']:
-        """
-        Like standard, but nullspace compression only for removal of zero fluxes. 
-        Uses CoupledZero, CoupledContradicting, DeadEnd, DuplicateGene, Recursive compression
-        (temporarily omitting UniqueFlows due to over-compression bug)
-        """
-        return [cls.COUPLED_ZERO, cls.COUPLED_CONTRADICTING,
-                cls.DEAD_END, cls.DUPLICATE_GENE, cls.RECURSIVE]
-    
-    @classmethod
-    def safe(cls) -> List['CompressionMethod']:
-        """
-        Safe compression methods that preserve model functionality.
-        These methods have been verified to work correctly without over-compression.
-        """
-        return [cls.COUPLED_CONTRADICTING, cls.DEAD_END, cls.RECURSIVE]
-    
-    @classmethod
-    def java_compatible(cls) -> List['CompressionMethod']:
-        """
-        Compression methods that should match Java EFMTool behavior.
-        Use these when you need results identical to the original Java implementation.
-        Note: Some methods are currently disabled due to implementation bugs.
-        """
-        # This should eventually be the full Java set, but currently limited to working methods
-        return [cls.COUPLED_CONTRADICTING, cls.DEAD_END, cls.RECURSIVE]
-    
-    # Instance methods
-    
-    def contained_in(self, *methods: 'CompressionMethod') -> bool:
-        """
-        Check if this compression method is contained in the given methods.
-        
-        Args:
-            *methods: Variable number of CompressionMethod instances to check
-            
-        Returns:
-            bool: True if this method is in the given methods, False otherwise
-        """
-        return self in methods
-    
-    def is_duplicate_gene(self) -> bool:
-        """
-        Returns True if this method is DuplicateGene or DuplicateGeneExtended
-        """
-        return self in (CompressionMethod.DUPLICATE_GENE, CompressionMethod.DUPLICATE_GENE_EXTENDED)
-    
-    def is_coupled(self) -> bool:
-        """
-        Returns True if this method is CoupledZero, CoupledContradicting or CoupledCombine
-        """
-        return self in (CompressionMethod.COUPLED_ZERO, 
-                       CompressionMethod.COUPLED_CONTRADICTING, 
-                       CompressionMethod.COUPLED_COMBINE)
-    
-    # Static utility methods
-    
-    @staticmethod
-    def methods(*methods: 'CompressionMethod') -> List['CompressionMethod']:
-        """
-        Utility method to create a list of compression methods.
-        
-        Args:
-            *methods: Variable number of CompressionMethod instances
-            
-        Returns:
-            List of CompressionMethod instances
-        """
-        return list(methods)
-    
-    @staticmethod
-    def is_containing_coupled(*methods: 'CompressionMethod') -> bool:
-        """
-        Returns True if any of the methods is coupled (CoupledZero, CoupledContradicting, CoupledCombine)
-        
-        Args:
-            *methods: Variable number of CompressionMethod instances to check
-            
-        Returns:
-            bool: True if any method is coupled, False otherwise
-        """
-        for method in methods:
-            if method.is_coupled():
-                return True
-        return False
-    
+        return [cls.NULLSPACE, cls.RECURSIVE]
+
     @staticmethod
     def is_containing_recursive(*methods: 'CompressionMethod') -> bool:
         """
         Returns True if Recursive is contained in the given methods.
-        
-        Args:
-            *methods: Variable number of CompressionMethod instances to check
-            
-        Returns:
-            bool: True if Recursive is in methods, False otherwise
         """
-        return CompressionMethod.RECURSIVE.contained_in(*methods)
-    
-    @staticmethod
-    def is_containing_duplicate_gene(*methods: 'CompressionMethod') -> bool:
-        """
-        Returns True if any of the methods is duplicate gene (DuplicateGene or DuplicateGeneExtended)
-        
-        Args:
-            *methods: Variable number of CompressionMethod instances to check
-            
-        Returns:
-            bool: True if any method is duplicate gene, False otherwise
-        """
-        for method in methods:
-            if method.is_duplicate_gene():
-                return True
-        return False
-    
-    @staticmethod
-    def log(log_level: int, *methods: 'CompressionMethod') -> None:
-        """
-        Logs the compression methods. The output string has the form:
-        "network compression methods are [COUPLED_ZERO, RECURSIVE]"
-        
-        Args:
-            log_level: The log level (e.g., logging.INFO)
-            *methods: The compression methods to log
-        """
-        method_names = [method.value for method in methods]
-        logging.log(log_level, f"network compression methods are {method_names}")
-    
-    @staticmethod
-    def log_unsupported(log_level: int, methods: List['CompressionMethod'], 
-                       *supported: 'CompressionMethod') -> None:
-        """
-        Logs that the given compression methods are unsupported. The log string
-        looks like this:
-        "NOTE: ignoring unsupported network compression methods: COUPLED_ZERO, RECURSIVE"
-        
-        Args:
-            log_level: The log level on which to log (e.g., logging.INFO)
-            methods: The compression methods which have been specified
-            *supported: The compression methods which are supported
-        """
-        unsupported_methods = []
-        for method in methods:
-            if not method.contained_in(*supported):
-                unsupported_methods.append(method.value)
-        
-        if unsupported_methods:
-            plural = "s" if len(unsupported_methods) > 1 else ""
-            unsupported_str = ", ".join(unsupported_methods)
-            logging.log(log_level, 
-                       f"NOTE: ignoring unsupported network compression method{plural}: {unsupported_str}")
-    
-    @staticmethod
-    def remove_duplicate_gene_methods(*methods: 'CompressionMethod') -> List['CompressionMethod']:
-        """
-        Returns the methods after removing DuplicateGene and DuplicateGeneExtended if contained in methods
-        
-        Args:
-            *methods: Variable number of CompressionMethod instances
-            
-        Returns:
-            List of CompressionMethod instances with duplicate gene methods removed
-        """
-        return [method for method in methods if not method.is_duplicate_gene()]
+        return CompressionMethod.RECURSIVE in methods
     
     def __str__(self) -> str:
         """String representation uses the enum value (matches Java toString())"""

@@ -3,9 +3,8 @@ Core Compression Module
 
 This module contains the complete compression algorithm implementations:
 - StoichMatrixCompressor with full nullspace-based coupling detection
-- All compression methods (CoupledZero, DeadEnd, UniqueFlows, etc.)
+- All compression methods (CoupledZero, CoupledCombine, DeadEnd, etc.)
 - Compression data structures and statistics
-- Duplicate gene compression
 
 All algorithms preserve exact functionality from the original implementation.
 """

@@ -21,7 +21,7 @@ requirements:
     - scipy
     - matplotlib
     - psutil
-    - conda-forge:jpype1
+    - conda-forge:python-flint
     - conda-forge:cobra
 
 build:

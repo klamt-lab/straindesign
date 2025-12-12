@@ -5,7 +5,7 @@ This package provides a clean, high-level API for metabolic network compression
 using algorithms ported from the Java EFMTool implementation.
 
 Key Features:
-- Complete compression algorithm suite (CoupledZero, DeadEnd, UniqueFlows, etc.)
+- Complete compression algorithm suite (CoupledZero, CoupledCombine, DeadEnd, etc.)
 - Direct COBRA model integration
 - Bidirectional expression transformation
 - Exact rational arithmetic throughout (using fractions.Fraction)

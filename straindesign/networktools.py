@@ -1015,11 +1015,7 @@ def _compress_model_efmtool_python(model):
 
     result = compress_cobra_model(
         model,
-        methods=[CompressionMethod.COUPLED_ZERO,
-                 CompressionMethod.COUPLED_COMBINE,
-                 CompressionMethod.COUPLED_CONTRADICTING,
-                 CompressionMethod.DEAD_END,
-                 CompressionMethod.RECURSIVE],
+        methods=CompressionMethod.standard(),
         in_place=True,
         preprocessing=False  # Handled separately by straindesign
     )

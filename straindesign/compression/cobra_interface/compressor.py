@@ -32,7 +32,7 @@ def compress_cobra_model(
         model: COBRA model to compress
         methods: Compression methods to apply. Can be:
             - None: Use standard methods (CoupledZero, CoupledCombine, etc.)
-            - List of strings: ["CoupledZero", "DeadEnd", "UniqueFlows"]  
+            - List of strings: ["CoupledZero", "DeadEnd", "CoupledCombine"]  
             - List of CompressionMethod enums
         in_place: Whether to modify the original model (True) or work on copy (False)
         preprocessing: Whether to apply rational conversion and conservation removal
@@ -141,20 +141,8 @@ def _parse_compression_methods(methods: List[Union[str, CompressionMethod]]) -> 
             # Handle string method names
             method_upper = method.upper().replace('-', '_').replace(' ', '_')
             
-            # Handle common variations
-            name_mappings = {
-                'DEADEND': 'DEAD_END',
-                'UNIQUEFLOWS': 'UNIQUE_FLOWS',
-                'COUPLEDZERO': 'COUPLED_ZERO', 
-                'COUPLEDCOMBINE': 'COUPLED_COMBINE',
-                'COUPLEDCONTRADICTING': 'COUPLED_CONTRADICTING',
-                'DUPLICATEGENE': 'DUPLICATE_GENE',
-            }
-            
-            method_name = name_mappings.get(method_upper, method_upper)
-            
             try:
-                result.append(CompressionMethod[method_name])
+                result.append(CompressionMethod[method_upper])
             except KeyError:
                 raise ValueError(f"Unknown compression method: {method}. "
                                f"Available: {[m.name for m in CompressionMethod]}")

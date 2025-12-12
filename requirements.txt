@@ -1,5 +1,5 @@
 cobra
 scipy
 matplotlib
-JPype1
 psutil
+python-flint
