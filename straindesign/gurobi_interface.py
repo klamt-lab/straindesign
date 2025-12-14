@@ -122,11 +122,16 @@ class Gurobi_MILP_LP(gp.Model):
             self.addMConstr(A_eq, x, grb.EQUAL, array(b_eq))
 
         # add indicator constraints
+        self._has_indicator_constr = indic_constr is not None
         if indic_constr is not None:
             for i in range(len(indic_constr.sense)):
                 self.addGenConstrIndicator(x[indic_constr.binv[i]], bool(indic_constr.indicval[i]),
                                            gp.quicksum(indic_constr.A[i, j] * x[j] for j in range(len(c)) if indic_constr.A[i, j] != 0.0),
                                            '=' if indic_constr.sense[i] == 'E' else '<', indic_constr.b[i])
+            # Gurobi 13+ has a bug where presolve with indicator constraints can cause
+            # error 10005 "Unable to retrieve attribute 'ObjBound'". Disable presolve.
+            if gp.gurobi.version()[0] >= 13:
+                self.params.Presolve = 0
 
         # set parameters
         self.params.OutputFlag = 0
@@ -152,54 +157,47 @@ class Gurobi_MILP_LP(gp.Model):
 
     def solve(self) -> Tuple[List, float, float]:
         """Solve the MILP or LP
-        
+
         Example:
             sol_x, optim, status = gurobi.solve()
-        
+
         Returns:
             (Tuple[List, float, float])
-            
+
             solution_vector, optimal_value, optimization_status
         """
-        try:
-            self.optimize()  # call parent solve function (that was overwritten in this class)
-            status = self.Status
-            if status in [gstatus.OPTIMAL, gstatus.SOLUTION_LIMIT, gstatus.SUBOPTIMAL, gstatus.USER_OBJ_LIMIT]:  # solution
-                min_cx = self.ObjVal
-                status = OPTIMAL
-            elif status == gstatus.TIME_LIMIT and not hasattr(self.getVars()[0], 'X'):  # timeout without solution
+        self.optimize()  # call parent solve function (that was overwritten in this class)
+        status = self.Status
+        if status in [gstatus.OPTIMAL, gstatus.SOLUTION_LIMIT, gstatus.SUBOPTIMAL, gstatus.USER_OBJ_LIMIT]:  # solution
+            min_cx = self.ObjVal
+            status = OPTIMAL
+        elif status == gstatus.TIME_LIMIT and not hasattr(self.getVars()[0], 'X'):  # timeout without solution
+            x = [nan] * self.NumVars
+            min_cx = nan
+            status = TIME_LIMIT
+            return x, min_cx, status
+        elif status == gstatus.TIME_LIMIT and hasattr(self.getVars()[0], 'X'):
+            min_cx = self.ObjVal
+            status = TIME_LIMIT_W_SOL
+        elif status in [gstatus.INF_OR_UNBD, gstatus.UNBOUNDED, gstatus.INFEASIBLE]:
+            # solve problem again without objective to verify that problem is feasible
+            self.params.DualReductions = 0
+            self.optimize()
+            self.params.DualReductions = 1
+            if self.Status == gstatus.INFEASIBLE:
                 x = [nan] * self.NumVars
                 min_cx = nan
-                status = TIME_LIMIT
+                status = INFEASIBLE
                 return x, min_cx, status
-            elif status == gstatus.TIME_LIMIT and hasattr(self.getVars()[0], 'X'):
-                min_cx = self.ObjVal
-                status = TIME_LIMIT_W_SOL
-            elif status in [gstatus.INF_OR_UNBD, gstatus.UNBOUNDED, gstatus.INFEASIBLE]:
-                # solve problem again without objective to verify that problem is feasible
-                self.params.DualReductions = 0
-                self.optimize()
-                self.params.DualReductions = 1
-                if self.Status == gstatus.INFEASIBLE:
-                    x = [nan] * self.NumVars
-                    min_cx = nan
-                    status = INFEASIBLE
-                    return x, min_cx, status
-                else:
-                    x = [nan] * self.NumVars
-                    min_cx = -inf
-                    status = UNBOUNDED
-                    return x, min_cx, status
             else:
-                raise Exception('Status code ' + str(status) + " not yet handeld.")
-            x = self.getSolution()
-            return x, min_cx, status
-
-        except gp.GurobiError as e:
-            logging.error('Error code ' + str(e.errno) + ": " + str(e))
-            min_cx = nan
-            x = [nan] * self.NumVars
-            return x, min_cx, ERROR
+                x = [nan] * self.NumVars
+                min_cx = -inf
+                status = UNBOUNDED
+                return x, min_cx, status
+        else:
+            raise Exception('Status code ' + str(status) + " not yet handeld.")
+        x = self.getSolution()
+        return x, min_cx, status
 
     def slim_solve(self) -> float:
         """Solve the MILP or LP, but return only the optimal value

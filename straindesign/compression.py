@@ -21,7 +21,7 @@ import numpy as np
 from enum import Enum
 from typing import Dict, List, Optional, Set, Tuple, Union, Any
 
-from sympy import Rational
+from fractions import Fraction
 
 # ALL math imports from flint_interface - NO flint imports in this module
 from .flint_interface import (
@@ -263,7 +263,15 @@ class StoichMatrixCompressor:
     def compress(self, stoich: RationalMatrix, reversible: List[bool],
                  meta_names: List[str], reac_names: List[str],
                  suppressed: Optional[Set[str]] = None) -> CompressionRecord:
-        """Compress network, return transformation matrices."""
+        """Compress network, return transformation matrices.
+
+        Uses Java efmtool's two-phase approach:
+        1. Phase 1: Remove zero-flux and contradicting reactions (iteratively)
+        2. Phase 2: Combine coupled reactions (iteratively)
+
+        This separation prevents cascading effects where combining reactions
+        could create new coupling patterns that weren't present in the original.
+        """
         work = _WorkRecord(stoich, reversible, meta_names, reac_names)
 
         do_nullspace = CompressionMethod.NULLSPACE in self._methods
@@ -272,12 +280,25 @@ class StoichMatrixCompressor:
         work.remove_reactions(suppressed)
 
         if do_nullspace:
+            # Phase 1: Remove zero-flux and contradicting reactions only
+            # (matches Java's inclCompression=false phase)
             while True:
                 work.stats.inc_compression_iteration()
                 initial_metas = work.size.metas
                 work.remove_unused_metabolites()
                 compressed_any = (work.size.metas < initial_metas)
-                compressed_any |= self._nullspace_compress(work)
+                compressed_any |= self._nullspace_compress(work, incl_compression=False)
+                if not (compressed_any and do_recursive):
+                    break
+
+            # Phase 2: Combine coupled reactions
+            # (matches Java's inclCompression=true phase)
+            while True:
+                work.stats.inc_compression_iteration()
+                initial_metas = work.size.metas
+                work.remove_unused_metabolites()
+                compressed_any = (work.size.metas < initial_metas)
+                compressed_any |= self._nullspace_compress(work, incl_compression=True)
                 if not (compressed_any and do_recursive):
                     break
 
@@ -285,8 +306,13 @@ class StoichMatrixCompressor:
         work.stats.write_to_log()
         return work.get_truncated()
 
-    def _nullspace_compress(self, work: _WorkRecord) -> bool:
-        """One pass of nullspace compression. Returns True if reactions removed."""
+    def _nullspace_compress(self, work: _WorkRecord, incl_compression: bool = True) -> bool:
+        """One pass of nullspace compression. Returns True if reactions removed.
+
+        Args:
+            incl_compression: If False, only remove zero-flux and contradicting.
+                              If True, only combine coupled reactions.
+        """
         # Build active submatrix for nullspace computation
         active = RationalMatrix(work.size.metas, work.size.reacs)
         for i in range(work.size.metas):
@@ -297,13 +323,19 @@ class StoichMatrixCompressor:
         kernel = nullspace(active)
         LOG.debug(f"Nullspace kernel: {kernel.get_row_count()}x{kernel.get_column_count()}")
 
-        removed_zf = self._remove_zero_flux(work, kernel)
-        removed_contra = self._handle_coupled(work, kernel)
+        changed = False
+        if not incl_compression:
+            # Phase 1: Remove zero-flux and contradicting
+            changed |= self._remove_zero_flux(work, kernel)
+            changed |= self._handle_coupled(work, kernel, incl_compression=False)
+        else:
+            # Phase 2: Combine coupled reactions
+            changed |= self._handle_coupled(work, kernel, incl_compression=True)
 
-        if removed_zf or removed_contra:
+        if changed:
             work.remove_unused_metabolites()
 
-        return removed_zf or removed_contra
+        return changed
 
     def _remove_zero_flux(self, work: _WorkRecord, kernel: RationalMatrix) -> bool:
         """Remove reactions with all-zero kernel rows."""
@@ -326,8 +358,14 @@ class StoichMatrixCompressor:
 
         return len(zero_flux) > 0
 
-    def _handle_coupled(self, work: _WorkRecord, kernel: RationalMatrix) -> bool:
-        """Find and handle coupled reactions."""
+    def _handle_coupled(self, work: _WorkRecord, kernel: RationalMatrix,
+                        incl_compression: bool = True) -> bool:
+        """Find and handle coupled reactions.
+
+        Args:
+            incl_compression: If False, only remove contradicting reactions.
+                              If True, only combine consistent coupled reactions.
+        """
         kernel_cols = kernel.get_column_count()
         num_reacs = work.size.reacs
 
@@ -383,7 +421,7 @@ class StoichMatrixCompressor:
                                 break
 
                     if ratio_num is not None and ratio_num != 0:
-                        ratios[reac_b] = Rational(ratio_num, ratio_den)
+                        ratios[reac_b] = Fraction(ratio_num, ratio_den)
                         if group is None:
                             group = [reac_a]
                         group.append(reac_b)
@@ -391,26 +429,34 @@ class StoichMatrixCompressor:
                 if group is not None:
                     groups.append(group)
 
-        # Process groups
+        # Process groups based on phase
         reactions_to_remove = set()
-        had_contradicting = False
+        changed = False
 
         for group in groups:
-            if self._check_coupling_consistency(group, ratios, work.reversible):
-                self._combine_coupled(work, group, ratios)
-                for idx in group[1:]:
-                    reactions_to_remove.add(idx)
+            is_consistent = self._check_coupling_consistency(group, ratios, work.reversible)
+
+            if not incl_compression:
+                # Phase 1: Only remove contradicting reactions
+                if not is_consistent:
+                    LOG.debug(f"Contradicting coupled: {[work.reac_names[r] for r in group]}")
+                    for idx in group:
+                        reactions_to_remove.add(idx)
+                        work.stats.inc_contradicting_reactions()
+                    changed = True
             else:
-                LOG.debug(f"Contradicting coupled: {[work.reac_names[r] for r in group]}")
-                for idx in group:
-                    reactions_to_remove.add(idx)
-                    work.stats.inc_contradicting_reactions()
-                had_contradicting = True
+                # Phase 2: Only combine consistent coupled reactions
+                # (contradicting were already removed in phase 1)
+                if is_consistent:
+                    self._combine_coupled(work, group, ratios)
+                    for idx in group[1:]:
+                        reactions_to_remove.add(idx)
+                    changed = True
 
         work.remove_reactions_by_indices(reactions_to_remove)
-        return had_contradicting
+        return changed
 
-    def _check_coupling_consistency(self, group: List[int], ratios: List[Optional[Rational]],
+    def _check_coupling_consistency(self, group: List[int], ratios: List[Optional[Fraction]],
                                     reversible: List[bool]) -> bool:
         """Check if coupled group is consistent with reversibility."""
         for forward in [True, False]:
@@ -426,7 +472,7 @@ class StoichMatrixCompressor:
         return False
 
     def _combine_coupled(self, work: _WorkRecord, group: List[int],
-                         ratios: List[Optional[Rational]]) -> None:
+                         ratios: List[Optional[Fraction]]) -> None:
         """Combine coupled reactions into master reaction."""
         master = group[0]
         LOG.debug(f"Combining coupled: {[work.reac_names[r] for r in group]}")
@@ -443,10 +489,10 @@ class StoichMatrixCompressor:
                 s_num = work.cmp.get_numerator(meta, slave)
                 s_den = work.cmp.get_denominator(meta, slave)
                 # new = m + s*mult = (m_num*m_den_s + s_num*mult_num*m_den) / (m_den*s_den*mult_den)
-                # Simplified: use Rational arithmetic
-                m_val = Rational(m_num, m_den)
-                s_val = Rational(s_num, s_den)
-                mult = Rational(mult_num, mult_den)
+                # Use Fraction arithmetic (faster than sympy.Rational)
+                m_val = Fraction(m_num, m_den)
+                s_val = Fraction(s_num, s_den)
+                mult = Fraction(mult_num, mult_den)
                 new_val = m_val + s_val * mult
                 work.cmp.set_rational(meta, master, new_val.numerator, new_val.denominator)
 
@@ -456,9 +502,9 @@ class StoichMatrixCompressor:
                 m_den = work.post.get_denominator(orig, master)
                 s_num = work.post.get_numerator(orig, slave)
                 s_den = work.post.get_denominator(orig, slave)
-                m_val = Rational(m_num, m_den)
-                s_val = Rational(s_num, s_den)
-                mult = Rational(mult_num, mult_den)
+                m_val = Fraction(m_num, m_den)
+                s_val = Fraction(s_num, s_den)
+                mult = Fraction(mult_num, mult_den)
                 new_val = m_val + s_val * mult
                 work.post.set_rational(orig, master, new_val.numerator, new_val.denominator)
 
@@ -502,8 +548,8 @@ class CompressionResult:
 class CompressionConverter:
     """Bidirectional transformer for expressions between original and compressed spaces."""
 
-    def __init__(self, reaction_map: Dict[str, Dict[str, Union[float, Rational]]],
-                 metabolite_map: Dict[str, Dict[str, Union[float, Rational]]],
+    def __init__(self, reaction_map: Dict[str, Dict[str, Union[float, Fraction]]],
+                 metabolite_map: Dict[str, Dict[str, Union[float, Fraction]]],
                  flipped_reactions: List[str]):
         self.reaction_map = reaction_map
         self.metabolite_map = metabolite_map
@@ -617,11 +663,11 @@ def _build_stoich_matrix(model) -> RationalMatrix:
             i = model.metabolites.index(met.id)
             if hasattr(coeff, 'p'):  # sympy.Rational
                 matrix.set_rational(i, j, int(coeff.p), int(coeff.q))
-            elif hasattr(coeff, 'numerator'):  # fractions.Fraction or similar
-                matrix.set_rational(i, j, coeff.numerator, coeff.denominator)
+            elif hasattr(coeff, 'numerator'):  # fractions.Fraction
+                matrix.set_rational(i, j, int(coeff.numerator), int(coeff.denominator))
             else:
                 rat = float_to_rational(coeff)
-                matrix.set_rational(i, j, int(rat.p), int(rat.q))
+                matrix.set_rational(i, j, int(rat.numerator), int(rat.denominator))
 
     return matrix
 

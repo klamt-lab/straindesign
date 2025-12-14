@@ -20,7 +20,7 @@
 
 import numpy as np
 from scipy import sparse
-from sympy import Rational, nsimplify
+from sympy import Rational
 from typing import List
 from re import search
 from cobra import Model, Metabolite, Reaction, Configuration
@@ -1038,6 +1038,9 @@ def _compress_model_efmtool_java(model):
     # Initialize Java if not already done
     efm._init_java()
 
+    # Convert to rational coefficients for Java
+    stoichmat_coeff2rational(model)
+
     for r in model.reactions:
         r.gene_reaction_rule = ''
     num_met = len(model.metabolites)
@@ -1220,12 +1223,13 @@ def remove_conservation_relations(model, legacy_java_compression=False):
 # replace all stoichiometric coefficients with rationals.
 def stoichmat_coeff2rational(model):
     """Convert coefficients to rational numbers using sympy.Rational"""
+    from .flint_interface import float_to_rational
     num_reac = len(model.reactions)
     for i in range(num_reac):
         for k, v in model.reactions[i]._metabolites.items():
             if isinstance(v, (float, int)):
-                # Use nsimplify for nice float-to-rational conversion
-                model.reactions[i]._metabolites[k] = nsimplify(v, rational=True)
+                # Use fast Fraction.limit_denominator-based conversion (80x faster than nsimplify)
+                model.reactions[i]._metabolites[k] = float_to_rational(v)
             elif not hasattr(v, 'p'):  # Not a sympy.Rational
                 if hasattr(v, 'numerator'):  # fractions.Fraction or similar
                     model.reactions[i]._metabolites[k] = Rational(v.numerator, v.denominator)
@@ -1245,16 +1249,17 @@ def stoichmat_coeff2float(model):
 
 def modules_coeff2rational(sd_modules):
     """Convert coefficients to rational numbers using sympy.Rational"""
+    from .flint_interface import float_to_rational
     for i, module in enumerate(sd_modules):
         for param in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
             if param in module and module[param] is not None:
                 if param == CONSTRAINTS:
                     for constr in module[CONSTRAINTS]:
                         for reac in constr[0].keys():
-                            constr[0][reac] = nsimplify(constr[0][reac], rational=True)
+                            constr[0][reac] = float_to_rational(constr[0][reac])
                 if param in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                     for reac in module[param].keys():
-                        module[param][reac] = nsimplify(module[param][reac], rational=True)
+                        module[param][reac] = float_to_rational(module[param][reac])
     return sd_modules
 
 
