@@ -18,6 +18,7 @@
 #
 """Functions for metabolic network compression and extension with GPR rules"""
 
+from math import isinf
 import numpy as np
 from scipy import sparse
 from sympy import Rational
@@ -1068,8 +1069,12 @@ def _compress_model_efmtool_java(model):
         r0 = rxn_idx[0]
         model.reactions[r0].subset_rxns = []
         model.reactions[r0].subset_stoich = []
+        # Scale objective coefficient by POST factors
+        combined_obj = 0.0
         for r in rxn_idx:
             factor = efm.jBigFraction2sympyRat(comprec.post.getBigFractionValueAt(r, j))
+            # Accumulate objective contribution before scaling
+            combined_obj += model.reactions[r].objective_coefficient * float(factor)
             model.reactions[r] *= factor
             if model.reactions[r].lower_bound not in (0, -float('inf')):
                 model.reactions[r].lower_bound /= abs(subset_matrix[r, j])
@@ -1080,6 +1085,7 @@ def _compress_model_efmtool_java(model):
                 model.reactions[r0].subset_stoich.append(-factor)
             else:
                 model.reactions[r0].subset_stoich.append(factor)
+        model.reactions[r0].objective_coefficient = combined_obj
         for r in rxn_idx[1:]:
             if len(model.reactions[r0].id) + len(model.reactions[r].id) < 220 and model.reactions[r0].id[-3:] != '...':
                 model.reactions[r0].id += '*' + model.reactions[r].id
@@ -1129,11 +1135,11 @@ def compress_model_parallel(model, protected_rxns=set()):
     stoichmat_T = create_stoichiometric_matrix(model, 'lil').transpose()
     factor = [d[0] if d else 1.0 for d in stoichmat_T.data]
     A = (sparse.diags(factor) @ stoichmat_T)
-    lb = [r.lower_bound for r in model.reactions]
-    ub = [r.upper_bound for r in model.reactions]
-    fwd = sparse.lil_matrix([1. if (np.isinf(u) and f > 0 or np.isinf(l) and f < 0) else 0. for f, l, u in zip(factor, lb, ub)]).transpose()
-    rev = sparse.lil_matrix([1. if (np.isinf(l) and f > 0 or np.isinf(u) and f < 0) else 0. for f, l, u in zip(factor, lb, ub)]).transpose()
-    inh = sparse.lil_matrix([i+1 if not ((np.isinf(ub[i]) or ub[i] == 0) and (np.isinf(lb[i]) or lb[i] == 0)) \
+    lb = [float(r.lower_bound) for r in model.reactions]
+    ub = [float(r.upper_bound) for r in model.reactions]
+    fwd = sparse.lil_matrix([1. if (isinf(u) and f > 0 or isinf(l) and f < 0) else 0. for f, l, u in zip(factor, lb, ub)]).transpose()
+    rev = sparse.lil_matrix([1. if (isinf(l) and f > 0 or isinf(u) and f < 0) else 0. for f, l, u in zip(factor, lb, ub)]).transpose()
+    inh = sparse.lil_matrix([i+1 if not ((isinf(ub[i]) or ub[i] == 0) and (isinf(lb[i]) or lb[i] == 0)) \
                                  else 0 for i in range(len(model.reactions))]).transpose()
     A = sparse.hstack((A, fwd, rev, inh), 'csr')
     # find equivalent/parallel reactions

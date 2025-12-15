@@ -707,10 +707,24 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
         if not contributing:
             continue
 
-        # First contributing reaction becomes the "main" reaction (kept)
+        # Select "main" reaction: prefer one with non-zero objective coefficient
         main_idx = contributing[0][0]
+        for idx, _ in contributing:
+            if model.reactions[idx].objective_coefficient != 0:
+                main_idx = idx
+                break
         main_rxn = model.reactions[main_idx]
         del_rxns[main_idx] = False
+
+        # Scale objective coefficient by POST factors
+        # Original objective: sum(c_i * v_i) where v_i = coeff_i * v_compressed
+        # Compressed objective: sum(c_i * coeff_i) * v_compressed
+        combined_obj = Fraction(0)
+        for idx, coeff in contributing:
+            obj_coeff = model.reactions[idx].objective_coefficient
+            if obj_coeff != 0:
+                combined_obj += Fraction(obj_coeff).limit_denominator(10**12) * coeff
+        main_rxn.objective_coefficient = float(combined_obj)
 
         # Store subset info
         main_rxn.subset_rxns = [idx for idx, _ in contributing]
@@ -724,7 +738,7 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
             elif not main_rxn.id.endswith('...'):
                 main_rxn.id += '...'
 
-        # Set coefficients directly from cmp matrix as Fractions
+        # Set coefficients from cmp matrix as Fractions (exact arithmetic)
         new_metabolites = {}
         for m_idx in range(num_metas):
             num = cmp.get_numerator(m_idx, j)
@@ -769,7 +783,7 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
                 if lb != -float('inf'):
                     ub_candidates.append(Fraction(lb) / coeff if lb != 0 else Fraction(0))
 
-        # Final bounds are intersection of all constraints
+        # Final bounds are intersection of all constraints (as Fractions)
         main_rxn.lower_bound = max(lb_candidates) if lb_candidates else -float('inf')
         main_rxn.upper_bound = min(ub_candidates) if ub_candidates else float('inf')
 
