@@ -115,11 +115,13 @@ class CompressionRecord:
 
     def __init__(self, pre: RationalMatrix, cmp: RationalMatrix,
                  post: RationalMatrix, reversible: List[bool],
+                 meta_names: List[str],
                  stats: Optional[CompressionStatistics] = None):
         self.pre = pre    # metabolite transformation
         self.cmp = cmp    # compressed stoich
         self.post = post  # reaction transformation
         self.reversible = list(reversible)
+        self.meta_names = list(meta_names)  # compressed metabolite names (row order in cmp)
         self.stats = stats
 
 
@@ -247,7 +249,8 @@ class _WorkRecord:
                                         self.post.get_denominator(i, j))
 
         rev_trunc = self.reversible[:rc]
-        return CompressionRecord(pre_trunc, cmp_trunc, post_trunc, rev_trunc, self.stats)
+        meta_names_trunc = self.meta_names[:mc]
+        return CompressionRecord(pre_trunc, cmp_trunc, post_trunc, rev_trunc, meta_names_trunc, self.stats)
 
 
 # =============================================================================
@@ -673,62 +676,112 @@ def _build_stoich_matrix(model) -> RationalMatrix:
 
 
 def _apply_compression_to_model(model, compression_record, original_reaction_names):
-    """Apply compression results to COBRA model, return reaction map."""
+    """Apply compression results to COBRA model using exact Fraction arithmetic.
+
+    Sets stoichiometric coefficients and bounds as Fractions directly from
+    the compressed matrices, avoiding floating-point arithmetic.
+    """
     post = compression_record.post
+    cmp = compression_record.cmp
+    meta_names = compression_record.meta_names
     num_original = post.get_row_count()
     num_compressed = post.get_column_count()
+    num_metas = cmp.get_row_count()
 
-    post_matrix_np = post.to_numpy()
-
-    del_rxns = np.logical_not(np.any(post_matrix_np, axis=1))
+    # Track which original reactions to delete
+    del_rxns = [True] * num_original
     reaction_map = {}
 
+    # Build metabolite lookup for compressed metabolites
+    met_lookup = {name: model.metabolites.get_by_id(name) for name in meta_names}
+
     for j in range(num_compressed):
-        rxn_indices = post_matrix_np[:, j].nonzero()[0]
-        if len(rxn_indices) == 0:
+        # Find contributing original reactions from POST matrix (as Fractions)
+        contributing = []
+        for i in range(num_original):
+            num = post.get_numerator(i, j)
+            if num != 0:
+                den = post.get_denominator(i, j)
+                contributing.append((i, Fraction(num, den)))
+
+        if not contributing:
             continue
 
-        main_idx = rxn_indices[0]
+        # First contributing reaction becomes the "main" reaction (kept)
+        main_idx = contributing[0][0]
         main_rxn = model.reactions[main_idx]
+        del_rxns[main_idx] = False
 
-        main_rxn.subset_rxns = list(rxn_indices)
-        main_rxn.subset_stoich = [
-            float_to_rational(post_matrix_np[r_idx, j])
-            for r_idx in rxn_indices
-        ]
+        # Store subset info
+        main_rxn.subset_rxns = [idx for idx, _ in contributing]
+        main_rxn.subset_stoich = [coeff for _, coeff in contributing]
 
-        for r_idx in rxn_indices:
-            factor_float = post_matrix_np[r_idx, j]
-            if factor_float == 0:
-                continue
-            factor = float_to_rational(factor_float)
-            rxn = model.reactions[r_idx]
-            rxn *= factor
-            if rxn.lower_bound not in (0, -float('inf')):
-                rxn.lower_bound /= abs(factor_float)
-            if rxn.upper_bound not in (0, float('inf')):
-                rxn.upper_bound /= abs(factor_float)
-
-        for r_idx in rxn_indices[1:]:
-            rxn = model.reactions[r_idx]
+        # Build combined reaction name from contributing reactions
+        for idx, _ in contributing[1:]:
+            rxn = model.reactions[idx]
             if len(main_rxn.id) + len(rxn.id) < 220 and not main_rxn.id.endswith('...'):
                 main_rxn.id += '*' + rxn.id
             elif not main_rxn.id.endswith('...'):
                 main_rxn.id += '...'
-            main_rxn += rxn
-            if rxn.lower_bound > main_rxn.lower_bound:
-                main_rxn.lower_bound = rxn.lower_bound
-            if rxn.upper_bound < main_rxn.upper_bound:
-                main_rxn.upper_bound = rxn.upper_bound
-            del_rxns[r_idx] = True
 
+        # Set coefficients directly from cmp matrix as Fractions
+        new_metabolites = {}
+        for m_idx in range(num_metas):
+            num = cmp.get_numerator(m_idx, j)
+            if num != 0:
+                den = cmp.get_denominator(m_idx, j)
+                met = met_lookup[meta_names[m_idx]]
+                new_metabolites[met] = Fraction(num, den)
+
+        # Clear and set metabolites (must use subtract_metabolites to maintain consistency)
+        main_rxn.subtract_metabolites(dict(main_rxn.metabolites))
+        main_rxn.add_metabolites(new_metabolites)
+
+        # Compute bounds as Fractions from original reactions scaled by POST factors
+        lb_candidates = []
+        ub_candidates = []
+        for idx, coeff in contributing:
+            rxn = model.reactions[idx]
+            lb, ub = rxn.lower_bound, rxn.upper_bound
+
+            # Scaled bounds: v_compressed = coeff * v_original
+            # So v_original = v_compressed / coeff
+            # Original constraint: lb <= v_original <= ub
+            # Becomes: lb <= v_compressed/coeff <= ub
+            # If coeff > 0: lb*coeff <= v_compressed <= ub*coeff (NO! divide by coeff)
+            # Actually: lb/coeff <= v_compressed/coeff/coeff... let me think again
+            #
+            # v_compressed is the flux of the compressed reaction
+            # v_original = coeff * v_compressed (from POST interpretation)
+            # constraint: lb <= v_original <= ub
+            # so: lb <= coeff * v_compressed <= ub
+            # if coeff > 0: lb/coeff <= v_compressed <= ub/coeff
+            # if coeff < 0: ub/coeff <= v_compressed <= lb/coeff (inequality flips)
+
+            if coeff > 0:
+                if lb != -float('inf'):
+                    lb_candidates.append(Fraction(lb) / coeff if lb != 0 else Fraction(0))
+                if ub != float('inf'):
+                    ub_candidates.append(Fraction(ub) / coeff if ub != 0 else Fraction(0))
+            else:  # coeff < 0
+                if ub != float('inf'):
+                    lb_candidates.append(Fraction(ub) / coeff if ub != 0 else Fraction(0))
+                if lb != -float('inf'):
+                    ub_candidates.append(Fraction(lb) / coeff if lb != 0 else Fraction(0))
+
+        # Final bounds are intersection of all constraints
+        main_rxn.lower_bound = max(lb_candidates) if lb_candidates else -float('inf')
+        main_rxn.upper_bound = min(ub_candidates) if ub_candidates else float('inf')
+
+        # Build reaction map
         reaction_map[main_rxn.id] = {
-            original_reaction_names[r_idx]: main_rxn.subset_stoich[i]
-            for i, r_idx in enumerate(rxn_indices)
+            original_reaction_names[idx]: coeff for idx, coeff in contributing
         }
 
-    for i in reversed(np.where(del_rxns)[0]):
-        model.reactions[i].remove_from_model(remove_orphans=True)
+    # Delete non-main reactions (in reverse order to preserve indices)
+    for i in reversed(range(num_original)):
+        if del_rxns[i]:
+            model.reactions[i].remove_from_model(remove_orphans=True)
 
     return reaction_map
 
