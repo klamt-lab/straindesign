@@ -13,9 +13,10 @@ Example usage:
     >>> kernel = nullspace(mat)
 """
 
-from typing import List
+from typing import List, Tuple
 import numpy as np
 from fractions import Fraction
+from math import gcd
 
 # Backend detection - ONLY place flint is imported in entire straindesign package
 try:
@@ -42,32 +43,24 @@ def _load_sympy():
         _sympy_loaded = True
 
 
-def float_to_fmpq(val: float, max_denom: int = 10**9) -> 'fmpq':
-    """Convert float to FLINT fmpq using fast rational approximation."""
-    if val == 0:
-        return fmpq(0)
-    if val == int(val):
-        return fmpq(int(val))
-    f = Fraction(val).limit_denominator(max_denom)
-    return fmpq(f.numerator, f.denominator)
+def float_to_rational(val, max_precision: int = 6, max_denom: int = 100):
+    """Convert numeric value to Fraction with bounded denominators.
 
+    Strategy:
+    1. Try limit_denominator(max_denom) for small fractions like 1/3, 5/11
+    2. Check if it reconstructs correctly at given precision
+    3. If not, use power of 10 (auto-reduces to only 2,5 factors)
 
-def float_to_rational_sympy(val: float, max_denom: int = 10**9) -> 'Rational':
-    """Convert float to sympy.Rational using fast rational approximation."""
-    _load_sympy()
-    if val == 0:
-        return Rational(0)
-    if val == int(val):
-        return Rational(int(val))
-    f = Fraction(val).limit_denominator(max_denom)
-    return Rational(f.numerator, f.denominator)
+    This ensures all denominators have only factors 2, 3, 5 (for denominators > max_denom),
+    which keeps LCM bounded when clearing denominators row-wise.
 
+    Args:
+        val: Numeric value to convert
+        max_precision: Maximum decimal precision to preserve (default 6)
+        max_denom: Maximum denominator for "nice" fractions (default 100)
 
-def float_to_rational(val, max_denom: int = 10**9):
-    """Convert numeric value to Fraction using fast rational approximation.
-
-    Returns fractions.Fraction for exact arithmetic without sympy overhead.
-    Uses Fraction.limit_denominator internally (80x faster than nsimplify).
+    Returns:
+        Fraction with bounded denominator
     """
     if isinstance(val, Fraction):
         return val
@@ -75,7 +68,29 @@ def float_to_rational(val, max_denom: int = 10**9):
         return Fraction(0)
     if val == int(val):
         return Fraction(int(val))
-    return Fraction(val).limit_denominator(max_denom)
+
+    # Try small denominator first
+    small_frac = Fraction(val).limit_denominator(max_denom)
+    if round(float(small_frac), max_precision) == round(val, max_precision):
+        return small_frac
+
+    # Fallback: power of 10 (auto-reduces to only 2,5 factors)
+    denom = 10 ** max_precision
+    numer = round(val * denom)
+    return Fraction(numer, denom)
+
+
+def float_to_fmpq(val: float, max_precision: int = 6, max_denom: int = 100) -> 'fmpq':
+    """Convert float to FLINT fmpq using bounded rational approximation."""
+    f = float_to_rational(val, max_precision, max_denom)
+    return fmpq(f.numerator, f.denominator)
+
+
+def float_to_rational_sympy(val: float, max_precision: int = 6, max_denom: int = 100) -> 'Rational':
+    """Convert float to sympy.Rational using bounded rational approximation."""
+    _load_sympy()
+    f = float_to_rational(val, max_precision, max_denom)
+    return Rational(f.numerator, f.denominator)
 
 
 def fmpq_to_float(val: 'fmpq') -> float:
@@ -83,11 +98,13 @@ def fmpq_to_float(val: 'fmpq') -> float:
     return float(val.p) / float(val.q)
 
 
-def detect_max_denominator(arr: np.ndarray) -> int:
-    """Detect appropriate max_denominator based on coefficient precision.
+def detect_max_precision(arr: np.ndarray) -> int:
+    """Detect maximum decimal precision in array coefficients.
 
-    Examines non-zero values to find the maximum decimal precision needed.
-    Returns a power of 10 sufficient to represent all coefficients exactly.
+    Examines non-zero values to find the maximum number of decimal places.
+    Returns the precision as an integer (e.g., 6 for 6 decimal places).
+
+    The precision is clamped to [3, 12] range.
     """
     max_decimals = 0
     for val in arr.flat:
@@ -99,8 +116,37 @@ def detect_max_denominator(arr: np.ndarray) -> int:
                 decimals = len(s.split('.')[1].rstrip('0'))
                 max_decimals = max(max_decimals, decimals)
 
-    # Use power of 10, with minimum 10^6 and maximum 10^12
-    return min(10**12, max(10**6, 10**max_decimals))
+    # Clamp to reasonable range: minimum 3, maximum 12
+    return min(12, max(3, max_decimals))
+
+
+def _lcm(a: int, b: int) -> int:
+    """Compute least common multiple of two integers."""
+    if a == 0 or b == 0:
+        return 0
+    return abs(a * b) // gcd(a, b)
+
+
+def _lcm_list(numbers: List[int]) -> int:
+    """Compute LCM of a list of integers."""
+    if not numbers:
+        return 1
+    result = numbers[0]
+    for n in numbers[1:]:
+        result = _lcm(result, n)
+    return result
+
+
+def _gcd_list(numbers: List[int]) -> int:
+    """Compute GCD of a list of integers."""
+    if not numbers:
+        return 1
+    result = numbers[0]
+    for n in numbers[1:]:
+        result = gcd(result, n)
+        if result == 1:
+            return 1
+    return result
 
 
 # =============================================================================
@@ -152,18 +198,19 @@ class RationalMatrix:
         return result
 
     @classmethod
-    def from_numpy(cls, arr: np.ndarray, max_denom: int = None) -> 'RationalMatrix':
+    def from_numpy(cls, arr: np.ndarray, max_precision: int = None,
+                   max_denom: int = 100) -> 'RationalMatrix':
         """Create RationalMatrix from numpy array.
 
         Args:
             arr: Input numpy array
-            max_denom: Maximum denominator for rational approximation.
-                       If None, auto-detected from array precision.
+            max_precision: Maximum decimal precision. If None, auto-detected.
+            max_denom: Maximum denominator for "nice" fractions (default 100)
         """
         rows, cols = arr.shape
 
-        if max_denom is None:
-            max_denom = detect_max_denominator(arr)
+        if max_precision is None:
+            max_precision = detect_max_precision(arr)
 
         if FLINT_AVAILABLE:
             # Fast path: directly create fmpq_mat
@@ -172,7 +219,7 @@ class RationalMatrix:
                 for c in range(cols):
                     val = arr[r, c]
                     if val != 0:
-                        mat[r, c] = float_to_fmpq(val, max_denom)
+                        mat[r, c] = float_to_fmpq(val, max_precision, max_denom)
             return cls._from_flint(mat)
         else:
             # Sympy fallback
@@ -181,7 +228,7 @@ class RationalMatrix:
                 for c in range(cols):
                     val = arr[r, c]
                     if val != 0:
-                        result.set_value(r, c, float_to_rational_sympy(val, max_denom))
+                        result.set_value(r, c, float_to_rational_sympy(val, max_precision, max_denom))
             return result
 
     # --- Dimensions ---
@@ -275,6 +322,32 @@ class RationalMatrix:
         else:
             return RationalMatrix._from_sympy_data(self._data[:], self._rows, self._cols)
 
+    def submatrix(self, rows: int, cols: int) -> 'RationalMatrix':
+        """Create a new matrix containing the top-left submatrix.
+
+        Args:
+            rows: Number of rows in submatrix (must be <= self._rows)
+            cols: Number of columns in submatrix (must be <= self._cols)
+
+        Returns:
+            New RationalMatrix with dimensions rows x cols
+        """
+        if rows > self._rows or cols > self._cols:
+            raise ValueError(f"Submatrix ({rows}x{cols}) exceeds matrix size ({self._rows}x{self._cols})")
+
+        if self._is_flint:
+            new_mat = fmpq_mat(rows, cols)
+            for r in range(rows):
+                for c in range(cols):
+                    new_mat[r, c] = self._mat[r, c]
+            return RationalMatrix._from_flint(new_mat)
+        else:
+            data = []
+            for r in range(rows):
+                for c in range(cols):
+                    data.append(self._data[r * self._cols + c])
+            return RationalMatrix._from_sympy_data(data, rows, cols)
+
     # --- Conversion ---
 
     def to_numpy(self) -> np.ndarray:
@@ -283,6 +356,79 @@ class RationalMatrix:
             for c in range(self._cols):
                 result[r, c] = float(self.get_numerator(r, c)) / float(self.get_denominator(r, c))
         return result
+
+    def to_numpy_int(self) -> np.ndarray:
+        """Convert to numpy array, assuming all entries are integers.
+
+        Raises ValueError if any entry has denominator != 1.
+        """
+        result = np.zeros((self._rows, self._cols), dtype=np.int64)
+        for r in range(self._rows):
+            for c in range(self._cols):
+                den = self.get_denominator(r, c)
+                if den != 1:
+                    raise ValueError(f"Entry [{r},{c}] has denominator {den} != 1")
+                result[r, c] = self.get_numerator(r, c)
+        return result
+
+    def clear_denominators_rowwise(self) -> List[int]:
+        """Clear denominators row-wise by multiplying each row by LCM of its denominators.
+
+        Modifies the matrix in-place. After this operation, all entries are integers
+        (denominator = 1). Also reduces each row by GCD to get smallest integers.
+
+        Returns:
+            List of net row scaling factors (LCM / GCD for each row).
+        """
+        row_scalers = []
+        for r in range(self._rows):
+            # Collect all denominators in this row
+            denominators = []
+            for c in range(self._cols):
+                den = self.get_denominator(r, c)
+                if den != 1:
+                    denominators.append(den)
+
+            # Compute LCM of denominators
+            if not denominators:
+                # All denominators are 1, but still reduce by GCD of numerators
+                numerators = [abs(self.get_numerator(r, c)) for c in range(self._cols)
+                              if self.get_numerator(r, c) != 0]
+                if numerators:
+                    row_gcd = _gcd_list(numerators)
+                    if row_gcd > 1:
+                        for c in range(self._cols):
+                            num = self.get_numerator(r, c)
+                            self.set_rational(r, c, num // row_gcd, 1)
+                row_scalers.append(1)
+                continue
+
+            lcm = _lcm_list(denominators)
+
+            # Multiply each entry in row by lcm to clear denominators
+            for c in range(self._cols):
+                num = self.get_numerator(r, c)
+                den = self.get_denominator(r, c)
+                # new_num = num * (lcm / den), new_den = 1
+                new_num = num * (lcm // den)
+                self.set_rational(r, c, new_num, 1)
+
+            # Now reduce by GCD of the row to get smallest integers
+            numerators = [abs(self.get_numerator(r, c)) for c in range(self._cols)
+                          if self.get_numerator(r, c) != 0]
+            if numerators:
+                row_gcd = _gcd_list(numerators)
+                if row_gcd > 1:
+                    for c in range(self._cols):
+                        num = self.get_numerator(r, c)
+                        self.set_rational(r, c, num // row_gcd, 1)
+                    row_scalers.append(lcm // row_gcd)
+                else:
+                    row_scalers.append(lcm)
+            else:
+                row_scalers.append(lcm)
+
+        return row_scalers
 
     def __repr__(self) -> str:
         return f"RationalMatrix({self._rows}x{self._cols})"
@@ -426,7 +572,7 @@ __all__ = [
     'float_to_rational',
     'float_to_fmpq',
     'float_to_rational_sympy',
-    'detect_max_denominator',
+    'detect_max_precision',
     'nullspace',
     'rank',
     'basic_columns',
