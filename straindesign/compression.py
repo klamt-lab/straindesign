@@ -149,6 +149,9 @@ class _WorkRecord:
         self.meta_names = list(meta_names)
         self.reac_names = list(reac_names)
         self.size = _Size(rows, cols)
+        # Store original dimensions for get_truncated()
+        self._orig_metas = rows
+        self._orig_reacs = cols
         self.stats = CompressionStatistics()
         self.stats.inc_compression_iteration()
 
@@ -167,30 +170,101 @@ class _WorkRecord:
             self.cmp.set_rational(meta, self.size.reacs, 0, 1)
 
     def remove_reactions(self, suppressed: Optional[Set[str]]) -> bool:
-        """Remove reactions by name."""
+        """Remove reactions by name - uses batch removal."""
         if not suppressed:
             return False
-        indices = []
+        indices = set()
         for name in suppressed:
             try:
                 idx = self.reac_names.index(name)
                 if idx < self.size.reacs:
-                    indices.append(idx)
+                    indices.add(idx)
             except ValueError:
                 continue
         if not indices:
             return False
-        for idx in sorted(indices, reverse=True):
-            self.remove_reaction(idx)
-        return True
+        return self.remove_reactions_by_indices(indices)
 
     def remove_reactions_by_indices(self, indices: Set[int]) -> bool:
-        """Remove reactions by index."""
+        """Remove reactions by index - uses batch removal for efficiency."""
         if not indices:
             return False
-        for idx in sorted(indices, reverse=True):
-            if idx < self.size.reacs:
-                self.remove_reaction(idx)
+
+        # Filter to only valid indices
+        valid_indices = {idx for idx in indices if idx < self.size.reacs}
+        if not valid_indices:
+            return False
+
+        # Compute indices to keep
+        keep_indices = [i for i in range(self.size.reacs) if i not in valid_indices]
+
+        if not keep_indices:
+            self.size.reacs = 0
+            return True
+
+        # Use batch column removal
+        self._batch_remove_columns(keep_indices)
+        return True
+
+    def _batch_remove_columns(self, keep_indices: list) -> None:
+        """Batch remove columns by keeping only specified indices."""
+        LOG.debug(f"_batch_remove_columns: keeping {len(keep_indices)} of {self.size.reacs}")
+        LOG.debug(f"  Before: cmp={self.cmp.get_column_count()}, post={self.post.get_column_count()}")
+
+        # Remove columns from post and cmp matrices
+        self.post.remove_columns(keep_indices)
+        self.cmp.remove_columns(keep_indices)
+
+        LOG.debug(f"  After: cmp={self.cmp.get_column_count()}, post={self.post.get_column_count()}")
+
+        # Reindex names and reversibility
+        new_names = [self.reac_names[i] for i in keep_indices]
+        new_rev = [self.reversible[i] for i in keep_indices]
+
+        # Update arrays (preserving total length for consistency)
+        orig_len = len(self.reac_names)
+        for i, (name, rev) in enumerate(zip(new_names, new_rev)):
+            self.reac_names[i] = name
+            self.reversible[i] = rev
+
+        self.size.reacs = len(keep_indices)
+        LOG.debug(f"  size.reacs={self.size.reacs}")
+
+    def _batch_remove_rows(self, keep_indices: list) -> None:
+        """Batch remove rows (metabolites) by keeping only specified indices."""
+        LOG.debug(f"_batch_remove_rows: keeping {len(keep_indices)} of {self.size.metas}")
+
+        # Remove rows from pre and cmp matrices
+        self.pre.remove_rows(keep_indices)
+        self.cmp.remove_rows(keep_indices)
+
+        # Reindex metabolite names
+        new_names = [self.meta_names[i] for i in keep_indices]
+        for i, name in enumerate(new_names):
+            self.meta_names[i] = name
+
+        self.size.metas = len(keep_indices)
+        LOG.debug(f"  size.metas={self.size.metas}")
+
+    def remove_metabolites_by_indices(self, indices: Set[int]) -> bool:
+        """Remove metabolites by index - uses batch removal for efficiency."""
+        if not indices:
+            return False
+
+        # Filter to only valid indices
+        valid_indices = {idx for idx in indices if idx < self.size.metas}
+        if not valid_indices:
+            return False
+
+        # Compute indices to keep
+        keep_indices = [i for i in range(self.size.metas) if i not in valid_indices]
+
+        if not keep_indices:
+            self.size.metas = 0
+            return True
+
+        # Use batch row removal
+        self._batch_remove_rows(keep_indices)
         return True
 
     def remove_metabolite(self, idx: int) -> None:
@@ -206,47 +280,54 @@ class _WorkRecord:
             self.cmp.set_rational(self.size.metas, reac, 0, 1)
 
     def remove_unused_metabolites(self) -> bool:
-        """Remove metabolites with all-zero rows."""
-        removed_any = False
-        meta = 0
-        while meta < self.size.metas:
-            has_nonzero = False
-            for reac in range(self.size.reacs):
-                if self.cmp.get_signum(meta, reac) != 0:
-                    has_nonzero = True
-                    break
-            if not has_nonzero:
-                self.remove_metabolite(meta)
-                self.stats.inc_unused_metabolite()
-                removed_any = True
-            else:
-                meta += 1
-        return removed_any
+        """Remove metabolites with all-zero rows - uses batch removal.
+
+        Uses sparse structure for O(1) zero-row detection per metabolite.
+        """
+        # Get active submatrix to check only active columns
+        active_cmp = self.cmp.submatrix(self.size.metas, self.size.reacs)
+
+        # Find zero rows using sparse structure (O(1) per row with CSR)
+        unused_indices = set()
+        if hasattr(active_cmp, '_numerators') and active_cmp._numerators is not None:
+            # FLINT sparse path: zero row = no entries in CSR indptr range
+            indptr = active_cmp._numerators.indptr
+            for meta in range(self.size.metas):
+                if indptr[meta] == indptr[meta + 1]:
+                    unused_indices.add(meta)
+                    self.stats.inc_unused_metabolite()
+        else:
+            # Fallback: iterate columns
+            for meta in range(self.size.metas):
+                has_nonzero = False
+                for reac in range(self.size.reacs):
+                    if self.cmp.get_signum(meta, reac) != 0:
+                        has_nonzero = True
+                        break
+                if not has_nonzero:
+                    unused_indices.add(meta)
+                    self.stats.inc_unused_metabolite()
+
+        # Batch remove all unused metabolites at once
+        if unused_indices:
+            self.remove_metabolites_by_indices(unused_indices)
+            return True
+        return False
 
     def get_truncated(self) -> CompressionRecord:
         """Create final CompressionRecord with truncated matrices."""
         mc, rc = self.size.metas, self.size.reacs
-        m = self.cmp.get_row_count()
-        r = self.cmp.get_column_count()
+        # Use stored original dimensions (batch removal changes matrix sizes)
+        m = self._orig_metas
+        r = self._orig_reacs
 
-        # Create truncated matrices
-        pre_trunc = RationalMatrix(mc, m)
-        cmp_trunc = RationalMatrix(mc, rc)
-        post_trunc = RationalMatrix(r, rc)
-
-        # Copy values
-        for i in range(mc):
-            for j in range(m):
-                pre_trunc.set_rational(i, j, self.pre.get_numerator(i, j),
-                                       self.pre.get_denominator(i, j))
-        for i in range(mc):
-            for j in range(rc):
-                cmp_trunc.set_rational(i, j, self.cmp.get_numerator(i, j),
-                                       self.cmp.get_denominator(i, j))
-        for i in range(r):
-            for j in range(rc):
-                post_trunc.set_rational(i, j, self.post.get_numerator(i, j),
-                                        self.post.get_denominator(i, j))
+        # Create truncated matrices using efficient submatrix extraction
+        # pre: mc compressed metabolites × m original metabolites
+        # cmp: mc compressed metabolites × rc compressed reactions
+        # post: r original reactions × rc compressed reactions
+        pre_trunc = self.pre.submatrix(mc, m)
+        cmp_trunc = self.cmp.submatrix(mc, rc)
+        post_trunc = self.post.submatrix(r, rc)
 
         rev_trunc = self.reversible[:rc]
         meta_names_trunc = self.meta_names[:mc]
@@ -285,24 +366,23 @@ class StoichMatrixCompressor:
         if do_nullspace:
             # Phase 1: Remove zero-flux and contradicting reactions only
             # (matches Java's inclCompression=false phase)
+            # Optimization: Continue only if nullspace compression found reactions.
+            # Removing unused metabolites (all-zero rows) doesn't change the nullspace,
+            # so if _nullspace_compress returns False, the next iteration would too.
             while True:
                 work.stats.inc_compression_iteration()
-                initial_metas = work.size.metas
                 work.remove_unused_metabolites()
-                compressed_any = (work.size.metas < initial_metas)
-                compressed_any |= self._nullspace_compress(work, incl_compression=False)
-                if not (compressed_any and do_recursive):
+                found = self._nullspace_compress(work, incl_compression=False)
+                if not (found and do_recursive):
                     break
 
             # Phase 2: Combine coupled reactions
             # (matches Java's inclCompression=true phase)
             while True:
                 work.stats.inc_compression_iteration()
-                initial_metas = work.size.metas
                 work.remove_unused_metabolites()
-                compressed_any = (work.size.metas < initial_metas)
-                compressed_any |= self._nullspace_compress(work, incl_compression=True)
-                if not (compressed_any and do_recursive):
+                found = self._nullspace_compress(work, incl_compression=True)
+                if not (found and do_recursive):
                     break
 
         work.remove_unused_metabolites()
@@ -317,68 +397,55 @@ class StoichMatrixCompressor:
                               If True, only combine coupled reactions.
         """
         # Build active submatrix for nullspace computation
-        active = RationalMatrix(work.size.metas, work.size.reacs)
-        for i in range(work.size.metas):
-            for j in range(work.size.reacs):
-                active.set_rational(i, j, work.cmp.get_numerator(i, j),
-                                    work.cmp.get_denominator(i, j))
-
+        active = work.cmp.submatrix(work.size.metas, work.size.reacs)
         kernel = nullspace(active)
-        LOG.debug(f"Nullspace kernel: {kernel.get_row_count()}x{kernel.get_column_count()}")
+        LOG.debug(f"Nullspace: {active.get_row_count()}x{active.get_column_count()} -> kernel {kernel.get_row_count()}x{kernel.get_column_count()}")
+
+        # Convert kernel to sparse CSR once (179x faster pattern building)
+        kernel_sparse, kernel_denom = kernel.to_sparse_csr()
 
         changed = False
         if not incl_compression:
             # Phase 1: Remove zero-flux and contradicting
-            changed |= self._remove_zero_flux(work, kernel)
-            changed |= self._handle_coupled(work, kernel, incl_compression=False)
+            # IMPORTANT: Find both sets BEFORE any removal to avoid index mismatch!
+            zero_flux = self._find_zero_flux(work, kernel_sparse)
+            contradicting = self._find_contradicting(work, kernel_sparse)
+
+            # Remove all at once
+            all_to_remove = zero_flux | contradicting
+            LOG.debug(f"Phase 1: {len(zero_flux)} zero-flux + {len(contradicting)} contradicting = {len(all_to_remove)} to remove")
+            if all_to_remove:
+                work.remove_reactions_by_indices(all_to_remove)
+                changed = True
         else:
             # Phase 2: Combine coupled reactions
-            changed |= self._handle_coupled(work, kernel, incl_compression=True)
+            changed |= self._handle_coupled_combine(work, kernel_sparse)
 
         if changed:
             work.remove_unused_metabolites()
 
         return changed
 
-    def _remove_zero_flux(self, work: _WorkRecord, kernel: RationalMatrix) -> bool:
-        """Remove reactions with all-zero kernel rows."""
-        kernel_cols = kernel.get_column_count()
-        zero_flux = []
-
+    def _find_zero_flux(self, work: _WorkRecord, kernel_sparse) -> set:
+        """Find reactions with all-zero kernel rows (indices in current work)."""
+        zero_flux = set()
         for reac in range(work.size.reacs):
-            all_zero = True
-            for col in range(kernel_cols):
-                if kernel.get_numerator(reac, col) != 0:
-                    all_zero = False
-                    break
-            if all_zero:
-                zero_flux.append(reac)
-                LOG.debug(f"Zero flux reaction: {work.reac_names[reac]}")
+            if kernel_sparse.indptr[reac] == kernel_sparse.indptr[reac + 1]:
+                zero_flux.add(reac)
+                work.stats.inc_zero_flux_reactions()
+        return zero_flux
 
-        for idx in reversed(zero_flux):
-            work.remove_reaction(idx)
-            work.stats.inc_zero_flux_reactions()
-
-        return len(zero_flux) > 0
-
-    def _handle_coupled(self, work: _WorkRecord, kernel: RationalMatrix,
-                        incl_compression: bool = True) -> bool:
-        """Find and handle coupled reactions.
-
-        Args:
-            incl_compression: If False, only remove contradicting reactions.
-                              If True, only combine consistent coupled reactions.
-        """
-        kernel_cols = kernel.get_column_count()
+    def _find_contradicting(self, work: _WorkRecord, kernel_sparse) -> set:
+        """Find reactions in contradicting coupled groups (indices in current work)."""
         num_reacs = work.size.reacs
 
         # Group by zero-pattern
         patterns = {}
         for reac in range(num_reacs):
-            pattern = tuple(kernel.get_numerator(reac, col) == 0 for col in range(kernel_cols))
-            if pattern not in patterns:
-                patterns[pattern] = []
-            patterns[pattern].append(reac)
+            start = kernel_sparse.indptr[reac]
+            end = kernel_sparse.indptr[reac + 1]
+            pattern = tuple(kernel_sparse.indices[start:end])
+            patterns.setdefault(pattern, []).append(reac)
 
         potential_groups = [idxs for idxs in patterns.values() if len(idxs) > 1]
 
@@ -387,8 +454,10 @@ class StoichMatrixCompressor:
 
         for potential in potential_groups:
             ref_reac = potential[0]
-            nonzero_cols = [c for c in range(kernel_cols) if kernel.get_numerator(ref_reac, c) != 0]
-            if not nonzero_cols:
+            ref_start = kernel_sparse.indptr[ref_reac]
+            ref_end = kernel_sparse.indptr[ref_reac + 1]
+            nonzero_count = ref_end - ref_start
+            if nonzero_count == 0:
                 continue
 
             for i, reac_a in enumerate(potential):
@@ -396,34 +465,33 @@ class StoichMatrixCompressor:
                     continue
                 group = None
 
+                a_start = kernel_sparse.indptr[reac_a]
+                a_vals = kernel_sparse.data[a_start:a_start + nonzero_count]
+
                 for j in range(i + 1, len(potential)):
                     reac_b = potential[j]
                     if ratios[reac_b] is not None:
                         continue
 
-                    # Check ratio consistency
-                    ratio_num, ratio_den = None, None
-                    for col in nonzero_cols:
-                        num_a = kernel.get_numerator(reac_a, col)
-                        den_a = kernel.get_denominator(reac_a, col)
-                        num_b = kernel.get_numerator(reac_b, col)
-                        den_b = kernel.get_denominator(reac_b, col)
+                    b_start = kernel_sparse.indptr[reac_b]
+                    b_vals = kernel_sparse.data[b_start:b_start + nonzero_count]
 
-                        # ratio = (num_a/den_a) / (num_b/den_b) = (num_a*den_b) / (den_a*num_b)
-                        curr_num = num_a * den_b
-                        curr_den = den_a * num_b
+                    ratio_num = int(a_vals[0])
+                    ratio_den = int(b_vals[0])
+                    if ratio_den < 0:
+                        ratio_num, ratio_den = -ratio_num, -ratio_den
+
+                    is_consistent = True
+                    for k in range(1, nonzero_count):
+                        curr_num = int(a_vals[k])
+                        curr_den = int(b_vals[k])
                         if curr_den < 0:
                             curr_num, curr_den = -curr_num, -curr_den
+                        if ratio_num * curr_den != ratio_den * curr_num:
+                            is_consistent = False
+                            break
 
-                        if ratio_num is None:
-                            ratio_num, ratio_den = curr_num, curr_den
-                        else:
-                            # Check: ratio_num/ratio_den == curr_num/curr_den
-                            if ratio_num * curr_den != ratio_den * curr_num:
-                                ratio_num = 0
-                                break
-
-                    if ratio_num is not None and ratio_num != 0:
+                    if is_consistent:
                         ratios[reac_b] = Fraction(ratio_num, ratio_den)
                         if group is None:
                             group = [reac_a]
@@ -432,32 +500,121 @@ class StoichMatrixCompressor:
                 if group is not None:
                     groups.append(group)
 
-        # Process groups based on phase
+        # Find contradicting reactions
+        contradicting = set()
+        for group in groups:
+            is_consistent = self._check_coupling_consistency(group, ratios, work.reversible)
+            if not is_consistent:
+                for idx in group:
+                    contradicting.add(idx)
+                    work.stats.inc_contradicting_reactions()
+
+        return contradicting
+
+    def _handle_coupled_combine(self, work: _WorkRecord, kernel_sparse) -> bool:
+        """Phase 2: Combine consistent coupled reactions, remove contradicting.
+
+        Returns True if any contradicting reactions were removed (flux space changed),
+        which means new couplings might be revealed. Returns False if only merging
+        happened, since merging doesn't change the flux space.
+        """
+        num_reacs = work.size.reacs
+
+        # Group by zero-pattern
+        patterns = {}
+        for reac in range(num_reacs):
+            start = kernel_sparse.indptr[reac]
+            end = kernel_sparse.indptr[reac + 1]
+            pattern = tuple(kernel_sparse.indices[start:end])
+            patterns.setdefault(pattern, []).append(reac)
+
+        potential_groups = [idxs for idxs in patterns.values() if len(idxs) > 1]
+
+        groups = []
+        ratios = [None] * num_reacs
+
+        for potential in potential_groups:
+            ref_reac = potential[0]
+            ref_start = kernel_sparse.indptr[ref_reac]
+            ref_end = kernel_sparse.indptr[ref_reac + 1]
+            nonzero_count = ref_end - ref_start
+            if nonzero_count == 0:
+                continue
+
+            for i, reac_a in enumerate(potential):
+                if ratios[reac_a] is not None:
+                    continue
+                group = None
+
+                a_start = kernel_sparse.indptr[reac_a]
+                a_vals = kernel_sparse.data[a_start:a_start + nonzero_count]
+
+                for j in range(i + 1, len(potential)):
+                    reac_b = potential[j]
+                    if ratios[reac_b] is not None:
+                        continue
+
+                    b_start = kernel_sparse.indptr[reac_b]
+                    b_vals = kernel_sparse.data[b_start:b_start + nonzero_count]
+
+                    ratio_num = int(a_vals[0])
+                    ratio_den = int(b_vals[0])
+                    if ratio_den < 0:
+                        ratio_num, ratio_den = -ratio_num, -ratio_den
+
+                    is_consistent = True
+                    for k in range(1, nonzero_count):
+                        curr_num = int(a_vals[k])
+                        curr_den = int(b_vals[k])
+                        if curr_den < 0:
+                            curr_num, curr_den = -curr_num, -curr_den
+                        if ratio_num * curr_den != ratio_den * curr_num:
+                            is_consistent = False
+                            break
+
+                    if is_consistent:
+                        ratios[reac_b] = Fraction(ratio_num, ratio_den)
+                        if group is None:
+                            group = [reac_a]
+                        group.append(reac_b)
+
+                if group is not None:
+                    groups.append(group)
+
+        # Combine consistent groups, remove contradicting groups
         reactions_to_remove = set()
-        changed = False
+        contradicting_removed = False
+
+        # Enter batch edit mode for cmp and post matrices to avoid repeated LIL conversions
+        work.cmp.begin_batch_edit()
+        work.post.begin_batch_edit()
 
         for group in groups:
             is_consistent = self._check_coupling_consistency(group, ratios, work.reversible)
-
-            if not incl_compression:
-                # Phase 1: Only remove contradicting reactions
-                if not is_consistent:
-                    LOG.debug(f"Contradicting coupled: {[work.reac_names[r] for r in group]}")
-                    for idx in group:
-                        reactions_to_remove.add(idx)
-                        work.stats.inc_contradicting_reactions()
-                    changed = True
+            if is_consistent:
+                self._combine_coupled(work, group, ratios)
+                for idx in group[1:]:
+                    reactions_to_remove.add(idx)
             else:
-                # Phase 2: Only combine consistent coupled reactions
-                # (contradicting were already removed in phase 1)
-                if is_consistent:
-                    self._combine_coupled(work, group, ratios)
-                    for idx in group[1:]:
-                        reactions_to_remove.add(idx)
-                    changed = True
+                # Contradicting coupled group: reactions cannot carry flux together
+                # due to irreversibility constraints. Remove them to prune blocked paths,
+                # which may reveal new couplings in subsequent iterations.
+                LOG.debug(f"Removing contradicting coupled group: {[work.reac_names[r] for r in group]}")
+                for idx in group:
+                    reactions_to_remove.add(idx)
+                    work.stats.inc_contradicting_reactions()
+                contradicting_removed = True
 
+        # End batch edit mode
+        work.cmp.end_batch_edit()
+        work.post.end_batch_edit()
+
+        LOG.debug(f"Phase 2: {len(groups)} groups, removing {len(reactions_to_remove)} reactions, contradicting={contradicting_removed}")
         work.remove_reactions_by_indices(reactions_to_remove)
-        return changed
+
+        # Only return True if contradicting reactions were removed (flux space changed).
+        # Merging alone doesn't change the flux space, so no new couplings can emerge.
+        return contradicting_removed
 
     def _check_coupling_consistency(self, group: List[int], ratios: List[Optional[Fraction]],
                                     reversible: List[bool]) -> bool:
@@ -476,7 +633,10 @@ class StoichMatrixCompressor:
 
     def _combine_coupled(self, work: _WorkRecord, group: List[int],
                          ratios: List[Optional[Fraction]]) -> None:
-        """Combine coupled reactions into master reaction."""
+        """Combine coupled reactions into master reaction.
+
+        Uses batch column operations with native fmpq arithmetic for performance.
+        """
         master = group[0]
         LOG.debug(f"Combining coupled: {[work.reac_names[r] for r in group]}")
 
@@ -485,31 +645,11 @@ class StoichMatrixCompressor:
             # multiplier = 1/ratio = ratio.denominator / ratio.numerator
             mult_num, mult_den = ratio.denominator, ratio.numerator
 
-            # Update stoichiometric matrix
-            for meta in range(work.size.metas):
-                m_num = work.cmp.get_numerator(meta, master)
-                m_den = work.cmp.get_denominator(meta, master)
-                s_num = work.cmp.get_numerator(meta, slave)
-                s_den = work.cmp.get_denominator(meta, slave)
-                # new = m + s*mult = (m_num*m_den_s + s_num*mult_num*m_den) / (m_den*s_den*mult_den)
-                # Use Fraction arithmetic (faster than sympy.Rational)
-                m_val = Fraction(m_num, m_den)
-                s_val = Fraction(s_num, s_den)
-                mult = Fraction(mult_num, mult_den)
-                new_val = m_val + s_val * mult
-                work.cmp.set_rational(meta, master, new_val.numerator, new_val.denominator)
+            # Update stoichiometric matrix: cmp[:, master] += cmp[:, slave] * mult
+            work.cmp.add_scaled_column(master, slave, mult_num, mult_den)
 
-            # Update post matrix
-            for orig in range(work.post.get_row_count()):
-                m_num = work.post.get_numerator(orig, master)
-                m_den = work.post.get_denominator(orig, master)
-                s_num = work.post.get_numerator(orig, slave)
-                s_den = work.post.get_denominator(orig, slave)
-                m_val = Fraction(m_num, m_den)
-                s_val = Fraction(s_num, s_den)
-                mult = Fraction(mult_num, mult_den)
-                new_val = m_val + s_val * mult
-                work.post.set_rational(orig, master, new_val.numerator, new_val.denominator)
+            # Update post matrix: post[:, master] += post[:, slave] * mult
+            work.post.add_scaled_column(master, slave, mult_num, mult_den)
 
         work.stats.inc_coupled_reactions_count(len(group))
 
@@ -632,8 +772,13 @@ def compress_cobra_model(
         stoich_matrix, reversible, metabolite_names, reaction_names, suppressed_reactions
     )
 
-    # Apply to model
-    reaction_map = _apply_compression_to_model(model, compression_record, reaction_names)
+    # Apply to model (uses direct manipulation, bypasses solver)
+    reaction_map, objective_updates = _apply_compression_to_model(
+        model, compression_record, reaction_names
+    )
+
+    # Rebuild solver after all direct modifications
+    _rebuild_solver(model, objective_updates)
 
     pre_matrix = compression_record.pre.to_numpy()
     post_matrix = compression_record.post.to_numpy()
@@ -656,23 +801,38 @@ def compress_cobra_model(
 
 
 def _build_stoich_matrix(model) -> RationalMatrix:
-    """Build stoichiometric matrix with exact rational arithmetic."""
-    num_mets = len(model.metabolites)
-    num_rxns = len(model.reactions)
-    matrix = RationalMatrix(num_mets, num_rxns)
+    """Build stoichiometric matrix with exact rational arithmetic.
 
-    for j, rxn in enumerate(model.reactions):
-        for met, coeff in rxn.metabolites.items():
-            i = model.metabolites.index(met.id)
-            if hasattr(coeff, 'p'):  # sympy.Rational
-                matrix.set_rational(i, j, int(coeff.p), int(coeff.q))
-            elif hasattr(coeff, 'numerator'):  # fractions.Fraction
-                matrix.set_rational(i, j, int(coeff.numerator), int(coeff.denominator))
-            else:
-                rat = float_to_rational(coeff)
-                matrix.set_rational(i, j, int(rat.numerator), int(rat.denominator))
+    Uses optimized one-shot sparse construction instead of element-by-element.
+    """
+    return RationalMatrix.from_cobra_model(model)
 
-    return matrix
+
+def _rebuild_solver(model, objective_updates: dict) -> None:
+    """Rebuild solver after direct model modifications.
+
+    This creates a fresh solver and populates it with the current model state.
+    Must be called after using direct attribute manipulation that bypasses
+    solver updates (e.g., _metabolites, _lower_bound, _upper_bound).
+
+    Args:
+        model: COBRA model with stale solver state
+        objective_updates: dict mapping reactions to their objective coefficients
+    """
+    # Get solver interface type
+    solver_interface = model.solver.interface
+
+    # Create fresh solver
+    new_solver = solver_interface.Model()
+    model._solver = new_solver
+
+    # Populate solver with current model state
+    model._populate_solver(model.reactions, model.metabolites)
+
+    # Set objective coefficients (must be done after solver is populated)
+    for rxn, obj_coeff in objective_updates.items():
+        if rxn in model.reactions:
+            rxn.objective_coefficient = obj_coeff
 
 
 def _apply_compression_to_model(model, compression_record, original_reaction_names):
@@ -680,6 +840,9 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
 
     Sets stoichiometric coefficients and bounds as Fractions directly from
     the compressed matrices, avoiding floating-point arithmetic.
+
+    Uses direct attribute manipulation to bypass solver updates during modification.
+    Solver must be rebuilt after calling this function.
     """
     post = compression_record.post
     cmp = compression_record.cmp
@@ -688,21 +851,19 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
     num_compressed = post.get_column_count()
     num_metas = cmp.get_row_count()
 
-    # Track which original reactions to delete
-    del_rxns = [True] * num_original
+    # Track which original reactions to keep (main reactions)
+    keep_rxns = [False] * num_original
     reaction_map = {}
 
     # Build metabolite lookup for compressed metabolites
     met_lookup = {name: model.metabolites.get_by_id(name) for name in meta_names}
 
+    # Track objective coefficients to set at end (bypass solver updates)
+    objective_updates = {}
+
     for j in range(num_compressed):
-        # Find contributing original reactions from POST matrix (as Fractions)
-        contributing = []
-        for i in range(num_original):
-            num = post.get_numerator(i, j)
-            if num != 0:
-                den = post.get_denominator(i, j)
-                contributing.append((i, Fraction(num, den)))
+        # Find contributing original reactions from POST matrix (sparse iteration)
+        contributing = list(post.iter_column_fractions(j))
 
         if not contributing:
             continue
@@ -714,17 +875,15 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
                 main_idx = idx
                 break
         main_rxn = model.reactions[main_idx]
-        del_rxns[main_idx] = False
+        keep_rxns[main_idx] = True
 
-        # Scale objective coefficient by POST factors
-        # Original objective: sum(c_i * v_i) where v_i = coeff_i * v_compressed
-        # Compressed objective: sum(c_i * coeff_i) * v_compressed
+        # Scale objective coefficient by POST factors (store for later)
         combined_obj = Fraction(0)
         for idx, coeff in contributing:
             obj_coeff = model.reactions[idx].objective_coefficient
             if obj_coeff != 0:
                 combined_obj += Fraction(obj_coeff).limit_denominator(10**12) * coeff
-        main_rxn.objective_coefficient = float(combined_obj)
+        objective_updates[main_rxn] = float(combined_obj)
 
         # Store subset info
         main_rxn.subset_rxns = [idx for idx, _ in contributing]
@@ -738,18 +897,22 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
             elif not main_rxn.id.endswith('...'):
                 main_rxn.id += '...'
 
-        # Set coefficients from cmp matrix as Fractions (exact arithmetic)
+        # Build new metabolites dict from cmp matrix (sparse iteration)
         new_metabolites = {}
-        for m_idx in range(num_metas):
-            num = cmp.get_numerator(m_idx, j)
-            if num != 0:
-                den = cmp.get_denominator(m_idx, j)
-                met = met_lookup[meta_names[m_idx]]
-                new_metabolites[met] = Fraction(num, den)
+        for m_idx, frac in cmp.iter_column_fractions(j):
+            met = met_lookup[meta_names[m_idx]]
+            new_metabolites[met] = frac
 
-        # Clear and set metabolites (must use subtract_metabolites to maintain consistency)
-        main_rxn.subtract_metabolites(dict(main_rxn.metabolites))
-        main_rxn.add_metabolites(new_metabolites)
+        # OPTIMIZATION: Direct _metabolites assignment (bypasses solver updates)
+        # Clear old metabolite back-references
+        for met in list(main_rxn._metabolites.keys()):
+            if main_rxn in met._reaction:
+                met._reaction.discard(main_rxn)
+        # Set new metabolites directly
+        main_rxn._metabolites = new_metabolites
+        # Update new metabolite back-references
+        for met in new_metabolites:
+            met._reaction.add(main_rxn)
 
         # Compute bounds as Fractions from original reactions scaled by POST factors
         lb_candidates = []
@@ -758,14 +921,6 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
             rxn = model.reactions[idx]
             lb, ub = rxn.lower_bound, rxn.upper_bound
 
-            # Scaled bounds: v_compressed = coeff * v_original
-            # So v_original = v_compressed / coeff
-            # Original constraint: lb <= v_original <= ub
-            # Becomes: lb <= v_compressed/coeff <= ub
-            # If coeff > 0: lb*coeff <= v_compressed <= ub*coeff (NO! divide by coeff)
-            # Actually: lb/coeff <= v_compressed/coeff/coeff... let me think again
-            #
-            # v_compressed is the flux of the compressed reaction
             # v_original = coeff * v_compressed (from POST interpretation)
             # constraint: lb <= v_original <= ub
             # so: lb <= coeff * v_compressed <= ub
@@ -783,21 +938,58 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
                 if lb != -float('inf'):
                     ub_candidates.append(Fraction(lb) / coeff if lb != 0 else Fraction(0))
 
-        # Final bounds are intersection of all constraints (as Fractions)
-        main_rxn.lower_bound = max(lb_candidates) if lb_candidates else -float('inf')
-        main_rxn.upper_bound = min(ub_candidates) if ub_candidates else float('inf')
+        # OPTIMIZATION: Direct bounds assignment (bypasses solver updates)
+        main_rxn._lower_bound = float(max(lb_candidates)) if lb_candidates else -float('inf')
+        main_rxn._upper_bound = float(min(ub_candidates)) if ub_candidates else float('inf')
 
         # Build reaction map
         reaction_map[main_rxn.id] = {
             original_reaction_names[idx]: coeff for idx, coeff in contributing
         }
 
-    # Delete non-main reactions (in reverse order to preserve indices)
-    for i in reversed(range(num_original)):
-        if del_rxns[i]:
-            model.reactions[i].remove_from_model(remove_orphans=True)
+    # OPTIMIZATION: Batch reaction and metabolite removal
+    # Use reaction objects directly (not IDs, since IDs are modified during compression)
+    from cobra import DictList
 
-    return reaction_map
+    # Build set of reaction objects to keep
+    keep_rxn_objs = {model.reactions[i] for i in range(num_original) if keep_rxns[i]}
+
+    # Find metabolites that will be in kept reactions
+    mets_in_kept_rxns = set()
+    for rxn in keep_rxn_objs:
+        mets_in_kept_rxns.update(rxn._metabolites.keys())
+
+    # Build new reactions list (only kept reactions)
+    new_reactions = DictList()
+    for rxn in model.reactions:
+        if rxn in keep_rxn_objs:
+            new_reactions.append(rxn)
+        else:
+            # Clear metabolite back-references for removed reaction
+            for met in list(rxn._metabolites.keys()):
+                if rxn in met._reaction:
+                    met._reaction.discard(rxn)
+            rxn._model = None
+
+    # Build new metabolites list (only those in kept reactions)
+    new_metabolites = DictList()
+    for met in model.metabolites:
+        if met in mets_in_kept_rxns:
+            new_metabolites.append(met)
+        else:
+            met._model = None
+
+    # Replace model lists (using __dict__ to bypass any property setters)
+    model.__dict__['reactions'] = new_reactions
+    model.__dict__['metabolites'] = new_metabolites
+
+    # Update model references
+    for rxn in model.reactions:
+        rxn._model = model
+    for met in model.metabolites:
+        met._model = model
+
+    return reaction_map, objective_updates
 
 
 # =============================================================================
