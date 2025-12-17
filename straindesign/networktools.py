@@ -913,7 +913,7 @@ def filter_sd_maxcost(sd, max_cost, kocost, kicost):
 
 def modules_coeff2rational(sd_modules):
     """Convert coefficients to rational numbers using sympy.Rational"""
-    from .flint_cmp_interface import float_to_rational
+    from .compression import float_to_rational
     for i, module in enumerate(sd_modules):
         for param in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
             if param in module and module[param] is not None:

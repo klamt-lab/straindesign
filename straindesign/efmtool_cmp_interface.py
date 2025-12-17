@@ -35,7 +35,7 @@ import sys
 
 def basic_columns_rat(mx, tolerance=0):
     """Find basic columns using exact rational arithmetic (FLINT or sympy)."""
-    from .flint_cmp_interface import basic_columns_from_numpy
+    from .compression import basic_columns_from_numpy
     return basic_columns_from_numpy(mx)
 
 
