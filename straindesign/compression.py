@@ -19,9 +19,14 @@ import copy
 import logging
 import numpy as np
 from enum import Enum
+from math import isinf
 from typing import Dict, List, Optional, Set, Tuple, Union, Any
 
 from fractions import Fraction
+from scipy import sparse
+from sympy import Rational
+from cobra import Configuration
+from cobra.util.array import create_stoichiometric_matrix
 
 # ALL math imports from flint_cmp_interface - NO flint imports in this module
 from .flint_cmp_interface import (
@@ -952,10 +957,258 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
 
 
 # =============================================================================
+# Preprocessing Functions
+# =============================================================================
+
+def remove_blocked_reactions(model) -> List:
+    """Remove blocked reactions (bounds == (0, 0)) from a network."""
+    blocked_reactions = [reac for reac in model.reactions if reac.bounds == (0, 0)]
+    model.remove_reactions(blocked_reactions)
+    return blocked_reactions
+
+
+def remove_ext_mets(model) -> None:
+    """Remove external metabolites from 'External_Species' compartment."""
+    external_mets = [m for m in model.metabolites if m.compartment == 'External_Species']
+    model.remove_metabolites(external_mets)
+    stoich_mat = create_stoichiometric_matrix(model)
+    obsolete_reacs = [r for r, has_nonzero in zip(model.reactions, np.any(stoich_mat, 0)) if not has_nonzero]
+    model.remove_reactions(obsolete_reacs)
+
+
+def remove_dummy_bounds(model) -> None:
+    """Replace COBRA standard bounds with +/-inf."""
+    cobra_conf = Configuration()
+    bound_thres = max(abs(cobra_conf.lower_bound), abs(cobra_conf.upper_bound))
+    if any(any(abs(b) >= bound_thres for b in r.bounds) for r in model.reactions):
+        LOG.warning(f'Removing reaction bounds >= {round(bound_thres)}.')
+        for rxn in model.reactions:
+            if rxn.lower_bound <= -bound_thres:
+                rxn.lower_bound = -np.inf
+            if rxn.upper_bound >= bound_thres:
+                rxn.upper_bound = np.inf
+
+
+def stoichmat_coeff2rational(model) -> None:
+    """Convert stoichiometric coefficients to rational numbers."""
+    for rxn in model.reactions:
+        for met, coeff in rxn._metabolites.items():
+            if isinstance(coeff, (float, int)):
+                rxn._metabolites[met] = float_to_rational(coeff)
+            elif not hasattr(coeff, 'p'):  # Not sympy.Rational
+                if hasattr(coeff, 'numerator'):  # fractions.Fraction
+                    rxn._metabolites[met] = Rational(coeff.numerator, coeff.denominator)
+                else:
+                    raise TypeError(f"Unsupported coefficient type: {type(coeff)}")
+
+
+def stoichmat_coeff2float(model) -> None:
+    """Convert stoichiometric coefficients to floats."""
+    for rxn in model.reactions:
+        for met, coeff in rxn._metabolites.items():
+            rxn._metabolites[met] = float(coeff)
+
+
+# =============================================================================
+# High-Level Compression API
+# =============================================================================
+
+def compress_model(model, no_par_compress_reacs=set(), legacy_java_compression=False):
+    """Compress a metabolic model using multiple techniques.
+
+    Performs blocked reaction removal, conservation relation removal, and
+    alternating dependent/parallel reaction lumping until no further
+    compression is possible.
+
+    Args:
+        model: COBRA model to compress in-place
+        no_par_compress_reacs: Reactions exempt from parallel compression
+        legacy_java_compression: If True, use Java implementation
+
+    Returns:
+        list of dict: Compression maps for reversing each compression step
+    """
+    LOG.info('  Removing blocked reactions.')
+    remove_blocked_reactions(model)
+    LOG.info('  Converting coefficients to rationals.')
+    stoichmat_coeff2rational(model)
+    LOG.info('  Removing conservation relations.')
+    remove_conservation_relations(model) if not legacy_java_compression else \
+        _remove_conservation_relations_java(model)
+
+    parallel = False
+    run = 1
+    cmp_mapReac = []
+    numr = len(model.reactions)
+
+    while True:
+        if not parallel:
+            LOG.info(f'  Compression {run}: Applying efmtool compression.')
+            reac_map_exp = compress_model_efmtool(model, legacy_java_compression)
+            for new_reac, old_reac_val in reac_map_exp.items():
+                old_reacs_no_compress = [r for r in no_par_compress_reacs if r in old_reac_val]
+                if old_reacs_no_compress:
+                    for r in old_reacs_no_compress:
+                        no_par_compress_reacs.remove(r)
+                    no_par_compress_reacs.add(new_reac)
+        else:
+            LOG.info(f'  Compression {run}: Lumping parallel reactions.')
+            reac_map_exp = compress_model_parallel(model, no_par_compress_reacs)
+
+        if not legacy_java_compression:
+            remove_conservation_relations(model)
+        else:
+            _remove_conservation_relations_java(model)
+
+        if numr > len(reac_map_exp):
+            LOG.info(f'  Reduced to {len(reac_map_exp)} reactions.')
+            cmp_mapReac.append({
+                "reac_map_exp": reac_map_exp,
+                "parallel": parallel,
+            })
+            parallel = not parallel
+            run += 1
+            numr = len(reac_map_exp)
+        else:
+            LOG.info(f'  No further reduction ({numr} reactions).')
+            LOG.info(f'  Compression complete ({run - 1} iterations).')
+            break
+
+    stoichmat_coeff2float(model)
+    return cmp_mapReac
+
+
+def _remove_conservation_relations_java(model) -> None:
+    """Remove conservation relations using Java efmtool."""
+    from . import efmtool_cmp_interface as efm
+    stoich_mat = create_stoichiometric_matrix(model, array_type='lil')
+    basic_mets = efm.basic_columns_rat_java(stoich_mat.transpose().toarray(), tolerance=0)
+    dependent_mets = [model.metabolites[i].id
+                      for i in set(range(len(model.metabolites))) - set(basic_mets)]
+    for m_id in dependent_mets:
+        model.metabolites.get_by_id(m_id).remove_from_model()
+
+
+def compress_model_efmtool(model, legacy_java_compression=False):
+    """Compress by lumping dependent reactions (efmtool approach).
+
+    Args:
+        model: COBRA model to compress in-place
+        legacy_java_compression: If True, use Java implementation
+
+    Returns:
+        dict: Mapping {compressed_id: {orig_id: factor, ...}}
+    """
+    if legacy_java_compression:
+        from .efmtool_cmp_interface import compress_model_java
+        return compress_model_java(model)
+
+    # Clear gene rules to match Java behavior
+    for r in model.reactions:
+        r.gene_reaction_rule = ''
+
+    result = compress_cobra_model(
+        model,
+        methods=CompressionMethod.standard(),
+        in_place=True
+    )
+
+    # Account for flipped reactions
+    flipped = set(result.flipped_reactions)
+    return {
+        cmp_id: {orig_id: c * (-1 if orig_id in flipped else 1)
+                 for orig_id, c in orig_map.items()}
+        for cmp_id, orig_map in result.reaction_map.items()
+    }
+
+
+def compress_model_parallel(model, protected_rxns=set()):
+    """Compress by lumping parallel reactions.
+
+    Args:
+        model: COBRA model to compress in-place
+        protected_rxns: Reactions exempt from parallel compression
+
+    Returns:
+        dict: Mapping {compressed_id: {orig_id: factor, ...}}
+    """
+    old_num_reac = len(model.reactions)
+    old_objective = [r.objective_coefficient for r in model.reactions]
+    old_reac_ids = [r.id for r in model.reactions]
+
+    stoichmat_T = create_stoichiometric_matrix(model, 'lil').transpose()
+    factor = [d[0] if d else 1.0 for d in stoichmat_T.data]
+    A = sparse.diags(factor) @ stoichmat_T
+
+    lb = [float(r.lower_bound) for r in model.reactions]
+    ub = [float(r.upper_bound) for r in model.reactions]
+
+    fwd = sparse.lil_matrix([1. if (isinf(u) and f > 0 or isinf(l) and f < 0) else 0.
+                             for f, l, u in zip(factor, lb, ub)]).transpose()
+    rev = sparse.lil_matrix([1. if (isinf(l) and f > 0 or isinf(u) and f < 0) else 0.
+                             for f, l, u in zip(factor, lb, ub)]).transpose()
+    inh = sparse.lil_matrix([i + 1 if not ((isinf(ub[i]) or ub[i] == 0) and
+                                           (isinf(lb[i]) or lb[i] == 0))
+                             else 0 for i in range(len(model.reactions))]).transpose()
+    A = sparse.hstack((A, fwd, rev, inh), 'csr')
+
+    # Find parallel reactions via hash comparison
+    subset_list = []
+    prev_found = []
+    protected = [r.id in protected_rxns for r in model.reactions]
+    hashes = [hash((tuple(A[i].indices), tuple(A[i].data))) for i in range(A.shape[0])]
+
+    for i in range(A.shape[0]):
+        if i in prev_found:
+            continue
+        if protected[i]:
+            subset_list.append([i])
+            continue
+        subset_i = [i]
+        for j in range(i + 1, A.shape[0]):
+            if not protected[j] and j not in prev_found and hashes[i] == hashes[j]:
+                subset_i.append(j)
+                prev_found.append(j)
+        subset_list.append(subset_i)
+
+    # Lump parallel reactions
+    del_rxns = [False] * len(model.reactions)
+    for rxn_idx in subset_list:
+        for i in range(1, len(rxn_idx)):
+            main_rxn = model.reactions[rxn_idx[0]]
+            other_rxn = model.reactions[rxn_idx[i]]
+            if len(main_rxn.id) + len(other_rxn.id) < 220 and main_rxn.id[-3:] != '...':
+                main_rxn.id += '*' + other_rxn.id
+            elif main_rxn.id[-3:] != '...':
+                main_rxn.id += '...'
+            del_rxns[rxn_idx[i]] = True
+
+    del_indices = np.where(del_rxns)[0]
+    for i in reversed(del_indices):
+        model.reactions[i].remove_from_model(remove_orphans=True)
+
+    # Build compression map
+    rational_map = {}
+    subT = np.zeros((old_num_reac, len(model.reactions)))
+    for i in range(subT.shape[1]):
+        for j in subset_list[i]:
+            subT[j, i] = 1
+        rational_map[model.reactions[i].id] = {old_reac_ids[j]: Rational(1) for j in subset_list[i]}
+
+    # Update objective
+    new_objective = old_objective @ subT
+    for r, c in zip(model.reactions, new_objective):
+        r.objective_coefficient = c
+
+    return rational_map
+
+
+# =============================================================================
 # Exports
 # =============================================================================
 
 __all__ = [
+    # Core compression
     'compress_cobra_model',
     'CompressionResult',
     'CompressionRecord',
@@ -963,4 +1216,15 @@ __all__ = [
     'CompressionMethod',
     'CompressionConverter',
     'StoichMatrixCompressor',
+    # High-level API
+    'compress_model',
+    'compress_model_efmtool',
+    'compress_model_parallel',
+    # Preprocessing
+    'remove_blocked_reactions',
+    'remove_ext_mets',
+    'remove_conservation_relations',
+    'remove_dummy_bounds',
+    'stoichmat_coeff2rational',
+    'stoichmat_coeff2float',
 ]

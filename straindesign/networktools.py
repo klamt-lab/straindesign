@@ -16,21 +16,35 @@
 #
 #
 #
-"""Functions for metabolic network compression and extension with GPR rules"""
+"""Functions for metabolic network extension with GPR rules and strain design module handling.
 
-from math import isinf
-import numpy as np
-from scipy import sparse
-from sympy import Rational
-from typing import List
-from re import search
-from cobra import Model, Metabolite, Reaction, Configuration
-from cobra.util.array import create_stoichiometric_matrix
-import straindesign.efmtool_cmp_interface as efm
-from straindesign import fva, select_solver, parse_constraints, avail_solvers
-from straindesign.names import *
-import logging
+Compression functions have been moved to straindesign.compression.
+This module re-exports them for backwards compatibility.
+"""
+
 import ast
+import logging
+import numpy as np
+from re import search
+from typing import List
+
+from cobra import Model, Metabolite, Reaction
+from straindesign import fva, select_solver, avail_solvers
+from straindesign.names import *
+from straindesign.parse_constr import parse_constraints
+
+# Re-export compression functions for backwards compatibility
+from straindesign.compression import (
+    compress_model,
+    compress_model_efmtool,
+    compress_model_parallel,
+    remove_blocked_reactions,
+    remove_ext_mets,
+    remove_conservation_relations,
+    remove_dummy_bounds,
+    stoichmat_coeff2rational,
+    stoichmat_coeff2float,
+)
 
 
 def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
@@ -703,93 +717,9 @@ def extend_model_regulatory(model, reg_itv):
     return regcost
 
 
-def compress_model(model, no_par_compress_reacs=set(), legacy_java_compression=False):
-    """Compress a metabolic model with a number of different techniques
-    
-    The network compression routine removes blocked reactions, removes conservation
-    relations and then performs alternatingly lumps dependent (compress_model_efmtool) 
-    and parallel (compress_model_parallel) reactions. The compression returns a compressed 
-    network and a list of compression maps. Each map consists of a dictionary that contains 
-    complete information for reversing the compression steps successively and expand 
-    information obtained from the compressed model to the full model. Each entry of each 
-    map contains the id of a compressed reaction, associated with the original reaction 
-    names and their factor (provided as a rational number) with which they were lumped.
-    
-    Furthermore, the user can select reactions that should be exempt from the parallel 
-    compression. This is a critical feature for strain design computations. There is
-    currently no way to exempt reactions from the efmtool/dependency compression.
-    
-    Example:
-        comression_map = compress_model(model,set('EX_etoh_e','PFL'))
-    
-    Args:
-        model (cobra.Model):
-            A metabolic model that is an instance of the cobra.Model class
-        
-        no_par_compress_reacs (set or list of str): (Default: set())
-            A set of reaction identifiers whose reactions should not be lumped with other
-            parallel reactions.
-
-        legacy_java_compression (bool): (Default: False)
-            If True, use Java-based compression (requires jpype1). If False, use the
-            default pure Python compression.
-
-    Returns:
-        (list of dict):
-        A list of compression maps. Each map is a dict that contains information for reversing 
-        the compression steps successively and expand information obtained from the compressed 
-        model to the full model. Each entry of each map contains the id of a compressed reaction, 
-        associated with the original reaction identifiers and their factor with which they are
-        represented in the lumped reaction (provided as a rational number) with which they were 
-        lumped.
-    """
-    # Remove conservation relations.
-    logging.info('  Removing blocked reactions.')
-    remove_blocked_reactions(model)
-    logging.info('  Translating stoichiometric coefficients to rationals.')
-    stoichmat_coeff2rational(model)
-    logging.info('  Removing conservation relations.')
-    remove_conservation_relations(model, legacy_java_compression)
-    parallel = False
-    run = 1
-    cmp_mapReac = []
-    numr = len(model.reactions)
-    while True:
-        if not parallel:
-            logging.info('  Compression ' + str(run) + ': Applying compression from EFM-tool module.')
-            reac_map_exp = compress_model_efmtool(model, legacy_java_compression)
-            for new_reac, old_reac_val in reac_map_exp.items():
-                old_reacs_no_compress = [r for r in no_par_compress_reacs if r in old_reac_val]
-                if old_reacs_no_compress:
-                    [no_par_compress_reacs.remove(r) for r in old_reacs_no_compress]
-                    no_par_compress_reacs.add(new_reac)
-        else:
-            logging.info('  Compression ' + str(run) + ': Lumping parallel reactions.')
-            reac_map_exp = compress_model_parallel(model, no_par_compress_reacs)
-        remove_conservation_relations(model, legacy_java_compression)
-        if numr > len(reac_map_exp):
-            logging.info('  Reduced to ' + str(len(reac_map_exp)) + ' reactions.')
-            # store the information for decompression in a Tuple
-            # (0) compression matrix, (1) reac_id dictornary {cmp_rid: {orig_rid1: factor1, orig_rid2: factor2}},
-            # (2) linear (True) or parallel (False) compression (3,4) ko and ki costs of expanded network
-            cmp_mapReac += [{
-                "reac_map_exp": reac_map_exp,
-                "parallel": parallel,
-            }]
-            if parallel:
-                parallel = False
-            else:
-                parallel = True
-            run += 1
-            numr = len(reac_map_exp)
-        else:
-            logging.info('  Last step could not reduce size further (' + str(numr) + ' reactions).')
-            logging.info('  Network compression completed. (' + str(run - 1) + ' compression iterations)')
-            logging.info('  Translating stoichiometric coefficients back to float.')
-            break
-    stoichmat_coeff2float(model)
-    return cmp_mapReac
-
+# =============================================================================
+# Strain Design Module Compression
+# =============================================================================
 
 def compress_modules(sd_modules, cmp_mapReac):
     """Compress strain design modules to match with a compressed model
@@ -981,201 +911,6 @@ def filter_sd_maxcost(sd, max_cost, kocost, kicost):
     return sd
 
 
-# compression function - now uses pure Python by default
-def compress_model_efmtool(model, legacy_java_compression=False):
-    """Compress model by lumping dependent reactions using the efmtool compression approach
-
-    Example:
-        cmp_mapReac = compress_model_efmtool(model)
-
-    Args:
-        model (cobra.Model):
-            A metabolic model that is an instance of the cobra.Model class
-        legacy_java_compression (bool):
-            If True, use Java efmtool (requires jpype and sympy).
-            If False (default), use pure Python implementation.
-
-    Returns:
-        (dict):
-        A dict that contains information about the lumping done in the compression process.
-        process. E.g.: {'reaction_lumped1' : {'reaction_orig1' : 2/3 'reaction_orig2' : 1/2}, ...}
-    """
-    if legacy_java_compression:
-        from .efmtool_cmp_interface import compress_model_java
-        return compress_model_java(model)
-    return _compress_model_efmtool_python(model)
-
-
-def _compress_model_efmtool_python(model):
-    """Pure Python compression using straindesign.compression."""
-    from straindesign.compression import compress_cobra_model, CompressionMethod
-
-    # Clear gene rules to match Java behavior
-    for r in model.reactions:
-        r.gene_reaction_rule = ''
-
-    result = compress_cobra_model(
-        model,
-        methods=CompressionMethod.standard(),
-        in_place=True
-    )
-
-    # Build set of flipped reactions for coefficient adjustment
-    flipped = set(result.flipped_reactions)
-
-    # Account for flipped reactions: negate coefficient to map back to original
-    rational_map = {}
-    for cmp_id, orig_map in result.reaction_map.items():
-        rational_map[cmp_id] = {
-            orig_id: c * (-1 if orig_id in flipped else 1)
-            for orig_id, c in orig_map.items()
-        }
-    return rational_map
-
-
-def compress_model_parallel(model, protected_rxns=set()):
-    """Compress model by lumping parallel reactions
-    
-    Example:
-        cmp_mapReac = compress_model_parallel(model)
-    
-    Args:
-        model (cobra.Model):
-            A metabolic model that is an instance of the cobra.Model class
-            
-    Returns:
-        (dict):
-        A dict that contains information about the lumping done in the compression process.
-        E.g.: {'reaction_lumped1' : {'reaction_orig1' : 1 'reaction_orig2' : 1}, ...}
-    """
-    #
-    # - exclude lumping of reactions with inhomogenous bounds
-    # - exclude protected reactions
-    old_num_reac = len(model.reactions)
-    old_objective = [r.objective_coefficient for r in model.reactions]
-    old_reac_ids = [r.id for r in model.reactions]
-    stoichmat_T = create_stoichiometric_matrix(model, 'lil').transpose()
-    factor = [d[0] if d else 1.0 for d in stoichmat_T.data]
-    A = (sparse.diags(factor) @ stoichmat_T)
-    lb = [float(r.lower_bound) for r in model.reactions]
-    ub = [float(r.upper_bound) for r in model.reactions]
-    fwd = sparse.lil_matrix([1. if (isinf(u) and f > 0 or isinf(l) and f < 0) else 0. for f, l, u in zip(factor, lb, ub)]).transpose()
-    rev = sparse.lil_matrix([1. if (isinf(l) and f > 0 or isinf(u) and f < 0) else 0. for f, l, u in zip(factor, lb, ub)]).transpose()
-    inh = sparse.lil_matrix([i+1 if not ((isinf(ub[i]) or ub[i] == 0) and (isinf(lb[i]) or lb[i] == 0)) \
-                                 else 0 for i in range(len(model.reactions))]).transpose()
-    A = sparse.hstack((A, fwd, rev, inh), 'csr')
-    # find equivalent/parallel reactions
-    subset_list = []
-    prev_found = []
-    protected = [True if r.id in protected_rxns else False for r in model.reactions]
-    hashes = [hash((tuple(A[i].indices), tuple(A[i].data))) for i in range(A.shape[0])]
-    for i in range(A.shape[0]):
-        if i in prev_found:  # if reaction was already found to be identical to another one, skip.
-            continue
-        if protected[i]:  # if protected, add 1:1 relationship, skip.
-            subset_list += [[i]]
-            continue
-        subset_i = [i]
-        for j in range(i + 1, A.shape[0]):  # otherwise, identify parallel reactions
-            if not protected[j] and j not in prev_found:
-                # if np.all(A[i].indices == A[j].indices) and np.all(A[i].data == A[j].data):
-                if hashes[i] == hashes[j]:
-                    subset_i += [j]
-                    prev_found += [j]
-        if subset_i:
-            subset_list += [subset_i]
-    # lump parallel reactions (delete redundant)
-    del_rxns = [False] * len(model.reactions)
-    for rxn_idx in subset_list:
-        for i in range(1, len(rxn_idx)):
-            if len(model.reactions[rxn_idx[0]].id) + len(
-                    model.reactions[rxn_idx[i]].id) < 220 and model.reactions[rxn_idx[0]].id[-3:] != '...':
-                model.reactions[rxn_idx[0]].id += '*' + model.reactions[rxn_idx[i]].id  # combine names
-            elif not model.reactions[rxn_idx[0]].id[-3:] == '...':
-                model.reactions[rxn_idx[0]].id += '...'
-            del_rxns[rxn_idx[i]] = True
-    del_rxns = np.where(del_rxns)[0]
-    for i in range(len(del_rxns) - 1, -1, -1):  # delete in reversed index order to keep indices valid
-        model.reactions[del_rxns[i]].remove_from_model(remove_orphans=True)
-    # create compression map
-    rational_map = {}
-    subT = np.zeros((old_num_reac, len(model.reactions)))
-    for i in range(subT.shape[1]):
-        for j in subset_list[i]:
-            subT[j, i] = 1
-        # rational_map is a dictionary that associates the new reaction with a dict of its original reactions and its scaling factors
-        rational_map.update({model.reactions[i].id: {old_reac_ids[j]: Rational(1) for j in subset_list[i]}})
-
-    new_objective = old_objective @ subT
-    for r, c in zip(model.reactions, new_objective):
-        r.objective_coefficient = c
-    return rational_map
-
-
-def remove_blocked_reactions(model) -> List:
-    """Remove blocked reactions from a network"""
-    blocked_reactions = [reac for reac in model.reactions if reac.bounds == (0, 0)]
-    model.remove_reactions(blocked_reactions)
-    return blocked_reactions
-
-
-def remove_ext_mets(model):
-    """Remove (unbalanced) external metabolites from the compartment External_Species"""
-    external_mets = [i for i, cpts in zip(model.metabolites, model.metabolites.list_attr("compartment")) if cpts == 'External_Species']
-    model.remove_metabolites(external_mets)
-    stoich_mat = create_stoichiometric_matrix(model)
-    obsolete_reacs = [reac for reac, b_rempty in zip(model.reactions, np.any(stoich_mat, 0)) if not b_rempty]
-    model.remove_reactions(obsolete_reacs)
-
-
-def remove_conservation_relations(model, legacy_java_compression=False):
-    """Remove conservation relations in a model
-
-    This reduces the number of metabolites in a model while maintaining the
-    original flux space. This is a compression technique.
-
-    Args:
-        model: COBRA model
-        legacy_java_compression: If True, use Java implementation (requires jpype1)
-    """
-    if legacy_java_compression:
-        stoich_mat = create_stoichiometric_matrix(model, array_type='lil')
-        basic_metabolites = efm.basic_columns_rat_java(stoich_mat.transpose().toarray(), tolerance=0)
-        dependent_metabolites = [model.metabolites[i].id for i in set(range(len(model.metabolites))) - set(basic_metabolites)]
-        for m in dependent_metabolites:
-            model.metabolites.get_by_id(m).remove_from_model()
-    else:
-        from .compression import remove_conservation_relations as _remove_cons_rel
-        _remove_cons_rel(model)
-
-
-# replace all stoichiometric coefficients with rationals.
-def stoichmat_coeff2rational(model):
-    """Convert coefficients to rational numbers using sympy.Rational"""
-    from .flint_cmp_interface import float_to_rational
-    num_reac = len(model.reactions)
-    for i in range(num_reac):
-        for k, v in model.reactions[i]._metabolites.items():
-            if isinstance(v, (float, int)):
-                # Use fast Fraction.limit_denominator-based conversion (80x faster than nsimplify)
-                model.reactions[i]._metabolites[k] = float_to_rational(v)
-            elif not hasattr(v, 'p'):  # Not a sympy.Rational
-                if hasattr(v, 'numerator'):  # fractions.Fraction or similar
-                    model.reactions[i]._metabolites[k] = Rational(v.numerator, v.denominator)
-                else:
-                    raise TypeError(f"Unsupported coefficient type: {type(v)}")
-
-
-# replace all stoichiometric coefficients with ints and floats
-def stoichmat_coeff2float(model):
-    """Convert coefficients to floats"""
-    num_reac = len(model.reactions)
-    for i in range(num_reac):
-        for k, v in model.reactions[i]._metabolites.items():
-            # Accept any numeric type
-            model.reactions[i]._metabolites[k] = float(v)
-
-
 def modules_coeff2rational(sd_modules):
     """Convert coefficients to rational numbers using sympy.Rational"""
     from .flint_cmp_interface import float_to_rational
@@ -1205,23 +940,6 @@ def modules_coeff2float(sd_modules):
                     for reac in module[param].keys():
                         module[param][reac] = float(module[param][reac])
     return sd_modules
-
-
-def remove_dummy_bounds(model):
-    """Replace COBRA standard bounds with +/-inf
-    
-    Retrieve the standard bounds from the COBRApy Configuration and replace model bounds
-    of the same value with +/-inf.
-    """
-    cobra_conf = Configuration()
-    bound_thres = max((abs(cobra_conf.lower_bound), abs(cobra_conf.upper_bound)))
-    if any([any([abs(b) >= bound_thres for b in r.bounds]) for r in model.reactions]):
-        logging.warning('  Removing reaction bounds when larger than the cobra-threshold of ' + str(round(bound_thres)) + '.')
-        for i in range(len(model.reactions)):
-            if model.reactions[i].lower_bound <= -bound_thres:
-                model.reactions[i].lower_bound = -np.inf
-            if model.reactions[i].upper_bound >= bound_thres:
-                model.reactions[i].upper_bound = np.inf
 
 
 def bound_blocked_or_irrevers_fva(model, solver=None):
