@@ -14,32 +14,34 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-#
-#
-"""Functions for the compression of metabolic networks.
+"""EFMtool compression interface for straindesign.
 
-This module provides compression utilities. By default, pure Python implementations
-are used. Legacy Java compression is available via `legacy_java_compression=True`.
+This module provides compression utilities for metabolic networks.
+By default, pure Python implementations are used.
+Legacy Java compression is available via `legacy_java_compression=True`.
 
 For the documentation of the efmtool compression provided by StrainDesign,
 refer to the networktools module.
 """
 
-import numpy
+import logging
+import numpy as np
 import os
 import sys
 
-# Try to import python-flint for fast exact rational operations
-try:
-    from flint import fmpq_mat as _FlintRationalMatrix, fmpq as _FlintRational
-    _FLINT_AVAILABLE = True
-except ImportError:
-    _FLINT_AVAILABLE = False
+# =============================================================================
+# Pure Python Implementation (Default)
+# =============================================================================
+
+def basic_columns_rat(mx, tolerance=0):
+    """Find basic columns using exact rational arithmetic (FLINT or sympy)."""
+    from .flint_cmp_interface import basic_columns_from_numpy
+    return basic_columns_from_numpy(mx)
 
 
-# ============================================================================
+# =============================================================================
 # Lazy Java Initialization
-# ============================================================================
+# =============================================================================
 
 _JAVA_INITIALIZED = False
 _JPYPE_AVAILABLE = None
@@ -175,62 +177,9 @@ def _init_java():
     _JAVA_INITIALIZED = True
 
 
-# ============================================================================
-# Pure Python Implementation (Default)
-# ============================================================================
-
-def basic_columns_rat(mx, tolerance=0):
-    """
-    Find basic columns using rational Gaussian elimination.
-
-    Uses FLINT for fast exact rational arithmetic when available,
-    falls back to pure Python (sympy) implementation otherwise.
-
-    Args:
-        mx: Matrix (numpy array or compatible type)
-        tolerance: Tolerance for zero detection (unused in exact arithmetic)
-
-    Returns:
-        Array of indices of basic columns
-    """
-    if not isinstance(mx, numpy.ndarray):
-        raise TypeError(f"Expected numpy.ndarray, got {type(mx)}")
-
-    # Use unified flint_interface which handles FLINT/sympy fallback
-    from .flint_interface import basic_columns_from_numpy
-    return basic_columns_from_numpy(mx)
-
-
-# ============================================================================
-# Legacy Java Implementation (requires jpype + sympy)
-# ============================================================================
-
-def basic_columns_rat_java(mx, tolerance=0):
-    """
-    Find basic columns using Java Gaussian elimination.
-
-    Legacy implementation using jpype and Java efmtool.
-    Requires jpype1 and sympy to be installed.
-
-    Args:
-        mx: Matrix (numpy array or Java matrix)
-        tolerance: Tolerance (unused in exact arithmetic)
-
-    Returns:
-        Array of indices of basic columns
-    """
-    _init_java()
-    import jpype
-
-    if isinstance(mx, numpy.ndarray):
-        mx = DefaultBigIntegerRationalMatrix(numpy_mat2jpypeArrayOfArrays(mx), jTrue, jTrue)
-
-    row_map = jpype.JInt[mx.getRowCount()]
-    col_map = jpype.JInt[:](range(mx.getColumnCount()))
-    rank = Gauss.getRationalInstance().rowEchelon(mx, False, row_map, col_map)
-
-    return col_map[0:rank]
-
+# =============================================================================
+# Java Conversion Utilities
+# =============================================================================
 
 def numpy_mat2jpypeArrayOfArrays(npmat):
     """Convert numpy matrix to jpype array of arrays (requires Java init)."""
@@ -250,7 +199,7 @@ def jpypeArrayOfArrays2numpy_mat(jmat):
     """Convert jpype array of arrays to numpy matrix."""
     rows = len(jmat)
     cols = len(jmat[0])
-    npmat = numpy.zeros((rows, cols))
+    npmat = np.zeros((rows, cols))
     for r in range(rows):
         for c in range(cols):
             npmat[r, c] = jmat[r][c]
@@ -297,3 +246,143 @@ def jBigIntegerPair2sympyRat(numer, denom):
         denom = str(denom.toString())
 
     return sympy.Rational(numer, denom)
+
+
+# =============================================================================
+# Legacy Java Compression Functions
+# =============================================================================
+
+def basic_columns_rat_java(mx, tolerance=0):
+    """
+    Find basic columns using Java Gaussian elimination.
+
+    Legacy implementation using jpype and Java efmtool.
+    Requires jpype1 and sympy to be installed.
+
+    Args:
+        mx: Matrix (numpy array or Java matrix)
+        tolerance: Tolerance (unused in exact arithmetic)
+
+    Returns:
+        Array of indices of basic columns
+    """
+    _init_java()
+    import jpype
+
+    if isinstance(mx, np.ndarray):
+        mx = DefaultBigIntegerRationalMatrix(numpy_mat2jpypeArrayOfArrays(mx), jTrue, jTrue)
+
+    row_map = jpype.JInt[mx.getRowCount()]
+    col_map = jpype.JInt[:](range(mx.getColumnCount()))
+    rank = Gauss.getRationalInstance().rowEchelon(mx, False, row_map, col_map)
+
+    return col_map[0:rank]
+
+
+def compress_model_java(model):
+    """Legacy Java compression using jpype (requires jpype and sympy).
+
+    Args:
+        model: COBRA model (will be modified in place)
+
+    Returns:
+        dict: Reaction map from compressed to original reactions with scaling factors
+    """
+    import jpype
+    from .networktools import stoichmat_coeff2rational
+
+    # Initialize Java if not already done
+    _init_java()
+
+    # Convert to rational coefficients for Java
+    stoichmat_coeff2rational(model)
+
+    for r in model.reactions:
+        r.gene_reaction_rule = ''
+    num_met = len(model.metabolites)
+    num_reac = len(model.reactions)
+    old_reac_ids = [r.id for r in model.reactions]
+    stoich_mat = DefaultBigIntegerRationalMatrix(num_met, num_reac)
+    reversible = jpype.JBoolean[:]([r.reversibility for r in model.reactions])
+    flipped = []
+    for i in range(num_reac):
+        if model.reactions[i].upper_bound <= 0:
+            model.reactions[i] *= -1
+            flipped.append(i)
+            logging.debug("Flipped " + model.reactions[i].id)
+        for k, v in model.reactions[i]._metabolites.items():
+            n, d = sympyRat2jBigIntegerPair(v)
+            stoich_mat.setValueAt(model.metabolites.index(k.id), i, BigFraction(n, d))
+    # compress
+    smc = StoichMatrixCompressor(subset_compression)
+    reacNames = jpype.JString[:](model.reactions.list_attr('id'))
+    comprec = smc.compress(stoich_mat, reversible, jpype.JString[num_met], reacNames, None)
+    subset_matrix = jpypeArrayOfArrays2numpy_mat(comprec.post.getDoubleRows())
+    del_rxns = np.logical_not(np.any(subset_matrix, axis=1))
+    for j in range(subset_matrix.shape[1]):
+        rxn_idx = subset_matrix[:, j].nonzero()[0]
+        r0 = rxn_idx[0]
+        model.reactions[r0].subset_rxns = []
+        model.reactions[r0].subset_stoich = []
+        # Scale objective coefficient by POST factors
+        combined_obj = 0.0
+        for r in rxn_idx:
+            factor = jBigFraction2sympyRat(comprec.post.getBigFractionValueAt(r, j))
+            # Accumulate objective contribution before scaling
+            combined_obj += model.reactions[r].objective_coefficient * float(factor)
+            model.reactions[r] *= factor
+            if model.reactions[r].lower_bound not in (0, -float('inf')):
+                model.reactions[r].lower_bound /= abs(subset_matrix[r, j])
+            if model.reactions[r].upper_bound not in (0, float('inf')):
+                model.reactions[r].upper_bound /= abs(subset_matrix[r, j])
+            model.reactions[r0].subset_rxns.append(r)
+            if r in flipped:
+                model.reactions[r0].subset_stoich.append(-factor)
+            else:
+                model.reactions[r0].subset_stoich.append(factor)
+        model.reactions[r0].objective_coefficient = combined_obj
+        for r in rxn_idx[1:]:
+            if len(model.reactions[r0].id) + len(model.reactions[r].id) < 220 and model.reactions[r0].id[-3:] != '...':
+                model.reactions[r0].id += '*' + model.reactions[r].id
+            elif not model.reactions[r0].id[-3:] == '...':
+                model.reactions[r0].id += '...'
+            model.reactions[r0] += model.reactions[r]
+            if model.reactions[r].lower_bound > model.reactions[r0].lower_bound:
+                model.reactions[r0].lower_bound = model.reactions[r].lower_bound
+            if model.reactions[r].upper_bound < model.reactions[r0].upper_bound:
+                model.reactions[r0].upper_bound = model.reactions[r].upper_bound
+            del_rxns[r] = True
+    del_rxns = np.where(del_rxns)[0]
+    for i in range(len(del_rxns) - 1, -1, -1):
+        model.reactions[del_rxns[i]].remove_from_model(remove_orphans=True)
+    subT = np.zeros((num_reac, len(model.reactions)))
+    rational_map = {}
+    for j in range(subT.shape[1]):
+        subT[model.reactions[j].subset_rxns, j] = [float(v) for v in model.reactions[j].subset_stoich]
+        rational_map.update(
+            {model.reactions[j].id: {
+                 old_reac_ids[i]: v for i, v in zip(model.reactions[j].subset_rxns, model.reactions[j].subset_stoich)
+             }})
+    return rational_map
+
+
+# =============================================================================
+# Exports
+# =============================================================================
+
+__all__ = [
+    # Pure Python
+    'basic_columns_rat',
+    # Java initialization
+    '_init_java',
+    '_check_jpype_available',
+    # Java compression
+    'basic_columns_rat_java',
+    'compress_model_java',
+    # Java conversion utilities
+    'numpy_mat2jpypeArrayOfArrays',
+    'jpypeArrayOfArrays2numpy_mat',
+    'sympyRat2jBigIntegerPair',
+    'jBigFraction2sympyRat',
+    'jBigIntegerPair2sympyRat',
+]

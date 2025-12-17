@@ -26,7 +26,7 @@ from typing import List
 from re import search
 from cobra import Model, Metabolite, Reaction, Configuration
 from cobra.util.array import create_stoichiometric_matrix
-import straindesign.efmtool as efm
+import straindesign.efmtool_cmp_interface as efm
 from straindesign import fva, select_solver, parse_constraints, avail_solvers
 from straindesign.names import *
 import logging
@@ -1001,7 +1001,8 @@ def compress_model_efmtool(model, legacy_java_compression=False):
         process. E.g.: {'reaction_lumped1' : {'reaction_orig1' : 2/3 'reaction_orig2' : 1/2}, ...}
     """
     if legacy_java_compression:
-        return _compress_model_efmtool_java(model)
+        from .efmtool_cmp_interface import compress_model_java
+        return compress_model_java(model)
     return _compress_model_efmtool_python(model)
 
 
@@ -1029,85 +1030,6 @@ def _compress_model_efmtool_python(model):
             orig_id: c * (-1 if orig_id in flipped else 1)
             for orig_id, c in orig_map.items()
         }
-    return rational_map
-
-
-def _compress_model_efmtool_java(model):
-    """Legacy Java compression using jpype (requires jpype and sympy)."""
-    import jpype
-
-    # Initialize Java if not already done
-    efm._init_java()
-
-    # Convert to rational coefficients for Java
-    stoichmat_coeff2rational(model)
-
-    for r in model.reactions:
-        r.gene_reaction_rule = ''
-    num_met = len(model.metabolites)
-    num_reac = len(model.reactions)
-    old_reac_ids = [r.id for r in model.reactions]
-    stoich_mat = efm.DefaultBigIntegerRationalMatrix(num_met, num_reac)
-    reversible = jpype.JBoolean[:]([r.reversibility for r in model.reactions])
-    flipped = []
-    for i in range(num_reac):
-        if model.reactions[i].upper_bound <= 0:
-            model.reactions[i] *= -1
-            flipped.append(i)
-            logging.debug("Flipped " + model.reactions[i].id)
-        for k, v in model.reactions[i]._metabolites.items():
-            n, d = efm.sympyRat2jBigIntegerPair(v)
-            stoich_mat.setValueAt(model.metabolites.index(k.id), i, efm.BigFraction(n, d))
-    # compress
-    smc = efm.StoichMatrixCompressor(efm.subset_compression)
-    reacNames = jpype.JString[:](model.reactions.list_attr('id'))
-    comprec = smc.compress(stoich_mat, reversible, jpype.JString[num_met], reacNames, None)
-    subset_matrix = efm.jpypeArrayOfArrays2numpy_mat(comprec.post.getDoubleRows())
-    del_rxns = np.logical_not(np.any(subset_matrix, axis=1))
-    for j in range(subset_matrix.shape[1]):
-        rxn_idx = subset_matrix[:, j].nonzero()[0]
-        r0 = rxn_idx[0]
-        model.reactions[r0].subset_rxns = []
-        model.reactions[r0].subset_stoich = []
-        # Scale objective coefficient by POST factors
-        combined_obj = 0.0
-        for r in rxn_idx:
-            factor = efm.jBigFraction2sympyRat(comprec.post.getBigFractionValueAt(r, j))
-            # Accumulate objective contribution before scaling
-            combined_obj += model.reactions[r].objective_coefficient * float(factor)
-            model.reactions[r] *= factor
-            if model.reactions[r].lower_bound not in (0, -float('inf')):
-                model.reactions[r].lower_bound /= abs(subset_matrix[r, j])
-            if model.reactions[r].upper_bound not in (0, float('inf')):
-                model.reactions[r].upper_bound /= abs(subset_matrix[r, j])
-            model.reactions[r0].subset_rxns.append(r)
-            if r in flipped:
-                model.reactions[r0].subset_stoich.append(-factor)
-            else:
-                model.reactions[r0].subset_stoich.append(factor)
-        model.reactions[r0].objective_coefficient = combined_obj
-        for r in rxn_idx[1:]:
-            if len(model.reactions[r0].id) + len(model.reactions[r].id) < 220 and model.reactions[r0].id[-3:] != '...':
-                model.reactions[r0].id += '*' + model.reactions[r].id
-            elif not model.reactions[r0].id[-3:] == '...':
-                model.reactions[r0].id += '...'
-            model.reactions[r0] += model.reactions[r]
-            if model.reactions[r].lower_bound > model.reactions[r0].lower_bound:
-                model.reactions[r0].lower_bound = model.reactions[r].lower_bound
-            if model.reactions[r].upper_bound < model.reactions[r0].upper_bound:
-                model.reactions[r0].upper_bound = model.reactions[r].upper_bound
-            del_rxns[r] = True
-    del_rxns = np.where(del_rxns)[0]
-    for i in range(len(del_rxns) - 1, -1, -1):
-        model.reactions[del_rxns[i]].remove_from_model(remove_orphans=True)
-    subT = np.zeros((num_reac, len(model.reactions)))
-    rational_map = {}
-    for j in range(subT.shape[1]):
-        subT[model.reactions[j].subset_rxns, j] = [float(v) for v in model.reactions[j].subset_stoich]
-        rational_map.update(
-            {model.reactions[j].id: {
-                 old_reac_ids[i]: v for i, v in zip(model.reactions[j].subset_rxns, model.reactions[j].subset_stoich)
-             }})
     return rational_map
 
 
@@ -1216,20 +1138,21 @@ def remove_conservation_relations(model, legacy_java_compression=False):
         model: COBRA model
         legacy_java_compression: If True, use Java implementation (requires jpype1)
     """
-    stoich_mat = create_stoichiometric_matrix(model, array_type='lil')
     if legacy_java_compression:
+        stoich_mat = create_stoichiometric_matrix(model, array_type='lil')
         basic_metabolites = efm.basic_columns_rat_java(stoich_mat.transpose().toarray(), tolerance=0)
+        dependent_metabolites = [model.metabolites[i].id for i in set(range(len(model.metabolites))) - set(basic_metabolites)]
+        for m in dependent_metabolites:
+            model.metabolites.get_by_id(m).remove_from_model()
     else:
-        basic_metabolites = efm.basic_columns_rat(stoich_mat.transpose().toarray(), tolerance=0)
-    dependent_metabolites = [model.metabolites[i].id for i in set(range(len(model.metabolites))) - set(basic_metabolites)]
-    for m in dependent_metabolites:
-        model.metabolites.get_by_id(m).remove_from_model()
+        from .compression import remove_conservation_relations as _remove_cons_rel
+        _remove_cons_rel(model)
 
 
 # replace all stoichiometric coefficients with rationals.
 def stoichmat_coeff2rational(model):
     """Convert coefficients to rational numbers using sympy.Rational"""
-    from .flint_interface import float_to_rational
+    from .flint_cmp_interface import float_to_rational
     num_reac = len(model.reactions)
     for i in range(num_reac):
         for k, v in model.reactions[i]._metabolites.items():
@@ -1255,7 +1178,7 @@ def stoichmat_coeff2float(model):
 
 def modules_coeff2rational(sd_modules):
     """Convert coefficients to rational numbers using sympy.Rational"""
-    from .flint_interface import float_to_rational
+    from .flint_cmp_interface import float_to_rational
     for i, module in enumerate(sd_modules):
         for param in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
             if param in module and module[param] is not None:

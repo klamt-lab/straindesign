@@ -23,12 +23,13 @@ from typing import Dict, List, Optional, Set, Tuple, Union, Any
 
 from fractions import Fraction
 
-# ALL math imports from flint_interface - NO flint imports in this module
-from .flint_interface import (
+# ALL math imports from flint_cmp_interface - NO flint imports in this module
+from .flint_cmp_interface import (
     FLINT_AVAILABLE,
     RationalMatrix,
     nullspace,
     float_to_rational,
+    basic_columns_from_numpy,
 )
 
 LOG = logging.getLogger(__name__)
@@ -435,11 +436,14 @@ class StoichMatrixCompressor:
                 work.stats.inc_zero_flux_reactions()
         return zero_flux
 
-    def _find_contradicting(self, work: _WorkRecord, kernel_sparse) -> set:
-        """Find reactions in contradicting coupled groups (indices in current work)."""
-        num_reacs = work.size.reacs
+    def _find_coupled_groups(self, kernel_sparse, num_reacs):
+        """Find groups of coupled reactions from kernel sparsity pattern.
 
-        # Group by zero-pattern
+        Returns (groups, ratios) where:
+        - groups: list of lists, each containing indices of coupled reactions
+        - ratios: list where ratios[i] is the coupling ratio for reaction i
+        """
+        # Group reactions by zero-pattern in kernel
         patterns = {}
         for reac in range(num_reacs):
             start = kernel_sparse.indptr[reac]
@@ -499,6 +503,12 @@ class StoichMatrixCompressor:
 
                 if group is not None:
                     groups.append(group)
+
+        return groups, ratios
+
+    def _find_contradicting(self, work: _WorkRecord, kernel_sparse) -> set:
+        """Find reactions in contradicting coupled groups (indices in current work)."""
+        groups, ratios = self._find_coupled_groups(kernel_sparse, work.size.reacs)
 
         # Find contradicting reactions
         contradicting = set()
@@ -518,68 +528,7 @@ class StoichMatrixCompressor:
         which means new couplings might be revealed. Returns False if only merging
         happened, since merging doesn't change the flux space.
         """
-        num_reacs = work.size.reacs
-
-        # Group by zero-pattern
-        patterns = {}
-        for reac in range(num_reacs):
-            start = kernel_sparse.indptr[reac]
-            end = kernel_sparse.indptr[reac + 1]
-            pattern = tuple(kernel_sparse.indices[start:end])
-            patterns.setdefault(pattern, []).append(reac)
-
-        potential_groups = [idxs for idxs in patterns.values() if len(idxs) > 1]
-
-        groups = []
-        ratios = [None] * num_reacs
-
-        for potential in potential_groups:
-            ref_reac = potential[0]
-            ref_start = kernel_sparse.indptr[ref_reac]
-            ref_end = kernel_sparse.indptr[ref_reac + 1]
-            nonzero_count = ref_end - ref_start
-            if nonzero_count == 0:
-                continue
-
-            for i, reac_a in enumerate(potential):
-                if ratios[reac_a] is not None:
-                    continue
-                group = None
-
-                a_start = kernel_sparse.indptr[reac_a]
-                a_vals = kernel_sparse.data[a_start:a_start + nonzero_count]
-
-                for j in range(i + 1, len(potential)):
-                    reac_b = potential[j]
-                    if ratios[reac_b] is not None:
-                        continue
-
-                    b_start = kernel_sparse.indptr[reac_b]
-                    b_vals = kernel_sparse.data[b_start:b_start + nonzero_count]
-
-                    ratio_num = int(a_vals[0])
-                    ratio_den = int(b_vals[0])
-                    if ratio_den < 0:
-                        ratio_num, ratio_den = -ratio_num, -ratio_den
-
-                    is_consistent = True
-                    for k in range(1, nonzero_count):
-                        curr_num = int(a_vals[k])
-                        curr_den = int(b_vals[k])
-                        if curr_den < 0:
-                            curr_num, curr_den = -curr_num, -curr_den
-                        if ratio_num * curr_den != ratio_den * curr_num:
-                            is_consistent = False
-                            break
-
-                    if is_consistent:
-                        ratios[reac_b] = Fraction(ratio_num, ratio_den)
-                        if group is None:
-                            group = [reac_a]
-                        group.append(reac_b)
-
-                if group is not None:
-                    groups.append(group)
+        groups, ratios = self._find_coupled_groups(kernel_sparse, work.size.reacs)
 
         # Combine consistent groups, remove contradicting groups
         reactions_to_remove = set()
@@ -714,6 +663,24 @@ class CompressionConverter:
         return expanded
 
 
+def remove_conservation_relations(model) -> None:
+    """Remove conservation relations (dependent metabolites) from a model.
+
+    This reduces the number of metabolites while maintaining the original flux space.
+    Uses exact rational arithmetic to find linearly independent rows.
+
+    Args:
+        model: COBRA model to modify in-place
+    """
+    from cobra.util.array import create_stoichiometric_matrix
+    stoich_mat = create_stoichiometric_matrix(model, array_type='lil')
+    basic_mets = basic_columns_from_numpy(stoich_mat.transpose().toarray())
+    dependent_mets = [model.metabolites[i].id
+                      for i in set(range(len(model.metabolites))) - set(basic_mets)]
+    for m_id in dependent_mets:
+        model.metabolites.get_by_id(m_id).remove_from_model()
+
+
 def compress_cobra_model(
     model,
     methods: Optional[List[Union[str, CompressionMethod]]] = None,
@@ -761,7 +728,7 @@ def compress_cobra_model(
             flipped_reactions.append(rxn.id)
 
     # Build stoichiometric matrix with exact arithmetic
-    stoich_matrix = _build_stoich_matrix(model)
+    stoich_matrix = RationalMatrix.from_cobra_model(model)
     reversible = [rxn.reversibility for rxn in model.reactions]
     metabolite_names = [m.id for m in model.metabolites]
     reaction_names = [r.id for r in model.reactions]
@@ -798,14 +765,6 @@ def compress_cobra_model(
         original_metabolite_names=original_metabolite_names,
         flipped_reactions=flipped_reactions
     )
-
-
-def _build_stoich_matrix(model) -> RationalMatrix:
-    """Build stoichiometric matrix with exact rational arithmetic.
-
-    Uses optimized one-shot sparse construction instead of element-by-element.
-    """
-    return RationalMatrix.from_cobra_model(model)
 
 
 def _rebuild_solver(model, objective_updates: dict) -> None:

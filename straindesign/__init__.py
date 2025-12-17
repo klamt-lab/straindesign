@@ -46,7 +46,7 @@ if module_exists("pyscipopt"):
 from .solver_interface import *
 from .indicatorConstraints import *
 from .pool import *
-from .efmtool import *
+from .efmtool_cmp_interface import *
 from .parse_constr import *
 from .lptools import *
 from .networktools import *
