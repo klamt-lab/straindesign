@@ -375,24 +375,245 @@ class RationalMatrix:
 
 
 # =============================================================================
-# Linear Algebra Functions (FLINT backend)
+# Sparse Integer RREF for Nullspace Computation
 # =============================================================================
 
-def nullspace(matrix: RationalMatrix) -> RationalMatrix:
-    """Compute right nullspace (kernel). Returns K where matrix @ K = 0."""
-    from .flint_cmp_interface import nullspace_flint
-    return nullspace_flint(matrix)
+def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]], int, List[int]]:
+    """Compute integer RREF using dict-of-dicts for sparse row operations.
+
+    Uses GCD pre-scaling before row operations and post-reduction to control
+    coefficient growth. No denominator tracking needed - rows are arbitrarily
+    scalable for nullspace computation.
+
+    Args:
+        rm: Input RationalMatrix
+
+    Returns:
+        (rref_data, rank, pivot_columns)
+        rref_data: {row: {col: value}} dict representing RREF in integer form
+    """
+    rows = rm.get_row_count()
+    cols = rm.get_column_count()
+
+    # Convert to integer matrix (scale each row by LCM of denominators)
+    num_csr = rm._num_sparse.tocsr()
+    den_csr = rm._den_sparse.tocsr()
+
+    data: Dict[int, Dict[int, int]] = {}
+    for r in range(rows):
+        start, end = num_csr.indptr[r], num_csr.indptr[r + 1]
+        if start == end:
+            continue
+
+        # Compute row LCM of denominators
+        row_dens = [int(den_csr.data[i]) for i in range(start, end) if den_csr.data[i] != 0]
+        row_lcm = reduce(lcm, row_dens, 1) if row_dens else 1
+
+        # Scale numerators and store
+        row_data = {}
+        for i in range(start, end):
+            num = int(num_csr.data[i])
+            den = int(den_csr.data[i]) if den_csr.data[i] != 0 else 1
+            scaled = num * (row_lcm // den)
+            if scaled != 0:
+                row_data[int(num_csr.indices[i])] = scaled
+        if row_data:
+            data[r] = row_data
+
+    # Gaussian elimination with partial pivoting
+    pivot_cols = []
+    pivot_row = 0
+
+    for pivot_col in range(cols):
+        if pivot_row >= rows:
+            break
+
+        # Find pivot with smallest absolute value (minimizes coefficient growth)
+        best_row, best_val, best_abs = -1, 0, float('inf')
+        for r, row_data in data.items():
+            if r < pivot_row:
+                continue
+            if pivot_col in row_data:
+                v = row_data[pivot_col]
+                if abs(v) < best_abs:
+                    best_row, best_val, best_abs = r, v, abs(v)
+
+        if best_row < 0:
+            continue
+
+        # Swap rows if needed
+        if best_row != pivot_row:
+            if pivot_row in data:
+                if best_row in data:
+                    data[pivot_row], data[best_row] = data[best_row], data[pivot_row]
+                else:
+                    data[best_row] = data.pop(pivot_row)
+            elif best_row in data:
+                data[pivot_row] = data.pop(best_row)
+
+        pivot_row_data = data.get(pivot_row)
+        if pivot_row_data is None:
+            continue
+        pivot_val = pivot_row_data.get(pivot_col, 0)
+        if pivot_val == 0:
+            continue
+
+        pivot_cols.append(pivot_col)
+
+        # Collect rows to eliminate (snapshot keys before modification)
+        elim_targets = [(r, row_data[pivot_col])
+                        for r, row_data in data.items()
+                        if r != pivot_row and pivot_col in row_data]
+
+        # Eliminate pivot column from all other rows
+        for elim_row, elim_val in elim_targets:
+            elim_row_data = data[elim_row]
+
+            # Pre-scale by GCD to minimize coefficient growth
+            g = gcd(abs(pivot_val), abs(elim_val))
+            pv_scaled = pivot_val // g
+            ev_scaled = elim_val // g
+
+            # new[c] = elim[c] * pv_scaled - ev_scaled * pivot[c]
+            new_row = {}
+            for c, p_val in pivot_row_data.items():
+                new_val = elim_row_data.get(c, 0) * pv_scaled - ev_scaled * p_val
+                if new_val != 0:
+                    new_row[c] = new_val
+            for c, e_val in elim_row_data.items():
+                if c not in pivot_row_data:
+                    new_val = e_val * pv_scaled
+                    if new_val != 0:
+                        new_row[c] = new_val
+
+            # Update row and reduce by GCD
+            if new_row:
+                data[elim_row] = new_row
+                row_gcd = 0
+                for val in new_row.values():
+                    row_gcd = gcd(row_gcd, abs(val))
+                if row_gcd > 1:
+                    for c in new_row:
+                        new_row[c] //= row_gcd
+            else:
+                del data[elim_row]
+
+        pivot_row += 1
+
+    # Final GCD reduction of all rows
+    for row_data in data.values():
+        row_gcd = 0
+        for val in row_data.values():
+            row_gcd = gcd(row_gcd, abs(val))
+        if row_gcd > 1:
+            for c in row_data:
+                row_data[c] //= row_gcd
+
+    return data, len(pivot_cols), pivot_cols
 
 
-def basic_columns(matrix: RationalMatrix) -> List[int]:
-    """Find indices of basic (pivot) columns."""
-    from .flint_cmp_interface import basic_columns_flint
-    return basic_columns_flint(matrix)
+def _nullspace_sparse(matrix: RationalMatrix) -> RationalMatrix:
+    """Compute nullspace using integer RREF with row scaling.
+
+    No denominators needed - each row in RREF is scaled so pivot divides all elements.
+    The nullspace is extracted by reading off the relationships between pivot and free columns.
+    """
+    cols = matrix.get_column_count()
+
+    # Compute integer RREF
+    rref_data, rank, pivot_cols = _rref_integer_sparse(matrix)
+
+    if rank == cols:
+        return RationalMatrix(cols, 0)
+
+    # Free columns
+    pivot_set = set(pivot_cols)
+    free_cols = [c for c in range(cols) if c not in pivot_set]
+    nullity = len(free_cols)
+
+    if nullity == 0:
+        return RationalMatrix(cols, 0)
+
+    # Build kernel matrix
+    # For each free column f, the nullspace vector has:
+    # - Entry 1 at position f (the free variable)
+    # - Entry -rref[i,f]/rref[i,pivot_i] at each pivot position
+    row_indices, col_indices = [], []
+    numerators, denominators = [], []
+
+    for k, free_col in enumerate(free_cols):
+        # Identity entry for free variable
+        row_indices.append(free_col)
+        col_indices.append(k)
+        numerators.append(1)
+        denominators.append(1)
+
+        # Entries from RREF for pivot variables
+        for i, pivot_col in enumerate(pivot_cols):
+            row_data = rref_data.get(i, {})
+            val_at_free = row_data.get(free_col, 0)
+            if val_at_free != 0:
+                pivot_val = row_data.get(pivot_col, 1)  # Should always exist
+                # Nullspace entry: -val_at_free / pivot_val
+                g = gcd(abs(val_at_free), abs(pivot_val))
+                num = -val_at_free // g
+                den = pivot_val // g
+                # Ensure positive denominator
+                if den < 0:
+                    num, den = -num, -den
+                row_indices.append(pivot_col)
+                col_indices.append(k)
+                numerators.append(num)
+                denominators.append(den)
+
+    return RationalMatrix._build_from_sparse_data(
+        row_indices, col_indices, numerators, denominators, cols, nullity
+    )
 
 
-def basic_columns_from_numpy(mx: np.ndarray) -> List[int]:
+# =============================================================================
+# Linear Algebra Functions
+# =============================================================================
+
+def nullspace(matrix: RationalMatrix, backend: str = 'flint') -> RationalMatrix:
+    """Compute right nullspace (kernel). Returns K where matrix @ K = 0.
+
+    Args:
+        matrix: Input RationalMatrix
+        backend: 'flint' (default, uses FLINT library) or 'sparse' (pure Python sparse)
+
+    Returns:
+        Kernel matrix K where matrix @ K = 0
+    """
+    if backend == 'flint':
+        from .flint_cmp_interface import nullspace_flint
+        return nullspace_flint(matrix)
+    elif backend == 'sparse':
+        return _nullspace_sparse(matrix)
+    else:
+        raise ValueError(f"Unknown backend: {backend}. Use 'flint' or 'sparse'.")
+
+
+def basic_columns(matrix: RationalMatrix, backend: str = 'flint') -> List[int]:
+    """Find indices of basic (pivot) columns.
+
+    Args:
+        matrix: Input RationalMatrix
+        backend: 'flint' (default) or 'sparse'
+    """
+    if backend == 'flint':
+        from .flint_cmp_interface import basic_columns_flint
+        return basic_columns_flint(matrix)
+    elif backend == 'sparse':
+        _, _, pivot_cols = _rref_integer_sparse(matrix)
+        return pivot_cols
+    else:
+        raise ValueError(f"Unknown backend: {backend}. Use 'flint' or 'sparse'.")
+
+
+def basic_columns_from_numpy(mx: np.ndarray, backend: str = 'flint') -> List[int]:
     """Find basic columns from numpy array."""
-    return basic_columns(RationalMatrix.from_numpy(mx))
+    return basic_columns(RationalMatrix.from_numpy(mx), backend=backend)
 
 
 # =============================================================================
