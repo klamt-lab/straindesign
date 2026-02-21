@@ -408,8 +408,13 @@ class RationalMatrix:
 def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]], int, List[int]]:
     """Compute integer RREF using dict-of-dicts for sparse row operations.
 
+    Columns are pre-sorted by nnz ascending so that sparse (likely pivot) columns
+    are processed first, reducing pivot-search time and fill-in during elimination.
+    Rows are similarly pre-sorted by nnz ascending. Results are translated back to
+    the original column ordering before return.
+
     Uses GCD pre-scaling before row operations and post-reduction to control
-    coefficient growth. No denominator tracking needed - rows are arbitrarily
+    coefficient growth. No denominator tracking needed — rows are arbitrarily
     scalable for nullspace computation.
 
     Args:
@@ -417,12 +422,22 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
 
     Returns:
         (rref_data, rank, pivot_columns)
-        rref_data: {row: {col: value}} dict representing RREF in integer form
+        rref_data: {rref_row: {orig_col: value}} in original column space
+        pivot_columns: pivot column indices in original column space
     """
     rows = rm.get_row_count()
     cols = rm.get_column_count()
 
+    # --- Column sorting: sparse columns first ---
+    # col_order[sorted_pos] = original_col
+    nnz_per_col = np.diff(rm._num_sparse.tocsc().indptr)
+    col_order = np.argsort(nnz_per_col, kind='stable').tolist()
+    col_inverse = [0] * cols
+    for sorted_pos, orig_col in enumerate(col_order):
+        col_inverse[orig_col] = sorted_pos
+
     # Convert to integer matrix (scale each row by LCM of denominators)
+    # Store column indices in sorted space
     num_csr = rm._num_sparse.tocsr()
     den_csr = rm._den_sparse.tocsr()
 
@@ -436,19 +451,25 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
         row_dens = [int(den_csr.data[i]) for i in range(start, end) if den_csr.data[i] != 0]
         row_lcm = reduce(lcm, row_dens, 1) if row_dens else 1
 
-        # Scale numerators and store
+        # Scale numerators; store using sorted column index
         row_data = {}
         for i in range(start, end):
             num = int(num_csr.data[i])
             den = int(den_csr.data[i]) if den_csr.data[i] != 0 else 1
+            orig_col = int(num_csr.indices[i])
             scaled = num * (row_lcm // den)
             if scaled != 0:
-                row_data[int(num_csr.indices[i])] = scaled
+                row_data[col_inverse[orig_col]] = scaled
         if row_data:
             data[r] = row_data
 
-    # Gaussian elimination with partial pivoting
-    pivot_cols = []
+    # --- Row sorting: sparse rows first (better initial pivot candidates) ---
+    if data:
+        sorted_row_keys = sorted(data.keys(), key=lambda r: len(data[r]))
+        data = {new_r: data[old_r] for new_r, old_r in enumerate(sorted_row_keys)}
+
+    # Gaussian elimination with partial pivoting (all indices in sorted column space)
+    pivot_cols_sorted = []
     pivot_row = 0
 
     for pivot_col in range(cols):
@@ -485,7 +506,7 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
         if pivot_val == 0:
             continue
 
-        pivot_cols.append(pivot_col)
+        pivot_cols_sorted.append(pivot_col)
 
         # Collect rows to eliminate (snapshot keys before modification)
         elim_targets = [(r, row_data[pivot_col])
@@ -536,446 +557,11 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
             for c in row_data:
                 row_data[c] //= row_gcd
 
-    return data, len(pivot_cols), pivot_cols
-
-
-class RREFOverflowError(OverflowError):
-    """Raised when RREF computation overflows int64.
-
-    Suggests using the Python int-based fallback.
-    """
-    pass
-
-
-def _rref_fraction_csr(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, Fraction]], int, List[int]]:
-    """Compute RREF using LIL sparse matrices with int64 numerators/denominators.
-
-    Uses pivot normalization to keep coefficients bounded. Raises RREFOverflowError
-    if values exceed int64 range.
-
-    Args:
-        rm: Input RationalMatrix
-
-    Returns:
-        (rref_data, rank, pivot_columns)
-        rref_data: {row: {col: Fraction}} dict representing RREF
-
-    Raises:
-        RREFOverflowError: If coefficients exceed int64 range
-    """
-    from scipy.sparse import lil_matrix
-
-    rows = rm.get_row_count()
-    cols = rm.get_column_count()
-
-    INT64_MAX = np.int64(2**62)  # Leave headroom for intermediate calculations
-
-    def check_overflow(val: int, context: str = ""):
-        """Check if value exceeds int64 range."""
-        if abs(val) > INT64_MAX:
-            raise RREFOverflowError(
-                f"Integer overflow in RREF computation{': ' + context if context else ''}. "
-                f"Value {val} exceeds int64 range. "
-                f"Use backend='fraction' for arbitrary precision arithmetic."
-            )
-        return np.int64(val)
-
-    # Convert to LIL format with int64 (efficient for row operations)
-    num_lil = lil_matrix((rows, cols), dtype=np.int64)
-    den_lil = lil_matrix((rows, cols), dtype=np.int64)
-
-    num_csr = rm._num_sparse.tocsr()
-    den_csr = rm._den_sparse.tocsr()
-
-    for r in range(rows):
-        start, end = num_csr.indptr[r], num_csr.indptr[r + 1]
-        for i in range(start, end):
-            num = int(num_csr.data[i])
-            den = int(den_csr.data[i]) if den_csr.data[i] != 0 else 1
-            if num != 0:
-                c = int(num_csr.indices[i])
-                # Reduce fraction
-                g = gcd(abs(num), abs(den))
-                num //= g
-                den //= g
-                if den < 0:
-                    num, den = -num, -den
-                num_lil[r, c] = check_overflow(num, f"initial value at ({r},{c})")
-                den_lil[r, c] = check_overflow(den, f"initial value at ({r},{c})")
-
-    # Track which rows are non-empty
-    active_rows = set()
-    for r in range(rows):
-        if len(num_lil.rows[r]) > 0:
-            active_rows.add(r)
-
-    # Gaussian elimination with partial pivoting
-    pivot_cols: List[int] = []
-    pivot_row = 0
-
-    for pivot_col in range(cols):
-        if pivot_row >= rows:
-            break
-
-        # Find pivot: prefer ±1, then smallest |num * den| product
-        best_row = -1
-        best_num = 0
-        best_den = 1
-        best_score = float('inf')
-
-        for r in active_rows:
-            if r < pivot_row:
-                continue
-            # Find pivot_col in this row
-            try:
-                idx = num_lil.rows[r].index(pivot_col)
-                num = num_lil.data[r][idx]
-                den = den_lil.data[r][idx]
-                if num != 0:
-                    # Score: ±1 gets 0, otherwise |num * den|
-                    if abs(num) == 1 and den == 1:
-                        score = 0
-                    else:
-                        score = abs(num) * abs(den)
-                    if score < best_score:
-                        best_row, best_num, best_den, best_score = r, num, den, score
-                        if score == 0:
-                            break
-            except ValueError:
-                continue
-
-        if best_row < 0:
-            continue
-
-        # Swap rows if needed (just swap references in LIL)
-        if best_row != pivot_row:
-            num_lil.rows[pivot_row], num_lil.rows[best_row] = num_lil.rows[best_row], num_lil.rows[pivot_row]
-            num_lil.data[pivot_row], num_lil.data[best_row] = num_lil.data[best_row], num_lil.data[pivot_row]
-            den_lil.rows[pivot_row], den_lil.rows[best_row] = den_lil.rows[best_row], den_lil.rows[pivot_row]
-            den_lil.data[pivot_row], den_lil.data[best_row] = den_lil.data[best_row], den_lil.data[pivot_row]
-            # Update active_rows
-            if pivot_row in active_rows and best_row not in active_rows:
-                active_rows.remove(pivot_row)
-                active_rows.add(best_row)
-            elif best_row in active_rows and pivot_row not in active_rows:
-                active_rows.remove(best_row)
-                active_rows.add(pivot_row)
-
-        # Get pivot value
-        try:
-            pivot_idx = num_lil.rows[pivot_row].index(pivot_col)
-            pivot_num = int(num_lil.data[pivot_row][pivot_idx])
-            pivot_den = int(den_lil.data[pivot_row][pivot_idx])
-        except (ValueError, IndexError):
-            continue
-
-        if pivot_num == 0:
-            continue
-
-        pivot_cols.append(pivot_col)
-
-        # Normalize pivot row so pivot element becomes 1
-        # new_val = old_val / (pivot_num/pivot_den) = old_val * pivot_den / pivot_num
-        if pivot_num != 1 or pivot_den != 1:
-            for idx in range(len(num_lil.rows[pivot_row])):
-                old_num = int(num_lil.data[pivot_row][idx])
-                old_den = int(den_lil.data[pivot_row][idx])
-                # new = old * (pivot_den / pivot_num)
-                new_num = old_num * pivot_den
-                new_den = old_den * pivot_num
-                if new_den < 0:
-                    new_num, new_den = -new_num, -new_den
-                g = gcd(abs(new_num), abs(new_den))
-                new_num //= g
-                new_den //= g
-                num_lil.data[pivot_row][idx] = check_overflow(new_num, f"pivot normalization at row {pivot_row}")
-                den_lil.data[pivot_row][idx] = check_overflow(new_den, f"pivot normalization at row {pivot_row}")
-
-        # Get pivot row data as dict for elimination
-        pivot_row_cols = list(num_lil.rows[pivot_row])
-        pivot_row_nums = [int(x) for x in num_lil.data[pivot_row]]
-        pivot_row_dens = [int(x) for x in den_lil.data[pivot_row]]
-        pivot_data = {c: (n, d) for c, n, d in zip(pivot_row_cols, pivot_row_nums, pivot_row_dens)}
-
-        # Collect rows to eliminate
-        elim_targets = []
-        for r in list(active_rows):
-            if r == pivot_row:
-                continue
-            try:
-                idx = num_lil.rows[r].index(pivot_col)
-                elim_num = int(num_lil.data[r][idx])
-                elim_den = int(den_lil.data[r][idx])
-                if elim_num != 0:
-                    elim_targets.append((r, elim_num, elim_den))
-            except ValueError:
-                continue
-
-        # Eliminate pivot column from all other rows
-        for elim_row, elim_num, elim_den in elim_targets:
-            # new[c] = elim[c] - (elim_num/elim_den) * pivot[c]
-            # Since pivot[pivot_col] = 1/1, this zeros out elim[pivot_col]
-
-            # Get elimination row data
-            elim_cols = list(num_lil.rows[elim_row])
-            elim_nums = [int(x) for x in num_lil.data[elim_row]]
-            elim_dens = [int(x) for x in den_lil.data[elim_row]]
-            elim_data = {c: (n, d) for c, n, d in zip(elim_cols, elim_nums, elim_dens)}
-
-            # Compute new row
-            all_cols = set(elim_cols) | set(pivot_row_cols)
-            new_cols = []
-            new_nums = []
-            new_dens = []
-
-            for c in sorted(all_cols):
-                e_num, e_den = elim_data.get(c, (0, 1))
-                p_num, p_den = pivot_data.get(c, (0, 1))
-
-                # result = e_num/e_den - (elim_num/elim_den) * (p_num/p_den)
-                # = (e_num * e_den_other - elim_num * p_num * ...) / common_den
-
-                # Compute: e_num/e_den - elim_num/elim_den * p_num/p_den
-                # = (e_num * elim_den * p_den - elim_num * p_num * e_den) / (e_den * elim_den * p_den)
-
-                num_result = e_num * elim_den * p_den - elim_num * p_num * e_den
-                den_result = e_den * elim_den * p_den
-
-                if num_result != 0:
-                    if den_result < 0:
-                        num_result, den_result = -num_result, -den_result
-                    g = gcd(abs(num_result), abs(den_result))
-                    num_result //= g
-                    den_result //= g
-                    new_cols.append(c)
-                    new_nums.append(check_overflow(num_result, f"elimination at row {elim_row}, col {c}"))
-                    new_dens.append(check_overflow(den_result, f"elimination at row {elim_row}, col {c}"))
-
-            # Update row
-            num_lil.rows[elim_row] = new_cols
-            num_lil.data[elim_row] = new_nums
-            den_lil.rows[elim_row] = new_cols.copy()
-            den_lil.data[elim_row] = new_dens
-
-            if len(new_cols) == 0:
-                active_rows.discard(elim_row)
-            else:
-                active_rows.add(elim_row)
-
-        pivot_row += 1
-
-    # Convert to dict-of-dicts with Fraction for return value
-    rref_data: Dict[int, Dict[int, Fraction]] = {}
-    for r in range(rows):
-        if len(num_lil.rows[r]) > 0:
-            row_data = {}
-            for idx, c in enumerate(num_lil.rows[r]):
-                num = int(num_lil.data[r][idx])
-                den = int(den_lil.data[r][idx])
-                if num != 0:
-                    row_data[c] = Fraction(num, den)
-            if row_data:
-                rref_data[r] = row_data
-
-    return rref_data, len(pivot_cols), pivot_cols
-
-
-def _rref_fraction_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, Fraction]], int, List[int]]:
-    """Compute RREF using dict-of-dicts with Fraction values (fallback).
-
-    Uses fractions.Fraction for exact rational arithmetic throughout.
-    No row scaling needed - Fraction handles GCD reduction automatically.
-
-    This is the fallback for _rref_fraction_csr when int64 overflow occurs.
-
-    Args:
-        rm: Input RationalMatrix
-
-    Returns:
-        (rref_data, rank, pivot_columns)
-        rref_data: {row: {col: Fraction}} dict representing RREF
-    """
-    rows = rm.get_row_count()
-    cols = rm.get_column_count()
-
-    # Convert CSR to dict-of-dicts with Fraction values (no scaling)
-    num_csr = rm._num_sparse.tocsr()
-    den_csr = rm._den_sparse.tocsr()
-
-    data: Dict[int, Dict[int, Fraction]] = {}
-    for r in range(rows):
-        start, end = num_csr.indptr[r], num_csr.indptr[r + 1]
-        if start == end:
-            continue
-
-        row_data: Dict[int, Fraction] = {}
-        for i in range(start, end):
-            num = int(num_csr.data[i])
-            den = int(den_csr.data[i]) if den_csr.data[i] != 0 else 1
-            if num != 0:
-                row_data[int(num_csr.indices[i])] = Fraction(num, den)
-        if row_data:
-            data[r] = row_data
-
-    # Gaussian elimination with partial pivoting
-    pivot_cols: List[int] = []
-    pivot_row = 0
-    ZERO = Fraction(0)
-    ONE = Fraction(1)
-    NEG_ONE = Fraction(-1)
-
-    for pivot_col in range(cols):
-        if pivot_row >= rows:
-            break
-
-        # Find pivot: prefer ±1, then smallest numerator*denominator product
-        best_row = -1
-        best_val = ZERO
-        best_score = float('inf')  # Lower is better
-
-        for r, row_data in data.items():
-            if r < pivot_row:
-                continue
-            if pivot_col in row_data:
-                v = row_data[pivot_col]
-                # Score: ±1 gets 0, otherwise |numerator| * |denominator|
-                if v == ONE or v == NEG_ONE:
-                    score = 0
-                else:
-                    score = abs(v.numerator) * abs(v.denominator)
-                if score < best_score:
-                    best_row, best_val, best_score = r, v, score
-                    if score == 0:  # Can't do better than ±1
-                        break
-
-        if best_row < 0:
-            continue
-
-        # Swap rows if needed
-        if best_row != pivot_row:
-            if pivot_row in data:
-                if best_row in data:
-                    data[pivot_row], data[best_row] = data[best_row], data[pivot_row]
-                else:
-                    data[best_row] = data.pop(pivot_row)
-            elif best_row in data:
-                data[pivot_row] = data.pop(best_row)
-
-        pivot_row_data = data.get(pivot_row)
-        if pivot_row_data is None:
-            continue
-        pivot_val = pivot_row_data.get(pivot_col, ZERO)
-        if pivot_val == ZERO:
-            continue
-
-        pivot_cols.append(pivot_col)
-
-        # Normalize pivot row so pivot element is 1
-        if pivot_val != ONE:
-            pivot_row_data = {c: v / pivot_val for c, v in pivot_row_data.items()}
-            data[pivot_row] = pivot_row_data
-
-        # Collect rows to eliminate (snapshot before modification)
-        elim_targets = [(r, row_data[pivot_col])
-                        for r, row_data in data.items()
-                        if r != pivot_row and pivot_col in row_data]
-
-        # Eliminate pivot column from all other rows
-        for elim_row, elim_val in elim_targets:
-            elim_row_data = data[elim_row]
-
-            # new[c] = elim[c] - elim_val * pivot[c]
-            # Since pivot[pivot_col] = 1, this zeros out elim[pivot_col]
-            new_row: Dict[int, Fraction] = {}
-            for c, p_val in pivot_row_data.items():
-                new_val = elim_row_data.get(c, ZERO) - elim_val * p_val
-                if new_val != ZERO:
-                    new_row[c] = new_val
-            for c, e_val in elim_row_data.items():
-                if c not in pivot_row_data:
-                    if e_val != ZERO:
-                        new_row[c] = e_val
-
-            if new_row:
-                data[elim_row] = new_row
-            else:
-                del data[elim_row]
-
-        pivot_row += 1
-
-    return data, len(pivot_cols), pivot_cols
-
-
-def _nullspace_fraction_csr(matrix: RationalMatrix) -> RationalMatrix:
-    """Compute nullspace using CSR-based Fraction RREF (int64).
-
-    Uses _rref_fraction_csr for fast int64 computation.
-    Raises RREFOverflowError if coefficients exceed int64.
-    """
-    cols = matrix.get_column_count()
-    rref_data, rank, pivot_cols = _rref_fraction_csr(matrix)
-    return _nullspace_from_fraction_rref(rref_data, rank, pivot_cols, cols)
-
-
-def _nullspace_fraction_sparse(matrix: RationalMatrix) -> RationalMatrix:
-    """Compute nullspace using Fraction-based RREF (Python int fallback).
-
-    Uses Python Fraction for arbitrary precision. Slower but handles overflow.
-    """
-    cols = matrix.get_column_count()
-    rref_data, rank, pivot_cols = _rref_fraction_sparse(matrix)
-    return _nullspace_from_fraction_rref(rref_data, rank, pivot_cols, cols)
-
-
-def _nullspace_from_fraction_rref(rref_data: Dict[int, Dict[int, Fraction]],
-                                   rank: int, pivot_cols: List[int],
-                                   cols: int) -> RationalMatrix:
-    """Extract nullspace from Fraction-based RREF result.
-
-    Since RREF has normalized pivots (=1), nullspace extraction is straightforward.
-    """
-
-    if rank == cols:
-        return RationalMatrix(cols, 0)
-
-    # Free columns
-    pivot_set = set(pivot_cols)
-    free_cols = [c for c in range(cols) if c not in pivot_set]
-    nullity = len(free_cols)
-
-    if nullity == 0:
-        return RationalMatrix(cols, 0)
-
-    # Build kernel matrix
-    # For each free column f, the nullspace vector has:
-    # - Entry 1 at position f (the free variable)
-    # - Entry -rref[i,f] at each pivot position (since pivot = 1)
-    row_indices, col_indices = [], []
-    numerators, denominators = [], []
-
-    ZERO = Fraction(0)
-
-    for k, free_col in enumerate(free_cols):
-        # Identity entry for free variable
-        row_indices.append(free_col)
-        col_indices.append(k)
-        numerators.append(1)
-        denominators.append(1)
-
-        # Entries from RREF for pivot variables
-        for i, pivot_col in enumerate(pivot_cols):
-            row_data = rref_data.get(i, {})
-            val_at_free = row_data.get(free_col, ZERO)
-            if val_at_free != ZERO:
-                # Nullspace entry: -val_at_free (pivot is already 1)
-                row_indices.append(pivot_col)
-                col_indices.append(k)
-                numerators.append(-val_at_free.numerator)
-                denominators.append(val_at_free.denominator)
-
-    return RationalMatrix._build_from_sparse_data(
-        row_indices, col_indices, numerators, denominators, cols, nullity
-    )
+    # Translate results back to original column space
+    original_data = {r: {col_order[sc]: v for sc, v in rd.items()} for r, rd in data.items()}
+    pivot_cols_original = [col_order[p] for p in pivot_cols_sorted]
+
+    return original_data, len(pivot_cols_original), pivot_cols_original
 
 
 def _nullspace_sparse(matrix: RationalMatrix) -> RationalMatrix:
@@ -1041,76 +627,30 @@ def _nullspace_sparse(matrix: RationalMatrix) -> RationalMatrix:
 # Linear Algebra Functions
 # =============================================================================
 
-def nullspace(matrix: RationalMatrix, backend: str = 'flint') -> RationalMatrix:
+def nullspace(matrix: RationalMatrix) -> RationalMatrix:
     """Compute right nullspace (kernel). Returns K where matrix @ K = 0.
+
+    Uses integer RREF with column/row pre-sorting and GCD reduction.
+    All arithmetic is Python arbitrary-precision integers — no overflow possible.
 
     Args:
         matrix: Input RationalMatrix
-        backend:
-            - 'flint': Uses FLINT library (default)
-            - 'sparse': Integer RREF with row scaling
-            - 'fraction': CSR-based fraction RREF (int64) with auto-fallback to Python int
-            - 'fraction_csr': CSR-based fraction RREF (int64 only, raises on overflow)
-            - 'fraction_pyint': Python Fraction-based RREF (arbitrary precision, slower)
 
     Returns:
         Kernel matrix K where matrix @ K = 0
     """
-    if backend == 'flint':
-        from .flint_cmp_interface import nullspace_flint
-        return nullspace_flint(matrix)
-    elif backend == 'sparse':
-        return _nullspace_sparse(matrix)
-    elif backend == 'fraction':
-        # Try fast CSR int64, fall back to Python int on overflow
-        try:
-            return _nullspace_fraction_csr(matrix)
-        except RREFOverflowError:
-            LOG.warning("int64 overflow in RREF, falling back to Python int arithmetic")
-            return _nullspace_fraction_sparse(matrix)
-    elif backend == 'fraction_csr':
-        return _nullspace_fraction_csr(matrix)
-    elif backend == 'fraction_pyint':
-        return _nullspace_fraction_sparse(matrix)
-    else:
-        raise ValueError(f"Unknown backend: {backend}. Use 'flint', 'sparse', 'fraction', 'fraction_csr', or 'fraction_pyint'.")
+    return _nullspace_sparse(matrix)
 
 
-def basic_columns(matrix: RationalMatrix, backend: str = 'flint') -> List[int]:
-    """Find indices of basic (pivot) columns.
-
-    Args:
-        matrix: Input RationalMatrix
-        backend: 'flint' (default), 'sparse', 'fraction', 'fraction_csr', or 'fraction_pyint'
-    """
-    if backend == 'flint':
-        from .flint_cmp_interface import basic_columns_flint
-        return basic_columns_flint(matrix)
-    elif backend == 'sparse':
-        _, _, pivot_cols = _rref_integer_sparse(matrix)
-        return pivot_cols
-    elif backend == 'fraction':
-        # Try fast CSR int64, fall back to Python int on overflow
-        try:
-            _, _, pivot_cols = _rref_fraction_csr(matrix)
-            return pivot_cols
-        except RREFOverflowError:
-            LOG.warning("int64 overflow in RREF, falling back to Python int arithmetic")
-            _, _, pivot_cols = _rref_fraction_sparse(matrix)
-            return pivot_cols
-    elif backend == 'fraction_csr':
-        _, _, pivot_cols = _rref_fraction_csr(matrix)
-        return pivot_cols
-    elif backend == 'fraction_pyint':
-        _, _, pivot_cols = _rref_fraction_sparse(matrix)
-        return pivot_cols
-    else:
-        raise ValueError(f"Unknown backend: {backend}. Use 'flint', 'sparse', 'fraction', 'fraction_csr', or 'fraction_pyint'.")
+def basic_columns(matrix: RationalMatrix) -> List[int]:
+    """Find indices of basic (pivot) columns using integer RREF."""
+    _, _, pivot_cols = _rref_integer_sparse(matrix)
+    return pivot_cols
 
 
-def basic_columns_from_numpy(mx: np.ndarray, backend: str = 'flint') -> List[int]:
-    """Find basic columns from numpy array."""
-    return basic_columns(RationalMatrix.from_numpy(mx), backend=backend)
+def basic_columns_from_numpy(mx: np.ndarray) -> List[int]:
+    """Find basic columns from a numpy array."""
+    return basic_columns(RationalMatrix.from_numpy(mx))
 
 
 # =============================================================================
@@ -1234,20 +774,6 @@ class _WorkRecord:
         self.stats = CompressionStatistics()
         self.stats.inc_compression_iteration()
 
-    def remove_reaction(self, idx: int) -> None:
-        """Remove reaction by swapping to end and decrementing size."""
-        self.size.reacs -= 1
-        if idx != self.size.reacs:
-            self.post.swap_columns(idx, self.size.reacs)
-            self.cmp.swap_columns(idx, self.size.reacs)
-            self.reversible[idx], self.reversible[self.size.reacs] = \
-                self.reversible[self.size.reacs], self.reversible[idx]
-            self.reac_names[idx], self.reac_names[self.size.reacs] = \
-                self.reac_names[self.size.reacs], self.reac_names[idx]
-        # Zero out removed reaction
-        for meta in range(self.size.metas):
-            self.cmp.set_rational(meta, self.size.reacs, 0, 1)
-
     def remove_reactions(self, suppressed: Optional[Set[str]]) -> bool:
         """Remove reactions by name - uses batch removal."""
         if not suppressed:
@@ -1345,18 +871,6 @@ class _WorkRecord:
         # Use batch row removal
         self._batch_remove_rows(keep_indices)
         return True
-
-    def remove_metabolite(self, idx: int) -> None:
-        """Remove metabolite by swapping to end and decrementing size."""
-        self.size.metas -= 1
-        if idx != self.size.metas:
-            self.pre.swap_rows(idx, self.size.metas)
-            self.cmp.swap_rows(idx, self.size.metas)
-            self.meta_names[idx], self.meta_names[self.size.metas] = \
-                self.meta_names[self.size.metas], self.meta_names[idx]
-        # Zero out removed metabolite
-        for reac in range(self.size.reacs):
-            self.cmp.set_rational(self.size.metas, reac, 0, 1)
 
     def remove_unused_metabolites(self) -> bool:
         """Remove metabolites with all-zero rows - uses batch removal.
@@ -2095,7 +1609,7 @@ def stoichmat_coeff2float(model) -> None:
 # High-Level Compression API
 # =============================================================================
 
-def compress_model(model, no_par_compress_reacs=set(), legacy_java_compression=False):
+def compress_model(model, no_par_compress_reacs=set(), backend='sparse'):
     """Compress a metabolic model using multiple techniques.
 
     Performs blocked reaction removal, conservation relation removal, and
@@ -2105,18 +1619,25 @@ def compress_model(model, no_par_compress_reacs=set(), legacy_java_compression=F
     Args:
         model: COBRA model to compress in-place
         no_par_compress_reacs: Reactions exempt from parallel compression
-        legacy_java_compression: If True, use Java implementation
+        backend: Compression backend to use:
+            - 'sparse' (default): Pure Python integer RREF with column/row
+              pre-sorting. No external dependencies beyond NumPy/SciPy.
+            - 'efmtool': Java-based EFMTool via JPype. Requires a JVM and
+              the jpype1 package.
 
     Returns:
         list of dict: Compression maps for reversing each compression step
     """
+    use_java = (backend == 'efmtool')
     LOG.info('  Removing blocked reactions.')
     remove_blocked_reactions(model)
     LOG.info('  Converting coefficients to rationals.')
     stoichmat_coeff2rational(model)
     LOG.info('  Removing conservation relations.')
-    remove_conservation_relations(model) if not legacy_java_compression else \
+    if use_java:
         _remove_conservation_relations_java(model)
+    else:
+        remove_conservation_relations(model)
 
     parallel = False
     run = 1
@@ -2126,7 +1647,7 @@ def compress_model(model, no_par_compress_reacs=set(), legacy_java_compression=F
     while True:
         if not parallel:
             LOG.info(f'  Compression {run}: Applying efmtool compression.')
-            reac_map_exp = compress_model_efmtool(model, legacy_java_compression)
+            reac_map_exp = compress_model_efmtool(model, backend)
             for new_reac, old_reac_val in reac_map_exp.items():
                 old_reacs_no_compress = [r for r in no_par_compress_reacs if r in old_reac_val]
                 if old_reacs_no_compress:
@@ -2137,10 +1658,10 @@ def compress_model(model, no_par_compress_reacs=set(), legacy_java_compression=F
             LOG.info(f'  Compression {run}: Lumping parallel reactions.')
             reac_map_exp = compress_model_parallel(model, no_par_compress_reacs)
 
-        if not legacy_java_compression:
-            remove_conservation_relations(model)
-        else:
+        if use_java:
             _remove_conservation_relations_java(model)
+        else:
+            remove_conservation_relations(model)
 
         if numr > len(reac_map_exp):
             LOG.info(f'  Reduced to {len(reac_map_exp)} reactions.')
@@ -2171,17 +1692,17 @@ def _remove_conservation_relations_java(model) -> None:
         model.metabolites.get_by_id(m_id).remove_from_model()
 
 
-def compress_model_efmtool(model, legacy_java_compression=False):
+def compress_model_efmtool(model, backend='sparse'):
     """Compress by lumping dependent reactions (efmtool approach).
 
     Args:
         model: COBRA model to compress in-place
-        legacy_java_compression: If True, use Java implementation
+        backend: 'sparse' (default, Python) or 'efmtool' (Java legacy)
 
     Returns:
         dict: Mapping {compressed_id: {orig_id: factor, ...}}
     """
-    if legacy_java_compression:
+    if backend == 'efmtool':
         from .efmtool_cmp_interface import compress_model_java
         return compress_model_java(model)
 

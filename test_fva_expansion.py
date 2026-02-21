@@ -89,7 +89,7 @@ if __name__ == "__main__":
 
         # Load and compress model
         model_comp = load_model("e_coli_core")
-        cmp_map = nt.compress_model(model_comp, legacy_java_compression=use_legacy)
+        cmp_map = nt.compress_model(model_comp, backend=('efmtool' if use_legacy else 'sparse'))
         print(f"\n{method} compressed: {len(model_comp.reactions)} reactions")
 
         # Run FVA on compressed model

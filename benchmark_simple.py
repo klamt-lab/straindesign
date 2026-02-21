@@ -43,7 +43,7 @@ if __name__ == "__main__":
         for i in range(n_runs):
             model_copy = loader()
             start = time.perf_counter()
-            nt.compress_model(model_copy, legacy_java_compression=False)
+            nt.compress_model(model_copy, backend='sparse')
             elapsed = time.perf_counter() - start
             results['python_times'].append(elapsed)
             results['python_final'] = len(model_copy.reactions)
@@ -58,7 +58,7 @@ if __name__ == "__main__":
         for i in range(n_runs):
             model_copy = loader()
             start = time.perf_counter()
-            nt.compress_model(model_copy, legacy_java_compression=True)
+            nt.compress_model(model_copy, backend='efmtool')
             elapsed = time.perf_counter() - start
             results['java_times'].append(elapsed)
             results['java_final'] = len(model_copy.reactions)
@@ -86,7 +86,7 @@ if __name__ == "__main__":
     java_stds = [np.std(all_results[m]['java_times']) for m in model_names]
 
     bars1 = ax1.bar(x - width/2, python_means, width, yerr=python_stds,
-                    label='Python (new)', capsize=5, color='#2ecc71')
+                    label='Python (sparse)', capsize=5, color='#2ecc71')
     bars2 = ax1.bar(x + width/2, java_means, width, yerr=java_stds,
                     label='Java (legacy)', capsize=5, color='#3498db')
 

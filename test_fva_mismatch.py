@@ -16,13 +16,13 @@ if __name__ == "__main__":
     # Python compression
     print("\nPython compression:")
     model_py = load_model("e_coli_core")
-    cmp_map_py = nt.compress_model(model_py, legacy_java_compression=False)
+    cmp_map_py = nt.compress_model(model_py, backend='sparse')
     print(f"  Compressed to {len(model_py.reactions)} reactions")
 
     # Java compression
     print("\nJava compression:")
     model_java = load_model("e_coli_core")
-    cmp_map_java = nt.compress_model(model_java, legacy_java_compression=True)
+    cmp_map_java = nt.compress_model(model_java, backend='efmtool')
     print(f"  Compressed to {len(model_java.reactions)} reactions")
 
     # Compare reaction IDs
