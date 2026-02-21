@@ -2,4 +2,3 @@ cobra
 scipy
 matplotlib
 psutil
-python-flint

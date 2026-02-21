@@ -140,5 +140,8 @@ dmypy.json
 efmtool_source.jar
 efmtool_port/
 
-# Tests directory
-tests/
+# Benchmark and profiling scripts (development only)
+benchmark_compression.py
+benchmark_simple.py
+profile_compression.py
+compression_benchmark.png
