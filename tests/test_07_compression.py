@@ -251,22 +251,30 @@ def test_fva_expansion():
 # MCS validation
 # =============================================================================
 
-def test_mcs_e_coli_core():
+@pytest.mark.parametrize("backend", ["sparse", "efmtool"])
+def test_mcs_e_coli_core(backend):
     """MCS computation on e_coli_core returns the expected 455 solutions.
+
+    Parametrized over both compression backends so regressions in either
+    are caught. The efmtool variant is skipped when jpype is not installed.
 
     Requires a strong MILP solver (Gurobi, CPLEX, or SCIP). GLPK cannot
     reliably enumerate all solutions via POPULATE and is excluded.
     """
-    from straindesign.names import SUPPRESS, POPULATE, GLPK
+    if backend == "efmtool":
+        pytest.importorskip("jpype", reason="jpype not installed; skipping efmtool backend")
+    from straindesign.names import SUPPRESS, POPULATE, GLPK, SCIP, GUROBI, CPLEX
+    # Solver priority: SCIP (no size limit) > CPLEX > GUROBI (both have free-tier limits)
     strong_solvers = sd.avail_solvers - {GLPK}
     if not strong_solvers:
         pytest.skip("test_mcs_e_coli_core requires Gurobi, CPLEX, or SCIP (GLPK gives incorrect results)")
+    solver = SCIP if SCIP in strong_solvers else next(iter(strong_solvers))
     model = load_model('e_coli_core')
     modules = [sd.SDModule(model, SUPPRESS, constraints='BIOMASS_Ecoli_core_w_GAM >= 0.001')]
     sols = sd.compute_strain_designs(model, sd_modules=modules, solution_approach=POPULATE,
-                                     max_cost=3, gene_kos=True)
+                                     max_cost=3, gene_kos=True, solver=solver, backend=backend)
     assert len(sols.reaction_sd) == 455, (
-        f"Expected 455 MCS for e_coli_core, got {len(sols.reaction_sd)}"
+        f"Expected 455 MCS for e_coli_core (backend={backend}), got {len(sols.reaction_sd)}"
     )
 
 

@@ -875,33 +875,19 @@ class _WorkRecord:
     def remove_unused_metabolites(self) -> bool:
         """Remove metabolites with all-zero rows - uses batch removal.
 
-        Uses sparse structure for O(1) zero-row detection per metabolite.
+        Uses CSR indptr for O(m) zero-row detection (avoids element-by-element
+        sparse indexing which is O(m*r) with large per-call Python overhead).
         """
-        # Get active submatrix to check only active columns
-        active_cmp = self.cmp.submatrix(self.size.metas, self.size.reacs)
+        mc, rc = self.size.metas, self.size.reacs
+        # Slice active submatrix and convert to CSR for indptr access.
+        # tocsr() is a no-op if already CSR (returns self), so this is safe
+        # regardless of current format.
+        num_csr = self.cmp._num_sparse[:mc, :rc].tocsr()
+        zero_rows = np.where(np.diff(num_csr.indptr) == 0)[0]
+        unused_indices = set(zero_rows.tolist())
+        for _ in unused_indices:
+            self.stats.inc_unused_metabolite()
 
-        # Find zero rows using sparse structure (O(1) per row with CSR)
-        unused_indices = set()
-        if hasattr(active_cmp, '_numerators') and active_cmp._numerators is not None:
-            # FLINT sparse path: zero row = no entries in CSR indptr range
-            indptr = active_cmp._numerators.indptr
-            for meta in range(self.size.metas):
-                if indptr[meta] == indptr[meta + 1]:
-                    unused_indices.add(meta)
-                    self.stats.inc_unused_metabolite()
-        else:
-            # Fallback: iterate columns
-            for meta in range(self.size.metas):
-                has_nonzero = False
-                for reac in range(self.size.reacs):
-                    if self.cmp.get_signum(meta, reac) != 0:
-                        has_nonzero = True
-                        break
-                if not has_nonzero:
-                    unused_indices.add(meta)
-                    self.stats.inc_unused_metabolite()
-
-        # Batch remove all unused metabolites at once
         if unused_indices:
             self.remove_metabolites_by_indices(unused_indices)
             return True

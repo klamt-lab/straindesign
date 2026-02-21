@@ -85,6 +85,10 @@ jobs:
         if: matrix.package-manager == 'pip' && runner.os != 'macOS'
         run: |
           pip install cplex
+      - name: Install scip (pip)
+        if: matrix.package-manager == 'pip'
+        run: |
+          pip install pyscipopt
       - name: Install pytest (pip)
         if: matrix.package-manager == 'pip'
         run: |
