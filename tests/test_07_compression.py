@@ -252,8 +252,15 @@ def test_fva_expansion():
 # =============================================================================
 
 def test_mcs_e_coli_core():
-    """MCS computation on e_coli_core returns the expected 455 solutions."""
-    from straindesign.names import SUPPRESS, POPULATE
+    """MCS computation on e_coli_core returns the expected 455 solutions.
+
+    Requires a strong MILP solver (Gurobi, CPLEX, or SCIP). GLPK cannot
+    reliably enumerate all solutions via POPULATE and is excluded.
+    """
+    from straindesign.names import SUPPRESS, POPULATE, GLPK
+    strong_solvers = sd.avail_solvers - {GLPK}
+    if not strong_solvers:
+        pytest.skip("test_mcs_e_coli_core requires Gurobi, CPLEX, or SCIP (GLPK gives incorrect results)")
     model = load_model('e_coli_core')
     modules = [sd.SDModule(model, SUPPRESS, constraints='BIOMASS_Ecoli_core_w_GAM >= 0.001')]
     sols = sd.compute_strain_designs(model, sd_modules=modules, solution_approach=POPULATE,
