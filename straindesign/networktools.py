@@ -722,6 +722,7 @@ def extend_model_regulatory(model, reg_itv):
 # Strain Design Module Compression
 # =============================================================================
 
+
 def compress_modules(sd_modules, cmp_mapReac):
     """Compress strain design modules to match with a compressed model
     
