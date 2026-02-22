@@ -97,7 +97,15 @@ def test_mcs_gpr(curr_solver, model_gpr, comp_approach):
 
 @pytest.mark.timeout(15)
 def test_mcs_gpr2(model_gpr, comp_approach):
-    """Test MCS computation gpr rule (compression)."""
+    """Test MCS computation with gene names instead of IDs (requires a strong solver).
+
+    Uses CPLEX > SCIP > Gurobi in order of preference; skipped if none are available.
+    GLPK is excluded because it cannot reliably enumerate all solutions via POPULATE.
+    """
+    preferred = [CPLEX, SCIP, GUROBI]
+    solver = next((s for s in preferred if s in sd.avail_solvers), None)
+    if solver is None:
+        pytest.skip("test_mcs_gpr2 requires CPLEX, SCIP, or Gurobi")
     modules = [sd.SDModule(model_gpr, SUPPRESS, constraints=["1.0 rd_ex >= 1.0 "])]
     modules += [sd.SDModule(model_gpr, PROTECT, constraints=[[{'r_bm': 1.0}, '>=', 1.0]])]
     kocost = {'rs_up': 1.0, 'rd_ex': 1.0, 'rp_ex': 1.1, 'r_bm': 0.75}
@@ -124,7 +132,7 @@ def test_mcs_gpr2(model_gpr, comp_approach):
         GKOCOST: gkocost,
         GKICOST: gkicost,
         REGCOST: regcost,
-        SOLVER: 'cplex'
+        SOLVER: solver,
     }
     solution = sd.compute_strain_designs(model_gpr, sd_setup=sd_setup)
     assert (len(solution.gene_sd) == 4)

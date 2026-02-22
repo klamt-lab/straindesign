@@ -23,8 +23,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         # macos-latest should be added later as soon as libsbml support is back up
-        python-version: ['3.10', '3.11', '3.12']
-        package-manager: ['pip','conda','conda_env']
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+        package-manager: ['pip','conda']
 #        exclude:
 #        - os: macos-latest
 #          package-manager: 'pip'
@@ -61,19 +61,11 @@ jobs:
       - name: Set JAVA_HOME for mac OS
         if: runner.os == 'macOS'
         run: export JAVA_HOME=$(/usr/libexec/java_home)
-      - name: Set up Conda Environment with Micromamba (conda environment test)
-        if: matrix.package-manager == 'conda_env'
-        uses: mamba-org/setup-micromamba@v2
-        with:
-          environment-file: environment.yml
-          create-args: >-
-            python=${{ matrix.python-version }}
-          post-cleanup: 'none'
       - name: Build for PyPI (if pip)
         if: matrix.package-manager == 'pip'
         run: |
-          pip install setuptools wheel
-          python setup.py sdist bdist_wheel
+          pip install build
+          python -m build
       - name: Install package using pip
         if: matrix.package-manager == 'pip'
         run: pip install ./dist/*.whl
@@ -89,6 +81,10 @@ jobs:
         if: matrix.package-manager == 'pip'
         run: |
           pip install pyscipopt
+      - name: Install jpype1 (pip)
+        if: matrix.package-manager == 'pip'
+        run: |
+          pip install jpype1
       - name: Install pytest (pip)
         if: matrix.package-manager == 'pip'
         run: |
@@ -127,11 +123,14 @@ jobs:
         if: matrix.package-manager == 'conda'
         run: |
           micromamba install -c conda-forge pyscipopt scip
+      - name: Install jpype1 (conda)
+        if: matrix.package-manager == 'conda'
+        run: |
+          micromamba install -c conda-forge jpype1
       - name: Install pytest (conda)
         if: matrix.package-manager == 'conda'
         run: |
           micromamba install pytest pytest-timeout
       - name: Test with pytest
-        if: matrix.package-manager == 'conda' || matrix.package-manager == 'pip'
         run: pytest tests -v --log-cli-level=INFO
         
