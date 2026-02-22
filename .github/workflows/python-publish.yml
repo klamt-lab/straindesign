@@ -85,12 +85,10 @@ jobs:
       run: rm -rf ~/conda-bld
     - name: Build and publish on Anaconda
       env:
-        ANCONDA_USERNAME: ${{ secrets.ANACONDA_USERNAME }}
-        ANACONDA_PASSWORD: ${{ secrets.ANACONDA_PASSWORD }}
+        ANACONDA_API_TOKEN: ${{ secrets.ANACONDA_API_TOKEN }}
       run: |
         conda build conda-recipe/. -c conda-forge --croot ~/conda-bld
-        /usr/share/miniconda/bin/anaconda login --username $ANCONDA_USERNAME --password $ANACONDA_PASSWORD
-        /usr/share/miniconda/bin/anaconda upload -u cnapy ~/conda-bld/noarch/straindesign*
+        /usr/share/miniconda/bin/anaconda upload --token $ANACONDA_API_TOKEN -u cnapy ~/conda-bld/noarch/straindesign*
     - name: Final clean up
       run: |
         rm -rf dist
