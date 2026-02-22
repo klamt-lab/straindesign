@@ -89,7 +89,7 @@ jobs:
       run: |
         conda build conda-recipe/. -c conda-forge --croot ~/conda-bld
         conda config --set anaconda_upload yes
-        /usr/share/miniconda/bin/anaconda --token $ANACONDA_API_TOKEN upload -u vonalphabiszulu ~/conda-bld/noarch/straindesign*
+        /usr/share/miniconda/bin/anaconda --token $ANACONDA_API_TOKEN upload -u cnapy ~/conda-bld/noarch/straindesign*
     - name: Final clean up
       run: |
         rm -rf dist
