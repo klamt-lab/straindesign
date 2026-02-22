@@ -128,3 +128,20 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# IDE settings
+.vscode/
+.idea/
+
+# Claude Code
+.claude/
+
+# EFMtool development artifacts
+efmtool_source.jar
+efmtool_port/
+
+# Benchmark and profiling scripts (development only)
+benchmark_compression.py
+benchmark_simple.py
+profile_compression.py
+compression_benchmark.png

@@ -1,5 +1,4 @@
 cobra
 scipy
 matplotlib
-JPype1
 psutil

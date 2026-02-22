@@ -156,7 +156,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
-        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED
+        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, 'backend'
     }
     logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
@@ -351,7 +351,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                     if p in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                         for k in param.keys():
                             no_par_compress_reacs.add(k)
-        cmp_mapReac = compress_model(cmp_model, no_par_compress_reacs)
+        backend = kwargs.get('backend', 'sparse_rref')
+        cmp_mapReac = compress_model(cmp_model, no_par_compress_reacs, backend=backend)
         # compress information in strain design modules
         sd_modules = compress_modules(sd_modules, cmp_mapReac)
         # compress ko_cost and ki_cost

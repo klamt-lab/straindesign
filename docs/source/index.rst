@@ -75,7 +75,7 @@ The comprehensive StrainDesign package for MILP-based strain design computation 
   :width: 40%
   :alt: Plot animation
 
-Parts of the compression routine is done by efmtool's compression function (https://csb.ethz.ch/tools/software/efmtool.html\ :html:`<a href="#ref6"><sup>[6]</sup></a>`).
+The default compression uses a pure Python sparse RREF implementation. A legacy Java-based compression via EFMTool :html:`<a href="#ref6"><sup>[6]</sup></a>` is optionally available (see :doc:`legacy_methods`).
 
 :html:`<a id="installation"></a>`\ Installation:
 ================================================
@@ -96,21 +96,6 @@ Download the repository and run
 ``pip install -e .``
 
 in the main folder. Through the installation with -e, updates from a 'git pull' are at once available in your Python envrionment without the need for a reinstallation.
-
-JAVA_HOME path:
----------------
-
-In some cases, installing the StrainDesign python package may fail with the error:
-
-``JVMNotFoundException: No JVM shared library file (libjli.dylib) found. Try setting up the JAVA_HOME environment variable.``
-
-In this case, make sure Java is installed correctly and the JAVA_HOME varialbe is set. `JAVA_HOME environment variable <https://www.baeldung.com/java-home-on-windows-7-8-10-mac-os-x-linux>`_
-
-If you're on OS X and get the error
-
-``OSError: [Errno 0] JVM DLL not found``
-
-check that your `Java and the JPype library is set up correctly <https://github.com/jpype-project/jpype/issues/994>`_. The easiest way to avoid this error is to use conda to install StrainDesign.
 
 :html:`<a id="examples"></a>`\ Examples:
 ================================================
@@ -136,6 +121,7 @@ How to cite:
    examples/JN_08_compression.ipynb
    9_cnapy_integration
    api_reference
+   legacy_methods
    
 .. 
    examples/JN_07_network_design.ipynb

@@ -5,9 +5,9 @@ package:
   version: {{ version }}
 
 source:
-  # path: ..
-  git_url: https://github.com/klamt-lab/straindesign
-  git_rev: v{{ version }}
+  path: ..
+  # git_url: https://github.com/klamt-lab/straindesign
+  # git_rev: v{{ version }}
 
 requirements:
   build:
@@ -21,7 +21,6 @@ requirements:
     - scipy
     - matplotlib
     - psutil
-    - conda-forge:jpype1
     - conda-forge:cobra
 
 build:

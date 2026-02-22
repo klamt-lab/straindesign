@@ -27,6 +27,7 @@ and their individual counterparts in dual problems, which is essential when simu
 knockouts in dual problems. Most of the time, the sparse datatype is used to store and
 edit matrices for improved speed and memory."""
 
+from math import isinf
 import numpy as np
 from scipy import sparse
 from cobra.util import create_stoichiometric_matrix
@@ -511,7 +512,7 @@ class SDProblem:
                 _, max_Ax[i] = worker_compute(i)
 
         # round Ms up to 5 digits
-        Ms = [np.ceil(M * 1e5) / 1e5 if not np.isinf(M) else self.M for M in max_Ax]
+        Ms = [np.ceil(M * 1e5) / 1e5 if not isinf(M) else self.M for M in max_Ax]
         # fill up M-vector also for notknockable reactions
         Ms = [
             Ms[np.array([i == j
@@ -524,7 +525,7 @@ class SDProblem:
         self.A_ineq = self.A_ineq.todok()
         # iterate through knockable constraints
         for row in range(self.A_ineq.shape[0]):
-            if not np.isinf(Ms[row]) and not np.isnan(Ms[row]):  # if there is a real number for M, use this for KO
+            if not isinf(Ms[row]) and not np.isnan(Ms[row]):  # if there is a real number for M, use this for KO
                 z_i = self.z_map_constr_ineq[:, row].nonzero()[0][0]
                 sense = self.z_map_constr_ineq[z_i, row]
                 if sense > 0:  # This means z_i = 1 knocks out ineq:
@@ -538,7 +539,7 @@ class SDProblem:
 
         # 5. Translate back remaining inequalities to equations if applicable and link via indicator constraints
         knockable_constr_ineq = tuple(knockable_constr_ineq)
-        knockable_constr_ineq_ic = [i for i in range(self.A_ineq.shape[0]) if np.isinf(Ms[i])]
+        knockable_constr_ineq_ic = [i for i in range(self.A_ineq.shape[0]) if isinf(Ms[i])]
         self.A_ineq = self.A_ineq.tocsr()
 
         # approach to find inequalities that can be lumped:
@@ -679,8 +680,8 @@ def build_primal_from_cbm(model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None,
     b_eq = [0 for _ in range(S.shape[0])] + v_eq
     A_ineq = V_ineq.copy()
     b_ineq = v_ineq.copy()
-    lb = [v.lower_bound for v in model.reactions]
-    ub = [v.upper_bound for v in model.reactions]
+    lb = [float(v.lower_bound) for v in model.reactions]
+    ub = [float(v.upper_bound) for v in model.reactions]
     z_map_vars = sparse.identity(numr, 'd', format="csc")
     z_map_constr_eq = sparse.csc_matrix((numr, A_eq.shape[0]))
     z_map_constr_ineq = sparse.csc_matrix((numr, A_ineq.shape[0]))
@@ -765,8 +766,8 @@ def LP_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p,
         c_p = [0.0] * numr
 
     # Translate inhomogenous bounds into inequality constraints
-    lb_inh_bounds = [i for i in np.nonzero(lb_p)[0] if not np.isinf(lb_p[i])]
-    ub_inh_bounds = [i for i in np.nonzero(ub_p)[0] if not np.isinf(ub_p[i])]
+    lb_inh_bounds = [i for i in np.nonzero(lb_p)[0] if not isinf(lb_p[i])]
+    ub_inh_bounds = [i for i in np.nonzero(ub_p)[0] if not isinf(ub_p[i])]
     x_geq0 = np.nonzero(np.greater_equal(lb_p, 0) & np.greater(ub_p, 0))[0]
     x_eR = np.nonzero(np.greater(0, lb_p) & np.greater(ub_p, 0))[0]
     x_leq0 = np.nonzero(np.greater(0, lb_p) & np.greater_equal(0, ub_p))[0]
@@ -954,8 +955,8 @@ def reassign_lb_ub_from_ineq(A_ineq, b_ineq, A_eq, b_eq, lb, ub,
             lb[idx_r] += [b_eq[i] / A_eq[i, idx_r]]
             ub[idx_r] += [b_eq[i] / A_eq[i, idx_r]]
     # set tightest bounds (avoid inf)
-    lb = [max([i for i in l if not np.isinf(i)] + [np.nan]) for l in lb]
-    ub = [min([i for i in u if not np.isinf(i)] + [np.nan]) for u in ub]
+    lb = [max([i for i in l if not isinf(i)] + [np.nan]) for l in lb]
+    ub = [min([i for i in u if not isinf(i)] + [np.nan]) for u in ub]
     # set if only if no other bound remains
     lb = [-np.inf if np.isnan(l) else l for l in lb]
     ub = [np.inf if np.isnan(u) else u for u in ub]

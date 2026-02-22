@@ -6,6 +6,5 @@ dependencies:
   - python
   - scipy
   - matplotlib
-  - jpype1
   - psutil
   - conda-forge::cobra
