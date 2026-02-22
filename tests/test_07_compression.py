@@ -57,11 +57,11 @@ def test_python_compression_basic(model_gpr):
     assert len(cmp_map) > 0
 
 
-def test_python_compression_efmtool_function(model_small_example):
-    """compress_model_efmtool with backend='sparse_rref' returns a dict."""
+def test_python_compression_coupled_function(model_small_example):
+    """compress_model_coupled with backend='sparse_rref' returns a dict."""
     nt.stoichmat_coeff2rational(model_small_example)
     nt.remove_conservation_relations(model_small_example)
-    reac_map = nt.compress_model_efmtool(model_small_example, backend='sparse_rref')
+    reac_map = nt.compress_model_coupled(model_small_example, backend='sparse_rref')
     assert isinstance(reac_map, dict)
 
 
@@ -69,7 +69,7 @@ def test_compression_coefficient_type(model_small_example):
     """Compression coefficients are exact rational number types."""
     nt.stoichmat_coeff2rational(model_small_example)
     nt.remove_conservation_relations(model_small_example)
-    reac_map = nt.compress_model_efmtool(model_small_example, backend='sparse_rref')
+    reac_map = nt.compress_model_coupled(model_small_example, backend='sparse_rref')
     for new_reac, old_reacs in reac_map.items():
         for old_reac, coeff in old_reacs.items():
             assert is_rational_type(coeff), (

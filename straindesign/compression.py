@@ -1643,7 +1643,7 @@ def compress_model(model, no_par_compress_reacs=set(), backend='sparse_rref'):
     """
     # Suppress optlang LP coefficient updates during compression.
     #
-    # compress_model_efmtool calls _rebuild_solver after each iteration,
+    # compress_model_coupled calls _rebuild_solver after each iteration,
     # which calls _populate_solver -> constraint.set_linear_coefficients
     # for every metabolite.  On Gurobi this involves _get_expression (a
     # full LP-row read) and dominates runtime for large/GPR-extended models.
@@ -1686,8 +1686,8 @@ def compress_model(model, no_par_compress_reacs=set(), backend='sparse_rref'):
 
         while True:
             if not parallel:
-                LOG.info(f'  Compression {run}: Applying efmtool compression.')
-                reac_map_exp = compress_model_efmtool(model, backend)
+                LOG.info(f'  Compression {run}: Lumping coupled reactions.')
+                reac_map_exp = compress_model_coupled(model, backend)
                 for new_reac, old_reac_val in reac_map_exp.items():
                     old_reacs_no_compress = [r for r in no_par_compress_reacs if r in old_reac_val]
                     if old_reacs_no_compress:
@@ -1756,8 +1756,13 @@ def _remove_conservation_relations_java(model) -> None:
         model.metabolites.get_by_id(m_id).remove_from_model()
 
 
-def compress_model_efmtool(model, backend='sparse_rref'):
-    """Compress by lumping dependent reactions (efmtool approach).
+def compress_model_coupled(model, backend='sparse_rref'):
+    """Compress by lumping stoichiometrically coupled (dependent) reactions.
+
+    Identifies groups of reactions whose flux vectors are proportional in every
+    steady state (i.e. they share a common nullspace direction) and merges each
+    group into a single lumped reaction.  Both the pure-Python and legacy Java
+    backends perform this operation; the backend controls the nullspace algorithm.
 
     Args:
         model: COBRA model to compress in-place
@@ -1787,6 +1792,11 @@ def compress_model_efmtool(model, backend='sparse_rref'):
                  for orig_id, c in orig_map.items()}
         for cmp_id, orig_map in result.reaction_map.items()
     }
+
+
+# Backward-compatibility alias (old name referenced efmtool, but the function
+# is backend-agnostic — the new name compress_model_coupled is preferred).
+compress_model_efmtool = compress_model_coupled
 
 
 def compress_model_parallel(model, protected_rxns=set()):
@@ -1892,7 +1902,8 @@ __all__ = [
     'StoichMatrixCompressor',
     # High-level API
     'compress_model',
-    'compress_model_efmtool',
+    'compress_model_coupled',
+    'compress_model_efmtool',  # backward-compat alias
     'compress_model_parallel',
     # Preprocessing
     'remove_blocked_reactions',
