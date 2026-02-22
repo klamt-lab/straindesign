@@ -517,8 +517,9 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
         for elim_row, elim_val in elim_targets:
             elim_row_data = data[elim_row]
 
-            # Pre-scale by GCD to minimize coefficient growth
-            g = gcd(abs(pivot_val), abs(elim_val))
+            # Pre-scale by GCD to minimize coefficient growth.
+            # math.gcd handles negatives and returns a positive value (Python 3.5+).
+            g = gcd(pivot_val, elim_val)
             pv_scaled = pivot_val // g
             ev_scaled = elim_val // g
 
@@ -534,12 +535,11 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
                     if new_val != 0:
                         new_row[c] = new_val
 
-            # Update row and reduce by GCD
+            # Update row and reduce by GCD.
+            # gcd(*values) uses one C-level call instead of len(row) Python calls.
             if new_row:
                 data[elim_row] = new_row
-                row_gcd = 0
-                for val in new_row.values():
-                    row_gcd = gcd(row_gcd, abs(val))
+                row_gcd = gcd(*new_row.values())
                 if row_gcd > 1:
                     for c in new_row:
                         new_row[c] //= row_gcd
@@ -550,9 +550,7 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
 
     # Final GCD reduction of all rows
     for row_data in data.values():
-        row_gcd = 0
-        for val in row_data.values():
-            row_gcd = gcd(row_gcd, abs(val))
+        row_gcd = gcd(*row_data.values())
         if row_gcd > 1:
             for c in row_data:
                 row_data[c] //= row_gcd
@@ -1259,11 +1257,40 @@ def remove_conservation_relations(model) -> None:
     Args:
         model: COBRA model to modify in-place
     """
-    from cobra.util.array import create_stoichiometric_matrix
-    stoich_mat = create_stoichiometric_matrix(model, array_type='lil')
-    basic_mets = basic_columns_from_numpy(stoich_mat.transpose().toarray())
+    # Build the transposed stoichiometric matrix (reactions × metabolites) directly
+    # from cobra reaction coefficients — avoids a sparse→dense→sparse round-trip that
+    # would iterate over all m×r elements including zeros.
+    num_rxns = len(model.reactions)
+    num_mets = len(model.metabolites)
+    met_index = {m.id: i for i, m in enumerate(model.metabolites)}
+
+    row_idx, col_idx, num_data, den_data = [], [], [], []
+    for j, rxn in enumerate(model.reactions):
+        for met, coeff in rxn._metabolites.items():
+            if coeff == 0:
+                continue
+            i = met_index[met.id]
+            if isinstance(coeff, Fraction):
+                frac = coeff
+            elif hasattr(coeff, 'numerator'):
+                frac = Fraction(coeff.numerator, coeff.denominator)
+            else:
+                frac = float_to_rational(float(coeff))
+            row_idx.append(j)   # reaction → row (transposed layout)
+            col_idx.append(i)   # metabolite → column
+            num_data.append(frac.numerator)
+            den_data.append(frac.denominator)
+
+    from scipy.sparse import csr_matrix as _csr
+    num_sparse = _csr((num_data, (row_idx, col_idx)),
+                      shape=(num_rxns, num_mets), dtype=np.int64)
+    den_sparse = _csr((den_data, (row_idx, col_idx)),
+                      shape=(num_rxns, num_mets), dtype=np.int64)
+    rm = RationalMatrix._from_sparse(num_sparse, den_sparse)
+    basic_mets = basic_columns(rm)
+
     dependent_mets = [model.metabolites[i].id
-                      for i in set(range(len(model.metabolites))) - set(basic_mets)]
+                      for i in set(range(num_mets)) - set(basic_mets)]
     for m_id in dependent_mets:
         model.metabolites.get_by_id(m_id).remove_from_model()
 
@@ -1614,56 +1641,107 @@ def compress_model(model, no_par_compress_reacs=set(), backend='sparse'):
     Returns:
         list of dict: Compression maps for reversing each compression step
     """
-    use_java = (backend == 'efmtool')
-    LOG.info('  Removing blocked reactions.')
-    remove_blocked_reactions(model)
-    LOG.info('  Converting coefficients to rationals.')
-    stoichmat_coeff2rational(model)
-    LOG.info('  Removing conservation relations.')
-    if use_java:
-        _remove_conservation_relations_java(model)
-    else:
-        remove_conservation_relations(model)
+    # Suppress optlang LP coefficient updates during compression.
+    #
+    # compress_model_efmtool calls _rebuild_solver after each iteration,
+    # which calls _populate_solver -> constraint.set_linear_coefficients
+    # for every metabolite.  On Gurobi this involves _get_expression (a
+    # full LP-row read) and dominates runtime for large/GPR-extended models.
+    #
+    # Fix: patch set_linear_coefficients to a no-op for the duration of
+    # compression so that intermediate rebuilds only maintain LP structure
+    # (variables, constraints, bounds) without re-writing coefficients.
+    # One final _populate_solver call at the end sets the correct
+    # stoichiometric coefficients from the compressed model state.
+    #
+    # Guards: all accesses are hasattr-checked so that cobra/optlang API
+    # changes simply disable the optimisation without breaking compression.
+    _slc_cls = None   # the Constraint class we patched
+    _slc_orig = None  # the original set_linear_coefficients method
+    try:
+        if hasattr(model, 'problem') and hasattr(model.problem, 'Constraint'):
+            _slc_cls = model.problem.Constraint
+            if hasattr(_slc_cls, 'set_linear_coefficients'):
+                _slc_orig = _slc_cls.set_linear_coefficients
+                _slc_cls.set_linear_coefficients = lambda self, *a, **kw: None
+    except Exception:
+        _slc_cls = _slc_orig = None
 
-    parallel = False
-    run = 1
     cmp_mapReac = []
-    numr = len(model.reactions)
-
-    while True:
-        if not parallel:
-            LOG.info(f'  Compression {run}: Applying efmtool compression.')
-            reac_map_exp = compress_model_efmtool(model, backend)
-            for new_reac, old_reac_val in reac_map_exp.items():
-                old_reacs_no_compress = [r for r in no_par_compress_reacs if r in old_reac_val]
-                if old_reacs_no_compress:
-                    for r in old_reacs_no_compress:
-                        no_par_compress_reacs.remove(r)
-                    no_par_compress_reacs.add(new_reac)
-        else:
-            LOG.info(f'  Compression {run}: Lumping parallel reactions.')
-            reac_map_exp = compress_model_parallel(model, no_par_compress_reacs)
-
+    try:
+        use_java = (backend == 'efmtool')
+        LOG.info('  Removing blocked reactions.')
+        remove_blocked_reactions(model)
+        LOG.info('  Converting coefficients to rationals.')
+        stoichmat_coeff2rational(model)
+        LOG.info('  Removing conservation relations.')
         if use_java:
             _remove_conservation_relations_java(model)
         else:
             remove_conservation_relations(model)
 
-        if numr > len(reac_map_exp):
-            LOG.info(f'  Reduced to {len(reac_map_exp)} reactions.')
-            cmp_mapReac.append({
-                "reac_map_exp": reac_map_exp,
-                "parallel": parallel,
-            })
-            parallel = not parallel
-            run += 1
-            numr = len(reac_map_exp)
-        else:
-            LOG.info(f'  No further reduction ({numr} reactions).')
-            LOG.info(f'  Compression complete ({run - 1} iterations).')
-            break
+        parallel = False
+        run = 1
+        numr = len(model.reactions)
 
-    stoichmat_coeff2float(model)
+        while True:
+            if not parallel:
+                LOG.info(f'  Compression {run}: Applying efmtool compression.')
+                reac_map_exp = compress_model_efmtool(model, backend)
+                for new_reac, old_reac_val in reac_map_exp.items():
+                    old_reacs_no_compress = [r for r in no_par_compress_reacs if r in old_reac_val]
+                    if old_reacs_no_compress:
+                        for r in old_reacs_no_compress:
+                            no_par_compress_reacs.remove(r)
+                        no_par_compress_reacs.add(new_reac)
+            else:
+                LOG.info(f'  Compression {run}: Lumping parallel reactions.')
+                reac_map_exp = compress_model_parallel(model, no_par_compress_reacs)
+
+            if use_java:
+                _remove_conservation_relations_java(model)
+            else:
+                remove_conservation_relations(model)
+
+            if numr > len(reac_map_exp):
+                LOG.info(f'  Reduced to {len(reac_map_exp)} reactions.')
+                cmp_mapReac.append({
+                    "reac_map_exp": reac_map_exp,
+                    "parallel": parallel,
+                })
+                parallel = not parallel
+                run += 1
+                numr = len(reac_map_exp)
+            else:
+                LOG.info(f'  No further reduction ({numr} reactions).')
+                LOG.info(f'  Compression complete ({run - 1} iterations).')
+                break
+
+        stoichmat_coeff2float(model)
+    finally:
+        # Step 1: Always restore set_linear_coefficients, even if compression raises.
+        if _slc_orig is not None and _slc_cls is not None:
+            _slc_cls.set_linear_coefficients = _slc_orig
+
+        # Step 2: Single final LP rebuild with correct stoichiometric coefficients.
+        # _populate_solver cannot be called on the existing solver (it would try to
+        # re-add constraints already in the pending queue -> ContainerAlreadyContains).
+        # _rebuild_solver creates a fresh optlang model first, then populates it.
+        # We must collect the objective from the current (still valid) LP beforehand.
+        if _slc_orig is not None:
+            try:
+                obj_updates = {}
+                for rxn in model.reactions:
+                    try:
+                        c = rxn.objective_coefficient
+                        if c != 0:
+                            obj_updates[rxn] = c
+                    except Exception:
+                        pass
+                _rebuild_solver(model, obj_updates)
+            except Exception:
+                pass  # Structural compression succeeded; LP may need manual resync.
+
     return cmp_mapReac
 
 
