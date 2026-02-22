@@ -94,20 +94,14 @@ Download the repository and run
 
 in the main folder. Through the installation with -e, updates from a 'git pull' are at once available in your Python envrionment without the need for a reinstallation.
 
-JAVA_HOME path:
----------------
+Legacy Java backend (optional):
+--------------------------------
 
-In some cases, installing or using the StrainDesign python package may fail with the error:
-
-``JVMNotFoundException: No JVM shared library file (libjli.dylib) found. Try setting up the JAVA_HOME environment variable.``
-
-In this case, ensure you have java (JRE or JDK) installed and your `JAVA_HOME environment variable is set <https://www.baeldung.com/java-home-on-windows-7-8-10-mac-os-x-linux>`_.
-
-If you're on OS X and get the error
-
-``OSError: [Errno 0] JVM DLL not found``
-
-check that your `Java and the JPype library is set up correctly <https://github.com/jpype-project/jpype/issues/994>`_.
+Java is not required for the default compression (``backend='sparse_rref'``).
+A legacy Java-based EFMTool backend (``backend='efmtool_rref'``) is optionally
+available via ``pip install straindesign[java]``. For setup help see the
+`Legacy Methods <https://straindesign.readthedocs.io/en/latest/legacy_methods.html>`_
+documentation page.
 
 Install additional solvers:
 ===========================

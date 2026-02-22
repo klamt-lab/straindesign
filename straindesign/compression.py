@@ -1622,7 +1622,7 @@ def stoichmat_coeff2float(model) -> None:
 # High-Level Compression API
 # =============================================================================
 
-def compress_model(model, no_par_compress_reacs=set(), backend='sparse'):
+def compress_model(model, no_par_compress_reacs=set(), backend='sparse_rref'):
     """Compress a metabolic model using multiple techniques.
 
     Performs blocked reaction removal, conservation relation removal, and
@@ -1633,10 +1633,10 @@ def compress_model(model, no_par_compress_reacs=set(), backend='sparse'):
         model: COBRA model to compress in-place
         no_par_compress_reacs: Reactions exempt from parallel compression
         backend: Compression backend to use:
-            - 'sparse' (default): Pure Python integer RREF with column/row
-              pre-sorting. No external dependencies beyond NumPy/SciPy.
-            - 'efmtool': Java-based EFMTool via JPype. Requires a JVM and
-              the jpype1 package.
+            - 'sparse_rref' (default): Pure Python sparse integer RREF.
+              No external dependencies beyond NumPy/SciPy.
+            - 'efmtool_rref' (legacy): Java-based EFMTool via JPype.
+              Requires a JVM and the jpype1 package.
 
     Returns:
         list of dict: Compression maps for reversing each compression step
@@ -1669,7 +1669,7 @@ def compress_model(model, no_par_compress_reacs=set(), backend='sparse'):
 
     cmp_mapReac = []
     try:
-        use_java = (backend == 'efmtool')
+        use_java = (backend == 'efmtool_rref')
         LOG.info('  Removing blocked reactions.')
         remove_blocked_reactions(model)
         LOG.info('  Converting coefficients to rationals.')
@@ -1756,17 +1756,17 @@ def _remove_conservation_relations_java(model) -> None:
         model.metabolites.get_by_id(m_id).remove_from_model()
 
 
-def compress_model_efmtool(model, backend='sparse'):
+def compress_model_efmtool(model, backend='sparse_rref'):
     """Compress by lumping dependent reactions (efmtool approach).
 
     Args:
         model: COBRA model to compress in-place
-        backend: 'sparse' (default, Python) or 'efmtool' (Java legacy)
+        backend: 'sparse_rref' (default, Python) or 'efmtool_rref' (Java legacy)
 
     Returns:
         dict: Mapping {compressed_id: {orig_id: factor, ...}}
     """
-    if backend == 'efmtool':
+    if backend == 'efmtool_rref':
         from .efmtool_cmp_interface import compress_model_java
         return compress_model_java(model)
 

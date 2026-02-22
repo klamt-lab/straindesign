@@ -351,7 +351,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                     if p in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                         for k in param.keys():
                             no_par_compress_reacs.add(k)
-        backend = kwargs.get('backend', 'sparse')
+        backend = kwargs.get('backend', 'sparse_rref')
         cmp_mapReac = compress_model(cmp_model, no_par_compress_reacs, backend=backend)
         # compress information in strain design modules
         sd_modules = compress_modules(sd_modules, cmp_mapReac)

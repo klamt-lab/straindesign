@@ -17,8 +17,8 @@
 """EFMtool compression interface for straindesign.
 
 This module provides compression utilities for metabolic networks.
-By default, the pure Python 'sparse' backend is used.
-The Java EFMTool backend is available via backend='efmtool' (requires jpype1).
+By default, the pure Python 'sparse_rref' backend is used.
+The Java EFMTool backend is available via backend='efmtool_rref' (requires jpype1).
 
 For the documentation of the compression API provided by StrainDesign,
 refer to straindesign.compression.compress_model.
@@ -93,7 +93,7 @@ def _init_java():
     """
     Initialize JVM and Java classes.
 
-    This function is called lazily only when backend='efmtool'.
+    This function is called lazily only when backend='efmtool_rref'.
     Raises ImportError if jpype is not installed.
     """
     global _JAVA_INITIALIZED
@@ -108,14 +108,14 @@ def _init_java():
         raise ImportError(
             "jpype1 is not installed. Legacy Java compression requires jpype1.\n"
             "Install with: pip install jpype1\n"
-            "Or use the default Python compression (backend='sparse')."
+            "Or use the default Python compression (backend='sparse_rref')."
         )
 
     if not _check_sympy_available():
         raise ImportError(
             "sympy is not installed. Legacy Java compression requires sympy.\n"
             "Install with: pip install sympy\n"
-            "Or use the default Python compression (backend='sparse')."
+            "Or use the default Python compression (backend='sparse_rref')."
         )
 
     import jpype
