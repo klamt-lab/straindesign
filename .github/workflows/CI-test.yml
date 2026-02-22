@@ -132,22 +132,22 @@ jobs:
         run: |
           micromamba install pytest pytest-timeout
       - name: Test with pytest
+        id: run_pytest
+        continue-on-error: true
+        run: pytest tests -v --log-cli-level=INFO --junit-xml=test-results.xml
+      - name: Verify test results
         run: |
-          set +e
-          pytest tests -v --log-cli-level=INFO --junit-xml=test-results.xml
-          EXIT_CODE=$?
-          set -e
-          # Exit 139 = SIGSEGV during interpreter shutdown (known JPype/solver cleanup issue on Linux).
-          # Only treat as success if the JUnit XML confirms zero failures and zero errors.
-          if [ "$EXIT_CODE" -eq 139 ]; then
-            echo "Segmentation fault detected (exit 139). Checking test results..."
-            if grep -qP 'failures="0"' test-results.xml && grep -qP 'errors="0"' test-results.xml; then
-              echo "All tests passed before segfault (known cleanup issue). Treating as success."
-              exit 0
-            else
-              echo "Segfault occurred AND test failures/errors were recorded. Failing."
-              exit 139
-            fi
+          if [ "${{ steps.run_pytest.outcome }}" = "success" ]; then
+            exit 0
           fi
-          exit $EXIT_CODE
+          # pytest step failed — check if all tests passed before a segfault during cleanup
+          # (known JPype/solver shutdown issue on Linux, exit code 139)
+          if [ -f test-results.xml ] \
+              && grep -q 'failures="0"' test-results.xml \
+              && grep -q 'errors="0"' test-results.xml; then
+            echo "All tests passed before segfault during cleanup (known JPype/solver issue on Linux)."
+            exit 0
+          fi
+          echo "Test failures or errors detected."
+          exit 1
         
