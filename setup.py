@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="straindesign",
-    version="1.17",
+    version="1.18",
     url="https://github.com/klamt-lab/straindesign.git",
     description="Computational strain design package for the COBRApy framework",
     long_description=("Computational strain design package for the COBRApy framework, offering standard and advanced "
