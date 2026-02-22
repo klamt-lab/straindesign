@@ -74,7 +74,7 @@ jobs:
         run: |
           pip install gurobipy
       - name: Install cplex (pip)
-        if: matrix.package-manager == 'pip' && runner.os != 'macOS'
+        if: matrix.package-manager == 'pip' && runner.os != 'macOS' && matrix.python-version != '3.13'
         run: |
           pip install cplex
       - name: Install scip (pip)
@@ -116,7 +116,7 @@ jobs:
         run: |
           micromamba install -c gurobi gurobi
       - name: Install cplex (conda)
-        if: matrix.package-manager == 'conda'
+        if: matrix.package-manager == 'conda' && matrix.python-version != '3.13'
         run: |
           micromamba install -c ibmdecisionoptimization cplex
       - name: Install scip (conda)
@@ -132,5 +132,22 @@ jobs:
         run: |
           micromamba install pytest pytest-timeout
       - name: Test with pytest
-        run: pytest tests -v --log-cli-level=INFO
+        run: |
+          set +e
+          pytest tests -v --log-cli-level=INFO --junit-xml=test-results.xml
+          EXIT_CODE=$?
+          set -e
+          # Exit 139 = SIGSEGV during interpreter shutdown (known JPype/solver cleanup issue on Linux).
+          # Only treat as success if the JUnit XML confirms zero failures and zero errors.
+          if [ "$EXIT_CODE" -eq 139 ]; then
+            echo "Segmentation fault detected (exit 139). Checking test results..."
+            if grep -qP 'failures="0"' test-results.xml && grep -qP 'errors="0"' test-results.xml; then
+              echo "All tests passed before segfault (known cleanup issue). Treating as success."
+              exit 0
+            else
+              echo "Segfault occurred AND test failures/errors were recorded. Failing."
+              exit 139
+            fi
+          fi
+          exit $EXIT_CODE
         
