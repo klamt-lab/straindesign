@@ -32,10 +32,10 @@ from cobra.util.array import create_stoichiometric_matrix
 
 LOG = logging.getLogger(__name__)
 
-
 # =============================================================================
 # Utility Functions
 # =============================================================================
+
 
 def float_to_rational(val, max_precision: int = 6, max_denom: int = 100) -> Fraction:
     """Convert float to Fraction with bounded denominators."""
@@ -50,7 +50,7 @@ def float_to_rational(val, max_precision: int = 6, max_denom: int = 100) -> Frac
     if round(float(small_frac), max_precision) == round(val, max_precision):
         return small_frac
 
-    denom = 10 ** max_precision
+    denom = 10**max_precision
     numer = round(val * denom)
     return Fraction(numer, denom)
 
@@ -77,6 +77,7 @@ def _lcm_list(numbers: List[int]) -> int:
 # Rational Matrix with Sparse Storage
 # =============================================================================
 
+
 class RationalMatrix:
     """Sparse rational matrix using dual int sparse storage (numerators + denominators)."""
 
@@ -97,7 +98,9 @@ class RationalMatrix:
     # -------------------------------------------------------------------------
 
     @classmethod
-    def _from_sparse(cls, num_sparse: csr_matrix, den_sparse: csr_matrix,
+    def _from_sparse(cls,
+                     num_sparse: csr_matrix,
+                     den_sparse: csr_matrix,
                      scaled: Optional[csr_matrix] = None,
                      common_denom: Optional[int] = None) -> 'RationalMatrix':
         """Create RationalMatrix from sparse components."""
@@ -119,8 +122,7 @@ class RationalMatrix:
         return cls._from_sparse(num_sparse, den_sparse)
 
     @classmethod
-    def from_numpy(cls, arr: np.ndarray, max_precision: int = 6,
-                   max_denom: int = 100) -> 'RationalMatrix':
+    def from_numpy(cls, arr: np.ndarray, max_precision: int = 6, max_denom: int = 100) -> 'RationalMatrix':
         """Create RationalMatrix from numpy array."""
         rows, cols = arr.shape
         row_idx, col_idx, num_data, den_data = [], [], [], []
@@ -140,8 +142,7 @@ class RationalMatrix:
         return cls._from_sparse(num_sparse, den_sparse)
 
     @classmethod
-    def from_cobra_model(cls, model, max_precision: int = 6,
-                         max_denom: int = 100) -> 'RationalMatrix':
+    def from_cobra_model(cls, model, max_precision: int = 6, max_denom: int = 100) -> 'RationalMatrix':
         """Create RationalMatrix from COBRA model stoichiometry."""
         num_mets = len(model.metabolites)
         num_rxns = len(model.reactions)
@@ -167,21 +168,16 @@ class RationalMatrix:
                     num_data.append(frac.numerator)
                     den_data.append(frac.denominator)
 
-        num_sparse = csr_matrix((num_data, (row_idx, col_idx)),
-                                shape=(num_mets, num_rxns), dtype=np.int64)
-        den_sparse = csr_matrix((den_data, (row_idx, col_idx)),
-                                shape=(num_mets, num_rxns), dtype=np.int64)
+        num_sparse = csr_matrix((num_data, (row_idx, col_idx)), shape=(num_mets, num_rxns), dtype=np.int64)
+        den_sparse = csr_matrix((den_data, (row_idx, col_idx)), shape=(num_mets, num_rxns), dtype=np.int64)
         return cls._from_sparse(num_sparse, den_sparse)
 
     @classmethod
-    def _build_from_sparse_data(cls, row_indices: List[int], col_indices: List[int],
-                                numerators: List[int], denominators: List[int],
+    def _build_from_sparse_data(cls, row_indices: List[int], col_indices: List[int], numerators: List[int], denominators: List[int],
                                 num_rows: int, num_cols: int) -> 'RationalMatrix':
         """Build RationalMatrix from sparse coordinate data."""
-        num_sparse = csr_matrix((numerators, (row_indices, col_indices)),
-                                shape=(num_rows, num_cols), dtype=np.int64)
-        den_sparse = csr_matrix((denominators, (row_indices, col_indices)),
-                                shape=(num_rows, num_cols), dtype=np.int64)
+        num_sparse = csr_matrix((numerators, (row_indices, col_indices)), shape=(num_rows, num_cols), dtype=np.int64)
+        den_sparse = csr_matrix((denominators, (row_indices, col_indices)), shape=(num_rows, num_cols), dtype=np.int64)
         return cls._from_sparse(num_sparse, den_sparse)
 
     # -------------------------------------------------------------------------
@@ -246,10 +242,7 @@ class RationalMatrix:
 
     def clone(self) -> 'RationalMatrix':
         """Create a deep copy."""
-        return RationalMatrix._from_sparse(
-            self._num_sparse.copy(),
-            self._den_sparse.copy()
-        )
+        return RationalMatrix._from_sparse(self._num_sparse.copy(), self._den_sparse.copy())
 
     def submatrix(self, rows: int, cols: int) -> 'RationalMatrix':
         """Extract top-left submatrix of given dimensions."""
@@ -273,8 +266,7 @@ class RationalMatrix:
         self._cols = len(keep_indices)
         self._invalidate_cache()
 
-    def add_scaled_column(self, dst_col: int, src_col: int,
-                          scalar_num: int, scalar_den: int) -> None:
+    def add_scaled_column(self, dst_col: int, src_col: int, scalar_num: int, scalar_den: int) -> None:
         """Add scalar * column[src] to column[dst]. dst[i] += (num/den) * src[i]"""
         if scalar_num == 0:
             return
@@ -366,8 +358,7 @@ class RationalMatrix:
             else:
                 scaled_data.append(0)
 
-        scaled = csr_matrix((scaled_data, (coo_num.row, coo_num.col)),
-                            shape=(self._rows, self._cols), dtype=np.int64)
+        scaled = csr_matrix((scaled_data, (coo_num.row, coo_num.col)), shape=(self._rows, self._cols), dtype=np.int64)
         return scaled, common_denom
 
     def to_sparse_pattern(self) -> Tuple[csr_matrix, Dict[int, Dict[int, Fraction]]]:
@@ -381,8 +372,7 @@ class RationalMatrix:
         # Build pattern matrix (just 1s for structure)
         coo_num = self._num_sparse.tocoo()
         pattern_data = [1] * len(coo_num.data)
-        pattern = csr_matrix((pattern_data, (coo_num.row, coo_num.col)),
-                             shape=(self._rows, self._cols), dtype=np.int8)
+        pattern = csr_matrix((pattern_data, (coo_num.row, coo_num.col)), shape=(self._rows, self._cols), dtype=np.int8)
 
         # Build row-wise Fraction data
         coo_den = self._den_sparse.tocoo()
@@ -404,6 +394,7 @@ class RationalMatrix:
 # =============================================================================
 # Sparse Integer RREF for Nullspace Computation
 # =============================================================================
+
 
 def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]], int, List[int]]:
     """Compute integer RREF using dict-of-dicts for sparse row operations.
@@ -509,9 +500,7 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
         pivot_cols_sorted.append(pivot_col)
 
         # Collect rows to eliminate (snapshot keys before modification)
-        elim_targets = [(r, row_data[pivot_col])
-                        for r, row_data in data.items()
-                        if r != pivot_row and pivot_col in row_data]
+        elim_targets = [(r, row_data[pivot_col]) for r, row_data in data.items() if r != pivot_row and pivot_col in row_data]
 
         # Eliminate pivot column from all other rows
         for elim_row, elim_val in elim_targets:
@@ -616,14 +605,13 @@ def _nullspace_sparse(matrix: RationalMatrix) -> RationalMatrix:
                 numerators.append(num)
                 denominators.append(den)
 
-    return RationalMatrix._build_from_sparse_data(
-        row_indices, col_indices, numerators, denominators, cols, nullity
-    )
+    return RationalMatrix._build_from_sparse_data(row_indices, col_indices, numerators, denominators, cols, nullity)
 
 
 # =============================================================================
 # Linear Algebra Functions
 # =============================================================================
+
 
 def nullspace(matrix: RationalMatrix) -> RationalMatrix:
     """Compute right nullspace (kernel). Returns K where matrix @ K = 0.
@@ -655,6 +643,7 @@ def basic_columns_from_numpy(mx: np.ndarray) -> List[int]:
 # Configuration
 # =============================================================================
 
+
 class CompressionMethod(Enum):
     """Compression methods for metabolic network compression."""
     NULLSPACE = "Nullspace"  # Nullspace-based compression
@@ -677,6 +666,7 @@ class CompressionMethod(Enum):
 # =============================================================================
 # Statistics
 # =============================================================================
+
 
 class CompressionStatistics:
     """Tracks compression statistics for logging."""
@@ -722,6 +712,7 @@ class CompressionStatistics:
 # Compression Record
 # =============================================================================
 
+
 class CompressionRecord:
     """
     Compression result with transformation matrices.
@@ -730,12 +721,15 @@ class CompressionRecord:
     For EFM expansion: efm_original = post @ efm_compressed
     """
 
-    def __init__(self, pre: RationalMatrix, cmp: RationalMatrix,
-                 post: RationalMatrix, reversible: List[bool],
+    def __init__(self,
+                 pre: RationalMatrix,
+                 cmp: RationalMatrix,
+                 post: RationalMatrix,
+                 reversible: List[bool],
                  meta_names: List[str],
                  stats: Optional[CompressionStatistics] = None):
-        self.pre = pre    # metabolite transformation
-        self.cmp = cmp    # compressed stoich
+        self.pre = pre  # metabolite transformation
+        self.cmp = cmp  # compressed stoich
         self.post = post  # reaction transformation
         self.reversible = list(reversible)
         self.meta_names = list(meta_names)  # compressed metabolite names (row order in cmp)
@@ -746,8 +740,10 @@ class CompressionRecord:
 # Working State (Internal)
 # =============================================================================
 
+
 class _Size:
     """Mutable counter for active matrix dimensions during compression."""
+
     def __init__(self, metas: int, reacs: int):
         self.metas = metas
         self.reacs = reacs
@@ -756,8 +752,7 @@ class _Size:
 class _WorkRecord:
     """Mutable state during compression algorithm."""
 
-    def __init__(self, stoich: RationalMatrix, reversible: List[bool],
-                 meta_names: List[str], reac_names: List[str]):
+    def __init__(self, stoich: RationalMatrix, reversible: List[bool], meta_names: List[str], reac_names: List[str]):
         rows, cols = stoich.get_row_count(), stoich.get_column_count()
         self.pre = RationalMatrix.identity(rows)
         self.cmp = stoich.clone()
@@ -915,14 +910,18 @@ class _WorkRecord:
 # Core Algorithm
 # =============================================================================
 
+
 class StoichMatrixCompressor:
     """Nullspace-based metabolic network compression."""
 
     def __init__(self, *methods: CompressionMethod):
         self._methods = list(methods) if methods else CompressionMethod.standard()
 
-    def compress(self, stoich: RationalMatrix, reversible: List[bool],
-                 meta_names: List[str], reac_names: List[str],
+    def compress(self,
+                 stoich: RationalMatrix,
+                 reversible: List[bool],
+                 meta_names: List[str],
+                 reac_names: List[str],
                  suppressed: Optional[Set[str]] = None) -> CompressionRecord:
         """Compress network, return transformation matrices.
 
@@ -976,7 +975,9 @@ class StoichMatrixCompressor:
         # Build active submatrix for nullspace computation
         active = work.cmp.submatrix(work.size.metas, work.size.reacs)
         kernel = nullspace(active)
-        LOG.debug(f"Nullspace: {active.get_row_count()}x{active.get_column_count()} -> kernel {kernel.get_row_count()}x{kernel.get_column_count()}")
+        LOG.debug(
+            f"Nullspace: {active.get_row_count()}x{active.get_column_count()} -> kernel {kernel.get_row_count()}x{kernel.get_column_count()}"
+        )
 
         # Get kernel pattern (CSR for structure) and values (Fractions for exact ratios)
         kernel_pattern, kernel_values = kernel.to_sparse_pattern()
@@ -1150,8 +1151,7 @@ class StoichMatrixCompressor:
         # Merging alone doesn't change the flux space, so no new couplings can emerge.
         return contradicting_removed
 
-    def _check_coupling_consistency(self, group: List[int], ratios: List[Optional[Fraction]],
-                                    reversible: List[bool]) -> bool:
+    def _check_coupling_consistency(self, group: List[int], ratios: List[Optional[Fraction]], reversible: List[bool]) -> bool:
         """Check if coupled group is consistent with reversibility."""
         for forward in [True, False]:
             all_consistent = forward or reversible[group[0]]
@@ -1165,8 +1165,7 @@ class StoichMatrixCompressor:
                 return True
         return False
 
-    def _combine_coupled(self, work: _WorkRecord, group: List[int],
-                         ratios: List[Optional[Fraction]]) -> None:
+    def _combine_coupled(self, work: _WorkRecord, group: List[int], ratios: List[Optional[Fraction]]) -> None:
         """Combine coupled reactions into master reaction.
 
         Uses batch column operations with native fmpq arithmetic for performance.
@@ -1192,12 +1191,12 @@ class StoichMatrixCompressor:
 # COBRA Interface
 # =============================================================================
 
+
 class CompressionResult:
     """Result of COBRA model compression."""
 
-    def __init__(self, compressed_model, compression_converter, pre_matrix, post_matrix,
-                 reaction_map, metabolite_map, statistics, methods_used,
-                 original_reaction_names, original_metabolite_names, flipped_reactions):
+    def __init__(self, compressed_model, compression_converter, pre_matrix, post_matrix, reaction_map, metabolite_map, statistics,
+                 methods_used, original_reaction_names, original_metabolite_names, flipped_reactions):
         self.compressed_model = compressed_model
         self.compression_converter = compression_converter
         self.pre_matrix = pre_matrix
@@ -1226,14 +1225,12 @@ class CompressionConverter:
     """Bidirectional transformer for expressions between original and compressed spaces."""
 
     def __init__(self, reaction_map: Dict[str, Dict[str, Union[float, Fraction]]],
-                 metabolite_map: Dict[str, Dict[str, Union[float, Fraction]]],
-                 flipped_reactions: List[str]):
+                 metabolite_map: Dict[str, Dict[str, Union[float, Fraction]]], flipped_reactions: List[str]):
         self.reaction_map = reaction_map
         self.metabolite_map = metabolite_map
         self.flipped_reactions = set(flipped_reactions)
 
-    def expand_expression(self, expression: Dict[str, float],
-                          remove_missing: bool = False) -> Dict[str, float]:
+    def expand_expression(self, expression: Dict[str, float], remove_missing: bool = False) -> Dict[str, float]:
         """Transform expression from compressed back to original space."""
         expanded = {}
         for comp_rxn, comp_coeff in expression.items():
@@ -1276,31 +1273,26 @@ def remove_conservation_relations(model) -> None:
                 frac = Fraction(coeff.numerator, coeff.denominator)
             else:
                 frac = float_to_rational(float(coeff))
-            row_idx.append(j)   # reaction → row (transposed layout)
-            col_idx.append(i)   # metabolite → column
+            row_idx.append(j)  # reaction → row (transposed layout)
+            col_idx.append(i)  # metabolite → column
             num_data.append(frac.numerator)
             den_data.append(frac.denominator)
 
     from scipy.sparse import csr_matrix as _csr
-    num_sparse = _csr((num_data, (row_idx, col_idx)),
-                      shape=(num_rxns, num_mets), dtype=np.int64)
-    den_sparse = _csr((den_data, (row_idx, col_idx)),
-                      shape=(num_rxns, num_mets), dtype=np.int64)
+    num_sparse = _csr((num_data, (row_idx, col_idx)), shape=(num_rxns, num_mets), dtype=np.int64)
+    den_sparse = _csr((den_data, (row_idx, col_idx)), shape=(num_rxns, num_mets), dtype=np.int64)
     rm = RationalMatrix._from_sparse(num_sparse, den_sparse)
     basic_mets = basic_columns(rm)
 
-    dependent_mets = [model.metabolites[i].id
-                      for i in set(range(num_mets)) - set(basic_mets)]
+    dependent_mets = [model.metabolites[i].id for i in set(range(num_mets)) - set(basic_mets)]
     for m_id in dependent_mets:
         model.metabolites.get_by_id(m_id).remove_from_model()
 
 
-def compress_cobra_model(
-    model,
-    methods: Optional[List[Union[str, CompressionMethod]]] = None,
-    in_place: bool = True,
-    suppressed_reactions: Optional[Set[str]] = None
-) -> CompressionResult:
+def compress_cobra_model(model,
+                         methods: Optional[List[Union[str, CompressionMethod]]] = None,
+                         in_place: bool = True,
+                         suppressed_reactions: Optional[Set[str]] = None) -> CompressionResult:
     """
     Compress a COBRA model using nullspace-based coupling detection.
 
@@ -1349,14 +1341,10 @@ def compress_cobra_model(
 
     # Run compression
     compressor = StoichMatrixCompressor(*compression_methods)
-    compression_record = compressor.compress(
-        stoich_matrix, reversible, metabolite_names, reaction_names, suppressed_reactions
-    )
+    compression_record = compressor.compress(stoich_matrix, reversible, metabolite_names, reaction_names, suppressed_reactions)
 
     # Apply to model (uses direct manipulation, bypasses solver)
-    reaction_map, objective_updates = _apply_compression_to_model(
-        model, compression_record, reaction_names
-    )
+    reaction_map, objective_updates = _apply_compression_to_model(model, compression_record, reaction_names)
 
     # Rebuild solver after all direct modifications
     _rebuild_solver(model, objective_updates)
@@ -1366,19 +1354,17 @@ def compress_cobra_model(
 
     converter = CompressionConverter(reaction_map, {}, flipped_reactions)
 
-    return CompressionResult(
-        compressed_model=model,
-        compression_converter=converter,
-        pre_matrix=pre_matrix,
-        post_matrix=post_matrix,
-        reaction_map=reaction_map,
-        metabolite_map={},
-        statistics=compression_record.stats,
-        methods_used=compression_methods,
-        original_reaction_names=original_reaction_names,
-        original_metabolite_names=original_metabolite_names,
-        flipped_reactions=flipped_reactions
-    )
+    return CompressionResult(compressed_model=model,
+                             compression_converter=converter,
+                             pre_matrix=pre_matrix,
+                             post_matrix=post_matrix,
+                             reaction_map=reaction_map,
+                             metabolite_map={},
+                             statistics=compression_record.stats,
+                             methods_used=compression_methods,
+                             original_reaction_names=original_reaction_names,
+                             original_metabolite_names=original_metabolite_names,
+                             flipped_reactions=flipped_reactions)
 
 
 def _rebuild_solver(model, objective_updates: dict) -> None:
@@ -1516,9 +1502,7 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
         main_rxn._upper_bound = float(min(ub_candidates)) if ub_candidates else float('inf')
 
         # Build reaction map
-        reaction_map[main_rxn.id] = {
-            original_reaction_names[idx]: coeff for idx, coeff in contributing
-        }
+        reaction_map[main_rxn.id] = {original_reaction_names[idx]: coeff for idx, coeff in contributing}
 
     # OPTIMIZATION: Batch reaction and metabolite removal
     # Use reaction objects directly (not IDs, since IDs are modified during compression)
@@ -1568,6 +1552,7 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
 # =============================================================================
 # Preprocessing Functions
 # =============================================================================
+
 
 def remove_blocked_reactions(model) -> List:
     """Remove blocked reactions (bounds == (0, 0)) from a network."""
@@ -1622,6 +1607,7 @@ def stoichmat_coeff2float(model) -> None:
 # High-Level Compression API
 # =============================================================================
 
+
 def compress_model(model, no_par_compress_reacs=set(), backend='sparse_rref'):
     """Compress a metabolic model using multiple techniques.
 
@@ -1656,7 +1642,7 @@ def compress_model(model, no_par_compress_reacs=set(), backend='sparse_rref'):
     #
     # Guards: all accesses are hasattr-checked so that cobra/optlang API
     # changes simply disable the optimisation without breaking compression.
-    _slc_cls = None   # the Constraint class we patched
+    _slc_cls = None  # the Constraint class we patched
     _slc_orig = None  # the original set_linear_coefficients method
     try:
         if hasattr(model, 'problem') and hasattr(model.problem, 'Constraint'):
@@ -1750,8 +1736,7 @@ def _remove_conservation_relations_java(model) -> None:
     from . import efmtool_cmp_interface as efm
     stoich_mat = create_stoichiometric_matrix(model, array_type='lil')
     basic_mets = efm.basic_columns_rat_java(stoich_mat.transpose().toarray(), tolerance=0)
-    dependent_mets = [model.metabolites[i].id
-                      for i in set(range(len(model.metabolites))) - set(basic_mets)]
+    dependent_mets = [model.metabolites[i].id for i in set(range(len(model.metabolites))) - set(basic_mets)]
     for m_id in dependent_mets:
         model.metabolites.get_by_id(m_id).remove_from_model()
 
@@ -1779,18 +1764,14 @@ def compress_model_coupled(model, backend='sparse_rref'):
     for r in model.reactions:
         r.gene_reaction_rule = ''
 
-    result = compress_cobra_model(
-        model,
-        methods=CompressionMethod.standard(),
-        in_place=True
-    )
+    result = compress_cobra_model(model, methods=CompressionMethod.standard(), in_place=True)
 
     # Account for flipped reactions
     flipped = set(result.flipped_reactions)
     return {
-        cmp_id: {orig_id: c * (-1 if orig_id in flipped else 1)
-                 for orig_id, c in orig_map.items()}
-        for cmp_id, orig_map in result.reaction_map.items()
+        cmp_id: {
+            orig_id: c * (-1 if orig_id in flipped else 1) for orig_id, c in orig_map.items()
+        } for cmp_id, orig_map in result.reaction_map.items()
     }
 
 
@@ -1820,13 +1801,11 @@ def compress_model_parallel(model, protected_rxns=set()):
     lb = [float(r.lower_bound) for r in model.reactions]
     ub = [float(r.upper_bound) for r in model.reactions]
 
-    fwd = sparse.lil_matrix([1. if (isinf(u) and f > 0 or isinf(l) and f < 0) else 0.
-                             for f, l, u in zip(factor, lb, ub)]).transpose()
-    rev = sparse.lil_matrix([1. if (isinf(l) and f > 0 or isinf(u) and f < 0) else 0.
-                             for f, l, u in zip(factor, lb, ub)]).transpose()
-    inh = sparse.lil_matrix([i + 1 if not ((isinf(ub[i]) or ub[i] == 0) and
-                                           (isinf(lb[i]) or lb[i] == 0))
-                             else 0 for i in range(len(model.reactions))]).transpose()
+    fwd = sparse.lil_matrix([1. if (isinf(u) and f > 0 or isinf(l) and f < 0) else 0. for f, l, u in zip(factor, lb, ub)]).transpose()
+    rev = sparse.lil_matrix([1. if (isinf(l) and f > 0 or isinf(u) and f < 0) else 0. for f, l, u in zip(factor, lb, ub)]).transpose()
+    inh = sparse.lil_matrix([
+        i + 1 if not ((isinf(ub[i]) or ub[i] == 0) and (isinf(lb[i]) or lb[i] == 0)) else 0 for i in range(len(model.reactions))
+    ]).transpose()
     A = sparse.hstack((A, fwd, rev, inh), 'csr')
 
     # Find parallel reactions via hash comparison

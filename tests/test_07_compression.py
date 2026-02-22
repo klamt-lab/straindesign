@@ -13,10 +13,10 @@ import straindesign.networktools as nt
 
 warnings.filterwarnings('ignore')
 
-
 # =============================================================================
 # Helpers / fixtures
 # =============================================================================
+
 
 def is_rational_type(value):
     return isinstance(value, (Fraction, SympyRational))
@@ -35,6 +35,7 @@ def model_small_example():
 # =============================================================================
 # Unit tests (Python-only, no Java required)
 # =============================================================================
+
 
 def test_no_jpype_loaded():
     """Verify that jpype is not loaded when importing straindesign."""
@@ -72,9 +73,7 @@ def test_compression_coefficient_type(model_small_example):
     reac_map = nt.compress_model_coupled(model_small_example, backend='sparse_rref')
     for new_reac, old_reacs in reac_map.items():
         for old_reac, coeff in old_reacs.items():
-            assert is_rational_type(coeff), (
-                f"Coefficient for {old_reac} in {new_reac}: expected rational, got {type(coeff)}"
-            )
+            assert is_rational_type(coeff), (f"Coefficient for {old_reac} in {new_reac}: expected rational, got {type(coeff)}")
 
 
 def test_stoichmat_coeff2rational_uses_rational_type(model_small_example):
@@ -82,19 +81,13 @@ def test_stoichmat_coeff2rational_uses_rational_type(model_small_example):
     nt.stoichmat_coeff2rational(model_small_example)
     for reaction in model_small_example.reactions:
         for metabolite, coeff in reaction._metabolites.items():
-            assert is_rational_type(coeff), (
-                f"Coefficient for {metabolite.id} in {reaction.id}: expected rational, got {type(coeff)}"
-            )
+            assert is_rational_type(coeff), (f"Coefficient for {metabolite.id} in {reaction.id}: expected rational, got {type(coeff)}")
 
 
 def test_basic_columns_rat_python():
     """basic_columns_rat returns correct pivot count for a rank-2 matrix."""
     import straindesign.efmtool_cmp_interface as efm
-    mx = np.array([
-        [1.0, 0.0, 1.0],
-        [0.0, 1.0, 1.0],
-        [1.0, 1.0, 2.0]
-    ])
+    mx = np.array([[1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [1.0, 1.0, 2.0]])
     basic_cols = efm.basic_columns_rat(mx)
     assert len(basic_cols) == 2, f"Expected 2 basic columns, got {len(basic_cols)}"
 
@@ -113,9 +106,7 @@ def test_compression_preserves_flux_space(model_small_example):
                 if old_reac in old_reacs:
                     obj[new_reac] = obj.pop(old_reac) * float(old_reacs[old_reac])
     compressed_value = sd.fba(model_small_example, obj=obj, obj_sense=MAXIMIZE).objective_value
-    assert abs(original_value - compressed_value) < 1e-6, (
-        f"FBA values differ: original={original_value}, compressed={compressed_value}"
-    )
+    assert abs(original_value - compressed_value) < 1e-6, (f"FBA values differ: original={original_value}, compressed={compressed_value}")
 
 
 @pytest.mark.timeout(30)
@@ -126,8 +117,12 @@ def test_full_strain_design_without_java(model_gpr):
     module = sd.SDModule(model_gpr, module_type=SUPPRESS, constraints='r_bm >= 0.1')
     try:
         sd.compute_strain_designs(
-            model_gpr, sd_modules=[module], max_solutions=1, max_cost=2,
-            compress=True, solution_approach=ANY,
+            model_gpr,
+            sd_modules=[module],
+            max_solutions=1,
+            max_cost=2,
+            compress=True,
+            solution_approach=ANY,
         )
     except ImportError as e:
         if 'jpype' in str(e).lower():
@@ -138,6 +133,7 @@ def test_full_strain_design_without_java(model_gpr):
 # =============================================================================
 # Backend parity tests (Java required; skipped if jpype unavailable)
 # =============================================================================
+
 
 @pytest.fixture
 def jpype_available():
@@ -151,9 +147,8 @@ def test_compression_parity_reaction_count(jpype_available):
     nt.compress_model(model_py, backend='sparse_rref')
     model_java = load_model("e_coli_core")
     nt.compress_model(model_java, backend='efmtool_rref')
-    assert len(model_py.reactions) == len(model_java.reactions), (
-        f"Reaction count mismatch: sparse_rref={len(model_py.reactions)}, efmtool_rref={len(model_java.reactions)}"
-    )
+    assert len(model_py.reactions) == len(
+        model_java.reactions), (f"Reaction count mismatch: sparse_rref={len(model_py.reactions)}, efmtool_rref={len(model_java.reactions)}")
 
 
 def test_fba_equivalence(jpype_available):
@@ -171,9 +166,7 @@ def test_fba_equivalence(jpype_available):
     model_java.objective = biomass_java
     val_py = model_py.optimize().objective_value
     val_java = model_java.optimize().objective_value
-    assert abs(val_py - val_java) < 1e-6, (
-        f"FBA objective mismatch: sparse_rref={val_py}, efmtool_rref={val_java}"
-    )
+    assert abs(val_py - val_java) < 1e-6, (f"FBA objective mismatch: sparse_rref={val_py}, efmtool_rref={val_java}")
 
 
 def test_fva_equivalence(jpype_available):
@@ -200,14 +193,13 @@ def test_fva_equivalence(jpype_available):
         if not direct and not flipped:
             true_mismatches.append(r_id)
 
-    assert len(true_mismatches) == 0, (
-        f"True FVA mismatches between sparse_rref and efmtool_rref backends: {true_mismatches}"
-    )
+    assert len(true_mismatches) == 0, (f"True FVA mismatches between sparse_rref and efmtool_rref backends: {true_mismatches}")
 
 
 # =============================================================================
 # FVA back-mapping test (sparse only)
 # =============================================================================
+
 
 def test_fva_expansion():
     """Compression map correctly back-maps FVA results to the original reaction space."""
@@ -242,14 +234,13 @@ def test_fva_expansion():
         if abs(exp_min - orig_min) > 1e-5 or abs(exp_max - orig_max) > 1e-5:
             true_mismatches.append(orig_id)
 
-    assert len(true_mismatches) == 0, (
-        f"FVA expansion mismatches for reactions: {true_mismatches}"
-    )
+    assert len(true_mismatches) == 0, (f"FVA expansion mismatches for reactions: {true_mismatches}")
 
 
 # =============================================================================
 # MCS validation
 # =============================================================================
+
 
 @pytest.mark.parametrize("backend", ["sparse_rref", "efmtool_rref"])
 def test_mcs_e_coli_core(backend):
@@ -271,11 +262,14 @@ def test_mcs_e_coli_core(backend):
     solver = SCIP if SCIP in strong_solvers else next(iter(strong_solvers))
     model = load_model('e_coli_core')
     modules = [sd.SDModule(model, SUPPRESS, constraints='BIOMASS_Ecoli_core_w_GAM >= 0.001')]
-    sols = sd.compute_strain_designs(model, sd_modules=modules, solution_approach=POPULATE,
-                                     max_cost=3, gene_kos=True, solver=solver, backend=backend)
-    assert len(sols.reaction_sd) == 455, (
-        f"Expected 455 MCS for e_coli_core (backend={backend}), got {len(sols.reaction_sd)}"
-    )
+    sols = sd.compute_strain_designs(model,
+                                     sd_modules=modules,
+                                     solution_approach=POPULATE,
+                                     max_cost=3,
+                                     gene_kos=True,
+                                     solver=solver,
+                                     backend=backend)
+    assert len(sols.reaction_sd) == 455, (f"Expected 455 MCS for e_coli_core (backend={backend}), got {len(sols.reaction_sd)}")
 
 
 # iML1515 is excluded from CI: free solver tiers reject models of this size.
