@@ -33,6 +33,7 @@ import sys
 # Pure Python Implementation (Default)
 # =============================================================================
 
+
 def basic_columns_rat(mx, tolerance=0):
     """Find basic columns using exact rational arithmetic (FLINT or sympy)."""
     from .compression import basic_columns_from_numpy
@@ -105,18 +106,14 @@ def _init_java():
         return
 
     if not _check_jpype_available():
-        raise ImportError(
-            "jpype1 is not installed. Legacy Java compression requires jpype1.\n"
-            "Install with: pip install jpype1\n"
-            "Or use the default Python compression (compression_backend='sparse_rref')."
-        )
+        raise ImportError("jpype1 is not installed. Legacy Java compression requires jpype1.\n"
+                          "Install with: pip install jpype1\n"
+                          "Or use the default Python compression (compression_backend='sparse_rref').")
 
     if not _check_sympy_available():
-        raise ImportError(
-            "sympy is not installed. Legacy Java compression requires sympy.\n"
-            "Install with: pip install sympy\n"
-            "Or use the default Python compression (compression_backend='sparse_rref')."
-        )
+        raise ImportError("sympy is not installed. Legacy Java compression requires sympy.\n"
+                          "Install with: pip install sympy\n"
+                          "Or use the default Python compression (compression_backend='sparse_rref').")
 
     import jpype
     import io
@@ -125,10 +122,8 @@ def _init_java():
     # Add efmtool.jar to classpath
     efmtool_jar = os.path.join(os.path.dirname(__file__), 'efmtool.jar')
     if not os.path.exists(efmtool_jar):
-        raise FileNotFoundError(
-            f"efmtool.jar not found at {efmtool_jar}. "
-            "Legacy Java compression requires the efmtool.jar file."
-        )
+        raise FileNotFoundError(f"efmtool.jar not found at {efmtool_jar}. "
+                                "Legacy Java compression requires the efmtool.jar file.")
 
     jpype.addClassPath(efmtool_jar)
 
@@ -147,8 +142,7 @@ def _init_java():
                 extra_info = " JAVA_HOME is not defined."
             raise RuntimeError(
                 "Failed to start JVM. Please ensure that Java (OpenJDK) is installed." + extra_info +
-                " If using conda, install openjdk from conda-forge and set JAVA_HOME to the OpenJDK installation path."
-            ) from e
+                " If using conda, install openjdk from conda-forge and set JAVA_HOME to the OpenJDK installation path.") from e
 
     import jpype.imports
 
@@ -169,8 +163,7 @@ def _init_java():
     BigInteger = _BigInteger
 
     subset_compression = CompressionMethod[:](
-        [CompressionMethod.CoupledZero, CompressionMethod.CoupledCombine, CompressionMethod.CoupledContradicting]
-    )
+        [CompressionMethod.CoupledZero, CompressionMethod.CoupledCombine, CompressionMethod.CoupledContradicting])
     jTrue = jpype.JBoolean(True)
     jSystem = jpype.JClass("java.lang.System")
 
@@ -180,6 +173,7 @@ def _init_java():
 # =============================================================================
 # Java Conversion Utilities
 # =============================================================================
+
 
 def numpy_mat2jpypeArrayOfArrays(npmat):
     """Convert numpy matrix to jpype array of arrays (requires Java init)."""
@@ -251,6 +245,7 @@ def jBigIntegerPair2sympyRat(numer, denom):
 # =============================================================================
 # Legacy Java Compression Functions
 # =============================================================================
+
 
 def basic_columns_rat_java(mx, tolerance=0):
     """
