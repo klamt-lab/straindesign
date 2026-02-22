@@ -1622,7 +1622,7 @@ def stoichmat_coeff2float(model) -> None:
 # High-Level Compression API
 # =============================================================================
 
-def compress_model(model, no_par_compress_reacs=set(), backend='sparse_rref'):
+def compress_model(model, no_par_compress_reacs=set(), compression_backend='sparse_rref'):
     """Compress a metabolic model using multiple techniques.
 
     Performs blocked reaction removal, conservation relation removal, and
@@ -1632,7 +1632,7 @@ def compress_model(model, no_par_compress_reacs=set(), backend='sparse_rref'):
     Args:
         model: COBRA model to compress in-place
         no_par_compress_reacs: Reactions exempt from parallel compression
-        backend: Compression backend to use:
+        compression_backend: Compression backend to use:
             - 'sparse_rref' (default): Pure Python sparse integer RREF.
               No external dependencies beyond NumPy/SciPy.
             - 'efmtool_rref' (legacy): Java-based EFMTool via JPype.
@@ -1669,7 +1669,7 @@ def compress_model(model, no_par_compress_reacs=set(), backend='sparse_rref'):
 
     cmp_mapReac = []
     try:
-        use_java = (backend == 'efmtool_rref')
+        use_java = (compression_backend == 'efmtool_rref')
         LOG.info('  Removing blocked reactions.')
         remove_blocked_reactions(model)
         LOG.info('  Converting coefficients to rationals.')
@@ -1687,7 +1687,7 @@ def compress_model(model, no_par_compress_reacs=set(), backend='sparse_rref'):
         while True:
             if not parallel:
                 LOG.info(f'  Compression {run}: Lumping coupled reactions.')
-                reac_map_exp = compress_model_coupled(model, backend)
+                reac_map_exp = compress_model_coupled(model, compression_backend)
                 for new_reac, old_reac_val in reac_map_exp.items():
                     old_reacs_no_compress = [r for r in no_par_compress_reacs if r in old_reac_val]
                     if old_reacs_no_compress:
@@ -1756,22 +1756,22 @@ def _remove_conservation_relations_java(model) -> None:
         model.metabolites.get_by_id(m_id).remove_from_model()
 
 
-def compress_model_coupled(model, backend='sparse_rref'):
+def compress_model_coupled(model, compression_backend='sparse_rref'):
     """Compress by lumping stoichiometrically coupled (dependent) reactions.
 
     Identifies groups of reactions whose flux vectors are proportional in every
     steady state (i.e. they share a common nullspace direction) and merges each
     group into a single lumped reaction.  Both the pure-Python and legacy Java
-    backends perform this operation; the backend controls the nullspace algorithm.
+    backends perform this operation; the compression_backend controls the nullspace algorithm.
 
     Args:
         model: COBRA model to compress in-place
-        backend: 'sparse_rref' (default, Python) or 'efmtool_rref' (Java legacy)
+        compression_backend: 'sparse_rref' (default, Python) or 'efmtool_rref' (Java legacy)
 
     Returns:
         dict: Mapping {compressed_id: {orig_id: factor, ...}}
     """
-    if backend == 'efmtool_rref':
+    if compression_backend == 'efmtool_rref':
         from .efmtool_cmp_interface import compress_model_java
         return compress_model_java(model)
 

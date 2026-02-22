@@ -122,6 +122,7 @@ How to cite:
    9_cnapy_integration
    api_reference
    legacy_methods
+   developers_guide
    
 .. 
    examples/JN_07_network_design.ipynb

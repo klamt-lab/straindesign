@@ -1,4 +1,4 @@
-"""Compression tests: unit tests, backend parity, FVA equivalence, and MCS validation."""
+"""Compression tests: unit tests, compression_backend parity, FVA equivalence, and MCS validation."""
 import sys
 import pytest
 import numpy as np
@@ -58,10 +58,10 @@ def test_python_compression_basic(model_gpr):
 
 
 def test_python_compression_coupled_function(model_small_example):
-    """compress_model_coupled with backend='sparse_rref' returns a dict."""
+    """compress_model_coupled with compression_backend='sparse_rref' returns a dict."""
     nt.stoichmat_coeff2rational(model_small_example)
     nt.remove_conservation_relations(model_small_example)
-    reac_map = nt.compress_model_coupled(model_small_example, backend='sparse_rref')
+    reac_map = nt.compress_model_coupled(model_small_example, compression_backend='sparse_rref')
     assert isinstance(reac_map, dict)
 
 
@@ -69,7 +69,7 @@ def test_compression_coefficient_type(model_small_example):
     """Compression coefficients are exact rational number types."""
     nt.stoichmat_coeff2rational(model_small_example)
     nt.remove_conservation_relations(model_small_example)
-    reac_map = nt.compress_model_coupled(model_small_example, backend='sparse_rref')
+    reac_map = nt.compress_model_coupled(model_small_example, compression_backend='sparse_rref')
     for new_reac, old_reacs in reac_map.items():
         for old_reac, coeff in old_reacs.items():
             assert is_rational_type(coeff), (
@@ -146,22 +146,22 @@ def jpype_available():
 
 
 def test_compression_parity_reaction_count(jpype_available):
-    """Both backends compress e_coli_core to the same number of reactions."""
+    """Both compression backends compress e_coli_core to the same number of reactions."""
     model_py = load_model("e_coli_core")
-    nt.compress_model(model_py, backend='sparse_rref')
+    nt.compress_model(model_py, compression_backend='sparse_rref')
     model_java = load_model("e_coli_core")
-    nt.compress_model(model_java, backend='efmtool_rref')
+    nt.compress_model(model_java, compression_backend='efmtool_rref')
     assert len(model_py.reactions) == len(model_java.reactions), (
         f"Reaction count mismatch: sparse_rref={len(model_py.reactions)}, efmtool_rref={len(model_java.reactions)}"
     )
 
 
 def test_fba_equivalence(jpype_available):
-    """Both backends produce compressed models with the same optimal FBA value."""
+    """Both compression backends produce compressed models with the same optimal FBA value."""
     model_py = load_model("e_coli_core")
-    nt.compress_model(model_py, backend='sparse_rref')
+    nt.compress_model(model_py, compression_backend='sparse_rref')
     model_java = load_model("e_coli_core")
-    nt.compress_model(model_java, backend='efmtool_rref')
+    nt.compress_model(model_java, compression_backend='efmtool_rref')
 
     biomass_py = next((r for r in model_py.reactions if 'biomass' in r.id.lower()), None)
     biomass_java = next((r for r in model_java.reactions if 'biomass' in r.id.lower()), None)
@@ -177,15 +177,15 @@ def test_fba_equivalence(jpype_available):
 
 
 def test_fva_equivalence(jpype_available):
-    """Both backends produce flux spaces with no true FVA mismatches.
+    """Both compression backends produce flux spaces with no true FVA mismatches.
 
     Sign-convention differences (Python = -Java for some lumped reactions) are
     mathematically equivalent and are not counted as mismatches.
     """
     model_py = load_model("e_coli_core")
-    nt.compress_model(model_py, backend='sparse_rref')
+    nt.compress_model(model_py, compression_backend='sparse_rref')
     model_java = load_model("e_coli_core")
-    nt.compress_model(model_java, backend='efmtool_rref')
+    nt.compress_model(model_java, compression_backend='efmtool_rref')
 
     fva_py = flux_variability_analysis(model_py, fraction_of_optimum=0.0, processes=1)
     fva_java = flux_variability_analysis(model_java, fraction_of_optimum=0.0, processes=1)
@@ -216,7 +216,7 @@ def test_fva_expansion():
     fva_orig = flux_variability_analysis(model_orig, fraction_of_optimum=0.0, processes=1)
 
     model_cmp = load_model("e_coli_core")
-    cmp_map = nt.compress_model(model_cmp, backend='sparse_rref')
+    cmp_map = nt.compress_model(model_cmp, compression_backend='sparse_rref')
     fva_cmp = flux_variability_analysis(model_cmp, fraction_of_optimum=0.0, processes=1)
 
     # Build inverse map: orig_id -> (compressed_id, coefficient)
@@ -251,8 +251,8 @@ def test_fva_expansion():
 # MCS validation
 # =============================================================================
 
-@pytest.mark.parametrize("backend", ["sparse_rref", "efmtool_rref"])
-def test_mcs_e_coli_core(backend):
+@pytest.mark.parametrize("compression_backend", ["sparse_rref", "efmtool_rref"])
+def test_mcs_e_coli_core(compression_backend):
     """MCS computation on e_coli_core returns the expected 455 solutions.
 
     Parametrized over both compression backends so regressions in either
@@ -261,7 +261,7 @@ def test_mcs_e_coli_core(backend):
     Requires a strong MILP solver (Gurobi, CPLEX, or SCIP). GLPK cannot
     reliably enumerate all solutions via POPULATE and is excluded.
     """
-    if backend == "efmtool_rref":
+    if compression_backend == "efmtool_rref":
         pytest.importorskip("jpype", reason="jpype not installed; skipping efmtool backend")
     from straindesign.names import SUPPRESS, POPULATE, GLPK, SCIP, GUROBI, CPLEX
     # Solver priority: SCIP (no size limit) > CPLEX > GUROBI (both have free-tier limits)
@@ -272,9 +272,10 @@ def test_mcs_e_coli_core(backend):
     model = load_model('e_coli_core')
     modules = [sd.SDModule(model, SUPPRESS, constraints='BIOMASS_Ecoli_core_w_GAM >= 0.001')]
     sols = sd.compute_strain_designs(model, sd_modules=modules, solution_approach=POPULATE,
-                                     max_cost=3, gene_kos=True, solver=solver, backend=backend)
+                                     max_cost=3, gene_kos=True, solver=solver,
+                                     compression_backend=compression_backend)
     assert len(sols.reaction_sd) == 455, (
-        f"Expected 455 MCS for e_coli_core (backend={backend}), got {len(sols.reaction_sd)}"
+        f"Expected 455 MCS for e_coli_core (compression_backend={compression_backend}), got {len(sols.reaction_sd)}"
     )
 
 
