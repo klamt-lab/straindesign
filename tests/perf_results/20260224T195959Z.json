@@ -1,0 +1,20 @@
+{
+  "timestamp": "20260224T195959Z",
+  "git_sha": "b7fdb30",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.12.12",
+  "solver_versions": {
+    "cplex": "22.1.2.0",
+    "gurobi": "13.0.0"
+  },
+  "results": [
+    {
+      "test": "optknock",
+      "solver": "cplex",
+      "model": "weak_coupling",
+      "elapsed_s": 5.651,
+      "n_solutions": 3,
+      "status": "optimal"
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "timestamp": "20260224T133818Z",
+  "git_sha": "b7fdb30",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.12.12",
+  "solver_versions": {
+    "cplex": "22.1.2.0",
+    "gurobi": "13.0.0"
+  },
+  "results": [
+    {
+      "test": "ecoli_core_455",
+      "solver": "cplex",
+      "model": "e_coli_core",
+      "elapsed_s": 7.145,
+      "n_solutions": 455,
+      "status": "optimal"
+    },
+    {
+      "test": "ecoli_core_455",
+      "solver": "gurobi",
+      "model": "e_coli_core",
+      "elapsed_s": 7.692,
+      "n_solutions": 455,
+      "status": "optimal"
+    },
+    {
+      "test": "imlcore_ethanol",
+      "solver": "cplex",
+      "model": "iMLcore",
+      "elapsed_s": 47.472,
+      "n_solutions": 4,
+      "status": "optimal"
+    },
+    {
+      "test": "imlcore_ethanol",
+      "solver": "gurobi",
+      "model": "iMLcore",
+      "elapsed_s": 53.769,
+      "n_solutions": 4,
+      "status": "optimal"
+    },
+    {
+      "test": "imlcore_growth",
+      "solver": "cplex",
+      "model": "iMLcore",
+      "elapsed_s": 70.538,
+      "n_solutions": 310,
+      "status": "optimal"
+    },
+    {
+      "test": "imlcore_growth",
+      "solver": "gurobi",
+      "model": "iMLcore",
+      "elapsed_s": 78.82,
+      "n_solutions": 310,
+      "status": "optimal"
+    }
+  ]
+}
