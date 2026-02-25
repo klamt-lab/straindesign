@@ -15,6 +15,7 @@ conservation relations removed). Use networktools.compress_model() for
 automatic preprocessing.
 """
 
+import ast
 import copy
 import logging
 import numpy as np
@@ -26,7 +27,7 @@ from typing import Dict, Iterator, List, Optional, Set, Tuple, Union, Any
 from fractions import Fraction
 from scipy import sparse
 from scipy.sparse import csr_matrix, csc_matrix
-from sympy import Rational
+from sympy import Rational, Symbol as SympySymbol, And as SympyAnd, Or as SympyOr, simplify_logic
 from cobra import Configuration
 from cobra.util.array import create_stoichiometric_matrix
 
@@ -1604,11 +1605,110 @@ def stoichmat_coeff2float(model) -> None:
 
 
 # =============================================================================
+# GPR Propagation Helpers
+# =============================================================================
+
+
+def _gpr_ast_to_sympy(node):
+    """Convert a cobra GPR AST node to a sympy boolean expression.
+
+    Returns None for empty GPR (node is None), meaning the reaction has
+    no gene requirement and is always active.
+    """
+    if node is None:
+        return None
+    if isinstance(node, ast.BoolOp):
+        children = [_gpr_ast_to_sympy(v) for v in node.values]
+        if isinstance(node.op, ast.And):
+            return SympyAnd(*children)
+        else:
+            return SympyOr(*children)
+    elif isinstance(node, ast.Name):
+        return SympySymbol(node.id)
+    return None
+
+
+def _sympy_to_gpr_string(expr):
+    """Convert a sympy boolean expression to a GPR rule string.
+
+    Produces correctly parenthesised output with sorted gene names for
+    deterministic results.  Returns '' for None input.
+    """
+    if expr is None:
+        return ''
+    if isinstance(expr, SympySymbol):
+        return str(expr)
+    if expr.func == SympyAnd:
+        parts = []
+        for arg in sorted(expr.args, key=str):
+            s = _sympy_to_gpr_string(arg)
+            if hasattr(arg, 'func') and arg.func == SympyOr:
+                s = f'({s})'
+            parts.append(s)
+        return ' and '.join(parts)
+    if expr.func == SympyOr:
+        parts = []
+        for arg in sorted(expr.args, key=str):
+            s = _sympy_to_gpr_string(arg)
+            if hasattr(arg, 'func') and arg.func == SympyAnd:
+                s = f'({s})'
+            parts.append(s)
+        return ' or '.join(parts)
+    return str(expr)
+
+
+def _combine_gpr_and(gpr_bodies):
+    """Combine GPR AST bodies with AND logic (for coupled/serial reaction merge).
+
+    Args:
+        gpr_bodies: list of AST nodes (reaction.gpr.body), may include None
+
+    An empty/None GPR means the reaction has no gene requirement (always active),
+    which acts as True in boolean logic.  AND with True is a no-op, so empty GPRs
+    are skipped.  Returns '' if all inputs are empty (no gene restriction).
+
+    Uses sympy.simplify_logic to minimize the number of operations.
+    """
+    sympy_exprs = [_gpr_ast_to_sympy(b) for b in gpr_bodies]
+    non_empty = [s for s in sympy_exprs if s is not None]
+    if not non_empty:
+        return ''
+    if len(non_empty) == 1:
+        return _sympy_to_gpr_string(simplify_logic(non_empty[0]))
+    combined = SympyAnd(*non_empty)
+    simplified = simplify_logic(combined)
+    return _sympy_to_gpr_string(simplified)
+
+
+def _combine_gpr_or(gpr_bodies):
+    """Combine GPR AST bodies with OR logic (for parallel reaction merge).
+
+    Args:
+        gpr_bodies: list of AST nodes (reaction.gpr.body), may include None
+
+    If any input is None (reaction always active regardless of genes), the
+    combined reaction is also always active, so the result is '' (no restriction).
+
+    Uses sympy.simplify_logic to minimize the number of operations.
+    """
+    sympy_exprs = [_gpr_ast_to_sympy(b) for b in gpr_bodies]
+    if any(s is None for s in sympy_exprs):
+        return ''
+    if not sympy_exprs:
+        return ''
+    if len(sympy_exprs) == 1:
+        return _sympy_to_gpr_string(simplify_logic(sympy_exprs[0]))
+    combined = SympyOr(*sympy_exprs)
+    simplified = simplify_logic(combined)
+    return _sympy_to_gpr_string(simplified)
+
+
+# =============================================================================
 # High-Level Compression API
 # =============================================================================
 
 
-def compress_model(model, no_par_compress_reacs=set(), compression_backend='sparse_rref'):
+def compress_model(model, no_par_compress_reacs=set(), compression_backend='sparse_rref', propagate_gpr=False):
     """Compress a metabolic model using multiple techniques.
 
     Performs blocked reaction removal, conservation relation removal, and
@@ -1623,6 +1723,11 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
               No external dependencies beyond NumPy/SciPy.
             - 'efmtool_rref' (legacy): Java-based EFMTool via JPype.
               Requires a JVM and the jpype1 package.
+        propagate_gpr: If True, propagate and simplify GPR rules through
+            compression (AND for coupled, OR for parallel merges).
+            Empty GPR rules are correctly handled: skipped in AND (always
+            active), and absorb in OR (result is always active).
+            Uses sympy for boolean simplification. Default False.
 
     Returns:
         list of dict: Compression maps for reversing each compression step
@@ -1673,7 +1778,7 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
         while True:
             if not parallel:
                 LOG.info(f'  Compression {run}: Lumping coupled reactions.')
-                reac_map_exp = compress_model_coupled(model, compression_backend)
+                reac_map_exp = compress_model_coupled(model, compression_backend, propagate_gpr=propagate_gpr)
                 for new_reac, old_reac_val in reac_map_exp.items():
                     old_reacs_no_compress = [r for r in no_par_compress_reacs if r in old_reac_val]
                     if old_reacs_no_compress:
@@ -1682,7 +1787,7 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
                         no_par_compress_reacs.add(new_reac)
             else:
                 LOG.info(f'  Compression {run}: Lumping parallel reactions.')
-                reac_map_exp = compress_model_parallel(model, no_par_compress_reacs)
+                reac_map_exp = compress_model_parallel(model, no_par_compress_reacs, propagate_gpr=propagate_gpr)
 
             if use_java:
                 _remove_conservation_relations_java(model)
@@ -1741,7 +1846,7 @@ def _remove_conservation_relations_java(model) -> None:
         model.metabolites.get_by_id(m_id).remove_from_model()
 
 
-def compress_model_coupled(model, compression_backend='sparse_rref'):
+def compress_model_coupled(model, compression_backend='sparse_rref', propagate_gpr=False):
     """Compress by lumping stoichiometrically coupled (dependent) reactions.
 
     Identifies groups of reactions whose flux vectors are proportional in every
@@ -1752,27 +1857,45 @@ def compress_model_coupled(model, compression_backend='sparse_rref'):
     Args:
         model: COBRA model to compress in-place
         compression_backend: 'sparse_rref' (default, Python) or 'efmtool_rref' (Java legacy)
+        propagate_gpr: If True, AND-combine GPR rules of merged reactions
+            (with sympy simplification). Empty GPRs are skipped. Default False.
 
     Returns:
         dict: Mapping {compressed_id: {orig_id: factor, ...}}
     """
+    # Save GPR AST bodies before either backend clears them
+    if propagate_gpr:
+        saved_gpr_bodies = {r.id: r.gpr.body for r in model.reactions}
+
     if compression_backend == 'efmtool_rref':
         from .efmtool_cmp_interface import compress_model_java
-        return compress_model_java(model)
+        reaction_map = compress_model_java(model)
+    else:
+        # Clear gene rules to match Java behavior
+        for r in model.reactions:
+            r.gene_reaction_rule = ''
 
-    # Clear gene rules to match Java behavior
-    for r in model.reactions:
-        r.gene_reaction_rule = ''
+        result = compress_cobra_model(model, methods=CompressionMethod.standard(), in_place=True)
 
-    result = compress_cobra_model(model, methods=CompressionMethod.standard(), in_place=True)
+        # Account for flipped reactions
+        flipped = set(result.flipped_reactions)
+        reaction_map = {
+            cmp_id: {
+                orig_id: c * (-1 if orig_id in flipped else 1) for orig_id, c in orig_map.items()
+            } for cmp_id, orig_map in result.reaction_map.items()
+        }
 
-    # Account for flipped reactions
-    flipped = set(result.flipped_reactions)
-    return {
-        cmp_id: {
-            orig_id: c * (-1 if orig_id in flipped else 1) for orig_id, c in orig_map.items()
-        } for cmp_id, orig_map in result.reaction_map.items()
-    }
+    # Propagate GPR rules: AND-combine contributing reactions' GPR ASTs
+    if propagate_gpr:
+        for cmp_id, orig_map in reaction_map.items():
+            try:
+                rxn = model.reactions.get_by_id(cmp_id)
+            except KeyError:
+                continue
+            gpr_bodies = [saved_gpr_bodies.get(orig_id) for orig_id in orig_map]
+            rxn.gene_reaction_rule = _combine_gpr_and(gpr_bodies)
+
+    return reaction_map
 
 
 # Backward-compatibility alias (old name referenced efmtool, but the function
@@ -1780,12 +1903,14 @@ def compress_model_coupled(model, compression_backend='sparse_rref'):
 compress_model_efmtool = compress_model_coupled
 
 
-def compress_model_parallel(model, protected_rxns=set()):
+def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
     """Compress by lumping parallel reactions.
 
     Args:
         model: COBRA model to compress in-place
         protected_rxns: Reactions exempt from parallel compression
+        propagate_gpr: If True, OR-combine GPR rules of lumped reactions
+            (with sympy simplification). Default False.
 
     Returns:
         dict: Mapping {compressed_id: {orig_id: factor, ...}}
@@ -1793,6 +1918,9 @@ def compress_model_parallel(model, protected_rxns=set()):
     old_num_reac = len(model.reactions)
     old_objective = [r.objective_coefficient for r in model.reactions]
     old_reac_ids = [r.id for r in model.reactions]
+
+    if propagate_gpr:
+        old_gpr_bodies = {r.id: r.gpr.body for r in model.reactions}
 
     stoichmat_T = create_stoichiometric_matrix(model, 'lil').transpose()
     factor = [d[0] if d else 1.0 for d in stoichmat_T.data]
@@ -1839,9 +1967,23 @@ def compress_model_parallel(model, protected_rxns=set()):
                 main_rxn.id += '...'
             del_rxns[rxn_idx[i]] = True
 
+    # Pre-compute combined GPR for each group (OR logic) before deletions.
+    # Save (surviving_rxn_object, combined_gpr_string) pairs.
+    if propagate_gpr:
+        group_gpr = []
+        for rxn_idx_group in subset_list:
+            main_rxn = model.reactions[rxn_idx_group[0]]
+            gpr_bodies = [old_gpr_bodies.get(old_reac_ids[j]) for j in rxn_idx_group]
+            group_gpr.append((main_rxn, _combine_gpr_or(gpr_bodies)))
+
     del_indices = np.where(del_rxns)[0]
     for i in reversed(del_indices):
         model.reactions[i].remove_from_model(remove_orphans=True)
+
+    # Set combined GPR rules on surviving reactions
+    if propagate_gpr:
+        for rxn, combined_gpr in group_gpr:
+            rxn.gene_reaction_rule = combined_gpr
 
     # Build compression map
     rational_map = {}
@@ -1884,6 +2026,11 @@ __all__ = [
     'compress_model_coupled',
     'compress_model_efmtool',  # backward-compat alias
     'compress_model_parallel',
+    # GPR propagation helpers
+    '_gpr_ast_to_sympy',
+    '_sympy_to_gpr_string',
+    '_combine_gpr_and',
+    '_combine_gpr_or',
     # Preprocessing
     'remove_blocked_reactions',
     'remove_ext_mets',

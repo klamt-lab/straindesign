@@ -23,6 +23,7 @@ This module re-exports them for backwards compatibility.
 """
 
 import ast
+import hashlib
 import logging
 import numpy as np
 from re import search
@@ -423,7 +424,8 @@ def extend_model_gpr(model, use_names=False):
                         "solver or consider simplifying GPR rules or gene names in your model.")
 
     def truncate(id):
-        return id[0:MAX_NAME_LEN - 16] + hex(abs(hash(id)))[2:]
+        h = hashlib.sha256(id.encode()).hexdigest()[:20]
+        return id[0:MAX_NAME_LEN - 21] + "_" + h
 
     solver = search('(' + '|'.join(avail_solvers) + ')', model.solver.interface.__name__)[0]
 
