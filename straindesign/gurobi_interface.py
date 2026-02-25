@@ -95,7 +95,7 @@ class Gurobi_MILP_LP(gp.Model):
             A Gurobi MILP/LP interface class.
     """
 
-    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None, seed=None):
+    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None, seed=None, milp_threads=None):
         super().__init__()
         try:
             numvars = A_ineq.shape[1]
@@ -124,10 +124,14 @@ class Gurobi_MILP_LP(gp.Model):
         # add indicator constraints
         self._has_indicator_constr = indic_constr is not None
         if indic_constr is not None:
+            A_csr = sparse.csr_matrix(indic_constr.A)
             for i in range(len(indic_constr.sense)):
+                start, end = A_csr.indptr[i], A_csr.indptr[i + 1]
+                cols = A_csr.indices[start:end]
+                vals = A_csr.data[start:end]
+                lhs = gp.quicksum(float(val) * x[int(col)] for col, val in zip(cols, vals))
                 self.addGenConstrIndicator(x[indic_constr.binv[i]], bool(indic_constr.indicval[i]),
-                                           gp.quicksum(indic_constr.A[i, j] * x[j] for j in range(len(c)) if indic_constr.A[i, j] != 0.0),
-                                           '=' if indic_constr.sense[i] == 'E' else '<', indic_constr.b[i])
+                                           lhs, '=' if indic_constr.sense[i] == 'E' else '<', indic_constr.b[i])
             # Gurobi 13+ has a bug where presolve with indicator constraints can cause
             # error 10005 "Unable to retrieve attribute 'ObjBound'". Disable presolve.
             if gp.gurobi.version()[0] >= 13:
@@ -148,6 +152,8 @@ class Gurobi_MILP_LP(gp.Model):
                 seed = int(random.randint(0, 2**16 - 1))
                 logging.info('  MILP Seed: ' + str(seed))
             self.params.Seed = seed
+            if milp_threads is not None:
+                self.params.Threads = milp_threads
             self.params.IntFeasTol = 1e-9  # (0 is not allowed by Gurobi)
             # yield only optimal solutions in pool
             self.params.PoolGap = 1e-9

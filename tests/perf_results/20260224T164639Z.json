@@ -1,0 +1,140 @@
+{
+  "timestamp": "20260224T164639Z",
+  "git_sha": "0a04ebf",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.12.12",
+  "solver_versions": {
+    "cplex": "22.1.2.0",
+    "gurobi": "13.0.0"
+  },
+  "results": [
+    {
+      "test": "mcs_455",
+      "solver": "cplex",
+      "model": "e_coli_core",
+      "elapsed_s": 7.818,
+      "n_solutions": 455,
+      "status": "optimal"
+    },
+    {
+      "test": "mcs_455",
+      "solver": "gurobi",
+      "model": "e_coli_core",
+      "elapsed_s": 6.412,
+      "n_solutions": 455,
+      "status": "optimal"
+    },
+    {
+      "test": "mcs_wgcp",
+      "solver": "cplex",
+      "model": "e_coli_core",
+      "elapsed_s": 3.408,
+      "n_solutions": 8,
+      "status": "optimal"
+    },
+    {
+      "test": "mcs_wgcp",
+      "solver": "gurobi",
+      "model": "e_coli_core",
+      "elapsed_s": 2.225,
+      "n_solutions": 8,
+      "status": "optimal"
+    },
+    {
+      "test": "optknock",
+      "solver": "cplex",
+      "model": "e_coli_core",
+      "elapsed_s": 3.546,
+      "n_solutions": 30,
+      "status": "optimal"
+    },
+    {
+      "test": "optknock",
+      "solver": "gurobi",
+      "model": "e_coli_core",
+      "elapsed_s": 1.596,
+      "n_solutions": 30,
+      "status": "optimal"
+    },
+    {
+      "test": "robustknock",
+      "solver": "cplex",
+      "model": "e_coli_core",
+      "elapsed_s": 5.084,
+      "n_solutions": 36,
+      "status": "optimal"
+    },
+    {
+      "test": "robustknock",
+      "solver": "gurobi",
+      "model": "e_coli_core",
+      "elapsed_s": 2.44,
+      "n_solutions": 36,
+      "status": "optimal"
+    },
+    {
+      "test": "optcouple",
+      "solver": "cplex",
+      "model": "e_coli_core",
+      "elapsed_s": 3.858,
+      "n_solutions": 0,
+      "status": "infeasible"
+    },
+    {
+      "test": "optcouple",
+      "solver": "gurobi",
+      "model": "e_coli_core",
+      "elapsed_s": 2.837,
+      "n_solutions": 0,
+      "status": "infeasible"
+    },
+    {
+      "test": "imlcore_ethanol",
+      "solver": "cplex",
+      "model": "iMLcore",
+      "elapsed_s": 44.154,
+      "n_solutions": 4,
+      "status": "optimal"
+    },
+    {
+      "test": "imlcore_ethanol",
+      "solver": "gurobi",
+      "model": "iMLcore",
+      "elapsed_s": 50.853,
+      "n_solutions": 4,
+      "status": "optimal"
+    },
+    {
+      "test": "imlcore_growth",
+      "solver": "cplex",
+      "model": "iMLcore",
+      "elapsed_s": 63.975,
+      "n_solutions": 310,
+      "status": "optimal"
+    },
+    {
+      "test": "imlcore_growth",
+      "solver": "gurobi",
+      "model": "iMLcore",
+      "elapsed_s": 69.277,
+      "n_solutions": 310,
+      "status": "optimal"
+    },
+    {
+      "test": "iml1515_393",
+      "solver": "cplex",
+      "model": "iML1515",
+      "elapsed_s": 11176.897,
+      "n_solutions": 393,
+      "status": "optimal"
+    },
+    {
+      "test": "iml1515_393",
+      "solver": "gurobi",
+      "model": "iML1515",
+      "elapsed_s": 2772.703,
+      "n_solutions": 393,
+      "status": "optimal"
+    }
+  ]
+}

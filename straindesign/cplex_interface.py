@@ -95,7 +95,7 @@ class Cplex_MILP_LP(Cplex):
             A CPLEX MILP/LP interface class.
     """
 
-    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None, seed=None):
+    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None, seed=None, milp_threads=None):
         super().__init__()
         self.objective.set_sense(self.objective.sense.minimize)
         try:
@@ -151,6 +151,8 @@ class Cplex_MILP_LP(Cplex):
                 # seed = random.randint(0, _const.CPX_BIGINT)
                 seed = int(random.randint(0, 2**16 - 1))
             self.parameters.randomseed.set(seed)
+            if milp_threads is not None:
+                self.parameters.threads.set(milp_threads)
             self.parameters.mip.pool.absgap.set(0.0)
             self.parameters.mip.pool.relgap.set(0.0)
             self.parameters.mip.pool.intensity.set(4)

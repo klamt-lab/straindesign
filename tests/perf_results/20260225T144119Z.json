@@ -1,0 +1,124 @@
+{
+  "timestamp": "20260225T144119Z",
+  "git_sha": "0a04ebf",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.12.12",
+  "solver_versions": {
+    "cplex": "22.1.2.0",
+    "gurobi": "13.0.0"
+  },
+  "results": [
+    {
+      "test": "mcs_455",
+      "solver": "cplex",
+      "model": "e_coli_core",
+      "elapsed_s": 4.91,
+      "n_solutions": 455,
+      "status": "optimal"
+    },
+    {
+      "test": "mcs_455",
+      "solver": "gurobi",
+      "model": "e_coli_core",
+      "elapsed_s": 4.126,
+      "n_solutions": 455,
+      "status": "optimal"
+    },
+    {
+      "test": "mcs_wgcp",
+      "solver": "cplex",
+      "model": "weak_coupling",
+      "elapsed_s": 0.848,
+      "n_solutions": 3,
+      "status": "optimal"
+    },
+    {
+      "test": "mcs_wgcp",
+      "solver": "gurobi",
+      "model": "weak_coupling",
+      "elapsed_s": 0.228,
+      "n_solutions": 3,
+      "status": "optimal"
+    },
+    {
+      "test": "optknock",
+      "solver": "cplex",
+      "model": "weak_coupling",
+      "elapsed_s": 1.395,
+      "n_solutions": 3,
+      "status": "optimal"
+    },
+    {
+      "test": "optknock",
+      "solver": "gurobi",
+      "model": "weak_coupling",
+      "elapsed_s": 0.209,
+      "n_solutions": 3,
+      "status": "optimal"
+    },
+    {
+      "test": "robustknock",
+      "solver": "cplex",
+      "model": "weak_coupling",
+      "elapsed_s": 3.2,
+      "n_solutions": 3,
+      "status": "optimal"
+    },
+    {
+      "test": "robustknock",
+      "solver": "gurobi",
+      "model": "weak_coupling",
+      "elapsed_s": 0.259,
+      "n_solutions": 3,
+      "status": "optimal"
+    },
+    {
+      "test": "optcouple",
+      "solver": "cplex",
+      "model": "weak_coupling",
+      "elapsed_s": 1.384,
+      "n_solutions": 2,
+      "status": "optimal"
+    },
+    {
+      "test": "optcouple",
+      "solver": "gurobi",
+      "model": "weak_coupling",
+      "elapsed_s": 0.275,
+      "n_solutions": 2,
+      "status": "optimal"
+    },
+    {
+      "test": "imlcore_ethanol",
+      "solver": "cplex",
+      "model": "iMLcore",
+      "elapsed_s": 36.26,
+      "n_solutions": 4,
+      "status": "optimal"
+    },
+    {
+      "test": "imlcore_ethanol",
+      "solver": "gurobi",
+      "model": "iMLcore",
+      "elapsed_s": 34.347,
+      "n_solutions": 4,
+      "status": "optimal"
+    },
+    {
+      "test": "imlcore_growth",
+      "solver": "cplex",
+      "model": "iMLcore",
+      "elapsed_s": 37.211,
+      "n_solutions": 310,
+      "status": "optimal"
+    },
+    {
+      "test": "imlcore_growth",
+      "solver": "gurobi",
+      "model": "iMLcore",
+      "elapsed_s": 35.523,
+      "n_solutions": 310,
+      "status": "optimal"
+    }
+  ]
+}

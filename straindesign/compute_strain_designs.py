@@ -156,7 +156,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
-        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, 'compression_backend'
+        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'compression_backend'
     }
     logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
@@ -261,7 +261,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), DisableLogger():  # suppress standard output from copying model
         orig_model = model
         model = model.copy()
-        uncmp_model = model.copy()
     orig_ko_cost = deepcopy(uncmp_ko_cost)
     orig_ki_cost = deepcopy(uncmp_ki_cost)
     orig_reg_cost = deepcopy(uncmp_reg_cost)
@@ -273,22 +272,23 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         # ensure that gene and reaction kos/kis do not overlap
         g_itv = {g for g in list(uncmp_gko_cost.keys()) + list(uncmp_gki_cost.keys())}
         r_itv = {r for r in list(uncmp_ko_cost.keys()) + list(uncmp_ki_cost.keys())}
-        if np.any([np.any([True for g in uncmp_model.reactions.get_by_id(r).genes if g in g_itv]) for r in r_itv]) or \
+        if np.any([np.any([True for g in model.reactions.get_by_id(r).genes if g in g_itv]) for r in r_itv]) or \
             np.any(set(uncmp_gko_cost.keys()).intersection(set(uncmp_gki_cost.keys()))) or \
             np.any(set(uncmp_ko_cost.keys()).intersection(set(uncmp_ki_cost.keys()))):
             raise Exception('Specified gene and reaction knock-out/-in costs contain overlap. '\
                             'Make sure that metabolic interventions are enabled either through reaction or '\
                             'through gene interventions and are defined either as knock-ins or as knock-outs.')
     # 1) Preprocess Model
-    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), DisableLogger():  # suppress standard output from copying model
-        cmp_model = uncmp_model.copy()
-    # remove external metabolites
-    remove_ext_mets(cmp_model)
     # replace model bounds with +/- inf if above a certain threshold
     remove_dummy_bounds(model)
     # FVAs to identify blocked, irreversible and essential reactions, as well as non-bounding bounds
     logging.info('  FVA to identify blocked reactions and irreversibilities.')
     bound_blocked_or_irrevers_fva(model, solver=kwargs[SOLVER])
+    # Copy model after tightening bounds so cmp_model inherits them; saves one redundant copy
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), DisableLogger():  # suppress standard output from copying model
+        cmp_model = model.copy()
+    # remove external metabolites
+    remove_ext_mets(cmp_model)
     logging.info('  FVA(s) to identify essential reactions.')
     essential_reacs = set()
     for m in sd_modules:
@@ -386,7 +386,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     if REGCOST in kwargs1:
         kwargs1.pop(REGCOST)
 
-    kwargs_milp = {k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M', SEED]}
+    kwargs_milp = {k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M', SEED, MILP_THREADS]}
     kwargs_milp.update({KOCOST: cmp_ko_cost})
     kwargs_milp.update({KICOST: cmp_ki_cost})
     kwargs_milp.update({'essential_kis': essential_kis})

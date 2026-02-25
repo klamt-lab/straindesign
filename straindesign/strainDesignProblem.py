@@ -92,7 +92,7 @@ class SDProblem:
     """
 
     def __init__(self, model: Model, sd_modules: List[SDModule], *args, **kwargs):
-        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis', SEED}
+        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis', SEED, MILP_THREADS}
         # set all keys passed in kwargs
         for key, value in dict(kwargs).items():
             if key in allowed_keys:
@@ -485,7 +485,7 @@ class SDProblem:
         # M_A(i)*x + z*M <= b + M
         # b is the right hand side value
         M_A = self.A_ineq[[True if i in knockable_constr_ineq else False for i in range(0, self.A_ineq.shape[0])], :][:, cont_vars]
-        M_A = [(M_A[i, :])[0].toarray()[0] for i in range(M_A.shape[0])]
+        M_A = list(M_A.toarray())
         M_b = [self.b_ineq[i] for i in range(0, self.A_ineq.shape[0]) if i in knockable_constr_ineq]
 
         processes = Configuration().processes
@@ -1018,17 +1018,24 @@ def prevent_boundary_knockouts(A_ineq, b_ineq, lb, ub, z_map_constr_ineq, z_map_
     if z_map_vars is None:
         z_map_vars = sparse.csc_matrix((numz, numr))
 
+    new_A_rows = []
+    new_b = []
+    new_z_cols = 0
     for i in range(0, numr):
         if any(z_map_vars[:, i]) and lb[i] > 0:
-            A_ineq = sparse.vstack((A_ineq, sparse.csr_matrix(([-1], ([0], [i])), shape=(1, numr))))
-            b_ineq += [-lb[i]]
-            z_map_constr_ineq = sparse.hstack((z_map_constr_ineq, sparse.csc_matrix((numz, 1))))
+            new_A_rows.append(sparse.csr_matrix(([-1], ([0], [i])), shape=(1, numr)))
+            new_b.append(-lb[i])
+            new_z_cols += 1
             lb[i] = 0.0
         if any(z_map_vars[:, i]) and ub[i] < 0:
-            A_ineq = sparse.vstack((A_ineq, sparse.csr_matrix(([1], ([0], [i])), shape=(1, numr))))
-            b_ineq += [ub[i]]
-            z_map_constr_ineq = sparse.hstack((z_map_constr_ineq, sparse.csc_matrix((numz, 1))))
+            new_A_rows.append(sparse.csr_matrix(([1], ([0], [i])), shape=(1, numr)))
+            new_b.append(ub[i])
+            new_z_cols += 1
             ub[i] = 0.0
+    if new_A_rows:
+        A_ineq = sparse.vstack([A_ineq] + new_A_rows)
+        b_ineq += new_b
+        z_map_constr_ineq = sparse.hstack([z_map_constr_ineq, sparse.csc_matrix((numz, new_z_cols))])
 
     return A_ineq, b_ineq, lb, ub, z_map_constr_ineq
 

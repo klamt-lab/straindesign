@@ -94,7 +94,7 @@ class SCIP_MILP(pso.Model):
             A SCIP MILP interface class.
     """
 
-    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None, seed=None):
+    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None, seed=None, milp_threads=None):
         super().__init__()
         # uncomment to forward SCIP output to python terminal
         # self.redirectOutput()
@@ -166,6 +166,9 @@ class SCIP_MILP(pso.Model):
                 seed = int(random.randint(2**16 - 1))
                 logging.info('  MILP Seed: ' + str(seed))
             self.setParam('randomization/randomseedshift', seed)
+            if milp_threads is not None:
+                self.setParam('parallel/maxnthreads', milp_threads)
+                self.setParam('parallel/minnthreads', milp_threads)
             self.setEmphasis(0)
             # self.setParam('numerics/feastol', 1e-9)
             # self.setParam('numerics/dualfeastol', 1e-9)
