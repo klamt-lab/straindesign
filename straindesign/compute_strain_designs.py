@@ -32,7 +32,7 @@ from cobra.manipulation import rename_genes
 from straindesign import SDModule, SDSolutions, select_solver, fva, DisableLogger, SDProblem, SDMILP
 from straindesign.names import *
 from straindesign.networktools import   remove_ext_mets, remove_dummy_bounds, bound_blocked_or_irrevers_fva, \
-                                        remove_irrelevant_genes, extend_model_gpr, extend_model_regulatory, \
+                                        reduce_gpr, extend_model_gpr, extend_model_regulatory, \
                                         compress_model, compress_modules, compress_ki_ko_cost, expand_sd, filter_sd_maxcost
 
 
@@ -281,14 +281,45 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     # 1) Preprocess Model
     # replace model bounds with +/- inf if above a certain threshold
     remove_dummy_bounds(model)
-    # FVAs to identify blocked, irreversible and essential reactions, as well as non-bounding bounds
-    logging.info('  FVA to identify blocked reactions and irreversibilities.')
-    bound_blocked_or_irrevers_fva(model, solver=kwargs[SOLVER])
-    # Copy model after tightening bounds so cmp_model inherits them; saves one redundant copy
-    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), DisableLogger():  # suppress standard output from copying model
+    # Copy model for compression/processing
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), DisableLogger():
         cmp_model = model.copy()
     # remove external metabolites
     remove_ext_mets(cmp_model)
+    # Extend with regulatory constraints before compression (they reference original reaction IDs)
+    uncmp_ko_cost.update(extend_model_regulatory(cmp_model, uncmp_reg_cost))
+    # --- COMPRESS #1: on model WITHOUT gene pseudoreactions ---
+    if kwargs['compress'] is True or kwargs['compress'] is None:
+        # Exclude reactions named in strain design modules from parallel compression
+        no_par_compress_reacs = set()
+        for m in sd_modules:
+            for p in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+                if p in m and m[p] is not None:
+                    param = m[p]
+                    if p == CONSTRAINTS:
+                        for c in param:
+                            for k in c[0].keys():
+                                no_par_compress_reacs.add(k)
+                    if p in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+                        for k in param.keys():
+                            no_par_compress_reacs.add(k)
+        compression_backend = kwargs.get('compression_backend', 'sparse_rref')
+        logging.info('Compressing Network (' + str(len(cmp_model.reactions)) + ' reactions).')
+        cmp_mapReac_1 = compress_model(cmp_model, no_par_compress_reacs,
+                                        compression_backend=compression_backend,
+                                        propagate_gpr=True)
+        sd_modules = compress_modules(sd_modules, cmp_mapReac_1)
+        # Compress reaction + regulatory costs only (gene costs not yet added)
+        cmp_ko_cost, cmp_ki_cost, cmp_mapReac_1 = compress_ki_ko_cost(
+            uncmp_ko_cost, uncmp_ki_cost, cmp_mapReac_1)
+        logging.info('  Compressed to ' + str(len(cmp_model.reactions)) + ' reactions.')
+    else:
+        cmp_mapReac_1 = []
+        cmp_ko_cost = uncmp_ko_cost
+        cmp_ki_cost = uncmp_ki_cost
+    # --- FVAs on (possibly compressed) model ---
+    logging.info('  FVA to identify blocked reactions and irreversibilities.')
+    bound_blocked_or_irrevers_fva(cmp_model, solver=kwargs[SOLVER])
     logging.info('  FVA(s) to identify essential reactions.')
     essential_reacs = set()
     for m in sd_modules:
@@ -299,20 +330,20 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                 if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0:  # find essential
                     essential_reacs.add(reac_id)
     # remove ko-costs (and thus knockability) of essential reactions
-    [uncmp_ko_cost.pop(er) for er in essential_reacs if er in uncmp_ko_cost]
-    # If computation of gene-gased intervention strategies, (optionally) compress gpr are rules and extend stoichimetric network with genes
+    [cmp_ko_cost.pop(er) for er in essential_reacs if er in cmp_ko_cost]
+    # --- GPR extension on (possibly compressed) model ---
     if kwargs['gene_kos']:
         if kwargs['compress'] is True or kwargs['compress'] is None:
             num_genes = len(cmp_model.genes)
-            num_gpr = len([True for r in model.reactions if r.gene_reaction_rule])
+            num_gpr = len([True for r in cmp_model.reactions if r.gene_reaction_rule])
             logging.info('Preprocessing GPR rules (' + str(num_genes) + ' genes, ' + str(num_gpr) + ' gpr rules).')
             # removing irrelevant genes will also remove essential reactions from the list of knockable genes
-            uncmp_gko_cost = remove_irrelevant_genes(cmp_model, essential_reacs, uncmp_gki_cost, uncmp_gko_cost)
-            if len(cmp_model.genes) < num_genes or len([True for r in model.reactions if r.gene_reaction_rule]) < num_gpr:
+            uncmp_gko_cost = reduce_gpr(cmp_model, essential_reacs, uncmp_gki_cost, uncmp_gko_cost)
+            if len(cmp_model.genes) < num_genes or len([True for r in cmp_model.reactions if r.gene_reaction_rule]) < num_gpr:
                 num_genes = len(cmp_model.genes)
                 num_gpr = len([True for r in cmp_model.reactions if r.gene_reaction_rule])
-                logging.info('  Simplifyied to '+str(num_genes)+' genes and '+\
-                    str(num_gpr)+' gpr rules.')
+                logging.info('  Simplified to ' + str(num_genes) + ' genes and ' +
+                    str(num_gpr) + ' gpr rules.')
         logging.info('  Extending metabolic network with gpr associations.')
         reac_map = extend_model_gpr(cmp_model, has_gene_names)
         for i, m in enumerate(sd_modules):
@@ -329,16 +360,15 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                             v = m[p].pop(k)
                             for n, w in reac_map[k].items():
                                 m[p][n] = v * w
+        # Merge gene costs into compressed costs (and uncompressed for filter_sd_maxcost)
+        cmp_ko_cost.update(uncmp_gko_cost)
+        cmp_ki_cost.update(uncmp_gki_cost)
         uncmp_ko_cost.update(uncmp_gko_cost)
         uncmp_ki_cost.update(uncmp_gki_cost)
-    uncmp_ko_cost.update(extend_model_regulatory(cmp_model, uncmp_reg_cost))
-    cmp_ko_cost = uncmp_ko_cost
-    cmp_ki_cost = uncmp_ki_cost
-    # Compress model
-    if kwargs['compress'] is True or kwargs['compress'] is None:  # If compression is activated (or not defined)
-        logging.info('Compressing Network (' + str(len(cmp_model.reactions)) + ' reactions).')
-        # compress network by lumping sequential and parallel reactions alternatingly.
-        # Exclude reactions named in strain design modules from parallel compression
+    # --- COMPRESS #2: after GPR extension ---
+    if kwargs['compress'] is True or kwargs['compress'] is None:
+        logging.info('Compressing after GPR extension (' + str(len(cmp_model.reactions)) + ' reactions).')
+        # Rebuild no_par_compress_reacs from updated sd_modules
         no_par_compress_reacs = set()
         for m in sd_modules:
             for p in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
@@ -351,12 +381,12 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                     if p in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                         for k in param.keys():
                             no_par_compress_reacs.add(k)
-        compression_backend = kwargs.get('compression_backend', 'sparse_rref')
-        cmp_mapReac = compress_model(cmp_model, no_par_compress_reacs, compression_backend=compression_backend)
-        # compress information in strain design modules
-        sd_modules = compress_modules(sd_modules, cmp_mapReac)
-        # compress ko_cost and ki_cost
-        cmp_ko_cost, cmp_ki_cost, cmp_mapReac = compress_ki_ko_cost(cmp_ko_cost, cmp_ki_cost, cmp_mapReac)
+        cmp_mapReac_2 = compress_model(cmp_model, no_par_compress_reacs,
+                                        compression_backend=compression_backend)
+        sd_modules = compress_modules(sd_modules, cmp_mapReac_2)
+        cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2 = compress_ki_ko_cost(
+            cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2)
+        cmp_mapReac = cmp_mapReac_1 + cmp_mapReac_2
     else:
         cmp_mapReac = []
 

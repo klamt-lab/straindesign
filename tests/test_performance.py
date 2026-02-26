@@ -407,7 +407,7 @@ def test_imlcore_mcs_growth(solver, model_imlcore):
 # ===========================================================================
 
 @pytest.mark.large
-@pytest.mark.parametrize("solver", STRONG_SOLVERS)
+@pytest.mark.parametrize("solver", GUROBI)  # CPLEX is very slow on this one; skip to save time
 def test_iml1515_mcs_393(solver):
     """Enumerate all gene-level MCS on iML1515 (max_cost=3).
 

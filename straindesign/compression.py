@@ -27,7 +27,7 @@ from typing import Dict, Iterator, List, Optional, Set, Tuple, Union, Any
 from fractions import Fraction
 from scipy import sparse
 from scipy.sparse import csr_matrix, csc_matrix
-from sympy import Rational, Symbol as SympySymbol, And as SympyAnd, Or as SympyOr, simplify_logic
+from sympy import Rational, Symbol as SympySymbol, And as SympyAnd, Or as SympyOr
 from cobra import Configuration
 from cobra.util.array import create_stoichiometric_matrix
 
@@ -675,7 +675,6 @@ class CompressionStatistics:
     def __init__(self):
         self.iteration_count = 0
         self.zero_flux_count = 0
-        self.contradicting_count = 0
         self.coupled_count = 0
         self.unused_metabolite_count = 0
 
@@ -689,9 +688,6 @@ class CompressionStatistics:
     def inc_zero_flux_reactions(self) -> None:
         self.zero_flux_count += 1
 
-    def inc_contradicting_reactions(self) -> None:
-        self.contradicting_count += 1
-
     def inc_coupled_reactions_count(self, count: int) -> None:
         self.coupled_count += count
 
@@ -700,12 +696,12 @@ class CompressionStatistics:
 
     def write_to_log(self) -> None:
         LOG.info(f"Compression complete: {self.iteration_count} iterations, "
-                 f"{self.zero_flux_count} zero-flux, {self.contradicting_count} contradicting, "
+                 f"{self.zero_flux_count} zero-flux, "
                  f"{self.coupled_count} coupled, {self.unused_metabolite_count} unused metabolites")
 
     def __repr__(self):
         return (f"CompressionStatistics(iterations={self.iteration_count}, "
-                f"zero_flux={self.zero_flux_count}, contradicting={self.contradicting_count}, "
+                f"zero_flux={self.zero_flux_count}, "
                 f"coupled={self.coupled_count})")
 
 
@@ -726,13 +722,11 @@ class CompressionRecord:
                  pre: RationalMatrix,
                  cmp: RationalMatrix,
                  post: RationalMatrix,
-                 reversible: List[bool],
                  meta_names: List[str],
                  stats: Optional[CompressionStatistics] = None):
         self.pre = pre  # metabolite transformation
         self.cmp = cmp  # compressed stoich
         self.post = post  # reaction transformation
-        self.reversible = list(reversible)
         self.meta_names = list(meta_names)  # compressed metabolite names (row order in cmp)
         self.stats = stats
 
@@ -753,12 +747,11 @@ class _Size:
 class _WorkRecord:
     """Mutable state during compression algorithm."""
 
-    def __init__(self, stoich: RationalMatrix, reversible: List[bool], meta_names: List[str], reac_names: List[str]):
+    def __init__(self, stoich: RationalMatrix, meta_names: List[str], reac_names: List[str]):
         rows, cols = stoich.get_row_count(), stoich.get_column_count()
         self.pre = RationalMatrix.identity(rows)
         self.cmp = stoich.clone()
         self.post = RationalMatrix.identity(cols)
-        self.reversible = list(reversible)
         self.meta_names = list(meta_names)
         self.reac_names = list(reac_names)
         self.size = _Size(rows, cols)
@@ -816,15 +809,10 @@ class _WorkRecord:
 
         LOG.debug(f"  After: cmp={self.cmp.get_column_count()}, post={self.post.get_column_count()}")
 
-        # Reindex names and reversibility
+        # Reindex names
         new_names = [self.reac_names[i] for i in keep_indices]
-        new_rev = [self.reversible[i] for i in keep_indices]
-
-        # Update arrays (preserving total length for consistency)
-        orig_len = len(self.reac_names)
-        for i, (name, rev) in enumerate(zip(new_names, new_rev)):
+        for i, name in enumerate(new_names):
             self.reac_names[i] = name
-            self.reversible[i] = rev
 
         self.size.reacs = len(keep_indices)
         LOG.debug(f"  size.reacs={self.size.reacs}")
@@ -902,9 +890,8 @@ class _WorkRecord:
         cmp_trunc = self.cmp.submatrix(mc, rc)
         post_trunc = self.post.submatrix(r, rc)
 
-        rev_trunc = self.reversible[:rc]
         meta_names_trunc = self.meta_names[:mc]
-        return CompressionRecord(pre_trunc, cmp_trunc, post_trunc, rev_trunc, meta_names_trunc, self.stats)
+        return CompressionRecord(pre_trunc, cmp_trunc, post_trunc, meta_names_trunc, self.stats)
 
 
 # =============================================================================
@@ -920,20 +907,19 @@ class StoichMatrixCompressor:
 
     def compress(self,
                  stoich: RationalMatrix,
-                 reversible: List[bool],
                  meta_names: List[str],
                  reac_names: List[str],
                  suppressed: Optional[Set[str]] = None) -> CompressionRecord:
         """Compress network, return transformation matrices.
 
-        Uses Java efmtool's two-phase approach:
-        1. Phase 1: Remove zero-flux and contradicting reactions (iteratively)
+        Two-phase approach:
+        1. Phase 1: Remove zero-flux reactions (iteratively)
         2. Phase 2: Combine coupled reactions (iteratively)
 
         This separation prevents cascading effects where combining reactions
         could create new coupling patterns that weren't present in the original.
         """
-        work = _WorkRecord(stoich, reversible, meta_names, reac_names)
+        work = _WorkRecord(stoich, meta_names, reac_names)
 
         do_nullspace = CompressionMethod.NULLSPACE in self._methods
         do_recursive = CompressionMethod.RECURSIVE in self._methods
@@ -941,8 +927,7 @@ class StoichMatrixCompressor:
         work.remove_reactions(suppressed)
 
         if do_nullspace:
-            # Phase 1: Remove zero-flux and contradicting reactions only
-            # (matches Java's inclCompression=false phase)
+            # Phase 1: Remove zero-flux reactions only
             # Optimization: Continue only if nullspace compression found reactions.
             # Removing unused metabolites (all-zero rows) doesn't change the nullspace,
             # so if _nullspace_compress returns False, the next iteration would too.
@@ -954,7 +939,6 @@ class StoichMatrixCompressor:
                     break
 
             # Phase 2: Combine coupled reactions
-            # (matches Java's inclCompression=true phase)
             while True:
                 work.stats.inc_compression_iteration()
                 work.remove_unused_metabolites()
@@ -970,7 +954,7 @@ class StoichMatrixCompressor:
         """One pass of nullspace compression. Returns True if reactions removed.
 
         Args:
-            incl_compression: If False, only remove zero-flux and contradicting.
+            incl_compression: If False, only remove zero-flux reactions.
                               If True, only combine coupled reactions.
         """
         # Build active submatrix for nullspace computation
@@ -985,16 +969,11 @@ class StoichMatrixCompressor:
 
         changed = False
         if not incl_compression:
-            # Phase 1: Remove zero-flux and contradicting
-            # IMPORTANT: Find both sets BEFORE any removal to avoid index mismatch!
+            # Phase 1: Remove zero-flux reactions
             zero_flux = self._find_zero_flux(work, kernel_pattern)
-            contradicting = self._find_contradicting(work, kernel_pattern, kernel_values)
-
-            # Remove all at once
-            all_to_remove = zero_flux | contradicting
-            LOG.debug(f"Phase 1: {len(zero_flux)} zero-flux + {len(contradicting)} contradicting = {len(all_to_remove)} to remove")
-            if all_to_remove:
-                work.remove_reactions_by_indices(all_to_remove)
+            LOG.debug(f"Phase 1: {len(zero_flux)} zero-flux to remove")
+            if zero_flux:
+                work.remove_reactions_by_indices(zero_flux)
                 changed = True
         else:
             # Phase 2: Combine coupled reactions
@@ -1093,77 +1072,32 @@ class StoichMatrixCompressor:
 
         return groups, ratios
 
-    def _find_contradicting(self, work: _WorkRecord, kernel_pattern, kernel_values) -> set:
-        """Find reactions in contradicting coupled groups (indices in current work)."""
-        groups, ratios = self._find_coupled_groups(kernel_pattern, kernel_values, work.size.reacs)
-
-        # Find contradicting reactions
-        contradicting = set()
-        for group in groups:
-            is_consistent = self._check_coupling_consistency(group, ratios, work.reversible)
-            if not is_consistent:
-                for idx in group:
-                    contradicting.add(idx)
-                    work.stats.inc_contradicting_reactions()
-
-        return contradicting
-
     def _handle_coupled_combine(self, work: _WorkRecord, kernel_pattern, kernel_values) -> bool:
-        """Phase 2: Combine consistent coupled reactions, remove contradicting.
+        """Phase 2: Combine all coupled reactions.
 
-        Returns True if any contradicting reactions were removed (flux space changed),
-        which means new couplings might be revealed. Returns False if only merging
-        happened, since merging doesn't change the flux space.
+        Returns False because merging doesn't change the flux space,
+        so no new couplings can emerge.
         """
         groups, ratios = self._find_coupled_groups(kernel_pattern, kernel_values, work.size.reacs)
 
-        # Combine consistent groups, remove contradicting groups
         reactions_to_remove = set()
-        contradicting_removed = False
 
         # Enter batch edit mode for cmp and post matrices to avoid repeated LIL conversions
         work.cmp.begin_batch_edit()
         work.post.begin_batch_edit()
 
         for group in groups:
-            is_consistent = self._check_coupling_consistency(group, ratios, work.reversible)
-            if is_consistent:
-                self._combine_coupled(work, group, ratios)
-                for idx in group[1:]:
-                    reactions_to_remove.add(idx)
-            else:
-                # Contradicting coupled group: reactions cannot carry flux together
-                # due to irreversibility constraints. Remove them to prune blocked paths,
-                # which may reveal new couplings in subsequent iterations.
-                LOG.debug(f"Removing contradicting coupled group: {[work.reac_names[r] for r in group]}")
-                for idx in group:
-                    reactions_to_remove.add(idx)
-                    work.stats.inc_contradicting_reactions()
-                contradicting_removed = True
+            self._combine_coupled(work, group, ratios)
+            for idx in group[1:]:
+                reactions_to_remove.add(idx)
 
         # End batch edit mode
         work.cmp.end_batch_edit()
         work.post.end_batch_edit()
 
-        LOG.debug(f"Phase 2: {len(groups)} groups, removing {len(reactions_to_remove)} reactions, contradicting={contradicting_removed}")
+        LOG.debug(f"Phase 2: {len(groups)} groups, removing {len(reactions_to_remove)} slave reactions")
         work.remove_reactions_by_indices(reactions_to_remove)
 
-        # Only return True if contradicting reactions were removed (flux space changed).
-        # Merging alone doesn't change the flux space, so no new couplings can emerge.
-        return contradicting_removed
-
-    def _check_coupling_consistency(self, group: List[int], ratios: List[Optional[Fraction]], reversible: List[bool]) -> bool:
-        """Check if coupled group is consistent with reversibility."""
-        for forward in [True, False]:
-            all_consistent = forward or reversible[group[0]]
-            for idx in group[1:]:
-                ratio = ratios[idx]
-                ratio_positive = ratio.numerator * ratio.denominator > 0
-                if not ((forward == ratio_positive) or reversible[idx]):
-                    all_consistent = False
-                    break
-            if all_consistent:
-                return True
         return False
 
     def _combine_coupled(self, work: _WorkRecord, group: List[int], ratios: List[Optional[Fraction]]) -> None:
@@ -1327,22 +1261,14 @@ def compress_cobra_model(model,
             elif isinstance(method, str):
                 compression_methods.append(CompressionMethod[method.upper()])
 
-    # Flip reactions that can only run backwards
-    flipped_reactions = []
-    for rxn in model.reactions:
-        if rxn.upper_bound <= 0:
-            rxn *= -1
-            flipped_reactions.append(rxn.id)
-
     # Build stoichiometric matrix with exact arithmetic
     stoich_matrix = RationalMatrix.from_cobra_model(model)
-    reversible = [rxn.reversibility for rxn in model.reactions]
     metabolite_names = [m.id for m in model.metabolites]
     reaction_names = [r.id for r in model.reactions]
 
     # Run compression
     compressor = StoichMatrixCompressor(*compression_methods)
-    compression_record = compressor.compress(stoich_matrix, reversible, metabolite_names, reaction_names, suppressed_reactions)
+    compression_record = compressor.compress(stoich_matrix, metabolite_names, reaction_names, suppressed_reactions)
 
     # Apply to model (uses direct manipulation, bypasses solver)
     reaction_map, objective_updates = _apply_compression_to_model(model, compression_record, reaction_names)
@@ -1353,7 +1279,7 @@ def compress_cobra_model(model,
     pre_matrix = compression_record.pre.to_numpy()
     post_matrix = compression_record.post.to_numpy()
 
-    converter = CompressionConverter(reaction_map, {}, flipped_reactions)
+    converter = CompressionConverter(reaction_map, {}, [])
 
     return CompressionResult(compressed_model=model,
                              compression_converter=converter,
@@ -1365,7 +1291,7 @@ def compress_cobra_model(model,
                              methods_used=compression_methods,
                              original_reaction_names=original_reaction_names,
                              original_metabolite_names=original_metabolite_names,
-                             flipped_reactions=flipped_reactions)
+                             flipped_reactions=[])
 
 
 def _rebuild_solver(model, objective_updates: dict) -> None:
@@ -1436,6 +1362,17 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
                 break
         main_rxn = model.reactions[main_idx]
         keep_rxns[main_idx] = True
+
+        if len(contributing) == 1:
+            # Standalone reaction — not merged with anything.  Keep its
+            # stoichiometry and bounds as-is (no model modification needed).
+            obj = main_rxn.objective_coefficient
+            if obj != 0:
+                objective_updates[main_rxn] = obj
+            reaction_map[main_rxn.id] = {original_reaction_names[main_idx]: Fraction(1)}
+            continue
+
+        # --- Merged group (2+ contributing reactions) ---
 
         # Scale objective coefficient by POST factors (store for later)
         combined_obj = Fraction(0)
@@ -1667,17 +1604,17 @@ def _combine_gpr_and(gpr_bodies):
     which acts as True in boolean logic.  AND with True is a no-op, so empty GPRs
     are skipped.  Returns '' if all inputs are empty (no gene restriction).
 
-    Uses sympy.simplify_logic to minimize the number of operations.
+    Uses sympy And constructor which automatically flattens nested ANDs and
+    deduplicates terms.  Full simplification is deferred to reduce_gpr downstream.
     """
     sympy_exprs = [_gpr_ast_to_sympy(b) for b in gpr_bodies]
     non_empty = [s for s in sympy_exprs if s is not None]
     if not non_empty:
         return ''
     if len(non_empty) == 1:
-        return _sympy_to_gpr_string(simplify_logic(non_empty[0]))
+        return _sympy_to_gpr_string(non_empty[0])
     combined = SympyAnd(*non_empty)
-    simplified = simplify_logic(combined)
-    return _sympy_to_gpr_string(simplified)
+    return _sympy_to_gpr_string(combined)
 
 
 def _combine_gpr_or(gpr_bodies):
@@ -1689,7 +1626,8 @@ def _combine_gpr_or(gpr_bodies):
     If any input is None (reaction always active regardless of genes), the
     combined reaction is also always active, so the result is '' (no restriction).
 
-    Uses sympy.simplify_logic to minimize the number of operations.
+    Uses sympy Or constructor which automatically flattens nested ORs and
+    deduplicates terms.  Full simplification is deferred to reduce_gpr downstream.
     """
     sympy_exprs = [_gpr_ast_to_sympy(b) for b in gpr_bodies]
     if any(s is None for s in sympy_exprs):
@@ -1697,10 +1635,9 @@ def _combine_gpr_or(gpr_bodies):
     if not sympy_exprs:
         return ''
     if len(sympy_exprs) == 1:
-        return _sympy_to_gpr_string(simplify_logic(sympy_exprs[0]))
+        return _sympy_to_gpr_string(sympy_exprs[0])
     combined = SympyOr(*sympy_exprs)
-    simplified = simplify_logic(combined)
-    return _sympy_to_gpr_string(simplified)
+    return _sympy_to_gpr_string(combined)
 
 
 # =============================================================================
@@ -1876,14 +1813,7 @@ def compress_model_coupled(model, compression_backend='sparse_rref', propagate_g
             r.gene_reaction_rule = ''
 
         result = compress_cobra_model(model, methods=CompressionMethod.standard(), in_place=True)
-
-        # Account for flipped reactions
-        flipped = set(result.flipped_reactions)
-        reaction_map = {
-            cmp_id: {
-                orig_id: c * (-1 if orig_id in flipped else 1) for orig_id, c in orig_map.items()
-            } for cmp_id, orig_map in result.reaction_map.items()
-        }
+        reaction_map = result.reaction_map
 
     # Propagate GPR rules: AND-combine contributing reactions' GPR ASTs
     if propagate_gpr:

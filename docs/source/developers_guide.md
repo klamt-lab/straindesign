@@ -225,11 +225,11 @@ FVA is run in parallel using `SDPool` for large models.
 ### 4.2 GPR Integration
 
 **File:** `networktools.py`
-**Key functions:** `remove_irrelevant_genes`, `extend_model_gpr`
+**Key functions:** `reduce_gpr`, `extend_model_gpr`
 
 When gene-level interventions are requested (`gko_cost` or `gki_cost` provided), the model is **extended** with artificial reactions that represent gene-level knockouts. This allows the MILP's binary variables `z` to operate on genes rather than reactions.
 
-#### Step 1 — Remove irrelevant genes (`remove_irrelevant_genes`)
+#### Step 1 — Reduce GPR rules (`reduce_gpr`)
 
 Uses **AST-based GPR evaluation** (`evaluate_gpr_ast`):
 - Each reaction's GPR rule is parsed to an AST (`ast.parse`).
@@ -936,7 +936,7 @@ compute_strain_designs(model, **kwargs)
     ├── remove_dummy_bounds(model)
     ├── bound_blocked_or_irrevers_fva(model, ...)
     ├── [if gene_kos] rename_genes(model, ...)
-    ├── [if gene_kos] remove_irrelevant_genes(model, essential_reacs, gkis, gkos)
+    ├── [if gene_kos] reduce_gpr(model, essential_reacs, gkis, gkos)
     ├── [if gene_kos] extend_model_gpr(cmp_model, ...) → reac_map
     ├── [if reg]      extend_model_regulatory(cmp_model, ...) → reg_map
     ├── compress_model(cmp_model, ...) → cmp_mapReac

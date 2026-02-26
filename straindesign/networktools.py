@@ -49,22 +49,22 @@ from straindesign.compression import (
 )
 
 
-def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
-    """Remove genes whose that do not affect the flux space of the model using AST-based GPR parsing
-    
+def reduce_gpr(model, essential_reacs, gkis, gkos):
+    """Simplify GPR rules by removing non-targetable genes and reducing boolean expressions
+
     This function is used in preprocessing of computational strain design computations. Often,
     certain reactions, for instance, reactions essential for microbial growth can/must not be
-    targeted by interventions. That can be exploited to reduce the set of genes in which 
+    targeted by interventions. That can be exploited to reduce the set of genes in which
     interventions need to be considered.
-    
-    Given a set of essential reactions that is to be maintained operational, some genes can be 
-    removed from a metabolic model, either because they only affect only blocked reactions or 
+
+    Given a set of essential reactions that is to be maintained operational, some genes can be
+    removed from a metabolic model, either because they only affect only blocked reactions or
     essential reactions, or because they are essential reactions and must not be removed. As a
     consequence, the GPR rules of a model can be simplified using AST parsing for both DNF and non-DNF rules.
-    
-        
+
+
     Example:
-        remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
+        reduce_gpr(model, essential_reacs, gkis, gkos):
     
     Args:
         model (cobra.Model):
@@ -355,6 +355,10 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
             model.genes.remove(g)
 
     return gkos
+
+
+# backward-compat alias
+remove_irrelevant_genes = reduce_gpr
 
 
 def extend_model_gpr(model, use_names=False):
