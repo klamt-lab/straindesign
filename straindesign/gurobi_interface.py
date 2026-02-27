@@ -290,30 +290,34 @@ class Gurobi_MILP_LP(gp.Model):
 
     def set_objective(self, c):
         """Set the objective function with a vector"""
-        for i in range(len(self.getVars())):
-            self.getVars()[i].Obj = c[i]
+        gvars = self.getVars()
+        for i in range(len(gvars)):
+            gvars[i].Obj = c[i]
         self.update()
-        if any([self.getVars()[i].Obj for i in range(len(self.getVars()))]):
-            self.params.MIPFocus = 0
-        else:
-            self.params.MIPFocus = 1
+        if self.NumIntVars > 0:
+            self.params.MIPFocus = 0 if any(c) else 1
 
     def set_objective_idx(self, C):
         """Set the objective function with index-value pairs
-        
+
         e.g.: C=[[1, 1.0], [4,-0.2]]"""
+        gvars = self.getVars()
         for c in C:
-            self.getVars()[c[0]].Obj = c[1]
+            gvars[c[0]].Obj = c[1]
         self.update()
-        if any([self.getVars()[i].Obj for i in range(len(self.getVars()))]):
-            self.params.MIPFocus = 0
-        else:
-            self.params.MIPFocus = 1
+        if self.NumIntVars > 0:
+            has_nonzero = any(c[1] for c in C)
+            if has_nonzero:
+                self.params.MIPFocus = 0
+            else:
+                if not any(v.Obj for v in gvars):
+                    self.params.MIPFocus = 1
 
     def set_ub(self, ub):
         """Set the upper bounds to a given vector"""
+        gvars = self.getVars()
         for i in range(len(ub)):
-            self.getVars()[ub[i][0]].ub = ub[i][1]
+            gvars[ub[i][0]].ub = ub[i][1]
         self.update()
 
     def set_time_limit(self, t):
@@ -384,7 +388,7 @@ class Gurobi_MILP_LP(gp.Model):
 
     def getSolution(self) -> list:
         """Retrieve solution from Gurobi backend"""
-        return [x.X for x in self.getVars()]
+        return self.getAttr('X', self.getVars())
 
     def getSolutions(self) -> list:
         """Retrieve solution pool from Gurobi backend"""

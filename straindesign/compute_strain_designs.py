@@ -286,8 +286,26 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         cmp_model = model.copy()
     # remove external metabolites
     remove_ext_mets(cmp_model)
-    # Extend with regulatory constraints before compression (they reference original reaction IDs)
-    uncmp_ko_cost.update(extend_model_regulatory(cmp_model, uncmp_reg_cost))
+    # Extend with regulatory constraints: reaction-based can be applied now,
+    # gene-based must be deferred until after GPR extension.
+    # extend_model_regulatory mutates its dict arg in-place (replacing original
+    # keys with generated names), so we must update uncmp_reg_cost accordingly.
+    _deferred_reg = {}
+    if uncmp_reg_cost:
+        from straindesign.parse_constr import parse_constraints as _parse_constr
+        _rxn_ids = set(cmp_model.reactions.list_attr('id'))
+        _immediate_reg = {}
+        for k, v in uncmp_reg_cost.items():
+            try:
+                _parse_constr(k, _rxn_ids)
+                _immediate_reg[k] = v
+            except Exception:
+                _deferred_reg[k] = v
+        if _immediate_reg:
+            uncmp_ko_cost.update(extend_model_regulatory(cmp_model, _immediate_reg))
+        # Rebuild uncmp_reg_cost: immediate entries are now mutated, deferred are unchanged
+        uncmp_reg_cost.clear()
+        uncmp_reg_cost.update(_immediate_reg)
     # --- COMPRESS #1: on model WITHOUT gene pseudoreactions ---
     if kwargs['compress'] is True or kwargs['compress'] is None:
         # Exclude reactions named in strain design modules from parallel compression
@@ -360,11 +378,24 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                             v = m[p].pop(k)
                             for n, w in reac_map[k].items():
                                 m[p][n] = v * w
+        # Apply deferred regulatory constraints (gene-based, need GPR extension first)
+        if _deferred_reg:
+            reg_costs = extend_model_regulatory(cmp_model, _deferred_reg)
+            cmp_ko_cost.update(reg_costs)
+            uncmp_ko_cost.update(reg_costs)
+            uncmp_reg_cost.update(_deferred_reg)  # now mutated by extend_model_regulatory
+            _deferred_reg = {}  # prevent double application
         # Merge gene costs into compressed costs (and uncompressed for filter_sd_maxcost)
         cmp_ko_cost.update(uncmp_gko_cost)
         cmp_ki_cost.update(uncmp_gki_cost)
         uncmp_ko_cost.update(uncmp_gko_cost)
         uncmp_ki_cost.update(uncmp_gki_cost)
+    # Apply any deferred regulatory constraints that weren't handled in the gene_kos block
+    if _deferred_reg:
+        reg_costs = extend_model_regulatory(cmp_model, _deferred_reg)
+        cmp_ko_cost.update(reg_costs)
+        uncmp_ko_cost.update(reg_costs)
+        uncmp_reg_cost.update(_deferred_reg)  # now mutated by extend_model_regulatory
     # --- COMPRESS #2: after GPR extension ---
     if kwargs['compress'] is True or kwargs['compress'] is None:
         logging.info('Compressing after GPR extension (' + str(len(cmp_model.reactions)) + ' reactions).')

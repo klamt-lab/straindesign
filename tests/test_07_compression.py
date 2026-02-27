@@ -40,13 +40,22 @@ def model_small_example():
 def test_no_jpype_loaded():
     """Verify that jpype is not loaded when importing straindesign."""
     jpype_before = [m for m in sys.modules if 'jpype' in m.lower()]
-    modules_to_remove = [m for m in sys.modules if m.startswith('straindesign')]
-    for m in modules_to_remove:
+    # Save and remove straindesign modules to test a fresh import
+    saved_modules = {m: sys.modules[m] for m in list(sys.modules) if m.startswith('straindesign')}
+    for m in saved_modules:
         del sys.modules[m]
-    import straindesign
-    jpype_after = [m for m in sys.modules if 'jpype' in m.lower()]
-    new_jpype = set(jpype_after) - set(jpype_before)
-    assert len(new_jpype) == 0, f"straindesign loaded jpype modules: {new_jpype}"
+    try:
+        import straindesign as sd_fresh
+        jpype_after = [m for m in sys.modules if 'jpype' in m.lower()]
+        new_jpype = set(jpype_after) - set(jpype_before)
+        assert len(new_jpype) == 0, f"straindesign loaded jpype modules: {new_jpype}"
+    finally:
+        # Restore original modules so function identity is preserved for
+        # multiprocessing pickle (SDPool serialises fva_worker_init by reference).
+        for m in list(sys.modules):
+            if m.startswith('straindesign'):
+                del sys.modules[m]
+        sys.modules.update(saved_modules)
 
 
 def test_python_compression_basic(model_gpr):
@@ -242,7 +251,10 @@ def test_fva_expansion():
 # =============================================================================
 
 
-@pytest.mark.parametrize("compression_backend", ["sparse_rref", "efmtool_rref"])
+@pytest.mark.parametrize("compression_backend", [
+    "sparse_rref",
+    "efmtool_rref",
+])
 def test_mcs_e_coli_core(compression_backend):
     """MCS computation on e_coli_core returns the expected 455 solutions.
 

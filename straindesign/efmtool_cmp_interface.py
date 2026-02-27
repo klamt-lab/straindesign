@@ -133,9 +133,23 @@ def _init_java():
             candidate = _search_for_jvm()
             if candidate:
                 os.environ["JAVA_HOME"] = candidate
+
         try:
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                jpype.startJVM()
+            # Suppress faulthandler during JVM startup to prevent ugly
+            # "Windows fatal exception: access violation" messages.
+            # On Windows, jpype.startJVM() can trigger an access violation
+            # that is caught by Python's structured exception handler, but
+            # faulthandler prints a stack trace before the exception is raised.
+            import faulthandler as _fh
+            _fh_was_enabled = _fh.is_enabled()
+            if _fh_was_enabled:
+                _fh.disable()
+            try:
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    jpype.startJVM()
+            finally:
+                if _fh_was_enabled:
+                    _fh.enable()
         except Exception as e:
             extra_info = ""
             if not os.environ.get("JAVA_HOME"):
@@ -144,23 +158,19 @@ def _init_java():
                 "Failed to start JVM. Please ensure that Java (OpenJDK) is installed." + extra_info +
                 " If using conda, install openjdk from conda-forge and set JAVA_HOME to the OpenJDK installation path.") from e
 
-    import jpype.imports
-
-    # Import Java classes
-    import ch.javasoft.smx.impl.DefaultBigIntegerRationalMatrix as _DefaultBigIntegerRationalMatrix
-    import ch.javasoft.smx.ops.Gauss as _Gauss
-    import ch.javasoft.metabolic.compress.CompressionMethod as _CompressionMethod
-    import ch.javasoft.metabolic.compress.StoichMatrixCompressor as _StoichMatrixCompressor
-    import ch.javasoft.math.BigFraction as _BigFraction
-    import java.math.BigInteger as _BigInteger
-
-    # Assign to module-level globals
-    DefaultBigIntegerRationalMatrix = _DefaultBigIntegerRationalMatrix
-    Gauss = _Gauss
-    CompressionMethod = _CompressionMethod
-    StoichMatrixCompressor = _StoichMatrixCompressor
-    BigFraction = _BigFraction
-    BigInteger = _BigInteger
+    # Load Java classes via JClass (not `import` statements) to avoid
+    # jpype.imports.find_spec which can segfault on Windows.
+    try:
+        DefaultBigIntegerRationalMatrix = jpype.JClass('ch.javasoft.smx.impl.DefaultBigIntegerRationalMatrix')
+        Gauss = jpype.JClass('ch.javasoft.smx.ops.Gauss')
+        CompressionMethod = jpype.JClass('ch.javasoft.metabolic.compress.CompressionMethod')
+        StoichMatrixCompressor = jpype.JClass('ch.javasoft.metabolic.compress.StoichMatrixCompressor')
+        BigFraction = jpype.JClass('ch.javasoft.math.BigFraction')
+        BigInteger = jpype.JClass('java.math.BigInteger')
+    except Exception as e:
+        raise RuntimeError(
+            "Failed to load EFMTool Java classes. The JVM started but the efmtool.jar "
+            "classes could not be loaded. Use compression_backend='sparse_rref' instead.") from e
 
     subset_compression = CompressionMethod[:](
         [CompressionMethod.CoupledZero, CompressionMethod.CoupledCombine, CompressionMethod.CoupledContradicting])
@@ -274,11 +284,15 @@ def basic_columns_rat_java(mx, tolerance=0):
     return col_map[0:rank]
 
 
-def compress_model_java(model):
+def compress_model_java(model, suppressed_reactions=None):
     """Legacy Java compression using jpype (requires jpype and sympy).
 
     Args:
         model: COBRA model (will be modified in place)
+        suppressed_reactions: Set of reaction IDs to exclude from compression.
+            These reactions are kept as standalone entries with identity mapping.
+            Used to protect reactions referenced in strain design constraints
+            from being deleted by the Java compressor's CoupledContradicting logic.
 
     Returns:
         dict: Reaction map from compressed to original reactions with scaling factors
@@ -294,70 +308,100 @@ def compress_model_java(model):
 
     for r in model.reactions:
         r.gene_reaction_rule = ''
+
+    suppressed_set = set(suppressed_reactions) if suppressed_reactions else set()
     num_met = len(model.metabolites)
     num_reac = len(model.reactions)
     old_reac_ids = [r.id for r in model.reactions]
-    stoich_mat = DefaultBigIntegerRationalMatrix(num_met, num_reac)
-    reversible = jpype.JBoolean[:]([r.reversibility for r in model.reactions])
-    flipped = []
-    for i in range(num_reac):
-        if model.reactions[i].upper_bound <= 0:
-            model.reactions[i] *= -1
-            flipped.append(i)
-            logging.debug("Flipped " + model.reactions[i].id)
-        for k, v in model.reactions[i]._metabolites.items():
+
+    # Build mapping between active (non-suppressed) indices and model indices
+    active_to_model = [i for i in range(num_reac) if old_reac_ids[i] not in suppressed_set]
+    num_active = len(active_to_model)
+
+    stoich_mat = DefaultBigIntegerRationalMatrix(num_met, num_active)
+    reversible = jpype.JBoolean[:]([model.reactions[active_to_model[ai]].reversibility for ai in range(num_active)])
+    flipped = set()
+    for ai in range(num_active):
+        mi = active_to_model[ai]
+        if model.reactions[mi].upper_bound <= 0:
+            model.reactions[mi] *= -1
+            flipped.add(ai)
+            logging.debug("Flipped " + model.reactions[mi].id)
+        for k, v in model.reactions[mi]._metabolites.items():
             n, d = sympyRat2jBigIntegerPair(v)
-            stoich_mat.setValueAt(model.metabolites.index(k.id), i, BigFraction(n, d))
-    # compress
+            stoich_mat.setValueAt(model.metabolites.index(k.id), ai, BigFraction(n, d))
+
+    # Compress active reactions only
     smc = StoichMatrixCompressor(subset_compression)
-    reacNames = jpype.JString[:](model.reactions.list_attr('id'))
+    reacNames = jpype.JString[:]([old_reac_ids[active_to_model[ai]] for ai in range(num_active)])
     comprec = smc.compress(stoich_mat, reversible, jpype.JString[num_met], reacNames, None)
     subset_matrix = jpypeArrayOfArrays2numpy_mat(comprec.post.getDoubleRows())
-    del_rxns = np.logical_not(np.any(subset_matrix, axis=1))
+
+    # subset_matrix shape: (num_active, num_compressed)
+    del_model = np.zeros(num_reac, dtype=bool)
+
+    # Mark zero-flux active reactions for deletion
+    for ai in range(num_active):
+        if not np.any(subset_matrix[ai, :]):
+            del_model[active_to_model[ai]] = True
+
     for j in range(subset_matrix.shape[1]):
-        rxn_idx = subset_matrix[:, j].nonzero()[0]
-        r0 = rxn_idx[0]
-        model.reactions[r0].subset_rxns = []
-        model.reactions[r0].subset_stoich = []
+        rxn_ai = subset_matrix[:, j].nonzero()[0]
+        if len(rxn_ai) == 0:
+            continue
+        r0_mi = active_to_model[rxn_ai[0]]
+        model.reactions[r0_mi].subset_rxns = []
+        model.reactions[r0_mi].subset_stoich = []
         # Scale objective coefficient by POST factors
         combined_obj = 0.0
-        for r in rxn_idx:
-            factor = jBigFraction2sympyRat(comprec.post.getBigFractionValueAt(r, j))
+        for ai in rxn_ai:
+            mi = active_to_model[ai]
+            factor = jBigFraction2sympyRat(comprec.post.getBigFractionValueAt(ai, j))
             # Accumulate objective contribution before scaling
-            combined_obj += model.reactions[r].objective_coefficient * float(factor)
-            model.reactions[r] *= factor
-            if model.reactions[r].lower_bound not in (0, -float('inf')):
-                model.reactions[r].lower_bound /= abs(subset_matrix[r, j])
-            if model.reactions[r].upper_bound not in (0, float('inf')):
-                model.reactions[r].upper_bound /= abs(subset_matrix[r, j])
-            model.reactions[r0].subset_rxns.append(r)
-            if r in flipped:
-                model.reactions[r0].subset_stoich.append(-factor)
+            combined_obj += model.reactions[mi].objective_coefficient * float(factor)
+            model.reactions[mi] *= factor
+            if model.reactions[mi].lower_bound not in (0, -float('inf')):
+                model.reactions[mi].lower_bound /= abs(subset_matrix[ai, j])
+            if model.reactions[mi].upper_bound not in (0, float('inf')):
+                model.reactions[mi].upper_bound /= abs(subset_matrix[ai, j])
+            model.reactions[r0_mi].subset_rxns.append(mi)
+            if ai in flipped:
+                model.reactions[r0_mi].subset_stoich.append(-factor)
             else:
-                model.reactions[r0].subset_stoich.append(factor)
-        model.reactions[r0].objective_coefficient = combined_obj
-        for r in rxn_idx[1:]:
-            if len(model.reactions[r0].id) + len(model.reactions[r].id) < 220 and model.reactions[r0].id[-3:] != '...':
-                model.reactions[r0].id += '*' + model.reactions[r].id
-            elif not model.reactions[r0].id[-3:] == '...':
-                model.reactions[r0].id += '...'
-            model.reactions[r0] += model.reactions[r]
-            if model.reactions[r].lower_bound > model.reactions[r0].lower_bound:
-                model.reactions[r0].lower_bound = model.reactions[r].lower_bound
-            if model.reactions[r].upper_bound < model.reactions[r0].upper_bound:
-                model.reactions[r0].upper_bound = model.reactions[r].upper_bound
-            del_rxns[r] = True
-    del_rxns = np.where(del_rxns)[0]
-    for i in range(len(del_rxns) - 1, -1, -1):
-        model.reactions[del_rxns[i]].remove_from_model(remove_orphans=True)
-    subT = np.zeros((num_reac, len(model.reactions)))
+                model.reactions[r0_mi].subset_stoich.append(factor)
+        model.reactions[r0_mi].objective_coefficient = combined_obj
+        for ai in rxn_ai[1:]:
+            mi = active_to_model[ai]
+            if len(model.reactions[r0_mi].id) + len(model.reactions[mi].id) < 220 and model.reactions[r0_mi].id[-3:] != '...':
+                model.reactions[r0_mi].id += '*' + model.reactions[mi].id
+            elif not model.reactions[r0_mi].id[-3:] == '...':
+                model.reactions[r0_mi].id += '...'
+            model.reactions[r0_mi] += model.reactions[mi]
+            if model.reactions[mi].lower_bound > model.reactions[r0_mi].lower_bound:
+                model.reactions[r0_mi].lower_bound = model.reactions[mi].lower_bound
+            if model.reactions[mi].upper_bound < model.reactions[r0_mi].upper_bound:
+                model.reactions[r0_mi].upper_bound = model.reactions[mi].upper_bound
+            del_model[mi] = True
+
+    # Add suppressed reactions as standalone entries
+    from fractions import Fraction
+    for mi in range(num_reac):
+        if old_reac_ids[mi] in suppressed_set:
+            model.reactions[mi].subset_rxns = [mi]
+            model.reactions[mi].subset_stoich = [Fraction(1)]
+
+    # Delete reactions (reverse order to preserve indices)
+    del_indices = np.where(del_model)[0]
+    for i in range(len(del_indices) - 1, -1, -1):
+        model.reactions[del_indices[i]].remove_from_model(remove_orphans=True)
+
+    # Build rational_map
     rational_map = {}
-    for j in range(subT.shape[1]):
-        subT[model.reactions[j].subset_rxns, j] = [float(v) for v in model.reactions[j].subset_stoich]
-        rational_map.update(
-            {model.reactions[j].id: {
-                 old_reac_ids[i]: v for i, v in zip(model.reactions[j].subset_rxns, model.reactions[j].subset_stoich)
-             }})
+    for j in range(len(model.reactions)):
+        rational_map[model.reactions[j].id] = {
+            old_reac_ids[mi]: v
+            for mi, v in zip(model.reactions[j].subset_rxns, model.reactions[j].subset_stoich)
+        }
     return rational_map
 
 
