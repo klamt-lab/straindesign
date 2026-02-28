@@ -95,7 +95,7 @@ class Gurobi_MILP_LP(gp.Model):
             A Gurobi MILP/LP interface class.
     """
 
-    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None, seed=None):
+    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None, seed=None, milp_threads=None):
         super().__init__()
         try:
             numvars = A_ineq.shape[1]
@@ -124,10 +124,14 @@ class Gurobi_MILP_LP(gp.Model):
         # add indicator constraints
         self._has_indicator_constr = indic_constr is not None
         if indic_constr is not None:
+            A_csr = sparse.csr_matrix(indic_constr.A)
             for i in range(len(indic_constr.sense)):
+                start, end = A_csr.indptr[i], A_csr.indptr[i + 1]
+                cols = A_csr.indices[start:end]
+                vals = A_csr.data[start:end]
+                lhs = gp.quicksum(float(val) * x[int(col)] for col, val in zip(cols, vals))
                 self.addGenConstrIndicator(x[indic_constr.binv[i]], bool(indic_constr.indicval[i]),
-                                           gp.quicksum(indic_constr.A[i, j] * x[j] for j in range(len(c)) if indic_constr.A[i, j] != 0.0),
-                                           '=' if indic_constr.sense[i] == 'E' else '<', indic_constr.b[i])
+                                           lhs, '=' if indic_constr.sense[i] == 'E' else '<', indic_constr.b[i])
             # Gurobi 13+ has a bug where presolve with indicator constraints can cause
             # error 10005 "Unable to retrieve attribute 'ObjBound'". Disable presolve.
             if gp.gurobi.version()[0] >= 13:
@@ -148,6 +152,8 @@ class Gurobi_MILP_LP(gp.Model):
                 seed = int(random.randint(0, 2**16 - 1))
                 logging.info('  MILP Seed: ' + str(seed))
             self.params.Seed = seed
+            if milp_threads is not None:
+                self.params.Threads = milp_threads
             self.params.IntFeasTol = 1e-9  # (0 is not allowed by Gurobi)
             # yield only optimal solutions in pool
             self.params.PoolGap = 1e-9
@@ -284,30 +290,34 @@ class Gurobi_MILP_LP(gp.Model):
 
     def set_objective(self, c):
         """Set the objective function with a vector"""
-        for i in range(len(self.getVars())):
-            self.getVars()[i].Obj = c[i]
+        gvars = self.getVars()
+        for i in range(len(gvars)):
+            gvars[i].Obj = c[i]
         self.update()
-        if any([self.getVars()[i].Obj for i in range(len(self.getVars()))]):
-            self.params.MIPFocus = 0
-        else:
-            self.params.MIPFocus = 1
+        if self.NumIntVars > 0:
+            self.params.MIPFocus = 0 if any(c) else 1
 
     def set_objective_idx(self, C):
         """Set the objective function with index-value pairs
-        
+
         e.g.: C=[[1, 1.0], [4,-0.2]]"""
+        gvars = self.getVars()
         for c in C:
-            self.getVars()[c[0]].Obj = c[1]
+            gvars[c[0]].Obj = c[1]
         self.update()
-        if any([self.getVars()[i].Obj for i in range(len(self.getVars()))]):
-            self.params.MIPFocus = 0
-        else:
-            self.params.MIPFocus = 1
+        if self.NumIntVars > 0:
+            has_nonzero = any(c[1] for c in C)
+            if has_nonzero:
+                self.params.MIPFocus = 0
+            else:
+                if not any(v.Obj for v in gvars):
+                    self.params.MIPFocus = 1
 
     def set_ub(self, ub):
         """Set the upper bounds to a given vector"""
+        gvars = self.getVars()
         for i in range(len(ub)):
-            self.getVars()[ub[i][0]].ub = ub[i][1]
+            gvars[ub[i][0]].ub = ub[i][1]
         self.update()
 
     def set_time_limit(self, t):
@@ -378,7 +388,7 @@ class Gurobi_MILP_LP(gp.Model):
 
     def getSolution(self) -> list:
         """Retrieve solution from Gurobi backend"""
-        return [x.X for x in self.getVars()]
+        return self.getAttr('X', self.getVars())
 
     def getSolutions(self) -> list:
         """Retrieve solution pool from Gurobi backend"""

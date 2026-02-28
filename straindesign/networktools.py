@@ -23,6 +23,7 @@ This module re-exports them for backwards compatibility.
 """
 
 import ast
+import hashlib
 import logging
 import numpy as np
 from re import search
@@ -48,22 +49,22 @@ from straindesign.compression import (
 )
 
 
-def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
-    """Remove genes whose that do not affect the flux space of the model using AST-based GPR parsing
-    
+def reduce_gpr(model, essential_reacs, gkis, gkos):
+    """Simplify GPR rules by removing non-targetable genes and reducing boolean expressions
+
     This function is used in preprocessing of computational strain design computations. Often,
     certain reactions, for instance, reactions essential for microbial growth can/must not be
-    targeted by interventions. That can be exploited to reduce the set of genes in which 
+    targeted by interventions. That can be exploited to reduce the set of genes in which
     interventions need to be considered.
-    
-    Given a set of essential reactions that is to be maintained operational, some genes can be 
-    removed from a metabolic model, either because they only affect only blocked reactions or 
+
+    Given a set of essential reactions that is to be maintained operational, some genes can be
+    removed from a metabolic model, either because they only affect only blocked reactions or
     essential reactions, or because they are essential reactions and must not be removed. As a
     consequence, the GPR rules of a model can be simplified using AST parsing for both DNF and non-DNF rules.
-    
-        
+
+
     Example:
-        remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
+        reduce_gpr(model, essential_reacs, gkis, gkos):
     
     Args:
         model (cobra.Model):
@@ -356,6 +357,10 @@ def remove_irrelevant_genes(model, essential_reacs, gkis, gkos):
     return gkos
 
 
+# backward-compat alias
+remove_irrelevant_genes = reduce_gpr
+
+
 def extend_model_gpr(model, use_names=False):
     """Integrate GPR-rules into a metabolic model as pseudo metabolites and reactions using AST parsing
     
@@ -423,7 +428,8 @@ def extend_model_gpr(model, use_names=False):
                         "solver or consider simplifying GPR rules or gene names in your model.")
 
     def truncate(id):
-        return id[0:MAX_NAME_LEN - 16] + hex(abs(hash(id)))[2:]
+        h = hashlib.sha256(id.encode()).hexdigest()[:20]
+        return id[0:MAX_NAME_LEN - 21] + "_" + h
 
     solver = search('(' + '|'.join(avail_solvers) + ')', model.solver.interface.__name__)[0]
 

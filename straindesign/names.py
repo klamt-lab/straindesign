@@ -163,6 +163,7 @@ ANY = 'any'
 BEST = 'best'
 POPULATE = 'populate'
 SEED = 'seed'
+MILP_THREADS = 'milp_threads'
 
 # Analysis
 MAXIMIZE = 'maximize'

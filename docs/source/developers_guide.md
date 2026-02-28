@@ -11,9 +11,12 @@
 3. [Public API & Entry Points](#3-public-api--entry-points)
 4. [Preprocessing Pipeline](#4-preprocessing-pipeline)
    - 4.1 [Model Cleaning](#41-model-cleaning)
-   - 4.2 [GPR Integration](#42-gpr-integration)
-   - 4.3 [Network Compression](#43-network-compression)
-   - 4.4 [Regulatory Interventions](#44-regulatory-interventions)
+   - 4.2 [Compression Pass 1](#42-compression-pass-1-before-gpr-extension)
+   - 4.3 [FVA](#43-fva)
+   - 4.4 [GPR Integration](#44-gpr-integration)
+   - 4.5 [Compression Pass 2](#45-compression-pass-2-after-gpr-extension)
+   - 4.6 [Network Compression — Algorithm Details](#46-network-compression--algorithm-details)
+   - 4.7 [Regulatory Interventions](#47-regulatory-interventions)
 5. [MILP Construction](#5-milp-construction)
    - 5.1 [Overview & z-map Matrices](#51-overview--z-map-matrices)
    - 5.2 [Primal LP from COBRApy Model](#52-primal-lp-from-cobrapy-model)
@@ -204,32 +207,48 @@ from straindesign.compression import compress_cobra_model
 
 ## 4. Preprocessing Pipeline
 
-`compute_strain_designs` (`compute_strain_designs.py`) orchestrates all preprocessing before constructing the MILP.
+`compute_strain_designs` (`compute_strain_designs.py`) orchestrates all preprocessing before constructing the MILP. The pipeline uses **two-pass compression**: the model is compressed once *before* GPR extension (so that FVA and GPR processing operate on a smaller model), then again *after* GPR extension (to compress the newly added gene pseudoreactions). This roughly halves model size at each downstream step and yields a ~4x end-to-end speedup on genome-scale models like iML1515.
 
 ### 4.1 Model Cleaning
 
-**Functions:** `remove_ext_mets`, `remove_dummy_bounds`, `bound_blocked_or_irrevers_fva`
-(all in `networktools.py`, which re-exports them from `compression.py`).
+**Functions:** `remove_ext_mets`, `remove_dummy_bounds`
+(in `networktools.py`, re-exported from `compression.py`).
 
 Steps:
-1. **Deep-copy** the model so the user's model is never mutated.
-2. **Remove external metabolites** — metabolites with no stoichiometric coupling to the rest of the network (boundary metabolites already handled by COBRApy exchange reactions, but orphaned ones are pruned).
-3. **Remove dummy bounds** — COBRApy uses ±1000 as a proxy for ±∞. Anything above a `bound_thres` (from `cobra.Configuration`) is replaced with `±inf` so big-M bounding works correctly.
-4. **FVA** (`fva` from `lptools.py`) — flux variability analysis identifies:
-   - **Blocked reactions** (FVA min = FVA max = 0): forced to zero, removed from intervention candidates.
-   - **Irreversible reactions** (FVA min ≥ 0 or FVA max ≤ 0): bounds tightened.
-   - **Essential reactions** (cannot be zero): excluded from knockout candidates, which helps compression and reduces MILP size.
+1. **Remove dummy bounds** — COBRApy uses ±1000 as a proxy for ±∞. Anything above a `bound_thres` (from `cobra.Configuration`) is replaced with `±inf` so big-M bounding works correctly.
+2. **Deep-copy** the model so the user's model is never mutated.
+3. **Remove external metabolites** — metabolites with no stoichiometric coupling to the rest of the network (boundary metabolites already handled by COBRApy exchange reactions, but orphaned ones are pruned).
+
+### 4.2 Compression Pass 1 (before GPR extension)
+
+**File:** `compression.py`
+**Orchestrated by:** `networktools.compress_model`
+
+Before FVA or GPR processing, the model is compressed with `propagate_gpr=True`. This merges coupled and parallel reactions while propagating GPR rules through the compression map: when reactions are lumped, their GPR rules are AND-combined (using sympy `And`/`Or` constructors for flattening and deduplication). The result is a much smaller model that retains correct GPR annotations.
+
+After compress #1:
+- `compress_modules(sd_modules, cmp_mapReac_1)` — rewrites constraint/objective reaction IDs.
+- `compress_ki_ko_cost(ko_cost, ki_cost, cmp_mapReac_1)` — maps reaction and regulatory costs (gene costs are not yet present and are handled separately after GPR extension).
+
+### 4.3 FVA
+
+**Function:** `bound_blocked_or_irrevers_fva`, `fva` (from `lptools.py`)
+
+Now running on the **compressed model** (roughly half the reactions of the original), FVA identifies:
+- **Blocked reactions** (FVA min = FVA max = 0): forced to zero, removed from intervention candidates.
+- **Irreversible reactions** (FVA min >= 0 or FVA max <= 0): bounds tightened.
+- **Essential reactions** (cannot be zero under module constraints): excluded from knockout candidates.
 
 FVA is run in parallel using `SDPool` for large models.
 
-### 4.2 GPR Integration
+### 4.4 GPR Integration
 
 **File:** `networktools.py`
-**Key functions:** `remove_irrelevant_genes`, `extend_model_gpr`
+**Key functions:** `reduce_gpr`, `extend_model_gpr`
 
-When gene-level interventions are requested (`gko_cost` or `gki_cost` provided), the model is **extended** with artificial reactions that represent gene-level knockouts. This allows the MILP's binary variables `z` to operate on genes rather than reactions.
+When gene-level interventions are requested (`gko_cost` or `gki_cost` provided), the model is **extended** with artificial reactions that represent gene-level knockouts. This allows the MILP's binary variables `z` to operate on genes rather than reactions. Because the model has already been compressed, there are fewer reactions to extend and fewer GPR rules to process.
 
-#### Step 1 — Remove irrelevant genes (`remove_irrelevant_genes`)
+#### Step 1 — Reduce GPR rules (`reduce_gpr`)
 
 Uses **AST-based GPR evaluation** (`evaluate_gpr_ast`):
 - Each reaction's GPR rule is parsed to an AST (`ast.parse`).
@@ -259,7 +278,15 @@ After computation, the artificial reactions in solutions are translated back to 
 - `interv`: current gene intervention state.
 - Returns `True/False/nan` (active/inactive/undetermined).
 
-### 4.3 Network Compression
+### 4.5 Compression Pass 2 (after GPR extension)
+
+After GPR extension adds gene pseudoreactions, the model is compressed a second time. This pass merges newly coupled gene pseudoreactions and parallel reactions introduced by the GPR encoding. The `no_par_compress_reacs` set is rebuilt from the (now rewritten) `sd_modules` to protect constraint/objective reactions.
+
+The final compression map is the concatenation of both passes: `cmp_mapReac = cmp_mapReac_1 + cmp_mapReac_2`. When decompressing solutions, `expand_sd` processes this list in reverse order (pass 2 first, then pass 1).
+
+A final FVA pass identifies essential reactions in the fully compressed model and removes them from the knockout candidates.
+
+### 4.6 Network Compression — Algorithm Details
 
 **File:** `compression.py`
 **Orchestrated by:** `networktools.compress_model`
@@ -268,7 +295,7 @@ Network compression reduces model size while preserving the strain design proble
 
 #### RationalMatrix
 
-The core data structure for numerically exact RREF computation. It uses **sparse dual-integer storage** (numerator matrix + denominator matrix, both `scipy.sparse.csr_matrix`). Operations are performed in rational arithmetic using `fractions.Fraction` and `sympy.Rational`.
+The core data structure for numerically exact RREF computation. It uses **sparse dual-integer storage** (numerator matrix + denominator matrix, both `scipy.sparse.csr_matrix`). Operations are performed in rational arithmetic using `fractions.Fraction` and `sympy.Rational`. The model stays in exact rational arithmetic throughout both compression passes; no float conversion is performed between passes.
 
 Key operations: row operations, scaling, finding pivots, extracting nullspace.
 
@@ -276,40 +303,42 @@ Floating-point coefficients are converted via `float_to_rational` with configura
 
 #### Compression Algorithm (StoichMatrixCompressor)
 
-The main class `StoichMatrixCompressor` performs the following:
+The main class `StoichMatrixCompressor` performs the following in alternating iterations until no further reduction is possible:
 
 1. **Remove conservation relations** (`remove_conservation_relations`):
    Compute the left nullspace of the stoichiometric matrix `S` over the rationals (homogeneous dependencies among metabolite rows). Rows that are linearly dependent are removed. This is the RREF step.
 
 2. **Remove blocked reactions** (`remove_blocked_reactions`):
-   Reactions with zero flux under any feasible steady state are removed. Uses FVA for reliable detection.
+   Reactions with zero flux under any feasible steady state are removed. Detected via nullspace analysis (reactions not in the column space of the reduced matrix).
 
 3. **Detect coupled reactions** (`compress_model_coupled`):
-   Two reactions `r_i` and `r_j` are **coupled** if there exists a scalar `α` such that in every feasible steady state, `v_i = α * v_j`. These can be lumped into one reaction. Coupling is detected by computing the right nullspace and identifying proportional columns. Lumpable reactions are merged and their costs combined.
+   Two reactions `r_i` and `r_j` are **coupled** if there exists a scalar `alpha` such that in every feasible steady state, `v_i = alpha * v_j`. These can be lumped into one reaction. Coupling is detected by computing the right nullspace and identifying proportional columns. Lumpable reactions are merged and their costs combined. When `propagate_gpr=True`, GPR rules are AND-combined during merging. **Contradicting groups** (where bounds intersection yields lb > ub or lb = ub = 0) are detected and removed.
 
 4. **Parallel reactions** (`compress_model_parallel`):
    Reactions with identical stoichiometry (same column in `S`) are merged. The resulting "super-reaction" carries the combined cost, and the z-variable controls all of them simultaneously.
 
 #### Compression Result
 
-`cmp_mapReac`: maps each compressed reaction to a list of original reactions it represents (with scaling factors).
+`cmp_mapReac`: a list of dicts, one per compression pass. Each dict maps compressed reaction IDs to their original reactions with scaling factors.
 
 This is used by:
 - `compress_modules(sd_modules, cmp_mapReac)` — rewrites constraints/objectives in terms of compressed reaction IDs.
 - `compress_ki_ko_cost(cmp_ko_cost, cmp_ki_cost, cmp_mapReac)` — maps intervention costs.
-- `expand_sd(sd, cmp_mapReac)` — after solving, maps binary solutions back to original reactions.
+- `expand_sd(sd, cmp_mapReac)` — after solving, maps binary solutions back to original reactions (processes passes in reverse order).
 
 #### Backend Selection
 
-The compression backend is chosen by the `backend` parameter:
+The compression backend is chosen by the `compression_backend` parameter:
 - `'sparse_rref'` (default): Pure Python, uses `RationalMatrix` for exact arithmetic. No Java dependency.
 - `'efmtool_rref'` (legacy): Uses the bundled `efmtool.jar` via JPype for RREF. Requires `pip install straindesign[java]`. Available via `compress_model_efmtool`.
 
-### 4.4 Regulatory Interventions
+### 4.7 Regulatory Interventions
 
 **Function:** `extend_model_regulatory` (`networktools.py`)
 
 Regulatory interventions represent changes that activate or silence a pathway without directly knocking out a gene. They are encoded similarly to gene interventions: artificial reactions are added to the model, and their "presence" or "absence" is controlled by binary z-variables.
+
+Regulatory constraints are **split by parsability**: constraints that reference only existing reaction IDs (e.g., `r6 >= 4.5`) are applied before compression pass 1; constraints that reference gene IDs (e.g., `g4 <= 0.4`) are deferred until after `extend_model_gpr` creates the corresponding pseudoreactions.
 
 After solving, `postprocess_reg_sd` in `compute_strain_designs.py` converts regulatory intervention values from numeric (`1`/`0`) to boolean (`True`/`False`) in the solution dict.
 
@@ -932,17 +961,40 @@ The hot spots are typically: `link_z` (LP bounding), `fva` (preprocessing), and 
 
 ```
 compute_strain_designs(model, **kwargs)
-    ├── remove_ext_mets(model)
-    ├── remove_dummy_bounds(model)
-    ├── bound_blocked_or_irrevers_fva(model, ...)
-    ├── [if gene_kos] rename_genes(model, ...)
-    ├── [if gene_kos] remove_irrelevant_genes(model, essential_reacs, gkis, gkos)
-    ├── [if gene_kos] extend_model_gpr(cmp_model, ...) → reac_map
-    ├── [if reg]      extend_model_regulatory(cmp_model, ...) → reg_map
-    ├── compress_model(cmp_model, ...) → cmp_mapReac
-    ├── compress_modules(sd_modules, cmp_mapReac)
-    ├── compress_ki_ko_cost(ko_cost, ki_cost, cmp_mapReac)
-    ├── SDMILP(cmp_model, sd_modules, ko_cost, ki_cost, solver, M, ...)
+    │
+    │── remove_dummy_bounds(model)
+    │── cmp_model = model.copy()
+    │── remove_ext_mets(cmp_model)
+    │── [if reg] split regulatory constraints:
+    │       ├── reaction-based → extend_model_regulatory(cmp_model) now
+    │       └── gene-based → deferred until after GPR extension
+    │
+    │── ─── COMPRESS #1 (before GPR extension) ───
+    │── compress_model(cmp_model, propagate_gpr=True) → cmp_mapReac_1
+    │── compress_modules(sd_modules, cmp_mapReac_1)
+    │── compress_ki_ko_cost(rxn_ko, rxn_ki, cmp_mapReac_1)
+    │
+    │── ─── FVA (on compressed model) ───
+    │── bound_blocked_or_irrevers_fva(cmp_model, ...)
+    │── fva(cmp_model, ...) → essential_reacs
+    │
+    │── ─── GPR extension (on compressed model) ───
+    │── [if gene_kos] rename_genes(cmp_model, ...)
+    │── [if gene_kos] reduce_gpr(cmp_model, essential_reacs, gkis, gkos)
+    │── [if gene_kos] extend_model_gpr(cmp_model, ...) → reac_map
+    │── [if gene_kos] apply deferred gene-based regulatory constraints
+    │── [if gene_kos] merge gene costs into cmp_ko_cost / cmp_ki_cost
+    │
+    │── ─── COMPRESS #2 (after GPR extension) ───
+    │── compress_model(cmp_model) → cmp_mapReac_2
+    │── compress_modules(sd_modules, cmp_mapReac_2)
+    │── compress_ki_ko_cost(all_ko, all_ki, cmp_mapReac_2)
+    │── cmp_mapReac = cmp_mapReac_1 + cmp_mapReac_2
+    │
+    │── fva(cmp_model, ...) → final essential_reacs
+    │
+    │── ─── MILP construction & solving ───
+    │── SDMILP(cmp_model, sd_modules, ko_cost, ki_cost, solver, M, ...)
     │       ├── SDProblem.__init__(...)
     │       │       ├── [for each module] addModule(sd_module)
     │       │       │       ├── build_primal_from_cbm(model, V_ineq, v_ineq, ...)
@@ -967,7 +1019,7 @@ compute_strain_designs(model, **kwargs)
     │       ├── solveZ() / populateZ(n)
     │       ├── verify_sd(z) → valid[]
     │       └── add_exclusion_constraints(z)
-    ├── expand_sd(sd, cmp_mapReac)
+    ├── expand_sd(sd, cmp_mapReac)          ← processes pass 2, then pass 1
     ├── filter_sd_maxcost(sd, max_cost, ...)
     ├── postprocess_reg_sd(sd, ...)
     └── SDSolutions(model, sd, status, sd_setup)

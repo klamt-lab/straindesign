@@ -19,7 +19,7 @@
 #
 """Function: computing metabolic strain designs (compute_strain_designs)"""
 
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import contextmanager, redirect_stdout, redirect_stderr
 from typing import Dict, List, Tuple
 import numpy as np
 import logging
@@ -32,10 +32,19 @@ from cobra.manipulation import rename_genes
 from straindesign import SDModule, SDSolutions, select_solver, fva, DisableLogger, SDProblem, SDMILP
 from straindesign.names import *
 from straindesign.networktools import   remove_ext_mets, remove_dummy_bounds, bound_blocked_or_irrevers_fva, \
-                                        remove_irrelevant_genes, extend_model_gpr, extend_model_regulatory, \
+                                        reduce_gpr, extend_model_gpr, extend_model_regulatory, \
                                         compress_model, compress_modules, compress_ki_ko_cost, expand_sd, filter_sd_maxcost
+from straindesign.compression import with_suppressed_lp
 
 
+@contextmanager
+def _silent_io():
+    """Suppress stdout, stderr and logging."""
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), DisableLogger():
+        yield
+
+
+@with_suppressed_lp
 def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """Computes strain designs for a user-defined strain design problem
 
@@ -156,7 +165,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
-        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, 'compression_backend'
+        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'compression_backend'
     }
     logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
@@ -258,10 +267,9 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         raise Exception("Only one of the module types 'OptKnock', 'RobustKnock' and 'OptCouple' can be defined per "\
                             "strain design setup.")
     logging.info('  Using ' + kwargs[SOLVER] + ' for solving LPs during preprocessing.')
-    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), DisableLogger():  # suppress standard output from copying model
+    with _silent_io():
         orig_model = model
         model = model.copy()
-        uncmp_model = model.copy()
     orig_ko_cost = deepcopy(uncmp_ko_cost)
     orig_ki_cost = deepcopy(uncmp_ki_cost)
     orig_reg_cost = deepcopy(uncmp_reg_cost)
@@ -273,22 +281,72 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         # ensure that gene and reaction kos/kis do not overlap
         g_itv = {g for g in list(uncmp_gko_cost.keys()) + list(uncmp_gki_cost.keys())}
         r_itv = {r for r in list(uncmp_ko_cost.keys()) + list(uncmp_ki_cost.keys())}
-        if np.any([np.any([True for g in uncmp_model.reactions.get_by_id(r).genes if g in g_itv]) for r in r_itv]) or \
+        if np.any([np.any([True for g in model.reactions.get_by_id(r).genes if g in g_itv]) for r in r_itv]) or \
             np.any(set(uncmp_gko_cost.keys()).intersection(set(uncmp_gki_cost.keys()))) or \
             np.any(set(uncmp_ko_cost.keys()).intersection(set(uncmp_ki_cost.keys()))):
             raise Exception('Specified gene and reaction knock-out/-in costs contain overlap. '\
                             'Make sure that metabolic interventions are enabled either through reaction or '\
                             'through gene interventions and are defined either as knock-ins or as knock-outs.')
     # 1) Preprocess Model
-    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), DisableLogger():  # suppress standard output from copying model
-        cmp_model = uncmp_model.copy()
-    # remove external metabolites
-    remove_ext_mets(cmp_model)
     # replace model bounds with +/- inf if above a certain threshold
     remove_dummy_bounds(model)
-    # FVAs to identify blocked, irreversible and essential reactions, as well as non-bounding bounds
+    # Copy model for compression/processing
+    with _silent_io():
+        cmp_model = model.copy()
+    # remove external metabolites
+    remove_ext_mets(cmp_model)
+    # Extend with regulatory constraints: reaction-based can be applied now,
+    # gene-based must be deferred until after GPR extension.
+    # extend_model_regulatory mutates its dict arg in-place (replacing original
+    # keys with generated names), so we must update uncmp_reg_cost accordingly.
+    _deferred_reg = {}
+    if uncmp_reg_cost:
+        from straindesign.parse_constr import parse_constraints as _parse_constr
+        _rxn_ids = set(cmp_model.reactions.list_attr('id'))
+        _immediate_reg = {}
+        for k, v in uncmp_reg_cost.items():
+            try:
+                _parse_constr(k, _rxn_ids)
+                _immediate_reg[k] = v
+            except Exception:
+                _deferred_reg[k] = v
+        if _immediate_reg:
+            uncmp_ko_cost.update(extend_model_regulatory(cmp_model, _immediate_reg))
+        # Rebuild uncmp_reg_cost: immediate entries are now mutated, deferred are unchanged
+        uncmp_reg_cost.clear()
+        uncmp_reg_cost.update(_immediate_reg)
+    # --- COMPRESS #1: on model WITHOUT gene pseudoreactions ---
+    if kwargs['compress'] is True or kwargs['compress'] is None:
+        # Exclude reactions named in strain design modules from parallel compression
+        no_par_compress_reacs = set()
+        for m in sd_modules:
+            for p in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+                if p in m and m[p] is not None:
+                    param = m[p]
+                    if p == CONSTRAINTS:
+                        for c in param:
+                            for k in c[0].keys():
+                                no_par_compress_reacs.add(k)
+                    if p in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+                        for k in param.keys():
+                            no_par_compress_reacs.add(k)
+        compression_backend = kwargs.get('compression_backend', 'sparse_rref')
+        logging.info('Compressing Network (' + str(len(cmp_model.reactions)) + ' reactions).')
+        cmp_mapReac_1 = compress_model(cmp_model, no_par_compress_reacs,
+                                        compression_backend=compression_backend,
+                                        propagate_gpr=True)
+        sd_modules = compress_modules(sd_modules, cmp_mapReac_1)
+        # Compress reaction + regulatory costs only (gene costs not yet added)
+        cmp_ko_cost, cmp_ki_cost, cmp_mapReac_1 = compress_ki_ko_cost(
+            uncmp_ko_cost, uncmp_ki_cost, cmp_mapReac_1)
+        logging.info('  Compressed to ' + str(len(cmp_model.reactions)) + ' reactions.')
+    else:
+        cmp_mapReac_1 = []
+        cmp_ko_cost = uncmp_ko_cost
+        cmp_ki_cost = uncmp_ki_cost
+    # --- FVAs on (possibly compressed) model ---
     logging.info('  FVA to identify blocked reactions and irreversibilities.')
-    bound_blocked_or_irrevers_fva(model, solver=kwargs[SOLVER])
+    bound_blocked_or_irrevers_fva(cmp_model, solver=kwargs[SOLVER])
     logging.info('  FVA(s) to identify essential reactions.')
     essential_reacs = set()
     for m in sd_modules:
@@ -299,20 +357,20 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                 if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0:  # find essential
                     essential_reacs.add(reac_id)
     # remove ko-costs (and thus knockability) of essential reactions
-    [uncmp_ko_cost.pop(er) for er in essential_reacs if er in uncmp_ko_cost]
-    # If computation of gene-gased intervention strategies, (optionally) compress gpr are rules and extend stoichimetric network with genes
+    [cmp_ko_cost.pop(er) for er in essential_reacs if er in cmp_ko_cost]
+    # --- GPR extension on (possibly compressed) model ---
     if kwargs['gene_kos']:
         if kwargs['compress'] is True or kwargs['compress'] is None:
             num_genes = len(cmp_model.genes)
-            num_gpr = len([True for r in model.reactions if r.gene_reaction_rule])
+            num_gpr = len([True for r in cmp_model.reactions if r.gene_reaction_rule])
             logging.info('Preprocessing GPR rules (' + str(num_genes) + ' genes, ' + str(num_gpr) + ' gpr rules).')
             # removing irrelevant genes will also remove essential reactions from the list of knockable genes
-            uncmp_gko_cost = remove_irrelevant_genes(cmp_model, essential_reacs, uncmp_gki_cost, uncmp_gko_cost)
-            if len(cmp_model.genes) < num_genes or len([True for r in model.reactions if r.gene_reaction_rule]) < num_gpr:
+            uncmp_gko_cost = reduce_gpr(cmp_model, essential_reacs, uncmp_gki_cost, uncmp_gko_cost)
+            if len(cmp_model.genes) < num_genes or len([True for r in cmp_model.reactions if r.gene_reaction_rule]) < num_gpr:
                 num_genes = len(cmp_model.genes)
                 num_gpr = len([True for r in cmp_model.reactions if r.gene_reaction_rule])
-                logging.info('  Simplifyied to '+str(num_genes)+' genes and '+\
-                    str(num_gpr)+' gpr rules.')
+                logging.info('  Simplified to ' + str(num_genes) + ' genes and ' +
+                    str(num_gpr) + ' gpr rules.')
         logging.info('  Extending metabolic network with gpr associations.')
         reac_map = extend_model_gpr(cmp_model, has_gene_names)
         for i, m in enumerate(sd_modules):
@@ -329,16 +387,28 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                             v = m[p].pop(k)
                             for n, w in reac_map[k].items():
                                 m[p][n] = v * w
+        # Apply deferred regulatory constraints (gene-based, need GPR extension first)
+        if _deferred_reg:
+            reg_costs = extend_model_regulatory(cmp_model, _deferred_reg)
+            cmp_ko_cost.update(reg_costs)
+            uncmp_ko_cost.update(reg_costs)
+            uncmp_reg_cost.update(_deferred_reg)  # now mutated by extend_model_regulatory
+            _deferred_reg = {}  # prevent double application
+        # Merge gene costs into compressed costs (and uncompressed for filter_sd_maxcost)
+        cmp_ko_cost.update(uncmp_gko_cost)
+        cmp_ki_cost.update(uncmp_gki_cost)
         uncmp_ko_cost.update(uncmp_gko_cost)
         uncmp_ki_cost.update(uncmp_gki_cost)
-    uncmp_ko_cost.update(extend_model_regulatory(cmp_model, uncmp_reg_cost))
-    cmp_ko_cost = uncmp_ko_cost
-    cmp_ki_cost = uncmp_ki_cost
-    # Compress model
-    if kwargs['compress'] is True or kwargs['compress'] is None:  # If compression is activated (or not defined)
-        logging.info('Compressing Network (' + str(len(cmp_model.reactions)) + ' reactions).')
-        # compress network by lumping sequential and parallel reactions alternatingly.
-        # Exclude reactions named in strain design modules from parallel compression
+    # Apply any deferred regulatory constraints that weren't handled in the gene_kos block
+    if _deferred_reg:
+        reg_costs = extend_model_regulatory(cmp_model, _deferred_reg)
+        cmp_ko_cost.update(reg_costs)
+        uncmp_ko_cost.update(reg_costs)
+        uncmp_reg_cost.update(_deferred_reg)  # now mutated by extend_model_regulatory
+    # --- COMPRESS #2: after GPR extension ---
+    if kwargs['compress'] is True or kwargs['compress'] is None:
+        logging.info('Compressing after GPR extension (' + str(len(cmp_model.reactions)) + ' reactions).')
+        # Rebuild no_par_compress_reacs from updated sd_modules
         no_par_compress_reacs = set()
         for m in sd_modules:
             for p in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
@@ -351,12 +421,12 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                     if p in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                         for k in param.keys():
                             no_par_compress_reacs.add(k)
-        compression_backend = kwargs.get('compression_backend', 'sparse_rref')
-        cmp_mapReac = compress_model(cmp_model, no_par_compress_reacs, compression_backend=compression_backend)
-        # compress information in strain design modules
-        sd_modules = compress_modules(sd_modules, cmp_mapReac)
-        # compress ko_cost and ki_cost
-        cmp_ko_cost, cmp_ki_cost, cmp_mapReac = compress_ki_ko_cost(cmp_ko_cost, cmp_ki_cost, cmp_mapReac)
+        cmp_mapReac_2 = compress_model(cmp_model, no_par_compress_reacs,
+                                        compression_backend=compression_backend)
+        sd_modules = compress_modules(sd_modules, cmp_mapReac_2)
+        cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2 = compress_ki_ko_cost(
+            cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2)
+        cmp_mapReac = cmp_mapReac_1 + cmp_mapReac_2
     else:
         cmp_mapReac = []
 
@@ -386,7 +456,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     if REGCOST in kwargs1:
         kwargs1.pop(REGCOST)
 
-    kwargs_milp = {k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M', SEED]}
+    kwargs_milp = {k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M', SEED, MILP_THREADS]}
     kwargs_milp.update({KOCOST: cmp_ko_cost})
     kwargs_milp.update({KICOST: cmp_ki_cost})
     kwargs_milp.update({'essential_kis': essential_kis})

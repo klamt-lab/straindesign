@@ -99,7 +99,8 @@ class SDMILP(SDProblem, MILP_LP):
                          indic_constr=self.indic_constr,
                          M=self.M,
                          solver=self.solver,
-                         seed=self.seed)
+                         seed=self.seed,
+                         milp_threads=self.milp_threads)
 
     def add_exclusion_constraints(self, z):
         """Exclude binary solution in z and all supersets from MILP"""

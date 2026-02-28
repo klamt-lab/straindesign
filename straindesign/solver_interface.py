@@ -102,7 +102,7 @@ class MILP_LP(object):
 
     def __init__(self, **kwargs):
         allowed_keys = {
-            'c', 'A_ineq', 'b_ineq', 'A_eq', 'b_eq', 'lb', 'ub', 'vtype', 'indic_constr', 'M', SOLVER, 'skip_checks', 'tlim', SEED
+            'c', 'A_ineq', 'b_ineq', 'A_eq', 'b_eq', 'lb', 'ub', 'vtype', 'indic_constr', 'M', SOLVER, 'skip_checks', 'tlim', SEED, MILP_THREADS
         }
         # set all keys passed in kwargs
         for key, value in kwargs.items():
@@ -179,15 +179,17 @@ class MILP_LP(object):
         if not self.solver == GLPK and self.M and not (isnan(self.M) or isinf(self.M)) and \
            self.indic_constr and self.indic_constr.A.shape[0]:
             logging.warning('Provided big M value is ignored unless glpk is used.')
+        if self.solver == GLPK and self.milp_threads is not None:
+            raise ValueError("milp_threads is not supported for GLPK, which is single-threaded.")
         # Create backend
         if self.solver == CPLEX:
             from straindesign.cplex_interface import Cplex_MILP_LP
             self.backend = Cplex_MILP_LP(self.c, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq, self.lb, self.ub, self.vtype,
-                                         self.indic_constr, self.seed)
+                                         self.indic_constr, self.seed, self.milp_threads)
         elif self.solver == GUROBI:
             from straindesign.gurobi_interface import Gurobi_MILP_LP
             self.backend = Gurobi_MILP_LP(self.c, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq, self.lb, self.ub, self.vtype,
-                                          self.indic_constr, self.seed)
+                                          self.indic_constr, self.seed, self.milp_threads)
         elif self.solver == SCIP:
             from straindesign.scip_interface import SCIP_MILP, SCIP_LP
             self.isLP = all(v == 'C' for v in self.vtype)
@@ -196,7 +198,7 @@ class MILP_LP(object):
                 return
             else:
                 self.backend = SCIP_MILP(self.c, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq, self.lb, self.ub, self.vtype,
-                                         self.indic_constr, self.seed)
+                                         self.indic_constr, self.seed, self.milp_threads)
         elif self.solver == GLPK:
             from straindesign.glpk_interface import GLPK_MILP_LP
             self.backend = GLPK_MILP_LP(self.c, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq, self.lb, self.ub, self.vtype,

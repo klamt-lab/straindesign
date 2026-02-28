@@ -2,6 +2,38 @@ import pytest
 from cobra import Configuration
 from straindesign.names import *
 
+
+# ---------------------------------------------------------------------------
+# Custom CLI flags for test_performance.py tiered benchmarks
+# ---------------------------------------------------------------------------
+
+def pytest_addoption(parser):
+    for name, help_text in [
+        ("--medium", "Run iMLcore genome-scale benchmarks (~4 min total)."),
+        ("--large",  "Run iML1515 large-model benchmarks (several min/solver)."),
+    ]:
+        try:
+            parser.addoption(name, action="store_true", default=False, help=help_text)
+        except ValueError:
+            pass  # already registered
+
+
+def pytest_configure(config):
+    for marker, desc in [
+        ("medium", "genome-scale benchmark; enable with --medium"),
+        ("large",  "large-model benchmark; enable with --large"),
+    ]:
+        config.addinivalue_line("markers", f"{marker}: {desc}")
+
+
+def pytest_collection_modifyitems(config, items):
+    for flag, marker in [("--medium", "medium"), ("--large", "large")]:
+        if not config.getoption(flag, default=False):
+            skip = pytest.mark.skip(reason=f"pass {flag} to enable this benchmark")
+            for item in items:
+                if marker in item.keywords:
+                    item.add_marker(skip)
+
 cobra_conf = Configuration()
 bound_thres = max((abs(cobra_conf.lower_bound), abs(cobra_conf.upper_bound)))
 
