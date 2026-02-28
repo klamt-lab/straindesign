@@ -34,6 +34,108 @@ from cobra.util.array import create_stoichiometric_matrix
 LOG = logging.getLogger(__name__)
 
 # =============================================================================
+# LP Update Suppression
+# =============================================================================
+
+# Saved original methods (set when suppressed, None when active).
+_ORIG_SLC = None  # (class, method) for Constraint.set_linear_coefficients
+_ORIG_SB = None   # (class, method) for Variable.set_bounds
+
+# Sentinel no-op: identity check tells us whether the class is already patched.
+_SLC_NOOP = lambda self, *a, **kw: None
+
+
+def _sb_noop(self, lb, ub):
+    """No-op set_bounds: updates Python-side state only, skips solver."""
+    self._lb = lb
+    self._ub = ub
+
+
+def _suppress_lp_updates(model):
+    """Patch optlang to skip LP coefficient and bounds updates.
+
+    Safe to call when already suppressed (idempotent).  The real methods
+    are saved on first call and restored by :func:`_restore_lp_updates`.
+    Guards: all accesses are hasattr-checked so that cobra/optlang API
+    changes simply disable the optimisation without breaking anything.
+    """
+    global _ORIG_SLC, _ORIG_SB
+    try:
+        if hasattr(model, 'problem'):
+            prob = model.problem
+            if hasattr(prob, 'Constraint'):
+                cls_c = prob.Constraint
+                if hasattr(cls_c, 'set_linear_coefficients'):
+                    if cls_c.set_linear_coefficients is not _SLC_NOOP:
+                        _ORIG_SLC = (cls_c, cls_c.set_linear_coefficients)
+                        cls_c.set_linear_coefficients = _SLC_NOOP
+            if hasattr(prob, 'Variable'):
+                cls_v = prob.Variable
+                if hasattr(cls_v, 'set_bounds'):
+                    if cls_v.set_bounds is not _sb_noop:
+                        _ORIG_SB = (cls_v, cls_v.set_bounds)
+                        cls_v.set_bounds = _sb_noop
+    except Exception:
+        pass
+
+
+def _restore_lp_updates():
+    """Restore original optlang LP update methods.
+
+    Safe to call when not suppressed (idempotent).
+    """
+    global _ORIG_SLC, _ORIG_SB
+    if _ORIG_SLC is not None:
+        cls, method = _ORIG_SLC
+        cls.set_linear_coefficients = method
+        _ORIG_SLC = None
+    if _ORIG_SB is not None:
+        cls, method = _ORIG_SB
+        cls.set_bounds = method
+        _ORIG_SB = None
+
+
+def _is_lp_suppressed():
+    """Return True if LP updates are currently suppressed."""
+    return _ORIG_SLC is not None or _ORIG_SB is not None
+
+
+from contextlib import contextmanager
+from functools import wraps
+
+
+@contextmanager
+def suppress_lp_context(model):
+    """Context manager that suppresses optlang LP updates for its duration.
+
+    Patches set_linear_coefficients and set_bounds at the class level on
+    entry, restores on exit.  Nests safely: if already suppressed by an
+    outer context, this is a no-op.
+    """
+    entered_here = not _is_lp_suppressed()
+    if entered_here:
+        _suppress_lp_updates(model)
+    try:
+        yield
+    finally:
+        if entered_here:
+            _restore_lp_updates()
+
+
+def with_suppressed_lp(func):
+    """Decorator that wraps a function in :func:`suppress_lp_context`.
+
+    The first positional argument must be a cobra Model.
+    """
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        model = args[0]
+        with suppress_lp_context(model):
+            return func(*args, **kwargs)
+    return wrapper
+
+
+# =============================================================================
 # Utility Functions
 # =============================================================================
 
@@ -917,12 +1019,10 @@ class StoichMatrixCompressor:
                  bounds: Optional[List[Tuple[float, float]]] = None) -> CompressionRecord:
         """Compress network, return transformation matrices.
 
-        Two-phase approach:
-        1. Phase 1: Remove zero-flux reactions (iteratively)
-        2. Phase 2: Combine coupled reactions (iteratively)
-
-        This separation prevents cascading effects where combining reactions
-        could create new coupling patterns that weren't present in the original.
+        Single-pass approach: each iteration computes the nullspace once,
+        then removes zero-flux reactions AND merges coupled groups from
+        the same kernel.  Re-iterates only when contradicting groups were
+        removed (which may expose new couplings).
         """
         work = _WorkRecord(stoich, meta_names, reac_names, bounds)
 
@@ -932,22 +1032,10 @@ class StoichMatrixCompressor:
         work.remove_reactions(suppressed)
 
         if do_nullspace:
-            # Phase 1: Remove zero-flux reactions only
-            # Optimization: Continue only if nullspace compression found reactions.
-            # Removing unused metabolites (all-zero rows) doesn't change the nullspace,
-            # so if _nullspace_compress returns False, the next iteration would too.
             while True:
                 work.stats.inc_compression_iteration()
                 work.remove_unused_metabolites()
-                found = self._nullspace_compress(work, incl_compression=False)
-                if not (found and do_recursive):
-                    break
-
-            # Phase 2: Combine coupled reactions
-            while True:
-                work.stats.inc_compression_iteration()
-                work.remove_unused_metabolites()
-                found = self._nullspace_compress(work, incl_compression=True)
+                found = self._nullspace_compress(work)
                 if not (found and do_recursive):
                     break
 
@@ -955,12 +1043,14 @@ class StoichMatrixCompressor:
         work.stats.write_to_log()
         return work.get_truncated()
 
-    def _nullspace_compress(self, work: _WorkRecord, incl_compression: bool = True) -> bool:
-        """One pass of nullspace compression. Returns True if reactions removed.
+    def _nullspace_compress(self, work: _WorkRecord) -> bool:
+        """One pass of nullspace compression. Returns True if contradicting
+        groups were removed (triggering re-iteration).
 
-        Args:
-            incl_compression: If False, only remove zero-flux reactions.
-                              If True, only combine coupled reactions.
+        Computes the nullspace once, then from the same kernel:
+        - Identifies zero-flux reactions (absent from kernel)
+        - Identifies and merges coupled reaction groups (proportional kernel rows)
+        - Removes zero-flux + coupled slaves + contradicting groups in one batch
         """
         # Build active submatrix for nullspace computation
         active = work.cmp.submatrix(work.size.metas, work.size.reacs)
@@ -972,22 +1062,8 @@ class StoichMatrixCompressor:
         # Get kernel pattern (CSR for structure) and values (Fractions for exact ratios)
         kernel_pattern, kernel_values = kernel.to_sparse_pattern()
 
-        changed = False
-        if not incl_compression:
-            # Phase 1: Remove zero-flux reactions
-            zero_flux = self._find_zero_flux(work, kernel_pattern)
-            LOG.debug(f"Phase 1: {len(zero_flux)} zero-flux to remove")
-            if zero_flux:
-                work.remove_reactions_by_indices(zero_flux)
-                changed = True
-        else:
-            # Phase 2: Combine coupled reactions
-            changed |= self._handle_coupled_combine(work, kernel_pattern, kernel_values)
-
-        if changed:
-            work.remove_unused_metabolites()
-
-        return changed
+        # Find zero-flux reactions and merge coupled groups in one pass
+        return self._handle_compress(work, kernel_pattern, kernel_values)
 
     def _find_zero_flux(self, work: _WorkRecord, kernel_sparse) -> set:
         """Find reactions with all-zero kernel rows (indices in current work)."""
@@ -1077,19 +1153,25 @@ class StoichMatrixCompressor:
 
         return groups, ratios
 
-    def _handle_coupled_combine(self, work: _WorkRecord, kernel_pattern, kernel_values) -> bool:
-        """Phase 2: Combine coupled reactions, detect contradicting groups.
+    def _handle_compress(self, work: _WorkRecord, kernel_pattern, kernel_values) -> bool:
+        """Remove zero-flux and merge coupled reactions from a single kernel.
 
-        Merges all coupled groups unconditionally. Then checks bounds
-        intersection: if a group's feasible range is [0, 0] (or infeasible),
-        the group is contradicting and the master is also removed.
+        From one nullspace computation:
+        1. Identifies zero-flux reactions (empty kernel rows)
+        2. Finds and merges coupled groups (proportional kernel rows)
+        3. Detects contradicting groups via bounds intersection
+        4. Removes everything in one batch
 
-        Returns True if any contradicting groups were removed (flux space
+        Returns True if contradicting groups were removed (flux space
         changed), triggering re-iteration to find new couplings.
         """
+        # Collect zero-flux reactions
+        zero_flux = self._find_zero_flux(work, kernel_pattern)
+
+        # Find and merge coupled groups
         groups, ratios = self._find_coupled_groups(kernel_pattern, kernel_values, work.size.reacs)
 
-        reactions_to_remove = set()
+        reactions_to_remove = set(zero_flux)
         contradicting_removed = False
 
         # Enter batch edit mode for cmp and post matrices to avoid repeated LIL conversions
@@ -1143,7 +1225,8 @@ class StoichMatrixCompressor:
         work.cmp.end_batch_edit()
         work.post.end_batch_edit()
 
-        LOG.debug(f"Phase 2: {len(groups)} groups, removing {len(reactions_to_remove)} reactions, contradicting={contradicting_removed}")
+        LOG.debug(f"Compression: {len(zero_flux)} zero-flux, {len(groups)} coupled groups, "
+                  f"removing {len(reactions_to_remove)} reactions, contradicting={contradicting_removed}")
         work.remove_reactions_by_indices(reactions_to_remove)
 
         return contradicting_removed
@@ -1322,8 +1405,10 @@ def compress_cobra_model(model,
     # Apply to model (uses direct manipulation, bypasses solver)
     reaction_map, objective_updates = _apply_compression_to_model(model, compression_record, reaction_names)
 
-    # Rebuild solver after all direct modifications
-    _rebuild_solver(model, objective_updates)
+    # Rebuild solver only if we're not inside a caller's suppress context
+    # (compress_model rebuilds once at the end instead of every iteration)
+    if not _is_lp_suppressed():
+        _rebuild_solver(model, objective_updates)
 
     pre_matrix = compression_record.pre.to_numpy()
     post_matrix = compression_record.post.to_numpy()
@@ -1350,10 +1435,20 @@ def _rebuild_solver(model, objective_updates: dict) -> None:
     Must be called after using direct attribute manipulation that bypasses
     solver updates (e.g., _metabolites, _lower_bound, _upper_bound).
 
+    If LP updates are currently suppressed, they are temporarily restored
+    so that the fresh solver receives correct coefficients and bounds,
+    then re-suppressed afterwards.
+
     Args:
         model: COBRA model with stale solver state
         objective_updates: dict mapping reactions to their objective coefficients
     """
+    # Temporarily restore real LP methods so _populate_solver sets correct
+    # coefficients and bounds on the fresh solver.
+    was_suppressed = _is_lp_suppressed()
+    if was_suppressed:
+        _restore_lp_updates()
+
     # Get solver interface type
     solver_interface = model.solver.interface
 
@@ -1368,6 +1463,10 @@ def _rebuild_solver(model, objective_updates: dict) -> None:
     for rxn, obj_coeff in objective_updates.items():
         if rxn in model.reactions:
             rxn.objective_coefficient = obj_coeff
+
+    # Re-suppress if it was suppressed before
+    if was_suppressed:
+        _suppress_lp_updates(model)
 
 
 def _apply_compression_to_model(model, compression_record, original_reaction_names):
@@ -1720,34 +1819,8 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
     Returns:
         list of dict: Compression maps for reversing each compression step
     """
-    # Suppress optlang LP coefficient updates during compression.
-    #
-    # compress_model_coupled calls _rebuild_solver after each iteration,
-    # which calls _populate_solver -> constraint.set_linear_coefficients
-    # for every metabolite.  On Gurobi this involves _get_expression (a
-    # full LP-row read) and dominates runtime for large/GPR-extended models.
-    #
-    # Fix: patch set_linear_coefficients to a no-op for the duration of
-    # compression so that intermediate rebuilds only maintain LP structure
-    # (variables, constraints, bounds) without re-writing coefficients.
-    # One final _populate_solver call at the end sets the correct
-    # stoichiometric coefficients from the compressed model state.
-    #
-    # Guards: all accesses are hasattr-checked so that cobra/optlang API
-    # changes simply disable the optimisation without breaking compression.
-    _slc_cls = None  # the Constraint class we patched
-    _slc_orig = None  # the original set_linear_coefficients method
-    try:
-        if hasattr(model, 'problem') and hasattr(model.problem, 'Constraint'):
-            _slc_cls = model.problem.Constraint
-            if hasattr(_slc_cls, 'set_linear_coefficients'):
-                _slc_orig = _slc_cls.set_linear_coefficients
-                _slc_cls.set_linear_coefficients = lambda self, *a, **kw: None
-    except Exception:
-        _slc_cls = _slc_orig = None
-
-    cmp_mapReac = []
-    try:
+    with suppress_lp_context(model):
+        cmp_mapReac = []
         use_java = (compression_backend == 'efmtool_rref')
         LOG.info('  Removing blocked reactions.')
         remove_blocked_reactions(model)
@@ -1797,29 +1870,22 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
                 LOG.info(f'  Compression complete ({run - 1} iterations).')
                 break
 
-    finally:
-        # Step 1: Always restore set_linear_coefficients, even if compression raises.
-        if _slc_orig is not None and _slc_cls is not None:
-            _slc_cls.set_linear_coefficients = _slc_orig
-
-        # Step 2: Single final LP rebuild with correct stoichiometric coefficients.
-        # _populate_solver cannot be called on the existing solver (it would try to
-        # re-add constraints already in the pending queue -> ContainerAlreadyContains).
-        # _rebuild_solver creates a fresh optlang model first, then populates it.
-        # We must collect the objective from the current (still valid) LP beforehand.
-        if _slc_orig is not None:
-            try:
-                obj_updates = {}
-                for rxn in model.reactions:
-                    try:
-                        c = rxn.objective_coefficient
-                        if c != 0:
-                            obj_updates[rxn] = c
-                    except Exception:
-                        pass
-                _rebuild_solver(model, obj_updates)
-            except Exception:
-                pass  # Structural compression succeeded; LP may need manual resync.
+    # Outside the suppress context: if we were the outermost caller
+    # (standalone use), LP methods are now restored.  Rebuild the
+    # solver so the model is usable with cobra's optimize()/FVA.
+    if not _is_lp_suppressed():
+        try:
+            obj_updates = {}
+            for rxn in model.reactions:
+                try:
+                    c = rxn.objective_coefficient
+                    if c != 0:
+                        obj_updates[rxn] = c
+                except Exception:
+                    pass
+            _rebuild_solver(model, obj_updates)
+        except Exception:
+            pass
 
     return cmp_mapReac
 

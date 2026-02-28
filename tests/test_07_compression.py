@@ -161,21 +161,54 @@ def test_compression_parity_reaction_count(jpype_available):
 
 
 def test_fba_equivalence(jpype_available):
-    """Both compression backends produce compressed models with the same optimal FBA value."""
+    """Both compression backends produce compressed models with the same optimal FBA value (straindesign FBA)."""
     model_py = load_model("e_coli_core")
     nt.compress_model(model_py, compression_backend='sparse_rref')
     model_java = load_model("e_coli_core")
     nt.compress_model(model_java, compression_backend='efmtool_rref')
 
-    biomass_py = next((r for r in model_py.reactions if 'biomass' in r.id.lower()), None)
-    biomass_java = next((r for r in model_java.reactions if 'biomass' in r.id.lower()), None)
+    biomass_py = next((r.id for r in model_py.reactions if 'biomass' in r.id.lower()), None)
+    biomass_java = next((r.id for r in model_java.reactions if 'biomass' in r.id.lower()), None)
     assert biomass_py and biomass_java, "Could not find biomass reaction"
 
-    model_py.objective = biomass_py
-    model_java.objective = biomass_java
-    val_py = model_py.optimize().objective_value
-    val_java = model_java.optimize().objective_value
+    val_py = sd.fba(model_py, obj={biomass_py: 1}, obj_sense='maximize').objective_value
+    val_java = sd.fba(model_java, obj={biomass_java: 1}, obj_sense='maximize').objective_value
     assert abs(val_py - val_java) < 1e-6, (f"FBA objective mismatch: sparse_rref={val_py}, efmtool_rref={val_java}")
+
+
+def test_cobra_optimize_after_compression():
+    """Cobra's model.optimize() works correctly after compress_model (standalone use).
+
+    This ensures compress_model rebuilds the solver when called outside of
+    compute_strain_designs, so cobra's LP interface is not left in a broken state.
+    Uses the compression map to back-transform the compressed biomass flux and
+    verify it matches the original uncompressed value.
+    """
+    model_orig = load_model("e_coli_core")
+    biomass_id = next((r.id for r in model_orig.reactions if 'biomass' in r.id.lower()), None)
+    assert biomass_id is not None, "Could not find biomass reaction"
+    model_orig.objective = biomass_id
+    val_orig = model_orig.optimize().objective_value
+
+    model_cmp = load_model("e_coli_core")
+    cmp_map = nt.compress_model(model_cmp, compression_backend='sparse_rref')
+
+    # Find biomass in compressed model via compression map
+    biomass_cmp_id = None
+    biomass_coeff = 1.0
+    for step in cmp_map:
+        for new_reac, old_reacs in step.get('reac_map_exp', {}).items():
+            if biomass_id in old_reacs:
+                biomass_cmp_id = new_reac
+                biomass_coeff = float(old_reacs[biomass_id])
+    assert biomass_cmp_id is not None, "Biomass reaction not found in compression map"
+
+    model_cmp.objective = biomass_cmp_id
+    sol = model_cmp.optimize()
+    assert sol.status == 'optimal', f"Expected optimal solution, got {sol.status}"
+    val_expanded = sol.objective_value * biomass_coeff
+    assert abs(val_orig - val_expanded) < 1e-6, (
+        f"Expanded objective mismatch: original={val_orig}, expanded={val_expanded}")
 
 
 def test_fva_equivalence(jpype_available):

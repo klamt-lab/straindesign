@@ -19,7 +19,7 @@
 #
 """Function: computing metabolic strain designs (compute_strain_designs)"""
 
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import contextmanager, redirect_stdout, redirect_stderr
 from typing import Dict, List, Tuple
 import numpy as np
 import logging
@@ -34,8 +34,17 @@ from straindesign.names import *
 from straindesign.networktools import   remove_ext_mets, remove_dummy_bounds, bound_blocked_or_irrevers_fva, \
                                         reduce_gpr, extend_model_gpr, extend_model_regulatory, \
                                         compress_model, compress_modules, compress_ki_ko_cost, expand_sd, filter_sd_maxcost
+from straindesign.compression import with_suppressed_lp
 
 
+@contextmanager
+def _silent_io():
+    """Suppress stdout, stderr and logging."""
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), DisableLogger():
+        yield
+
+
+@with_suppressed_lp
 def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """Computes strain designs for a user-defined strain design problem
 
@@ -258,7 +267,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         raise Exception("Only one of the module types 'OptKnock', 'RobustKnock' and 'OptCouple' can be defined per "\
                             "strain design setup.")
     logging.info('  Using ' + kwargs[SOLVER] + ' for solving LPs during preprocessing.')
-    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), DisableLogger():  # suppress standard output from copying model
+    with _silent_io():
         orig_model = model
         model = model.copy()
     orig_ko_cost = deepcopy(uncmp_ko_cost)
@@ -282,7 +291,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     # replace model bounds with +/- inf if above a certain threshold
     remove_dummy_bounds(model)
     # Copy model for compression/processing
-    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), DisableLogger():
+    with _silent_io():
         cmp_model = model.copy()
     # remove external metabolites
     remove_ext_mets(cmp_model)
