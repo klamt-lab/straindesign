@@ -19,12 +19,10 @@
 #
 """Function: computing metabolic strain designs (compute_strain_designs)"""
 
-from contextlib import contextmanager, redirect_stdout, redirect_stderr
 from typing import Dict, List, Tuple
 import numpy as np
 import logging
 import json
-import io
 from copy import deepcopy
 import logging
 from cobra import Model
@@ -33,15 +31,8 @@ from straindesign import SDModule, SDSolutions, select_solver, fva, DisableLogge
 from straindesign.names import *
 from straindesign.networktools import   remove_ext_mets, remove_dummy_bounds, bound_blocked_or_irrevers_fva, \
                                         reduce_gpr, extend_model_gpr, extend_model_regulatory, \
-                                        compress_model, compress_modules, compress_ki_ko_cost, expand_sd, filter_sd_maxcost
-from straindesign.compression import with_suppressed_lp
-
-
-@contextmanager
-def _silent_io():
-    """Suppress stdout, stderr and logging."""
-    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), DisableLogger():
-        yield
+                                        compress_model, compress_modules, compress_ki_ko_cost, expand_sd, filter_sd_maxcost, \
+                                        with_suppressed_lp, _silent_io
 
 
 @with_suppressed_lp
@@ -288,8 +279,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                             'Make sure that metabolic interventions are enabled either through reaction or '\
                             'through gene interventions and are defined either as knock-ins or as knock-outs.')
     # 1) Preprocess Model
-    # replace model bounds with +/- inf if above a certain threshold
-    remove_dummy_bounds(model)
     # Copy model for compression/processing
     with _silent_io():
         cmp_model = model.copy()

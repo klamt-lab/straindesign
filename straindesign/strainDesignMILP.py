@@ -86,6 +86,8 @@ class SDMILP(SDProblem, MILP_LP):
     def __init__(self, model: Model, sd_modules: List[SDModule], **kwargs):
         # Construct problem
         SDProblem.__init__(self, model, sd_modules, **kwargs)
+        # Remove non-knockable z-variables before solver sees them
+        self._trim_z_variables()
         # Build MILP object from constructed problem
         MILP_LP.__init__(self,
                          c=self.c,
@@ -101,6 +103,61 @@ class SDMILP(SDProblem, MILP_LP):
                          solver=self.solver,
                          seed=self.seed,
                          milp_threads=self.milp_threads)
+
+    def _trim_z_variables(self):
+        """Remove non-knockable (ub=0) z-variables from MILP matrices.
+
+        Non-knockable reactions have ub=0 and cost=0. With Presolve=0 the
+        solver carries these dead variables. This trims them at construction
+        time. Stores _z_orig_indices for expanding solutions back.
+        """
+        keep_z = [i for i in range(self.num_z) if self.ub[i] > 0]
+        if len(keep_z) == self.num_z:
+            self._z_orig_indices = None  # no trimming needed
+            return
+
+        self._z_orig_indices = keep_z       # trimmed_idx -> orig_idx
+        self._orig_num_z = self.num_z
+
+        n_cont = len(self.c) - self.num_z
+        keep_cols = keep_z + list(range(self.num_z, self.num_z + n_cont))
+
+        # Trim constraint matrices (column selection)
+        self.A_ineq = self.A_ineq[:, keep_cols]
+        self.A_eq = self.A_eq[:, keep_cols]
+        self.c = [self.c[i] for i in keep_cols]
+        self.lb = [self.lb[i] for i in keep_cols]
+        self.ub = [self.ub[i] for i in keep_cols]
+
+        # Trim indicator constraints
+        if hasattr(self.indic_constr, 'A') and self.indic_constr.A is not None:
+            old_to_new = {old: new for new, old in enumerate(keep_z)}
+            self.indic_constr.A = self.indic_constr.A[:, keep_cols]
+            self.indic_constr.binv = [old_to_new[b] for b in self.indic_constr.binv]
+
+        # Update z-related arrays (trim to knockable-only)
+        new_num_z = len(keep_z)
+        self.cost = [self.cost[i] for i in keep_z]
+        self.z_inverted = [self.z_inverted[i] for i in keep_z]
+        self.z_non_targetable = [self.z_non_targetable[i] for i in keep_z]
+        self.idx_z = list(range(new_num_z))
+        self.num_z = new_num_z
+        self.vtype = 'B' * new_num_z + 'C' * n_cont
+        self.c_bu = [float(i) for i in self.c]
+
+        logging.info(f'  Trimmed z-variables: {self._orig_num_z} -> {new_num_z} '
+                     f'({self._orig_num_z - new_num_z} non-knockable removed)')
+
+    def _expand_z_to_orig(self, z_trimmed):
+        """Expand trimmed z-solution back to original z-space."""
+        if self._z_orig_indices is None:
+            return z_trimmed
+        n_rows = z_trimmed.shape[0]
+        expanded = sparse.lil_matrix((n_rows, self._orig_num_z))
+        z_coo = z_trimmed.tocoo()
+        for row, col, val in zip(z_coo.row, z_coo.col, z_coo.data):
+            expanded[row, self._z_orig_indices[col]] = val
+        return expanded.tocsr()
 
     def add_exclusion_constraints(self, z):
         """Exclude binary solution in z and all supersets from MILP"""
@@ -136,13 +193,14 @@ class SDMILP(SDProblem, MILP_LP):
         output = {}
         reacID = self.model.reactions.list_attr("id")
         for i in self.idx_z:
+            orig_i = self._z_orig_indices[i] if self._z_orig_indices is not None else i
             if sol[0, i] != 0 and not np.isnan(sol[0, i]):
                 if self.z_inverted[i]:
-                    output[reacID[i]] = sol[0, i]
+                    output[reacID[orig_i]] = sol[0, i]
                 else:
-                    output[reacID[i]] = -sol[0, i]
+                    output[reacID[orig_i]] = -sol[0, i]
             elif args and args[0] and (sol[0, i] == 0) and self.z_inverted[i]:
-                output[reacID[i]] = 0.0
+                output[reacID[orig_i]] = 0.0
         return output
 
     def solveZ(self) -> Tuple[List, int]:
@@ -192,8 +250,9 @@ class SDMILP(SDProblem, MILP_LP):
 
     def verify_sd(self, sols) -> List:
         """Verify computed strain design"""
-        valid = [False] * sols.shape[0]
-        for i, sol in zip(range(sols.shape[0]), sols):
+        sols_orig = self._expand_z_to_orig(sols)
+        valid = [False] * sols_orig.shape[0]
+        for i, sol in zip(range(sols_orig.shape[0]), sols_orig):
             inactive_vars = [var for z_i,var,sense in \
                             zip(self.cont_MILP.z_map_vars.row,self.cont_MILP.z_map_vars.col,self.cont_MILP.z_map_vars.data)\
                             if np.logical_xor(sol[0,z_i],sense==-1)]

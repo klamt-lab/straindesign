@@ -47,7 +47,8 @@
 9. [Constraint & Expression Parsing](#9-constraint--expression-parsing)
 10. [Supporting Utilities](#10-supporting-utilities)
 11. [Known Issues, Urgent Actions & Future Work](#11-known-issues-urgent-actions--future-work)
-12. [Testing](#12-testing)
+12. [MILP Performance Notes](#12-milp-performance-notes)
+13. [Testing](#13-testing)
 
 ---
 
@@ -303,19 +304,20 @@ Floating-point coefficients are converted via `float_to_rational` with configura
 
 #### Compression Algorithm (StoichMatrixCompressor)
 
-The main class `StoichMatrixCompressor` performs the following in alternating iterations until no further reduction is possible:
+The main class `StoichMatrixCompressor` performs the following in each cycle, repeating until no further reduction is possible:
 
-1. **Remove conservation relations** (`remove_conservation_relations`):
-   Compute the left nullspace of the stoichiometric matrix `S` over the rationals (homogeneous dependencies among metabolite rows). Rows that are linearly dependent are removed. This is the RREF step.
+1. **Parallel reactions** (`compress_model_parallel`):
+   Reactions with identical stoichiometry (same column in `S`) are merged via hash-based O(nnz) comparison. This is cheap and runs first to shrink the model before the expensive RREF step. The resulting "super-reaction" carries the combined cost, and the z-variable controls all of them simultaneously. Hash matches are verified with exact index/data comparison to prevent collisions.
 
-2. **Remove blocked reactions** (`remove_blocked_reactions`):
-   Reactions with zero flux under any feasible steady state are removed. Detected via nullspace analysis (reactions not in the column space of the reduced matrix).
+2. **Conservation relation removal** (`remove_conservation_relations`):
+   Compute the left nullspace of the stoichiometric matrix `S` over the rationals (homogeneous dependencies among metabolite rows). Linearly dependent rows are removed. This reduces the row count of `S` for the subsequent RREF computation.
 
-3. **Detect coupled reactions** (`compress_model_coupled`):
-   Two reactions `r_i` and `r_j` are **coupled** if there exists a scalar `alpha` such that in every feasible steady state, `v_i = alpha * v_j`. These can be lumped into one reaction. Coupling is detected by computing the right nullspace and identifying proportional columns. Lumpable reactions are merged and their costs combined. When `propagate_gpr=True`, GPR rules are AND-combined during merging. **Contradicting groups** (where bounds intersection yields lb > ub or lb = ub = 0) are detected and removed.
+3. **Exit check**: If the loop has completed at least one full cycle (including a coupled step) and neither parallel nor coupled compression reduced the reaction count, exit. This ensures the model is always fully cleaned (conservation relations removed) on exit.
 
-4. **Parallel reactions** (`compress_model_parallel`):
-   Reactions with identical stoichiometry (same column in `S`) are merged. The resulting "super-reaction" carries the combined cost, and the z-variable controls all of them simultaneously.
+4. **Coupled reactions** (`compress_model_coupled`):
+   Two reactions `r_i` and `r_j` are **coupled** if there exists a scalar `alpha` such that in every feasible steady state, `v_i = alpha * v_j`. These can be lumped into one reaction. Coupling is detected by computing the right nullspace (RREF) and identifying proportional columns. Lumpable reactions are merged and their costs combined. When `propagate_gpr=True`, GPR rules are AND-combined during merging. **Contradicting groups** (where bounds intersection yields lb > ub or lb = ub = 0) are detected and removed.
+
+Blocked reactions are removed once before the loop via `remove_blocked_reactions`.
 
 #### Compression Result
 
@@ -888,6 +890,9 @@ Currently, FVA is run on the full model before compression. Running FVA after co
 **Essential KI detection:**
 `essential_kis` is computed but may not always be passed correctly through the compression/GPR pipeline. Verify that the set persists through `compress_ki_ko_cost`.
 
+**Opposite-direction parallel merging:**
+Two irreversible reactions with opposite stoichiometry and complementary bounds (e.g., `A→B (0,inf)` and `B→A (0,inf)`) could be merged into one reversible reaction `(-inf,inf)`. This would help eliminate flux cycles. However, a computed strain design might need to knock out one direction specifically (the other being essential), which limits the merger to non-knockable reactions. Few reactions are essential in both directions, so the practical benefit is small.
+
 ### 11.3 Future Development Directions
 
 **Nullspace-based primal/dual formalization:**
@@ -918,7 +923,62 @@ The `sd_setup` dict format is designed for CNApy interoperability. Ensuring full
 
 ---
 
-## 12. Testing
+## 12. MILP Performance Notes
+
+The following design choices have a measurable impact on MILP enumeration
+performance. They are listed roughly by impact, based on benchmarking with
+e_coli_core (95 rxns, 353 MCS) and iML1515 (1920 compressed rxns, 393 MCS).
+
+**Unbounded reactions save constraints and variables.**
+Reactions with infinite bounds (`-inf` / `inf`) do not generate big-M or
+indicator constraints because no finite bound needs enforcement. Calling
+`remove_dummy_bounds` early (replacing ±1000 with ±inf) is therefore not
+just cosmetic — it directly reduces MILP size. Tightening bounds to FVA
+ranges has the opposite effect: more finite bounds means more constraints.
+
+**Omit non-knockable z-variables.**
+The SD formulation creates one binary z per reaction, but only knockable
+reactions (non-zero cost, non-essential) actually need one. Non-knockable
+z-variables have ub=0 and are fixed to zero; with solver presolve disabled
+they become dead weight. `_trim_z_variables` removes them before the solver
+sees the problem. On iML1515: 462 → 205 binaries after trimming.
+
+**Aggressive compression.**
+Two-pass network compression (before and after GPR extension) reduces the
+stoichiometric matrix substantially. On iML1515: 2712 → 1920 reactions,
+1728 → 974 metabolites. Every removed reaction is one fewer z-variable,
+one fewer column in all constraint matrices, and fewer indicator constraints.
+
+**GPR propagation through compression.**
+Merging GPR rules during compression (via `propagate_gpr=True`) and only
+running `extend_model_gpr` on the compressed model avoids creating gene
+pseudoreactions for reactions that were already merged away. This reduces
+both preprocessing time (FVA on ~190 vs ~2700 reactions) and final model
+size.
+
+**Condensed formulation (no reaction splitting).**
+The SD "condensed" formulation handles reversible reactions without
+splitting them into forward/reverse pairs. This produces fewer z-variables
+and fewer indicator constraints than the "split" variant. Benchmarks show
+condensed is consistently faster (4.0s vs 4.1s on iMLcore, but the gap
+widens on larger models).
+
+**Auxiliary-variable indicators do not help.**
+Replacing SD's complex indicators (`z=0 → A·x = b`) with FLB-style
+auxiliary variables (`A·x + s = b` always, `z=0 → s = 0`) was tested.
+The extra continuous variables and equality constraints outweigh the
+benefit of simpler indicator propagation (~15% slower on iMLcore).
+
+**Solver settings matter.**
+Gurobi's presolve is critical for indicator-constraint MILPs. With
+`Presolve=0` (which was temporarily needed for a Gurobi 13 bug),
+solve times were ~1.6× slower across all formulations. On iML1515 the
+full pipeline went from ~12 minutes (presolve off) to ~7 minutes
+(presolve on).
+
+---
+
+## 13. Testing
 
 Tests are in `tests/`. They are run with:
 ```bash

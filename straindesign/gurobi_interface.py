@@ -132,20 +132,11 @@ class Gurobi_MILP_LP(gp.Model):
                 lhs = gp.quicksum(float(val) * x[int(col)] for col, val in zip(cols, vals))
                 self.addGenConstrIndicator(x[indic_constr.binv[i]], bool(indic_constr.indicval[i]),
                                            lhs, '=' if indic_constr.sense[i] == 'E' else '<', indic_constr.b[i])
-            # Gurobi 13+ has a bug where presolve with indicator constraints can cause
-            # error 10005 "Unable to retrieve attribute 'ObjBound'". Disable presolve.
-            if gp.gurobi.version()[0] >= 13:
-                self.params.Presolve = 0
 
         # set parameters
         self.params.OutputFlag = 0
         self.params.OptimalityTol = 1e-9
         self.params.FeasibilityTol = 1e-9
-        # Crossover=1 ensures barrier-to-simplex crossover runs, which is required
-        # for ObjBound computation. Fixes Gurobi 13 regression where automatic
-        # crossover decision can fail during optimize() with error 10005.
-        # This is needed for both LPs and MILPs (MILPs solve LP relaxations internally).
-        self.params.Crossover = 1
         if 'B' in vtype or 'I' in vtype:
             if seed is None:
                 # seed = random(0, grb.MAXINT)
@@ -161,6 +152,25 @@ class Gurobi_MILP_LP(gp.Model):
             self.params.MIPFocus = 0
         self.update()
 
+    def _safe_optimize(self):
+        """Call optimize(), retrying with Presolve=0 on Gurobi 13 ObjBound bug.
+
+        Gurobi 13 has a bug where indicator constraints + presolve can raise
+        error 10005 "Unable to retrieve attribute 'ObjBound'".  Rather than
+        disabling presolve globally (1.6x slowdown), we try with presolve on
+        and fall back only when the bug triggers.
+        """
+        try:
+            self.optimize()
+        except gp.GurobiError as e:
+            if e.errno == 10005 and self._has_indicator_constr:
+                logging.warning('Gurobi error 10005 with indicators; retrying with Presolve=0, Crossover=1.')
+                self.params.Presolve = 0
+                self.params.Crossover = 1
+                self.optimize()
+            else:
+                raise
+
     def solve(self) -> Tuple[List, float, float]:
         """Solve the MILP or LP
 
@@ -172,7 +182,7 @@ class Gurobi_MILP_LP(gp.Model):
 
             solution_vector, optimal_value, optimization_status
         """
-        self.optimize()  # call parent solve function (that was overwritten in this class)
+        self._safe_optimize()
         status = self.Status
         if status in [gstatus.OPTIMAL, gstatus.SOLUTION_LIMIT, gstatus.SUBOPTIMAL, gstatus.USER_OBJ_LIMIT]:  # solution
             min_cx = self.ObjVal
@@ -216,22 +226,18 @@ class Gurobi_MILP_LP(gp.Model):
             
             Optimum value of the objective function.
         """
-        try:
-            self.optimize()  # call parent solve function (that was overwritten in this class)
-            status = self.Status
-            if status in [gstatus.OPTIMAL, gstatus.SOLUTION_LIMIT, gstatus.SUBOPTIMAL,
-                          gstatus.USER_OBJ_LIMIT]:  # solution integer optimal (tolerance)
-                opt = self.ObjVal
-            elif status in [gstatus.INF_OR_UNBD, gstatus.UNBOUNDED]:
-                opt = -inf
-            elif status in [gstatus.INFEASIBLE, gstatus.TIME_LIMIT]:
-                opt = nan
-            else:
-                raise Exception('Status code ' + str(status) + " not yet handeld.")
-            return opt
-        except gp.GurobiError as e:
-            logging.error('Error code ' + str(e.errno) + ": " + str(e))
-            return nan
+        self._safe_optimize()
+        status = self.Status
+        if status in [gstatus.OPTIMAL, gstatus.SOLUTION_LIMIT, gstatus.SUBOPTIMAL,
+                      gstatus.USER_OBJ_LIMIT]:  # solution integer optimal (tolerance)
+            opt = self.ObjVal
+        elif status in [gstatus.INF_OR_UNBD, gstatus.UNBOUNDED]:
+            opt = -inf
+        elif status in [gstatus.INFEASIBLE, gstatus.TIME_LIMIT]:
+            opt = nan
+        else:
+            raise Exception('Status code ' + str(status) + " not yet handeld.")
+        return opt
 
     def populate(self, n) -> Tuple[List, float, float]:
         """Generate a solution pool for MILPs
@@ -251,7 +257,7 @@ class Gurobi_MILP_LP(gp.Model):
                 self.params.PoolSolutions = n
             self.params.PoolSearchMode = 2
             self.params.NumericFocus = 2
-            self.optimize()  # call parent solve function (that was overwritten in this class)
+            self._safe_optimize()
             self.params.PoolSearchMode = 0
             self.params.NumericFocus = 0
             status = self.Status
