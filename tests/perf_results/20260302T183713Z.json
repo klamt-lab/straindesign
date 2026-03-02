@@ -1,0 +1,20 @@
+{
+  "timestamp": "20260302T183713Z",
+  "git_sha": "eff948d",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.12.12",
+  "solver_versions": {
+    "cplex": "22.1.2.0",
+    "gurobi": "13.0.1"
+  },
+  "results": [
+    {
+      "test": "iml1515_393",
+      "solver": "gurobi",
+      "model": "iML1515",
+      "elapsed_s": 486.736,
+      "n_solutions": 393,
+      "status": "optimal"
+    }
+  ]
+}
