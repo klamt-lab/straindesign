@@ -24,15 +24,139 @@ This module re-exports them for backwards compatibility.
 
 import ast
 import hashlib
+import io
 import logging
 import numpy as np
+from contextlib import contextmanager, redirect_stdout, redirect_stderr
+from functools import wraps
 from re import search
 from typing import List
 
 from cobra import Model, Metabolite, Reaction
-from straindesign import fva, select_solver, avail_solvers
+from straindesign import fva, select_solver, avail_solvers, DisableLogger
 from straindesign.names import *
 from straindesign.parse_constr import parse_constraints
+
+# =============================================================================
+# LP Update Suppression
+# =============================================================================
+
+# Saved original methods (set when suppressed, None when active).
+_ORIG_SLC = None   # (class, method) for Constraint.set_linear_coefficients
+_ORIG_SB = None    # (class, method) for Variable.set_bounds
+_ORIG_OSLC = None  # (class, method) for Objective.set_linear_coefficients
+
+# Sentinel no-op: identity check tells us whether the class is already patched.
+_SLC_NOOP = lambda self, *a, **kw: None
+
+
+def _sb_noop(self, lb, ub):
+    """No-op set_bounds: updates Python-side state only, skips solver."""
+    self._lb = lb
+    self._ub = ub
+
+
+def _suppress_lp_updates(model):
+    """Patch optlang to skip LP coefficient, bounds, and objective updates.
+
+    Safe to call when already suppressed (idempotent).  The real methods
+    are saved on first call and restored by :func:`_restore_lp_updates`.
+    Guards: all accesses are hasattr-checked so that cobra/optlang API
+    changes simply disable the optimisation without breaking anything.
+    """
+    global _ORIG_SLC, _ORIG_SB, _ORIG_OSLC
+    try:
+        if hasattr(model, 'problem'):
+            prob = model.problem
+            if hasattr(prob, 'Constraint'):
+                cls_c = prob.Constraint
+                if hasattr(cls_c, 'set_linear_coefficients'):
+                    if cls_c.set_linear_coefficients is not _SLC_NOOP:
+                        _ORIG_SLC = (cls_c, cls_c.set_linear_coefficients)
+                        cls_c.set_linear_coefficients = _SLC_NOOP
+            if hasattr(prob, 'Variable'):
+                cls_v = prob.Variable
+                if hasattr(cls_v, 'set_bounds'):
+                    if cls_v.set_bounds is not _sb_noop:
+                        _ORIG_SB = (cls_v, cls_v.set_bounds)
+                        cls_v.set_bounds = _sb_noop
+            if hasattr(prob, 'Objective'):
+                cls_o = prob.Objective
+                if hasattr(cls_o, 'set_linear_coefficients'):
+                    if cls_o.set_linear_coefficients is not _SLC_NOOP:
+                        _ORIG_OSLC = (cls_o, cls_o.set_linear_coefficients)
+                        cls_o.set_linear_coefficients = _SLC_NOOP
+    except Exception:
+        pass
+
+
+def _restore_lp_updates():
+    """Restore original optlang LP update methods.
+
+    Safe to call when not suppressed (idempotent).
+    """
+    global _ORIG_SLC, _ORIG_SB, _ORIG_OSLC
+    if _ORIG_SLC is not None:
+        cls, method = _ORIG_SLC
+        cls.set_linear_coefficients = method
+        _ORIG_SLC = None
+    if _ORIG_SB is not None:
+        cls, method = _ORIG_SB
+        cls.set_bounds = method
+        _ORIG_SB = None
+    if _ORIG_OSLC is not None:
+        cls, method = _ORIG_OSLC
+        cls.set_linear_coefficients = method
+        _ORIG_OSLC = None
+
+
+def _is_lp_suppressed():
+    """Return True if LP updates are currently suppressed."""
+    return _ORIG_SLC is not None or _ORIG_SB is not None or _ORIG_OSLC is not None
+
+
+@contextmanager
+def suppress_lp_context(model):
+    """Context manager that suppresses optlang LP updates for its duration.
+
+    Patches Constraint.set_linear_coefficients, Variable.set_bounds, and
+    Objective.set_linear_coefficients at the class level on entry, restores
+    on exit.  Nests safely: if already suppressed by an outer context,
+    this is a no-op.
+    """
+    entered_here = not _is_lp_suppressed()
+    if entered_here:
+        _suppress_lp_updates(model)
+    try:
+        yield
+    finally:
+        if entered_here:
+            _restore_lp_updates()
+
+
+def with_suppressed_lp(func):
+    """Decorator that wraps a function in :func:`suppress_lp_context`.
+
+    The first positional argument must be a cobra Model.
+    """
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        model = args[0]
+        with suppress_lp_context(model):
+            return func(*args, **kwargs)
+    return wrapper
+
+
+# =============================================================================
+# I/O Suppression
+# =============================================================================
+
+@contextmanager
+def _silent_io():
+    """Suppress stdout, stderr and logging."""
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), DisableLogger():
+        yield
+
 
 # Re-export compression functions for backwards compatibility
 from straindesign.compression import (
@@ -770,7 +894,6 @@ def compress_modules(sd_modules, cmp_mapReac):
                                 if np.any([k in old_reac_val for k in param.keys()]):
                                     lumped_reacs = [k for k in param.keys() if k in old_reac_val]
                                     m[p][new_reac] = np.sum([param.pop(k) * old_reac_val[k] for k in lumped_reacs if k in old_reac_val])
-    sd_modules = modules_coeff2float(sd_modules)
     return sd_modules
 
 

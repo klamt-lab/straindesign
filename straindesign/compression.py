@@ -33,107 +33,9 @@ from cobra.util.array import create_stoichiometric_matrix
 
 LOG = logging.getLogger(__name__)
 
-# =============================================================================
-# LP Update Suppression
-# =============================================================================
-
-# Saved original methods (set when suppressed, None when active).
-_ORIG_SLC = None  # (class, method) for Constraint.set_linear_coefficients
-_ORIG_SB = None   # (class, method) for Variable.set_bounds
-
-# Sentinel no-op: identity check tells us whether the class is already patched.
-_SLC_NOOP = lambda self, *a, **kw: None
-
-
-def _sb_noop(self, lb, ub):
-    """No-op set_bounds: updates Python-side state only, skips solver."""
-    self._lb = lb
-    self._ub = ub
-
-
-def _suppress_lp_updates(model):
-    """Patch optlang to skip LP coefficient and bounds updates.
-
-    Safe to call when already suppressed (idempotent).  The real methods
-    are saved on first call and restored by :func:`_restore_lp_updates`.
-    Guards: all accesses are hasattr-checked so that cobra/optlang API
-    changes simply disable the optimisation without breaking anything.
-    """
-    global _ORIG_SLC, _ORIG_SB
-    try:
-        if hasattr(model, 'problem'):
-            prob = model.problem
-            if hasattr(prob, 'Constraint'):
-                cls_c = prob.Constraint
-                if hasattr(cls_c, 'set_linear_coefficients'):
-                    if cls_c.set_linear_coefficients is not _SLC_NOOP:
-                        _ORIG_SLC = (cls_c, cls_c.set_linear_coefficients)
-                        cls_c.set_linear_coefficients = _SLC_NOOP
-            if hasattr(prob, 'Variable'):
-                cls_v = prob.Variable
-                if hasattr(cls_v, 'set_bounds'):
-                    if cls_v.set_bounds is not _sb_noop:
-                        _ORIG_SB = (cls_v, cls_v.set_bounds)
-                        cls_v.set_bounds = _sb_noop
-    except Exception:
-        pass
-
-
-def _restore_lp_updates():
-    """Restore original optlang LP update methods.
-
-    Safe to call when not suppressed (idempotent).
-    """
-    global _ORIG_SLC, _ORIG_SB
-    if _ORIG_SLC is not None:
-        cls, method = _ORIG_SLC
-        cls.set_linear_coefficients = method
-        _ORIG_SLC = None
-    if _ORIG_SB is not None:
-        cls, method = _ORIG_SB
-        cls.set_bounds = method
-        _ORIG_SB = None
-
-
-def _is_lp_suppressed():
-    """Return True if LP updates are currently suppressed."""
-    return _ORIG_SLC is not None or _ORIG_SB is not None
-
-
-from contextlib import contextmanager
-from functools import wraps
-
-
-@contextmanager
-def suppress_lp_context(model):
-    """Context manager that suppresses optlang LP updates for its duration.
-
-    Patches set_linear_coefficients and set_bounds at the class level on
-    entry, restores on exit.  Nests safely: if already suppressed by an
-    outer context, this is a no-op.
-    """
-    entered_here = not _is_lp_suppressed()
-    if entered_here:
-        _suppress_lp_updates(model)
-    try:
-        yield
-    finally:
-        if entered_here:
-            _restore_lp_updates()
-
-
-def with_suppressed_lp(func):
-    """Decorator that wraps a function in :func:`suppress_lp_context`.
-
-    The first positional argument must be a cobra Model.
-    """
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        model = args[0]
-        with suppress_lp_context(model):
-            return func(*args, **kwargs)
-    return wrapper
-
+# LP suppression utilities live in networktools.  Imports are deferred to
+# function bodies to avoid the circular dependency (networktools re-exports
+# compression symbols).
 
 # =============================================================================
 # Utility Functions
@@ -144,6 +46,12 @@ def float_to_rational(val, max_precision: int = 6, max_denom: int = 100) -> Frac
     """Convert float to Fraction with bounded denominators."""
     if isinstance(val, Fraction):
         return val
+    import numbers
+    if isinstance(val, numbers.Rational):
+        return Fraction(val.numerator, val.denominator)
+    # Handle sympy.Float and other numeric types that Fraction() doesn't accept directly
+    if not isinstance(val, (int, float)):
+        val = float(val)
     if val == 0:
         return Fraction(0)
     if val == int(val):
@@ -504,8 +412,9 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
 
     Columns are pre-sorted by nnz ascending so that sparse (likely pivot) columns
     are processed first, reducing pivot-search time and fill-in during elimination.
-    Rows are similarly pre-sorted by nnz ascending. Results are translated back to
-    the original column ordering before return.
+    Rows are pre-sorted by nnz ascending, and pivot rows are selected by Markowitz
+    criterion (sparsest row first, tie-break by smallest absolute value).
+    Results are translated back to the original column ordering before return.
 
     Uses GCD pre-scaling before row operations and post-reduction to control
     coefficient growth. No denominator tracking needed — rows are arbitrarily
@@ -570,15 +479,18 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
         if pivot_row >= rows:
             break
 
-        # Find pivot with smallest absolute value (minimizes coefficient growth)
-        best_row, best_val, best_abs = -1, 0, float('inf')
+        # Find pivot: sparsest row first (Markowitz), then smallest abs value
+        best_row, best_val = -1, 0
+        best_nnz, best_abs = float('inf'), float('inf')
         for r, row_data in data.items():
             if r < pivot_row:
                 continue
             if pivot_col in row_data:
                 v = row_data[pivot_col]
-                if abs(v) < best_abs:
-                    best_row, best_val, best_abs = r, v, abs(v)
+                rnnz = len(row_data)
+                if rnnz < best_nnz or (rnnz == best_nnz and abs(v) < best_abs):
+                    best_row, best_val = r, v
+                    best_nnz, best_abs = rnnz, abs(v)
 
         if best_row < 0:
             continue
@@ -1165,8 +1077,18 @@ class StoichMatrixCompressor:
         Returns True if contradicting groups were removed (flux space
         changed), triggering re-iteration to find new couplings.
         """
-        # Collect zero-flux reactions
+        # Collect zero-flux reactions (empty kernel rows)
         zero_flux = self._find_zero_flux(work, kernel_pattern)
+
+        # Also catch reactions blocked by bounds (lb=ub=0) that still have
+        # non-zero kernel rows.  These are structurally present but carry
+        # no flux.  Removing them here avoids needing a separate FVA pass.
+        for reac in range(work.size.reacs):
+            if reac not in zero_flux:
+                lb, ub = work.bounds[reac]
+                if lb == 0 and ub == 0:
+                    zero_flux.add(reac)
+                    work.stats.inc_zero_flux_reactions()
 
         # Find and merge coupled groups
         groups, ratios = self._find_coupled_groups(kernel_pattern, kernel_values, work.size.reacs)
@@ -1302,7 +1224,7 @@ class CompressionConverter:
         for comp_rxn, comp_coeff in expression.items():
             if comp_rxn in self.reaction_map:
                 for orig_rxn, scale in self.reaction_map[comp_rxn].items():
-                    coeff = comp_coeff * float(scale)
+                    coeff = comp_coeff * scale
                     if orig_rxn in self.flipped_reactions:
                         coeff = -coeff
                     expanded[orig_rxn] = expanded.get(orig_rxn, 0) + coeff
@@ -1407,6 +1329,7 @@ def compress_cobra_model(model,
 
     # Rebuild solver only if we're not inside a caller's suppress context
     # (compress_model rebuilds once at the end instead of every iteration)
+    from straindesign.networktools import _is_lp_suppressed
     if not _is_lp_suppressed():
         _rebuild_solver(model, objective_updates)
 
@@ -1445,6 +1368,7 @@ def _rebuild_solver(model, objective_updates: dict) -> None:
     """
     # Temporarily restore real LP methods so _populate_solver sets correct
     # coefficients and bounds on the fresh solver.
+    from straindesign.networktools import _is_lp_suppressed, _restore_lp_updates, _suppress_lp_updates
     was_suppressed = _is_lp_suppressed()
     if was_suppressed:
         _restore_lp_updates()
@@ -1528,7 +1452,7 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
             obj_coeff = model.reactions[idx].objective_coefficient
             if obj_coeff != 0:
                 combined_obj += Fraction(obj_coeff).limit_denominator(10**12) * coeff
-        objective_updates[main_rxn] = float(combined_obj)
+        objective_updates[main_rxn] = combined_obj
 
         # Store subset info
         main_rxn.subset_rxns = [idx for idx, _ in contributing]
@@ -1586,8 +1510,8 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
                     ub_candidates.append(Fraction(lb) / coeff if lb != 0 else Fraction(0))
 
         # OPTIMIZATION: Direct bounds assignment (bypasses solver updates)
-        main_rxn._lower_bound = float(max(lb_candidates)) if lb_candidates else -float('inf')
-        main_rxn._upper_bound = float(min(ub_candidates)) if ub_candidates else float('inf')
+        main_rxn._lower_bound = max(lb_candidates) if lb_candidates else -float('inf')
+        main_rxn._upper_bound = min(ub_candidates) if ub_candidates else float('inf')
 
         # Build reaction map
         reaction_map[main_rxn.id] = {original_reaction_names[idx]: coeff for idx, coeff in contributing}
@@ -1819,6 +1743,7 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
     Returns:
         list of dict: Compression maps for reversing each compression step
     """
+    from straindesign.networktools import suppress_lp_context, _is_lp_suppressed
     with suppress_lp_context(model):
         cmp_mapReac = []
         use_java = (compression_backend == 'efmtool_rref')
@@ -1826,49 +1751,51 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
         remove_blocked_reactions(model)
         LOG.info('  Converting coefficients to rationals.')
         stoichmat_coeff2rational(model)
-        LOG.info('  Removing conservation relations.')
-        if use_java:
-            _remove_conservation_relations_java(model)
-        else:
-            remove_conservation_relations(model)
-
-        parallel = False
+        coupled_changed = None  # None = not yet computed
         run = 1
-        numr = len(model.reactions)
-
         while True:
-            if not parallel:
-                LOG.info(f'  Compression {run}: Lumping coupled reactions.')
-                reac_map_exp = compress_model_coupled(model, compression_backend,
-                                                      propagate_gpr=propagate_gpr)
-                for new_reac, old_reac_val in reac_map_exp.items():
-                    old_reacs_no_compress = [r for r in no_par_compress_reacs if r in old_reac_val]
-                    if old_reacs_no_compress:
-                        for r in old_reacs_no_compress:
-                            no_par_compress_reacs.remove(r)
-                        no_par_compress_reacs.add(new_reac)
-            else:
-                LOG.info(f'  Compression {run}: Lumping parallel reactions.')
-                reac_map_exp = compress_model_parallel(model, no_par_compress_reacs, propagate_gpr=propagate_gpr)
+            numr = len(model.reactions)
 
+            # 1. Parallel (cheap — hash-based, no RREF)
+            LOG.info(f'  Compression {run}: Lumping parallel reactions.')
+            reac_map_exp = compress_model_parallel(model, no_par_compress_reacs,
+                                                    propagate_gpr=propagate_gpr)
+            parallel_changed = numr > len(reac_map_exp)
+            if parallel_changed:
+                LOG.info(f'  Reduced to {len(reac_map_exp)} reactions.')
+                cmp_mapReac.append({"reac_map_exp": reac_map_exp, "parallel": True})
+
+            # 2. Conservation relation removal (reduces S rows for RREF)
             if use_java:
                 _remove_conservation_relations_java(model)
             else:
                 remove_conservation_relations(model)
 
-            if numr > len(reac_map_exp):
-                LOG.info(f'  Reduced to {len(reac_map_exp)} reactions.')
-                cmp_mapReac.append({
-                    "reac_map_exp": reac_map_exp,
-                    "parallel": parallel,
-                })
-                parallel = not parallel
-                run += 1
-                numr = len(reac_map_exp)
-            else:
-                LOG.info(f'  No further reduction ({numr} reactions).')
-                LOG.info(f'  Compression complete ({run - 1} iterations).')
+            # 3. Exit if either parallel or coupled found nothing (after
+            #    at least one full cycle).  If one step found nothing,
+            #    re-running it won't help — the model hasn't changed in
+            #    a way that creates new opportunities for that step.
+            if coupled_changed is not None and (not parallel_changed or not coupled_changed):
+                LOG.info(f'  Compression complete ({run - 1} cycles).')
                 break
+
+            # 4. Coupled (expensive — nullspace/RREF)
+            numr_pre = len(model.reactions)
+            LOG.info(f'  Compression {run}: Lumping coupled reactions.')
+            reac_map_exp = compress_model_coupled(model, compression_backend,
+                                                  propagate_gpr=propagate_gpr)
+            for new_reac, old_reac_val in reac_map_exp.items():
+                old_reacs = [r for r in no_par_compress_reacs if r in old_reac_val]
+                if old_reacs:
+                    for r in old_reacs:
+                        no_par_compress_reacs.remove(r)
+                    no_par_compress_reacs.add(new_reac)
+            coupled_changed = numr_pre > len(reac_map_exp)
+            if coupled_changed:
+                LOG.info(f'  Reduced to {len(reac_map_exp)} reactions.')
+                cmp_mapReac.append({"reac_map_exp": reac_map_exp, "parallel": False})
+
+            run += 1
 
     # Outside the suppress context: if we were the outermost caller
     # (standalone use), LP methods are now restored.  Rebuild the
@@ -2000,7 +1927,7 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
 
     # Find parallel reactions via hash comparison
     subset_list = []
-    prev_found = []
+    prev_found = set()
     protected = [r.id in protected_rxns for r in model.reactions]
     hashes = [hash((tuple(A[i].indices), tuple(A[i].data))) for i in range(A.shape[0])]
 
@@ -2012,9 +1939,11 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
             continue
         subset_i = [i]
         for j in range(i + 1, A.shape[0]):
-            if not protected[j] and j not in prev_found and hashes[i] == hashes[j]:
+            if (not protected[j] and j not in prev_found and hashes[i] == hashes[j]
+                    and np.array_equal(A[i].indices, A[j].indices)
+                    and np.array_equal(A[i].data, A[j].data)):
                 subset_i.append(j)
-                prev_found.append(j)
+                prev_found.add(j)
         subset_list.append(subset_i)
 
     # Lump parallel reactions
