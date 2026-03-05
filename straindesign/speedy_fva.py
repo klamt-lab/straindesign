@@ -1,29 +1,26 @@
-"""Accelerated FVA using scan LPs, bound scanning, and KKT certification.
+"""Accelerated FVA using scan LPs and bound scanning.
 
 Standard FVA solves 2*n independent LPs (max and min for each reaction).
 This implementation reduces LP count via a two-phase approach:
 
-Phase 1 — Scan LPs (cheap, resolve ~50% of bounds):
+Phase 1 — Scan LPs (cheap, resolve ~50-70% of bounds):
   a. v=0 feasibility: free resolutions when zero flux is feasible
   b. min(sum(|x|)): pushes reactions toward zero, resolves lb=0/ub=0 bounds
   c. Push-to-bounds: directed objectives push unresolved reactions toward
      their variable bounds, with dual simplex warm-start for fast re-solves
-  d. Inf-bound scan: individual LPs for reactions with infinite bounds
   Each scan LP solution is processed by bound scanning (vectorized at-bound
-  check) and KKT dual certification (sparse LU + null-space augmentation).
+  check that marks reactions whose flux equals their variable bound).
 
 Phase 2 — Individual LPs for remaining unresolved objectives:
   Sequential (warm-started) or parallel (SDPool) dispatch depending on
-  problem size and thread count.
+  problem size and thread count.  Sequential mode includes co-optimization
+  scanning: each LP vertex is checked for other reactions at their bounds.
 """
 
 import logging
 import time as _time
 import numpy as np
 from scipy import sparse
-from scipy.sparse.linalg import splu
-from scipy.linalg import null_space as _null_space
-from scipy.optimize import linprog as _linprog
 from math import nan
 from cobra.util.array import create_stoichiometric_matrix
 from pandas import DataFrame
@@ -43,235 +40,6 @@ from straindesign.compression import (
     compress_cobra_model, CompressionMethod, remove_conservation_relations,
     stoichmat_coeff2rational, remove_blocked_reactions,
 )
-
-
-# ---------------------------------------------------------------------------
-# DualChecker — null-space KKT optimality certification
-# ---------------------------------------------------------------------------
-
-class DualChecker:
-    """Certify optimality via KKT for unresolved interior reactions.
-
-    Given LP solution v* for  min c^T v  s.t. Sv = 0, lb <= v <= ub:
-
-    Two-stage approach:
-    1. Fast sparse LU check (always): M = S_I S_I^T, vectorized sign check
-    2. Null-space augmentation (when d = m - |I| is small): for reactions that
-       failed stage 1, search ALL dual solutions via tiny feasibility LP
-       with incumbent and unfixable pre-filters
-    """
-
-    _D_MAX = 30  # max null-space dimension for stage 2
-
-    def __init__(self, S_sparse, x, lb, ub, res_min, res_max,
-                 incumbent_min, incumbent_max, tol=1e-7):
-        x = np.asarray(x, dtype=np.float64)
-        lb = np.asarray(lb, dtype=np.float64)
-        ub = np.asarray(ub, dtype=np.float64)
-        n = S_sparse.shape[1]
-        m = S_sparse.shape[0]
-
-        self.confirmed_min = np.zeros(n, dtype=bool)
-        self.confirmed_max = np.zeros(n, dtype=bool)
-        self.n_checks = 0
-        self.n_ns_lps = 0
-
-        # Partition I (interior), L (at lower), U (at upper)
-        I_set = np.where((x - lb > tol) & (ub - x > tol))[0]
-        L_set = np.where(x - lb <= tol)[0]
-        U_set = np.where(ub - x <= tol)[0]
-        nI, nL, nU = len(I_set), len(L_set), len(U_set)
-        if nI == 0:
-            return
-
-        # Unresolved candidates
-        unresolved = ~res_min[I_set] | ~res_max[I_set]
-        I_check = I_set[unresolved]
-        nC = len(I_check)
-        if nC == 0:
-            return
-
-        S_csc = S_sparse.tocsc()
-
-        # Stage 1: fast sparse LU check (always)
-        self.n_checks = 2 * nC
-        self._fast_sparse(S_csc, x, lb, ub, I_set, L_set, U_set,
-                          I_check, res_min, res_max, m, nL, nU, tol)
-
-        # Stage 2: null-space augmentation (only when d is small)
-        d_est = m - nI
-        if d_est > self._D_MAX:
-            return
-
-        # Check if any reactions still need resolving after stage 1
-        still_min = (~res_min[I_set]) & (~self.confirmed_min[I_set])
-        still_max = (~res_max[I_set]) & (~self.confirmed_max[I_set])
-        # Incumbent filter: only check if v* improves best known
-        still_min = still_min & (x[I_set] < incumbent_min[I_set] - tol)
-        still_max = still_max & (x[I_set] > incumbent_max[I_set] + tol)
-        n_remaining = int(still_min.sum() + still_max.sum())
-        if n_remaining == 0:
-            return
-
-        self._nullspace_augment(
-            S_csc, x, lb, ub, I_set, L_set, U_set,
-            m, nI, nL, nU, still_min, still_max, tol)
-
-    def _fast_sparse(self, S_csc, x, lb, ub, I_set, L_set, U_set,
-                     I_check, res_min, res_max, m, nL, nU, tol):
-        """Stage 1: sparse LU of M = S_I S_I^T, vectorized sign check."""
-        S_I = S_csc[:, I_set]
-        M = (S_I @ S_I.T).tocsc()
-        M = M + sparse.eye(m, format='csc') * 1e-14
-        try:
-            M_lu = splu(M)
-        except Exception:
-            return
-
-        S_check = S_csc[:, I_check].toarray()
-        Lambda = M_lu.solve(S_check)  # m x nC
-        nC = len(I_check)
-
-        # Verify LU solution: diagonal of S_check^T @ Lambda should be ≈ 1.0.
-        # When M is ill-conditioned, Lambda collapses toward zero and all sign
-        # checks pass vacuously.  The diagonal check catches this reliably.
-        diag = np.sum(S_check * Lambda, axis=0)  # shape (nC,)
-        bad_col = np.abs(diag - 1.0) > 0.2
-        if np.any(bad_col):
-            good = ~bad_col
-            I_check = I_check[good]
-            Lambda = Lambda[:, good]
-            nC = len(I_check)
-            if nC == 0:
-                return
-
-        if nL > 0:
-            D_L = S_csc[:, L_set].T @ Lambda
-            lb_L = lb[L_set]
-        if nU > 0:
-            D_U = S_csc[:, U_set].T @ Lambda
-            ub_U = ub[U_set]
-
-        # Min direction
-        sL = np.all(D_L <= tol, axis=0) if nL > 0 else np.ones(nC, dtype=bool)
-        sU = np.all(D_U >= -tol, axis=0) if nU > 0 else np.ones(nC, dtype=bool)
-        dual = np.zeros(nC)
-        if nL > 0:
-            dual -= lb_L @ D_L
-        if nU > 0:
-            dual -= ub_U @ D_U
-        sd_ok = np.abs(dual - x[I_check]) < tol * (1 + np.abs(x[I_check]))
-        conf_min = sL & sU & sd_ok & (~res_min[I_check])
-
-        # Max direction
-        sL = np.all(D_L >= -tol, axis=0) if nL > 0 else np.ones(nC, dtype=bool)
-        sU = np.all(D_U <= tol, axis=0) if nU > 0 else np.ones(nC, dtype=bool)
-        dual_max = np.zeros(nC)
-        if nL > 0:
-            dual_max += lb_L @ D_L
-        if nU > 0:
-            dual_max += ub_U @ D_U
-        sd_ok = np.abs(dual_max + x[I_check]) < tol * (1 + np.abs(x[I_check]))
-        conf_max = sL & sU & sd_ok & (~res_max[I_check])
-
-        self.confirmed_min[I_check] = conf_min
-        self.confirmed_max[I_check] = conf_max
-
-    def _nullspace_augment(self, S_csc, x, lb, ub, I_set, L_set, U_set,
-                           m, nI, nL, nU, cand_min, cand_max, tol):
-        """Stage 2: null-space search for reactions that failed stage 1."""
-        S_I = S_csc[:, I_set].toarray()
-
-        N = _null_space(S_I.T)  # m x d
-        d = N.shape[1]
-        if d == 0:
-            return  # stage 1 was already exact
-
-        P = np.linalg.pinv(S_I.T)  # m x nI
-        SL_P = S_csc[:, L_set].T.dot(P) if nL > 0 else None
-        SU_P = S_csc[:, U_set].T.dot(P) if nU > 0 else None
-        lb_L = lb[L_set] if nL > 0 else None
-        ub_U = ub[U_set] if nU > 0 else None
-
-        self.n_checks += int(cand_min.sum() + cand_max.sum())
-
-        SL_N = S_csc[:, L_set].T.dot(N) if nL > 0 else np.zeros((0, d))
-        SU_N = S_csc[:, U_set].T.dot(N) if nU > 0 else np.zeros((0, d))
-
-        a_sd = np.zeros(d)
-        if nL > 0:
-            a_sd -= lb_L @ SL_N
-        if nU > 0:
-            a_sd -= ub_U @ SU_N
-
-        parts = []
-        if nL > 0:
-            parts.append(SL_N)
-        if nU > 0:
-            parts.append(-SU_N)
-        A_sign = np.vstack(parts) if parts else np.zeros((0, d))
-        ns_norms = np.linalg.norm(A_sign, axis=1)
-
-        self._run_filtered(d, SL_P, SU_P, A_sign, a_sd, ns_norms,
-                           lb_L, ub_U, x, I_set, nL, nU,
-                           cand_min, cand_max, tol)
-
-    def _run_filtered(self, d, SL_P, SU_P, A_sign, a_sd, ns_norms,
-                      lb_L, ub_U, x, I_set, nL, nU,
-                      cand_min, cand_max, tol):
-        """Three-filter pipeline per candidate (d > 0)."""
-        c_obj = np.zeros(d)
-        A_eq_sd = a_sd.reshape(1, -1)
-        z_bounds = [(-1e12, 1e12)] * d
-
-        for idx in range(len(I_set)):
-            j = I_set[idx]
-            for sign, cand, arr in [
-                (1.0, cand_min, self.confirmed_min),
-                (-1.0, cand_max, self.confirmed_max),
-            ]:
-                if not cand[idx]:
-                    continue
-
-                sl_p = sign * SL_P[:, idx] if nL > 0 else np.array([])
-                su_p = sign * SU_P[:, idx] if nU > 0 else np.array([])
-
-                vL = sl_p > tol if nL > 0 else np.zeros(0, dtype=bool)
-                vU = su_p < -tol if nU > 0 else np.zeros(0, dtype=bool)
-
-                dual_p = 0.0
-                if nL > 0:
-                    dual_p -= lb_L @ sl_p
-                if nU > 0:
-                    dual_p -= ub_U @ su_p
-                target = sign * x[j]
-
-                # Filter 2a: pseudoinverse passes
-                if not np.any(vL) and not np.any(vU):
-                    if abs(dual_p - target) < tol * (1 + abs(target)):
-                        arr[j] = True
-                        continue
-
-                # Filter 2b: unfixable violations
-                viol = np.concatenate([vL, vU])
-                if np.any(viol & (ns_norms < 1e-12)):
-                    continue
-
-                # Filter 3: null-space feasibility LP
-                rhs_L = -sl_p if nL > 0 else np.array([])
-                rhs_U = su_p if nU > 0 else np.array([])
-                b_sign = np.concatenate([rhs_L, rhs_U])
-                b_sd = target - dual_p
-
-                try:
-                    res = _linprog(c_obj, A_ub=A_sign, b_ub=b_sign,
-                                   A_eq=A_eq_sd, b_eq=[b_sd],
-                                   bounds=z_bounds, method='highs')
-                    if res.success and res.status == 0:
-                        arr[j] = True
-                        self.n_ns_lps += 1
-                except Exception:
-                    pass
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +82,7 @@ def _compress_for_fva(model):
         rmap = result.reaction_map
         if len(rmap) < n_before:
             cmp_maps.append(rmap)
-        # Coupling can create new dependent rows — remove for DualChecker LU
+        # Coupling can create new dependent rows — remove for clean LU factorization
         remove_conservation_relations(cmp_model)
     return cmp_model, cmp_maps
 
@@ -534,8 +302,12 @@ def speedy_fva(model, **kwargs):
         threads = Configuration().processes if n_original >= 1000 else 1
     threads = max(1, int(threads))
 
+    t_phase = {}
+    _tp0 = _time.perf_counter()
+
     if compress:
         model, cmp_maps = _compress_for_fva(model)
+    t_phase['compress'] = _time.perf_counter() - _tp0
 
     reaction_ids = model.reactions.list_attr("id")
     n_orig = len(reaction_ids)
@@ -586,8 +358,6 @@ def speedy_fva(model, **kwargs):
             index=reaction_ids,
         )
 
-    S_csc = S.tocsc()
-
     # Initialize tracking
     incumbent_max = np.full(n_orig, -np.inf)
     incumbent_min = np.full(n_orig, np.inf)
@@ -604,13 +374,8 @@ def speedy_fva(model, **kwargs):
     # Stats
     lps_solved = 0
     total_bound_resolved = 0
-    total_dual_resolved = 0
-    total_dual_checks = 0
-    total_ns_lps = 0
     t_solve = 0.0
-    t_dual = 0.0
     tol_bound = 1e-9
-    has_extra_constraints = has_constraints
 
     def _bound_scan(x_local):
         nonlocal total_bound_resolved
@@ -627,36 +392,15 @@ def speedy_fva(model, **kwargs):
             incumbent_min[at_lb] = lb[at_lb]
             total_bound_resolved += n_lb
 
-    def _apply_dual(x_local):
-        """Build DualChecker, apply confirmed results."""
-        nonlocal total_dual_resolved, total_dual_checks, total_ns_lps, t_dual
-        if has_extra_constraints:
-            return
-        t0 = _time.perf_counter()
-        checker = DualChecker(S, x_local, lb, ub, res_min, res_max,
-                              incumbent_min, incumbent_max)
-        newly_min = checker.confirmed_min & (~res_min)
-        n_min = int(newly_min.sum())
-        if n_min:
-            res_min[newly_min] = True
-            incumbent_min[newly_min] = x_local[newly_min]
-            total_dual_resolved += n_min
-        newly_max = checker.confirmed_max & (~res_max)
-        n_max = int(newly_max.sum())
-        if n_max:
-            res_max[newly_max] = True
-            incumbent_max[newly_max] = x_local[newly_max]
-            total_dual_resolved += n_max
-        total_dual_checks += checker.n_checks
-        total_ns_lps += checker.n_ns_lps
-        t_dual += _time.perf_counter() - t0
+    t_phase['setup'] = _time.perf_counter() - _tp0 - t_phase['compress']
 
     # ------------------------------------------------------------------
-    # Phase 1: Global scan LPs + v=0 feasibility + DualChecker
+    # Phase 1: Global scan LPs + v=0 feasibility
     # ------------------------------------------------------------------
+    _tp1 = _time.perf_counter()
     # 1a: v=0 feasibility check — free resolutions, no LP needed
     v0_feasible = (not np.any(lb > tol_bound) and not np.any(ub < -tol_bound)
-                   and not has_extra_constraints)
+                   and not has_constraints)
     if v0_feasible:
         zero_lb = np.abs(lb) < tol_bound
         newly_min = zero_lb & (~res_min)
@@ -688,14 +432,14 @@ def speedy_fva(model, **kwargs):
             x_scan = np.array(x_list_scan[:n_scan], dtype=np.float64)
             before = int(res_max.sum() + res_min.sum())
             _bound_scan(x_scan)
-            _apply_dual(x_scan)
+
             np.maximum(incumbent_max, x_scan, out=incumbent_max)
             np.minimum(incumbent_min, x_scan, out=incumbent_min)
             resolved_absmin = int(res_max.sum() + res_min.sum()) - before
 
         if verbose:
             n_done_iter = int(res_max.sum() + res_min.sum())
-            logging.info(
+            logging.debug(
                 f"  Phase 1 min|x|: +{resolved_absmin} "
                 f"({n_done_iter}/{2*n_orig} resolved)")
 
@@ -727,7 +471,7 @@ def speedy_fva(model, **kwargs):
                     x_scan = np.array(x_list_scan[:n_scan], dtype=np.float64)
                     before = int(res_max.sum() + res_min.sum())
                     _bound_scan(x_scan)
-                    _apply_dual(x_scan)
+        
                     np.maximum(incumbent_max, x_scan, out=incumbent_max)
                     np.minimum(incumbent_min, x_scan, out=incumbent_min)
                     resolved_push_ub = int(res_max.sum() + res_min.sum()) - before
@@ -752,7 +496,7 @@ def speedy_fva(model, **kwargs):
                     x_scan = np.array(x_list_scan[:n_scan], dtype=np.float64)
                     before = int(res_max.sum() + res_min.sum())
                     _bound_scan(x_scan)
-                    _apply_dual(x_scan)
+        
                     np.maximum(incumbent_max, x_scan, out=incumbent_max)
                     np.minimum(incumbent_min, x_scan, out=incumbent_min)
                     resolved_push_lb = int(res_max.sum() + res_min.sum()) - before
@@ -760,7 +504,7 @@ def speedy_fva(model, **kwargs):
 
             if verbose:
                 n_done_iter = int(res_max.sum() + res_min.sum())
-                logging.info(
+                logging.debug(
                     f"  Phase 1 push {push_iter}: "
                     f"ub +{resolved_push_ub}, lb +{resolved_push_lb} "
                     f"({n_done_iter}/{2*n_orig} resolved)")
@@ -771,63 +515,12 @@ def speedy_fva(model, **kwargs):
 
         del scan_lp
 
-    # ------------------------------------------------------------------
-    # Phase 1d: Inf-bound scan — resolve truly unbounded reactions
-    # ------------------------------------------------------------------
-    # With inf bounds, scan LPs (clamped to BIG) can't resolve reactions
-    # at infinity. Check unresolved inf-bound directions individually.
-    has_inf_ub = np.isinf(ub) & (~res_max)
-    has_inf_lb = np.isinf(lb) & (~res_min)
-    n_inf_check = int(has_inf_ub.sum() + has_inf_lb.sum())
-    if n_inf_check > 0:
-        lp_inf = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
-                         lb=lb.tolist(), ub=ub.tolist(), solver=solver)
-        prev_col = -1
-        for j in np.where(has_inf_ub)[0]:
-            C = [[int(j), -1.0]] if prev_col < 0 or prev_col == j \
-                else [[int(j), -1.0], [prev_col, 0.0]]
-            if solver in ('cplex', 'gurobi'):
-                lp_inf.backend.set_objective_idx(C)
-            else:
-                lp_inf.set_objective_idx(C)
-            prev_col = int(j)
-            t0 = _time.perf_counter()
-            _, obj_val, status = lp_inf.solve()
-            t_solve += _time.perf_counter() - t0
-            lps_solved += 1
-            if status == UNBOUNDED:
-                res_max[j] = True
-                incumbent_max[j] = np.inf
-                total_bound_resolved += 1
-            elif status == OPTIMAL:
-                res_max[j] = True
-                incumbent_max[j] = -obj_val
-                total_bound_resolved += 1
-        for j in np.where(has_inf_lb)[0]:
-            C = [[int(j), 1.0]] if prev_col < 0 or prev_col == j \
-                else [[int(j), 1.0], [prev_col, 0.0]]
-            if solver in ('cplex', 'gurobi'):
-                lp_inf.backend.set_objective_idx(C)
-            else:
-                lp_inf.set_objective_idx(C)
-            prev_col = int(j)
-            t0 = _time.perf_counter()
-            _, obj_val, status = lp_inf.solve()
-            t_solve += _time.perf_counter() - t0
-            lps_solved += 1
-            if status == UNBOUNDED:
-                res_min[j] = True
-                incumbent_min[j] = -np.inf
-                total_bound_resolved += 1
-            elif status == OPTIMAL:
-                res_min[j] = True
-                incumbent_min[j] = obj_val
-                total_bound_resolved += 1
-        del lp_inf
+    t_phase['phase1'] = _time.perf_counter() - _tp1
 
     # ------------------------------------------------------------------
     # Phase 2: Dispatch remaining objectives — sequential or parallel
     # ------------------------------------------------------------------
+    _tp2 = _time.perf_counter()
     n_done = int(res_max.sum() + res_min.sum())
     n_remaining = 2 * n_orig - n_done
     phase2_entry_count = n_remaining  # for stats
@@ -991,6 +684,13 @@ def speedy_fva(model, **kwargs):
                     else:
                         res_min[j] = True
                         incumbent_min[j] = obj_val
+                    # Co-optimization scan: check if this vertex also
+                    # resolves other unresolved directions (at-bound check
+                    # on non-zero values that improve the incumbent).
+                    x_arr = np.array(x_list[:n_orig], dtype=np.float64)
+                    np.maximum(incumbent_max, x_arr, out=incumbent_max)
+                    np.minimum(incumbent_min, x_arr, out=incumbent_min)
+                    _bound_scan(x_arr)
 
     # ------------------------------------------------------------------
     # Assemble results
@@ -1007,21 +707,19 @@ def speedy_fva(model, **kwargs):
         cmp_msg = ""
         if cmp_maps:
             cmp_msg = f" (compressed {n_original}→{n_orig} rxns)"
-        logging.info(
+        logging.debug(
             f"  speedy_fva done{cmp_msg}: {lps_solved} LPs, "
             f"{total_bound_resolved} bound-resolved, "
-            f"{total_dual_resolved} dual-resolved "
-            f"({total_dual_checks} checks, {total_ns_lps} NS-LPs), "
             f"{2*n_orig} total objectives")
-        logging.info(
-            f"  timing: solve={t_solve:.2f}s, dual={t_dual:.3f}s, "
-            f"threads={threads}")
+        logging.debug(
+            f"  timing: solve={t_solve:.2f}s, threads={threads}")
 
+    t_phase['phase2'] = _time.perf_counter() - _tp2
+    t_phase['total'] = _time.perf_counter() - _tp0
+
+    fva_result.attrs['t_phase'] = t_phase
     fva_result.attrs['lps_solved'] = lps_solved
-    fva_result.attrs['trivial_resolved'] = total_bound_resolved
-    fva_result.attrs['duality_resolved'] = total_dual_resolved
-    fva_result.attrs['duality_checks'] = total_dual_checks
-    fva_result.attrs['ns_lps'] = total_ns_lps
+    fva_result.attrs['bound_resolved'] = total_bound_resolved
     fva_result.attrs['phase2_remaining'] = phase2_entry_count
     if cmp_maps:
         fva_result.attrs['n_original'] = n_original

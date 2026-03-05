@@ -233,14 +233,55 @@ After compress #1:
 
 ### 4.3 FVA
 
-**Function:** `bound_blocked_or_irrevers_fva`, `fva` (from `lptools.py`)
+**Function:** `bound_blocked_or_irrevers_fva`, `fva` (from `lptools.py`), `speedy_fva` (from `speedy_fva.py`)
 
 Now running on the **compressed model** (roughly half the reactions of the original), FVA identifies:
 - **Blocked reactions** (FVA min = FVA max = 0): forced to zero, removed from intervention candidates.
 - **Irreversible reactions** (FVA min >= 0 or FVA max <= 0): bounds tightened.
 - **Essential reactions** (cannot be zero under module constraints): excluded from knockout candidates.
 
-FVA is run in parallel using `SDPool` for large models.
+`fva()` in `lptools.py` delegates to `speedy_fva()`, which replaces the legacy implementation with a two-phase approach that reduces LP count by 70-80% on genome-scale models.
+
+#### speedy_fva algorithm
+
+**Phase 1 — Scan LPs** resolve the majority of bounds cheaply:
+
+1. **v=0 feasibility (Phase 1a):** If `lb[j] <= 0 <= ub[j]`, then zero flux is feasible, so `min x_j = 0` (or `max x_j = 0` when the bound is one-sided). No LP needed.
+
+2. **min(sum|x|) scan LP (Phase 1b):** Builds an extended LP with splitting variables for reversible reactions to minimize total absolute flux. The optimal vertex pushes many reactions to zero or their bounds. A vectorized **bound scan** marks any reaction whose flux equals its variable bound (within tolerance).
+
+3. **Push-to-bounds iteration (Phase 1c):** Using the same LP with dual simplex warm-start, iteratively sets directed objectives that push unresolved reactions toward their upper/lower bounds. Each round: set `c[j] = -1` for unresolved-max reactions, solve, scan; then `c[j] = +1` for unresolved-min reactions, solve, scan. Stops when a round resolves fewer than 5 new bounds. Warm-started dual simplex makes each re-solve near-instant (the basis stays primal feasible after objective changes).
+
+**Phase 2 — Individual LPs** for remaining unresolved objectives:
+- **Sequential mode** (default for small/medium models): warm-started dual simplex with periodic LP rebuild (every 200 solves) to limit degeneration. Each LP vertex is checked for **co-optimization**: a bound scan on the full solution vector that may resolve other unresolved directions for free.
+- **Parallel mode** (for large models, configurable via `threads`): process-based `SDPool` with per-worker LP instances.
+
+**Optional compression:** `speedy_fva` can compress the model internally (auto-enabled for n >= 200). This uses single-pass nullspace compression + conservation removal, with a fast model copy that avoids expensive `deepcopy(solver)`.
+
+**Benchmarks** (Gurobi, iML1515, compressed, single-threaded):
+
+| Configuration | Standard FVA | speedy_fva | LP count | Speedup |
+|---|---|---|---|---|
+| Unconstrained | 90s | 15s | 71% fewer | 6.0x |
+| Biomass >= 0.1 | 17s | 13s | 41% fewer | 1.3x |
+
+Phase 1 resolves 70-80% of objectives in the unconstrained case, but only ~40% when constraints limit the feasible space (fewer reactions can achieve their variable bounds).
+
+#### Design decisions and rejected alternatives
+
+**KKT dual certification (investigated, not pursued):**
+We explored using KKT optimality conditions to certify co-optimal reactions without solving additional LPs. After solving `min x_j`, we obtain a vertex solution and its basis. For another reaction k, optimality at the same vertex requires dual variables satisfying `S^T lambda + mu_ub - mu_lb = e_k` with correct complementarity. This can be checked by:
+
+1. Extracting the basis B from the solver
+2. Computing reduced costs for objective `e_k`: `pi = B^{-T} e_{pos(k)}`, then `r_i = -A_i^T pi` for nonbasic variables
+3. Verifying sign conditions: `r_i >= 0` for nonbasic-at-lb, `r_i <= 0` for nonbasic-at-ub
+
+The problem is that **bound scanning already handles nonbasic variables** (they are at their bounds by definition in a simplex vertex). KKT certification only adds value for *basic* variables (at interior points), which requires a sparse LU factorization of B per LP solve (1-5ms for m=900) — comparable to or exceeding the cost of the warm-started dual simplex LP itself (~0.5ms). The overhead exceeds the savings.
+
+An earlier implementation (`DualChecker`) used null-space projection to test dual feasibility via sparse LU. On **compressed models**, this produced zero certifications because compression creates linearly dependent column subsets (coupled reactions with diagonal values of 2/3 instead of 1), causing the factorization check to reject all candidates. On uncompressed models certifications were possible but the null-space dimension was too large (d=39-304 on iMLcore) for efficient LP-based certification. The approach was removed in favor of the simpler bound scan, which captures the same information for nonbasic variables at zero cost.
+
+**Intelligent objective ordering (considered, marginal benefit):**
+After each LP solve, the basis determines which variables are basic (interior) vs nonbasic (at bounds). Solving next for a basic variable should require fewer dual simplex pivots than jumping to a distant nonbasic variable. However, after bound scanning, the remaining unresolved reactions are precisely those that were basic (interior) in *every* solution seen — these "hard" reactions resist being pushed to bounds regardless of ordering. The objective change is always a rank-1 update, and pivot count depends more on problem structure than ordering. Warm-started dual simplex is already so fast per-LP (~0.5ms) that ordering heuristics cannot recover their own overhead.
 
 ### 4.4 GPR Integration
 
@@ -884,8 +925,8 @@ RobustKnock with POPULATE is not well-tested. The three-level dual structure is 
 **Parallel FVA compression for large models:**
 For genome-scale models (> 2000 reactions), compression can be slow. The RREF step in `RationalMatrix` has `O(n²)` row operations. Potential improvement: use block-sparse RREF or exploit model structure (e.g., subsystems).
 
-**Compression for FVA bounds:**
-Currently, FVA is run on the full model before compression. Running FVA after compression (on the smaller model) would be faster. The challenge is that some blocked reactions are only detectable post-compression.
+**FVA Phase 2 parallelization for non-Gurobi solvers:**
+Gurobi releases the GIL during `model.optimize()`, enabling `ThreadPoolExecutor`-based parallelism with batched warm-start (4.3x speedup measured on iML1515). CPLEX, GLPK, and SCIP hold the GIL, so they must use process-based `SDPool` with its ~4-6s spawn overhead. Investigating ctypes/Cython wrappers that release the GIL for these solvers could enable thread-based parallelism across all backends.
 
 **Essential KI detection:**
 `essential_kis` is computed but may not always be passed correctly through the compression/GPR pipeline. Verify that the set persists through `compress_ki_ko_cost`.
