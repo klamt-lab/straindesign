@@ -21,13 +21,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        # macos-latest should be added later as soon as libsbml support is back up
+        os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ['3.10', '3.11', '3.12', '3.13']
         package-manager: ['pip','conda']
-#        exclude:
-#        - os: macos-latest
-#          package-manager: 'pip'
+        exclude:
+        # python-libsbml has no conda-forge build for osx-arm64;
+        # pip works fine (PyPI has ARM64 wheels since python-libsbml 5.21.0)
+        - os: macos-latest
+          package-manager: 'conda'
     steps:
       - uses: actions/checkout@v4
       - name: Cache Conda packages
@@ -60,7 +61,7 @@ jobs:
           java-version: '17'
       - name: Set JAVA_HOME for mac OS
         if: runner.os == 'macOS'
-        run: export JAVA_HOME=$(/usr/libexec/java_home)
+        run: echo "JAVA_HOME=$(/usr/libexec/java_home)" >> "$GITHUB_ENV"
       - name: Build for PyPI (if pip)
         if: matrix.package-manager == 'pip'
         run: |
