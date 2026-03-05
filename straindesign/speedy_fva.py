@@ -60,16 +60,15 @@ def _compress_for_fva(model):
     """
     cmp_maps = []
     with suppress_lp_context(model):
-        # Fast copy: swap solver with empty stub so deepcopy(solver) is cheap,
-        # then populate stub with variable/constraint names (bounds and
-        # coefficients are skipped by suppress_lp_context).
+        # Fast copy: swap solver with empty stub so deepcopy(solver) is cheap
+        # (~0.3s vs ~3.3s on iML1515).  Safe because speedy_fva builds its own
+        # MILP_LP and the compression pipeline is solver-independent.
         saved_solver = model._solver
         model._solver = model.problem.Model()
         try:
             cmp_model = model.copy()
         finally:
             model._solver = saved_solver
-        cmp_model._populate_solver(cmp_model.reactions, cmp_model.metabolites)
         remove_blocked_reactions(cmp_model)
         stoichmat_coeff2rational(cmp_model)
         n_before = len(cmp_model.reactions)

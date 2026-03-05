@@ -41,11 +41,6 @@ from straindesign.parse_constr import parse_constraints
 # LP Update Suppression
 # =============================================================================
 
-# Saved original methods (set when suppressed, None when active).
-_ORIG_SLC = None   # (class, method) for Constraint.set_linear_coefficients
-_ORIG_SB = None    # (class, method) for Variable.set_bounds
-_ORIG_OSLC = None  # (class, method) for Objective.set_linear_coefficients
-
 # Sentinel no-op: identity check tells us whether the class is already patched.
 _SLC_NOOP = lambda self, *a, **kw: None
 
@@ -56,15 +51,171 @@ def _sb_noop(self, lb, ub):
     self._ub = ub
 
 
+# -- Cobra-level suppression replacements ------------------------------------
+
+def _suppressed_set_id(self, value):
+    """Bypass solver variable rename: write _id and update DictList index."""
+    old_id = self._id
+    self._id = value
+    if self._model is not None:
+        dl = self._model.reactions
+        old_index = dl._dict.pop(old_id, None)
+        if old_index is not None:
+            dl._dict[value] = old_index
+
+
+def _suppressed_set_lb(self, value):
+    """Bypass solver bounds update: write _lower_bound only."""
+    self._lower_bound = value
+
+
+def _suppressed_set_ub(self, value):
+    """Bypass solver bounds update: write _upper_bound only."""
+    self._upper_bound = value
+
+
+def _suppressed_populate_solver(self, reaction_list=None, metabolite_list=None):
+    """No-op during suppression: solver will be rebuilt on context exit."""
+    pass
+
+
+def _suppressed_update_variable_bounds(self):
+    """No-op during suppression: solver bounds synced on context exit."""
+    pass
+
+
+class _SolverStub:
+    """Stand-in returned by solver containers for keys missing during suppression.
+
+    Hashable (used as dict key in set_linear_coefficients calls) and has
+    no-op set_bounds / set_linear_coefficients so any downstream call is safe.
+    """
+    __slots__ = ('_id',)
+
+    def __init__(self, name=''):
+        self._id = name
+
+    def set_bounds(self, *a, **kw):
+        pass
+
+    def set_linear_coefficients(self, *a, **kw):
+        pass
+
+
+_SOLVER_STUB = _SolverStub('__stub__')
+
+_ORIG_CONTAINER_GETITEM = None  # saved Container.__getitem__
+
+
+def _permissive_container_getitem(self, item):
+    """Container.__getitem__ that returns a stub instead of raising KeyError."""
+    try:
+        return self._object_list[item]  # int/slice
+    except TypeError:
+        return self._dict.get(item, _SOLVER_STUB)
+
+
+def _remove_reactions_direct(model, remove_set: set) -> None:
+    """Remove reactions from model via direct DictList manipulation.
+
+    Bypasses the solver entirely — used as the implementation behind
+    ``_suppressed_remove_reactions``.
+    """
+    from cobra import DictList
+    new_reactions = DictList()
+    for rxn in model.reactions:
+        if rxn not in remove_set:
+            new_reactions.append(rxn)
+        else:
+            for met in list(rxn._metabolites.keys()):
+                if rxn in met._reaction:
+                    met._reaction.discard(rxn)
+            rxn._model = None
+    model.__dict__['reactions'] = new_reactions
+    # Remove orphan metabolites
+    mets_in_use = set()
+    for rxn in model.reactions:
+        mets_in_use.update(rxn._metabolites.keys())
+    new_metabolites = DictList()
+    for met in model.metabolites:
+        if met in mets_in_use:
+            new_metabolites.append(met)
+        else:
+            met._model = None
+    model.__dict__['metabolites'] = new_metabolites
+
+
+def _remove_metabolites_direct(model, remove_set: set) -> None:
+    """Remove metabolites from model via direct DictList manipulation.
+
+    Bypasses the solver entirely — used as the implementation behind
+    ``_suppressed_remove_metabolites``.
+    """
+    from cobra import DictList
+    for met in remove_set:
+        for rxn in list(met._reaction):
+            rxn._metabolites.pop(met, None)
+        met._reaction.clear()
+        met._model = None
+    new_metabolites = DictList()
+    for met in model.metabolites:
+        if met not in remove_set:
+            new_metabolites.append(met)
+    model.__dict__['metabolites'] = new_metabolites
+
+
+def _suppressed_remove_reactions(self, reactions, remove_orphans=False):
+    """Bypass solver variable removal: direct DictList manipulation."""
+    if not hasattr(reactions, '__iter__'):
+        reactions = [reactions]
+    remove_set = set()
+    for rxn in reactions:
+        if isinstance(rxn, str):
+            rxn = self.reactions.get_by_id(rxn)
+        remove_set.add(rxn)
+    if remove_set:
+        _remove_reactions_direct(self, remove_set)
+
+
+def _suppressed_remove_metabolites(self, metabolite_list, destructive=False):
+    """Bypass solver constraint removal: direct DictList manipulation."""
+    if not hasattr(metabolite_list, '__iter__'):
+        metabolite_list = [metabolite_list]
+    remove_set = {m for m in metabolite_list if m.id in self.metabolites}
+    if remove_set:
+        _remove_metabolites_direct(self, remove_set)
+
+
+# -- Saved originals (None = not suppressed) ----------------------------------
+
+_ORIG_SLC = None   # (cls, method) for Constraint.set_linear_coefficients
+_ORIG_SB = None    # (cls, method) for Variable.set_bounds
+_ORIG_OSLC = None  # (cls, method) for Objective.set_linear_coefficients
+_ORIG_COBRA = []   # list of (cls, attr_name, original) for cobra-level patches
+
+
 def _suppress_lp_updates(model):
-    """Patch optlang to skip LP coefficient, bounds, and objective updates.
+    """Patch optlang and cobra to skip all solver-touching operations.
+
+    **Optlang level** (coefficient/bounds/objective updates):
+      - Constraint.set_linear_coefficients → no-op
+      - Variable.set_bounds → Python-side only
+      - Objective.set_linear_coefficients → no-op
+
+    **Cobra level** (property setters and model mutations):
+      - Reaction._set_id_with_model → direct _id + DictList update
+      - Reaction.lower_bound → direct _lower_bound
+      - Reaction.upper_bound → direct _upper_bound
+      - Reaction.update_variable_bounds → no-op
+      - Model._populate_solver → no-op (rebuild on context exit)
+      - Model.remove_reactions → direct list manipulation
+      - Model.remove_metabolites → direct list manipulation
+      - Container.__getitem__ → return stub for missing keys
 
     Safe to call when already suppressed (idempotent).  The real methods
     are saved on first call and restored by :func:`_restore_lp_updates`.
-    Guards: all accesses are hasattr-checked so that cobra/optlang API
-    changes simply disable the optimisation without breaking anything.
     """
-    global _ORIG_SLC, _ORIG_SB, _ORIG_OSLC
+    global _ORIG_SLC, _ORIG_SB, _ORIG_OSLC, _ORIG_COBRA
     try:
         if hasattr(model, 'problem'):
             prob = model.problem
@@ -89,13 +240,48 @@ def _suppress_lp_updates(model):
     except Exception:
         pass
 
+    # Cobra-level patches
+    from cobra.core.reaction import Reaction
+    from cobra.core.model import Model
+    _ORIG_COBRA = []
+    if Reaction._set_id_with_model is not _suppressed_set_id:
+        _ORIG_COBRA.append((Reaction, '_set_id_with_model', Reaction._set_id_with_model))
+        Reaction._set_id_with_model = _suppressed_set_id
+    orig_lb = Reaction.__dict__.get('lower_bound')
+    if orig_lb is not None and isinstance(orig_lb, property) and orig_lb.fset is not _suppressed_set_lb:
+        _ORIG_COBRA.append((Reaction, 'lower_bound', orig_lb))
+        Reaction.lower_bound = property(fget=orig_lb.fget, fset=_suppressed_set_lb, fdel=orig_lb.fdel)
+    orig_ub = Reaction.__dict__.get('upper_bound')
+    if orig_ub is not None and isinstance(orig_ub, property) and orig_ub.fset is not _suppressed_set_ub:
+        _ORIG_COBRA.append((Reaction, 'upper_bound', orig_ub))
+        Reaction.upper_bound = property(fget=orig_ub.fget, fset=_suppressed_set_ub, fdel=orig_ub.fdel)
+    if Reaction.update_variable_bounds is not _suppressed_update_variable_bounds:
+        _ORIG_COBRA.append((Reaction, 'update_variable_bounds', Reaction.update_variable_bounds))
+        Reaction.update_variable_bounds = _suppressed_update_variable_bounds
+    if Model._populate_solver is not _suppressed_populate_solver:
+        _ORIG_COBRA.append((Model, '_populate_solver', Model._populate_solver))
+        Model._populate_solver = _suppressed_populate_solver
+    if Model.remove_reactions is not _suppressed_remove_reactions:
+        _ORIG_COBRA.append((Model, 'remove_reactions', Model.remove_reactions))
+        Model.remove_reactions = _suppressed_remove_reactions
+    if Model.remove_metabolites is not _suppressed_remove_metabolites:
+        _ORIG_COBRA.append((Model, 'remove_metabolites', Model.remove_metabolites))
+        Model.remove_metabolites = _suppressed_remove_metabolites
+
+    # Permissive solver container: return stub for missing keys
+    global _ORIG_CONTAINER_GETITEM
+    from optlang.container import Container
+    if Container.__getitem__ is not _permissive_container_getitem:
+        _ORIG_CONTAINER_GETITEM = Container.__getitem__
+        Container.__getitem__ = _permissive_container_getitem
+
 
 def _restore_lp_updates():
-    """Restore original optlang LP update methods.
+    """Restore original optlang and cobra methods.
 
     Safe to call when not suppressed (idempotent).
     """
-    global _ORIG_SLC, _ORIG_SB, _ORIG_OSLC
+    global _ORIG_SLC, _ORIG_SB, _ORIG_OSLC, _ORIG_COBRA, _ORIG_CONTAINER_GETITEM
     if _ORIG_SLC is not None:
         cls, method = _ORIG_SLC
         cls.set_linear_coefficients = method
@@ -108,30 +294,68 @@ def _restore_lp_updates():
         cls, method = _ORIG_OSLC
         cls.set_linear_coefficients = method
         _ORIG_OSLC = None
+    for cls, attr_name, original in _ORIG_COBRA:
+        setattr(cls, attr_name, original)
+    _ORIG_COBRA = []
+    if _ORIG_CONTAINER_GETITEM is not None:
+        from optlang.container import Container
+        Container.__getitem__ = _ORIG_CONTAINER_GETITEM
+        _ORIG_CONTAINER_GETITEM = None
 
 
 def _is_lp_suppressed():
     """Return True if LP updates are currently suppressed."""
-    return _ORIG_SLC is not None or _ORIG_SB is not None or _ORIG_OSLC is not None
+    return _ORIG_SLC is not None or _ORIG_SB is not None or _ORIG_OSLC is not None or len(_ORIG_COBRA) > 0
 
 
 @contextmanager
 def suppress_lp_context(model):
-    """Context manager that suppresses optlang LP updates for its duration.
+    """Context manager that suppresses all solver-touching operations.
 
-    Patches Constraint.set_linear_coefficients, Variable.set_bounds, and
-    Objective.set_linear_coefficients at the class level on entry, restores
-    on exit.  Nests safely: if already suppressed by an outer context,
-    this is a no-op.
+    Patches both optlang (coefficient/bounds updates) and cobra (property
+    setters, Model.remove_reactions, Model.remove_metabolites) at the class
+    level.  On exit, restores originals and rebuilds the solver so it
+    reflects the current model state.
+
+    Nests safely: if already suppressed by an outer context, this is a no-op.
     """
     entered_here = not _is_lp_suppressed()
     if entered_here:
+        # Capture objective and reaction IDs before suppression (solver still live)
+        obj_dict = {}
+        for rxn in model.reactions:
+            try:
+                c = rxn.objective_coefficient
+                if c != 0:
+                    obj_dict[rxn.id] = float(c)
+            except Exception:
+                pass
+        _pre_ids = {r.id for r in model.reactions}
+        # Store on model so compression code can update it through maps
+        model._suppressed_obj = dict(obj_dict)
         _suppress_lp_updates(model)
     try:
         yield
     finally:
         if entered_here:
             _restore_lp_updates()
+            # Rebuild solver only if the model was modified during suppression.
+            current_ids = {r.id for r in model.reactions}
+            # Use the stored objective (compression may have updated it)
+            final_obj = getattr(model, '_suppressed_obj', obj_dict)
+            if hasattr(model, '_suppressed_obj'):
+                del model._suppressed_obj
+            if current_ids != _pre_ids:
+                try:
+                    solver_interface = model.solver.interface
+                    model._solver = solver_interface.Model()
+                    model._populate_solver(model.reactions, model.metabolites)
+                    for rxn in model.reactions:
+                        c = final_obj.get(rxn.id, 0.0)
+                        if c != 0:
+                            rxn.objective_coefficient = c
+                except Exception:
+                    pass
 
 
 def with_suppressed_lp(func):

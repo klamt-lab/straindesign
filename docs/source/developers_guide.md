@@ -46,6 +46,7 @@
    - 8.3 [SDSolutions](#83-sdsolutions)
 9. [Constraint & Expression Parsing](#9-constraint--expression-parsing)
 10. [Supporting Utilities](#10-supporting-utilities)
+    - 10.1 [LP Suppression (`networktools.py`)](#networktoolspy--lp-suppression)
 11. [Known Issues, Urgent Actions & Future Work](#11-known-issues-urgent-actions--future-work)
 12. [MILP Performance Notes](#12-milp-performance-notes)
 13. [Testing](#13-testing)
@@ -104,7 +105,7 @@ straindesign/
 ├── strainDesignSolutions.py        # SDSolutions: result container, GPR translation
 │
 ├── compression.py                  # Network compression (RREF, RationalMatrix, nullspace)
-├── networktools.py                 # GPR extension, regulatory extension, compress wrappers
+├── networktools.py                 # GPR extension, regulatory extension, compress wrappers, LP suppression
 ├── lptools.py                      # FVA, flux space plotting, solver selection
 ├── parse_constr.py                 # Constraint/expression string → matrix conversion
 ├── indicatorConstraints.py         # IndicatorConstraints data class
@@ -854,6 +855,72 @@ The `parse_constraints` function uses regex splitting on `','` and `'\n'` to sep
 - **`select_solver(solver, model)`**: Selects solver based on availability, preference, and model settings. Priority: CPLEX > Gurobi > SCIP > GLPK.
 - **`plot_flux_space(model, ...)`**: 2D/3D convex hull visualization using `scipy.spatial.ConvexHull` and Matplotlib.
 - **`DisableLogger`**: Context manager to suppress logging during FVA.
+
+### `networktools.py` — LP Suppression
+
+#### Problem
+
+COBRApy's `Model` is tightly coupled to its solver backend (optlang). Every mutation — setting a reaction's bounds, renaming a reaction, adding/removing metabolites — immediately updates the solver's LP representation via `set_bounds`, `set_linear_coefficients`, `_populate_solver`, etc. During compression and preprocessing, hundreds of such mutations occur on a model copy. Synchronizing each one to the solver is pure overhead: the LP is rebuilt from scratch at the end anyway.
+
+Early approaches patched optlang classes (`Constraint.set_linear_coefficients`, `Variable.set_bounds`, `Objective.set_linear_coefficients`) at the class level during suppression. This worked for optlang-level calls but missed cobra-level code paths: `Reaction.add_metabolites` accesses `self.forward_variable`, `self.reverse_variable`, and `model.constraints[met.id]` to build solver constraint updates. These paths reached the solver through cobra internals, not optlang's public API.
+
+#### Architecture: class-level cobra patching
+
+`suppress_lp_context(model)` is a context manager that patches **both optlang and cobra classes** at the class level for the duration of the block. All solver-bound operations become no-ops, and cobra methods that would access the solver are redirected to safe stubs.
+
+**Patches applied by `_suppress_lp_updates`:**
+
+| Target | Original | Suppressed replacement |
+|---|---|---|
+| `Reaction._set_id_with_model` | Renames solver variable | `_suppressed_set_id`: writes `_id` + updates `DictList._dict` index only |
+| `Reaction.lower_bound` (setter) | Calls `update_variable_bounds` → solver | `_suppressed_set_lb`: writes `_lower_bound` only |
+| `Reaction.upper_bound` (setter) | Calls `update_variable_bounds` → solver | `_suppressed_set_ub`: writes `_upper_bound` only |
+| `Reaction.update_variable_bounds` | Accesses `forward_variable.set_bounds(...)` | No-op |
+| `Model._populate_solver` | Full solver rebuild | No-op |
+| `Model.remove_reactions` | Removes solver variables/constraints | `_suppressed_remove_reactions`: removes from model lists only |
+| `Model.remove_metabolites` | Removes solver constraints | `_suppressed_remove_metabolites`: removes from model lists only |
+| `Container.__getitem__` | Raises `KeyError` for missing keys | `_permissive_container_getitem`: returns `_SolverStub` for missing keys |
+| optlang `Constraint.set_linear_coefficients` | Updates solver constraint | No-op |
+| optlang `Variable.set_bounds` | Updates solver variable bounds | No-op |
+| optlang `Objective.set_linear_coefficients` | Updates solver objective | No-op |
+
+**`_SolverStub`** is a lightweight null object returned by the permissive `Container.__getitem__` when cobra code tries to access a solver variable/constraint that doesn't exist (because `_populate_solver` is suppressed). It is hashable (used as a dict key in `set_linear_coefficients` calls) and has no-op `set_bounds`/`set_linear_coefficients` methods. This single class eliminates the need to patch every individual cobra method that might touch the solver.
+
+**`_suppressed_set_id` and DictList invariant:** cobra's `DictList._dict` maps `id → int index` (not `id → object`). The suppressed setter must maintain this invariant: it pops the old key and inserts the new key with the same integer index. Violating this causes `ValueError` in `DictList.__setitem__` due to its duplicate-check logic.
+
+#### Objective preservation through compression
+
+When `suppress_lp_context` enters, it captures the model's objective coefficients into `model._suppressed_obj` (a `dict` mapping `reaction_id → float coefficient`). This dict is updated by compression code as reactions are merged:
+
+- **Coupled compression** (`compression.py`, `_apply_compression_to_model`): when reactions are merged, their objective contributions are weighted by compression factors and summed into the surviving reaction's entry.
+- **Parallel compression** (`compression.py`, `compress_model_parallel`): when identical-stoichiometry reactions are merged, their objective contributions are summed directly.
+- **Legacy Java compression** (`efmtool_cmp_interface.py`, `compress_model_java`): same logic using `jBigFraction2sympyRat` conversion factors.
+
+On exit, if the model was modified (reaction IDs changed), the context manager rebuilds the solver from the model's current state and restores the objective from `_suppressed_obj`. If the model was not modified (e.g., `compute_strain_designs` only modifies a copy), no rebuild occurs — this is critical because an unconditional rebuild would produce a solver with the wrong objective direction for methods like RobustKnock that have inner/outer objectives.
+
+```python
+# Simplified exit logic
+current_ids = {r.id for r in model.reactions}
+if current_ids != pre_ids:
+    model._solver = solver_interface.Model()
+    model._populate_solver(model.reactions, model.metabolites)
+    for rxn in model.reactions:
+        c = final_obj.get(rxn.id, 0.0)
+        if c != 0:
+            rxn.objective_coefficient = c
+```
+
+#### Design principles
+
+1. **All plumbing in the context manager.** Compression code, GPR extension, and other preprocessing functions are backend-agnostic — they manipulate the cobra model without knowing whether LP updates are suppressed. The context manager handles all solver synchronization.
+
+2. **Class-level patching, not instance-level.** Patching at the class level (e.g., `Reaction.lower_bound = property(fget, suppressed_fset)`) ensures that ALL reactions are covered, including ones created during compression. Instance-level patches would miss newly created objects.
+
+3. **Conditional rebuild.** The solver is only rebuilt when the model was actually modified. This prevents regressions in methods like RobustKnock/OptKnock/OptCouple that have complex objective structures.
+
+#### Performance impact
+
+On iML1515, LP suppression reduces preprocessing time from ~131s to ~70s (46% reduction). The bulk of the savings comes from avoiding ~2000 `set_linear_coefficients` calls during compression, each of which would otherwise rebuild solver constraint data structures.
 
 ### `pool.py` — SDPool
 Windows-compatible `multiprocessing.Pool` subclass. On Windows, the initializer function is pickled to a temporary file and loaded by worker processes, avoiding a performance regression from passing the initializer directly (COBRApy issue #997). Uses `'spawn'` context universally to avoid `fork`-related instability.
