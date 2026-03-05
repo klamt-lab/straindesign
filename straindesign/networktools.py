@@ -1073,15 +1073,16 @@ def modules_coeff2float(sd_modules):
     return sd_modules
 
 
-def bound_blocked_or_irrevers_fva(model, solver=None):
+def bound_blocked_or_irrevers_fva(model, **kwargs):
     """Use FVA to determine the flux ranges. Use this information to update the model bounds
-    
-    If flux ranges for a reaction are narrower than its bounds in the mode, these bounds can be omitted, 
-    since other reactions must constrain the reaction flux. If (upper or lower) flux bounds are found to 
+
+    If flux ranges for a reaction are narrower than its bounds in the mode, these bounds can be omitted,
+    since other reactions must constrain the reaction flux. If (upper or lower) flux bounds are found to
     be zero, the model bounds are updated to reduce the model complexity.
     """
+    solver = kwargs.get('solver', None)
     # FVAs to identify blocked and irreversible reactions, as well as non-bounding bounds
-    flux_limits = fva(model)
+    flux_limits = fva(model, **kwargs)
     if select_solver(solver) in [SCIP, GLPK]:
         tol = 1e-10  # use tolerance for tightening problem bounds
     else:

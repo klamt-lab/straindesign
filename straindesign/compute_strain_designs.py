@@ -335,13 +335,13 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         cmp_ki_cost = uncmp_ki_cost
     # --- FVAs on (possibly compressed) model ---
     logging.info('  FVA to identify blocked reactions and irreversibilities.')
-    bound_blocked_or_irrevers_fva(cmp_model, solver=kwargs[SOLVER])
+    bound_blocked_or_irrevers_fva(cmp_model, solver=kwargs[SOLVER], compress=False)
     logging.info('  FVA(s) to identify essential reactions.')
     essential_reacs = set()
     for m in sd_modules:
         if m[MODULE_TYPE] != SUPPRESS:  # Essential reactions can only be determined from desired
             # or opt-/robustknock modules
-            flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS])
+            flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS], compress=False)
             for (reac_id, limits) in flux_limits.iterrows():
                 if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0:  # find essential
                     essential_reacs.add(reac_id)
@@ -425,7 +425,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     for m in sd_modules:
         if m[MODULE_TYPE] != SUPPRESS:  # Essential reactions can only be determined from desired
             # or opt-/robustknock modules
-            flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS])
+            flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS], compress=False)
             for (reac_id, limits) in flux_limits.iterrows():
                 if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0:  # find essential
                     essential_reacs.add(reac_id)

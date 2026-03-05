@@ -355,6 +355,33 @@ class SCIP_MILP(pso.Model):
             else:
                 self.chgVarUb(self.vars[ub[i][0]], None)
 
+    def set_lp_method(self, method):
+        """Set the LP solving method.
+
+        Args:
+            method: LP_METHOD_AUTO, LP_METHOD_PRIMAL, LP_METHOD_DUAL, or LP_METHOD_BARRIER
+        """
+        # SCIP lp/initalgorithm + lp/resolvealgorithm: 's'=auto, 'p'=primal, 'd'=dual, 'b'=barrier
+        _map = {LP_METHOD_AUTO: 's', LP_METHOD_PRIMAL: 'p',
+                LP_METHOD_DUAL: 'd', LP_METHOD_BARRIER: 'b'}
+        algo = _map.get(method, 's')
+        self.setParam('lp/initalgorithm', algo)
+        self.setParam('lp/resolvealgorithm', algo)
+
+    def get_lp_method(self):
+        """Return the current LP method as a solver-neutral string."""
+        _rmap = {'s': LP_METHOD_AUTO, 'p': LP_METHOD_PRIMAL,
+                 'd': LP_METHOD_DUAL, 'b': LP_METHOD_BARRIER}
+        return _rmap.get(self.getParam('lp/initalgorithm'), LP_METHOD_AUTO)
+
+    def get_basis(self):
+        """Not available for SCIP MILP — LP basis is discarded after MIP solve."""
+        raise NotImplementedError('SCIP_MILP does not support get_basis (LP basis is not retained after MIP solve).')
+
+    def set_basis(self, basis):
+        """Not available for SCIP MILP — pyscipopt does not expose basis loading."""
+        raise NotImplementedError('SCIP_MILP does not support set_basis (pyscipopt does not expose setBasis).')
+
     def set_time_limit(self, t):
         """Set the computation time limit (in seconds)"""
         if t >= self.max_tlim:
@@ -364,11 +391,11 @@ class SCIP_MILP(pso.Model):
 
     def add_ineq_constraints(self, A_ineq, b_ineq):
         """Add inequality constraints to the model
-        
+
         Additional inequality constraints have the form A_ineq * x <= b_ineq.
         The number of columns in A_ineq must match with the number of variables x
         in the problem.
-        
+
         Args:
             A_ineq (sparse.csr_matrix):
                 The coefficient matrix
@@ -503,6 +530,9 @@ class SCIP_LP(pso.LP):
                     A SCIP LP interface class.
         """
         super().__init__(sense='minimize')
+        # Match tolerance of other solvers (SoPlex defaults are 1e-6)
+        self.setRealParam(pso.SCIP_LPPARAM.FEASTOL, 1e-9)
+        self.setRealParam(pso.SCIP_LPPARAM.DUALFEASTOL, 1e-9)
         # uncomment to forward SCIP output to python terminal
         try:
             numvars = A_ineq.shape[1]
@@ -630,3 +660,72 @@ class SCIP_LP(pso.LP):
         self.addRows([[(i,v) for i,v in zip(rows.indices,rows.data)] for rows in A_eq], \
                         lhss = b_eq,\
                         rhss = b_eq)
+
+    def set_lp_method(self, method):
+        """Set the LP solving method (no-op for SCIP_LP — SoPlex manages internally)."""
+        pass
+
+    def get_lp_method(self):
+        """Return LP_METHOD_AUTO — SCIP_LP does not expose method selection."""
+        return LP_METHOD_AUTO
+
+    _basis_warning_issued = False
+
+    def get_basis(self):
+        """Reconstruct vbasis/cbasis from SoPlex getBasisInds + solution.
+
+        Uses getBasisInds() to identify basic variables, then checks
+        solution values against bounds to determine non-basic status.
+
+        Returns:
+            dict with 'vbasis' (list of int) and 'cbasis' (list of int).
+            Status codes: 0=basic, -2=at lower bound, -3=at upper bound.
+        """
+        try:
+            basis_inds = self.getBasisInds()
+            if not basis_inds:
+                return None
+            ncols = self.ncols()
+            nrows = self.nrows()
+            x = self.getPrimal()
+            lbs, ubs = self.getBounds()
+            # Identify which columns and rows are basic
+            basic_cols = set()
+            basic_rows = set()
+            for idx in basis_inds:
+                if idx >= 0:
+                    basic_cols.add(idx)
+                else:
+                    basic_rows.add(-idx - 1)
+            # Reconstruct vbasis: 0=basic, -2=at_lb, -3=at_ub
+            tol = 1e-8
+            vbasis = []
+            for j in range(ncols):
+                if j in basic_cols:
+                    vbasis.append(0)
+                elif abs(x[j] - ubs[j]) < tol:
+                    vbasis.append(-3)
+                else:
+                    vbasis.append(-2)  # at lower bound (default for non-basic)
+            # Reconstruct cbasis: 0=basic (slack in basis), -1=non-basic (constraint binding)
+            cbasis = []
+            for i in range(nrows):
+                if i in basic_rows:
+                    cbasis.append(0)
+                else:
+                    cbasis.append(-1)
+            if not SCIP_LP._basis_warning_issued:
+                logging.warning('SCIP_LP: basis reconstructed from getBasisInds + solution values.')
+                SCIP_LP._basis_warning_issued = True
+            return {'vbasis': vbasis, 'cbasis': cbasis}
+        except Exception:
+            return None
+
+    def set_basis(self, basis):
+        """No-op — pyscipopt LP does not expose basis loading."""
+        if basis is not None:
+            logging.warning('SCIP_LP: set_basis is not supported (pyscipopt does not expose setBasis).')
+
+    def set_time_limit(self, t):
+        """No-op — SCIP_LP does not support time limits."""
+        pass

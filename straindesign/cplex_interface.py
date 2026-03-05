@@ -119,7 +119,12 @@ class Cplex_MILP_LP(Cplex):
         sense = len(b_ineq) * 'L' + len(b_eq) * 'E'
 
         # construct CPLEX problem. Add variables and linear constraints
-        self.variables.add(obj=c, lb=lb, ub=ub, types=vtype)
+        # Only pass types for MIPs — passing types='CCC...' makes CPLEX register
+        # the problem as MIP, which prevents basis extraction for pure LPs.
+        if any(v != 'C' for v in vtype):
+            self.variables.add(obj=c, lb=lb, ub=ub, types=vtype)
+        else:
+            self.variables.add(obj=c, lb=lb, ub=ub)
         self.linear_constraints.add(rhs=b, senses=sense)
         if A.nnz:
             self.linear_constraints.set_coefficients(zip(A.row.tolist(), A.col.tolist(), A.data.tolist()))
@@ -222,11 +227,11 @@ class Cplex_MILP_LP(Cplex):
         try:
             super().solve()  # call parent solve function (that was overwritten in this class)
             status = self.solution.get_status()
-            if status in [1, 101, 102, 107, 115, 128, 129, 130]:  # solution integer optimal (tolerance)
+            if status in [1, 101, 102, 107, 115, 128, 129, 130]:  # optimal (LP: 1, MIP: 101/102/107/115/128-130)
                 opt = self.solution.get_objective_value()
-            elif status in [118, 119]:  # solution unbounded (or inf or unbdd)
+            elif status in [2, 4, 118, 119]:  # unbounded (LP: 2/4, MIP: 118/119)
                 opt = -inf
-            elif status in [103, 108]:  # infeasible
+            elif status in [3, 103, 108]:  # infeasible (LP: 3, MIP: 103/108)
                 opt = nan
             else:
                 logging.exception(status)
@@ -300,6 +305,48 @@ class Cplex_MILP_LP(Cplex):
     def set_ub(self, ub):
         """Set the upper bounds to a given vector"""
         self.variables.set_upper_bounds(ub)
+
+    def set_lp_method(self, method):
+        """Set the LP solving method.
+
+        Args:
+            method: LP_METHOD_AUTO, LP_METHOD_PRIMAL, LP_METHOD_DUAL, or LP_METHOD_BARRIER
+        """
+        # CPLEX lpmethod: 0=auto, 1=primal, 2=dual, 4=barrier
+        _map = {LP_METHOD_AUTO: 0, LP_METHOD_PRIMAL: 1,
+                LP_METHOD_DUAL: 2, LP_METHOD_BARRIER: 4}
+        self.parameters.lpmethod.set(_map.get(method, 0))
+
+    def get_lp_method(self):
+        """Return the current LP method as a solver-neutral string."""
+        _rmap = {0: LP_METHOD_AUTO, 1: LP_METHOD_PRIMAL,
+                 2: LP_METHOD_DUAL, 4: LP_METHOD_BARRIER}
+        return _rmap.get(self.parameters.lpmethod.get(), LP_METHOD_AUTO)
+
+    def get_basis(self):
+        """Return the current LP basis (variable and constraint statuses).
+
+        Returns:
+            dict with 'vbasis' (list of int) and 'cbasis' (list of int).
+            CPLEX codes: 0=free/superbasic, 1=basic, 2=at ub, 3=at lb.
+        """
+        try:
+            col_status, row_status = self.solution.basis.get_basis()
+            return {'vbasis': list(col_status), 'cbasis': list(row_status)}
+        except CplexError:
+            return None
+
+    def set_basis(self, basis):
+        """Load a previously saved basis for warm-starting.
+
+        Args:
+            basis: dict from get_basis() with 'vbasis' and 'cbasis'.
+        """
+        if basis is None:
+            return
+        self.start.set_start(
+            col_status=basis['vbasis'], row_status=basis['cbasis'],
+            col_primal=[], row_primal=[], col_dual=[], row_dual=[])
 
     def set_time_limit(self, t):
         """Set the computation time limit (in seconds)"""

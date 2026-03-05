@@ -918,6 +918,46 @@ The three-level dual construction in ROBUSTKNOCK creates very large matrices wit
 **Integration of regulatory networks beyond simple T/F interventions:**
 The current regulatory intervention model (active/inactive) is binary. Future work could integrate thermodynamic constraints or kinetic feasibility checks.
 
+**SCIP native solution enumeration:**
+SCIP supports solution enumeration beyond the incidental pool (`limits/maxsol`, default 100).
+Since version 2.0, the `cons_countsols` constraint handler can count and enumerate all
+feasible solutions of a constraint integer program via the `count` command. Key details:
+
+- `constraints/countsols/collect = TRUE` stores detected solutions (default FALSE = count only).
+- To enumerate all *optimal* solutions: solve to optimality to get `c*`, add the objective
+  as a constraint with both bounds equal to `c*`, then run `count`.
+- Restarts must be turned off during counting (use `SCIPsetParamsCountsols()`).
+- SCIP uses unrestricted subtree detection, which can detect several solutions at once,
+  so a soft solution limit may be exceeded before SCIP stops.
+- Collected solutions are stored with respect to active (non-presolved) variables only;
+  they are lifted back into the original variable space when written to file.
+- This is *not* equivalent to Gurobi's ranked near-optimal pool (`PoolSearchMode`).
+  SCIP enumerates feasibility/optimality, not a ranked set of near-optimal solutions.
+
+Currently, StrainDesign's SCIP `populate` method uses a custom workaround
+(iterative solve with solution exclusion constraints). Replacing this with
+native `cons_countsols` enumeration could improve performance and correctness.
+However, pyscipopt does not yet expose the `count` command or `cons_countsols`
+parameters — this would require upstream pyscipopt changes or direct C API calls.
+
+**pyscipopt gaps for LP method and basis control:**
+Several SoPlex and SCIP features that would benefit StrainDesign are not exposed
+through the pyscipopt Python bindings:
+
+- *LP basis get/set:* SCIP internally maintains LP bases via SoPlex, but
+  pyscipopt does not expose `SCIPlpGetBasisInd`, `SCIPgetLPBasisInd`, or
+  the SoPlex `getBasis`/`setBasis` methods. This prevents explicit basis
+  warm-starting for LPs solved through the SCIP/SoPlex interface.
+- *LP algorithm selection for SCIP_LP (pure LP via `pyscipopt.LP`):*
+  The `pyscipopt.LP` class wraps SoPlex directly but does not expose
+  SoPlex's `setIntParam(ALGORITHM, ...)` for selecting primal vs dual
+  simplex. The SCIP_MILP path supports this via `lp/initalgorithm` and
+  `lp/resolvealgorithm` parameters, but the direct SoPlex LP wrapper does not.
+- *Solution enumeration:* The `count` command and `cons_countsols` constraint
+  handler (see above) are not accessible from pyscipopt.
+
+These gaps are candidates for upstream pyscipopt issues or contributions.
+
 **Improved CNApy integration:**
 The `sd_setup` dict format is designed for CNApy interoperability. Ensuring full round-trip serialization (JSON → `compute_strain_designs` → JSON) with all parameter types (modules, costs, constraints) is an ongoing compatibility concern.
 
