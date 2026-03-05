@@ -52,6 +52,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Fix Python PATH on macOS
+        if: runner.os == 'macOS'
+        shell: bash {0}
+        run: |
+          # macOS runners ship a system Python (e.g. 3.14) under /Library/Frameworks.
+          # bash -l sources /etc/profile which puts it first in PATH, overriding
+          # setup-python.  Fix: prepend the correct location in .bash_profile.
+          echo 'export PATH="${{ env.pythonLocation }}/bin:$PATH"' >> ~/.bash_profile
       - name: Check Python Version
         run: python --version
       - name: Java Setup
