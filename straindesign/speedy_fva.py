@@ -524,7 +524,7 @@ def speedy_fva(model, **kwargs):
     n_remaining = 2 * n_orig - n_done
     phase2_entry_count = n_remaining  # for stats
 
-    if n_remaining > 0 and n_remaining >= 100 and threads > 1:
+    if n_remaining >= 1000 and threads > 1:
         # Parallel dispatch via SDPool
         # Build list of unresolved objective indices (even=max, odd=min)
         unresolved = []
