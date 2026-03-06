@@ -257,6 +257,13 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     if len(bilvl_modules) > 1:
         raise Exception("Only one of the module types 'OptKnock', 'RobustKnock' and 'OptCouple' can be defined per "\
                             "strain design setup.")
+    # Validate module constraints with the selected solver (the SDModule
+    # constructor validates with the model's default solver, which may differ).
+    from straindesign import fba as _fba
+    for m in sd_modules:
+        if m[CONSTRAINTS]:
+            if _fba(model, constraints=m[CONSTRAINTS], solver=kwargs[SOLVER]).status == INFEASIBLE:
+                raise Exception("There is no feasible solution of the model under the given constraints.")
     logging.info('  Using ' + kwargs[SOLVER] + ' for solving LPs during preprocessing.')
     with _silent_io():
         orig_model = model
