@@ -1,5 +1,6 @@
 """Compression tests: unit tests, compression_backend parity, FVA equivalence, and MCS validation."""
 import sys
+import platform
 import pytest
 import numpy as np
 import warnings
@@ -149,6 +150,8 @@ def jpype_available():
     jpype = pytest.importorskip("jpype", reason="jpype not installed; skipping Java parity tests")
     if "cplex" in sys.modules:
         pytest.skip("JVM startup crashes when CPLEX native library is loaded (known JPype/CPLEX conflict)")
+    if platform.system() == "Darwin":
+        pytest.skip("JPype JVM startup is unreliable on macOS ARM64")
     return jpype
 
 
@@ -303,6 +306,8 @@ def test_mcs_e_coli_core(compression_backend):
         pytest.importorskip("jpype", reason="jpype not installed; skipping efmtool backend")
         if "cplex" in sys.modules:
             pytest.skip("JVM startup crashes when CPLEX native library is loaded (known JPype/CPLEX conflict)")
+        if platform.system() == "Darwin":
+            pytest.skip("JPype JVM startup is unreliable on macOS ARM64")
     from straindesign.names import SUPPRESS, POPULATE, GLPK, SCIP, GUROBI, CPLEX
     # Solver priority: SCIP (no size limit) > CPLEX > GUROBI (both have free-tier limits)
     strong_solvers = sd.avail_solvers - {GLPK}
