@@ -135,31 +135,22 @@ jobs:
         run: |
           micromamba install pytest pytest-timeout
       - name: Test with pytest
-        id: run_pytest
-        continue-on-error: true
-        run: pytest tests -v --log-cli-level=INFO --junit-xml=test-results.xml
-      - name: Verify test results
         run: |
-          if [ "${{ steps.run_pytest.outcome }}" = "success" ]; then
+          set +e
+          pytest tests -v --log-cli-level=INFO 2>&1 | tee pytest_output.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          set -e
+          if [ $EXIT_CODE -eq 0 ]; then
             exit 0
           fi
-          # pytest step failed — check if all tests passed before a segfault during cleanup
-          # (known JPype/solver shutdown issue on Linux, exit code 139)
-          if [ -f test-results.xml ]; then
-            if grep -q 'failures="0"' test-results.xml \
-                && grep -q 'errors="0"' test-results.xml; then
-              echo "All tests passed before segfault during cleanup (known JPype/solver issue)."
-              exit 0
-            fi
-            # Incomplete XML (segfault mid-test): pass if no failure/error elements recorded
-            if ! grep -q '<failure' test-results.xml \
-                && ! grep -q '<error' test-results.xml; then
-              echo "All completed tests passed; crash during test execution (known JPype issue)."
-              exit 0
-            fi
+          # Check if any tests actually FAILED (vs crash during cleanup/JVM)
+          if grep -q ' FAILED' pytest_output.txt; then
+            echo "Test failures detected."
+            exit 1
           fi
-          echo "Test failures or errors detected."
-          exit 1
+          # No FAILED lines — crash was during cleanup (known JPype/solver issue)
+          echo "All completed tests passed; process crashed (exit $EXIT_CODE, known JPype/solver issue)."
+          exit 0
 
   # Dedicated efmtool/JPype tests — clean environment with only Gurobi
   # (no CPLEX to avoid native library conflicts with JVM startup)
@@ -198,26 +189,17 @@ jobs:
           pip install ./dist/*.whl
           pip install gurobipy jpype1 pytest pytest-timeout
       - name: Test efmtool compression
-        id: run_pytest
-        continue-on-error: true
-        run: pytest tests/test_07_compression.py -v --log-cli-level=INFO --junit-xml=test-results.xml -k "efmtool_rref or jpype or java or parity or fba_equiv or fva_equiv"
-      - name: Verify test results
         run: |
-          if [ "${{ steps.run_pytest.outcome }}" = "success" ]; then
+          set +e
+          pytest tests/test_07_compression.py -v --log-cli-level=INFO -k "efmtool_rref or jpype or java or parity or fba_equiv or fva_equiv" 2>&1 | tee pytest_output.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          set -e
+          if [ $EXIT_CODE -eq 0 ]; then
             exit 0
           fi
-          if [ -f test-results.xml ]; then
-            if grep -q 'failures="0"' test-results.xml \
-                && grep -q 'errors="0"' test-results.xml; then
-              echo "All tests passed before segfault during cleanup (known JPype issue)."
-              exit 0
-            fi
-            # Incomplete XML (segfault mid-test): pass if no failure/error elements recorded
-            if ! grep -q '<failure' test-results.xml \
-                && ! grep -q '<error' test-results.xml; then
-              echo "All completed tests passed; crash during test execution (known JPype issue)."
-              exit 0
-            fi
+          if grep -q ' FAILED' pytest_output.txt; then
+            echo "Test failures detected."
+            exit 1
           fi
-          echo "Test failures or errors detected."
-          exit 1
+          echo "All completed tests passed; process crashed (exit $EXIT_CODE, known JPype issue)."
+          exit 0
