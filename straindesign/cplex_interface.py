@@ -164,6 +164,12 @@ class Cplex_MILP_LP(Cplex):
             # no integrality tolerance
             self.parameters.mip.tolerances.integrality.set(0.0)
 
+    def __del__(self):
+        try:
+            self.end()
+        except Exception:
+            pass
+
     def solve(self) -> Tuple[List, float, float]:
         """Solve the MILP or LP
         

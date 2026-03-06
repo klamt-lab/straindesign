@@ -150,6 +150,18 @@ def _init_java():
             finally:
                 if _fh_was_enabled:
                     _fh.enable()
+            # Register explicit JVM shutdown to avoid SIGSEGV during Python
+            # exit (known JPype race condition in _JTerminate, see
+            # https://github.com/jpype-project/jpype/issues/842).
+            import atexit
+            def _shutdown_jvm():
+                try:
+                    import jpype as _jp
+                    if _jp.isJVMStarted():
+                        _jp.shutdownJVM()
+                except Exception:
+                    pass
+            atexit.register(_shutdown_jvm)
         except Exception as e:
             extra_info = ""
             if not os.environ.get("JAVA_HOME"):
