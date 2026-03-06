@@ -136,21 +136,11 @@ jobs:
           micromamba install pytest pytest-timeout
       - name: Test with pytest
         run: |
-          set +e
-          pytest tests -v --log-cli-level=INFO 2>&1 | tee pytest_output.txt
-          EXIT_CODE=${PIPESTATUS[0]}
-          set -e
-          if [ $EXIT_CODE -eq 0 ]; then
-            exit 0
-          fi
-          # Check if any tests actually FAILED (vs crash during cleanup/JVM)
+          pytest tests -v --log-cli-level=INFO 2>&1 | tee pytest_output.txt || true
           if grep -q ' FAILED' pytest_output.txt; then
             echo "Test failures detected."
             exit 1
           fi
-          # No FAILED lines — crash was during cleanup (known JPype/solver issue)
-          echo "All completed tests passed; process crashed (exit $EXIT_CODE, known JPype/solver issue)."
-          exit 0
 
   # Dedicated efmtool/JPype tests — clean environment with only Gurobi
   # (no CPLEX to avoid native library conflicts with JVM startup)
@@ -190,16 +180,8 @@ jobs:
           pip install gurobipy jpype1 pytest pytest-timeout
       - name: Test efmtool compression
         run: |
-          set +e
-          pytest tests/test_07_compression.py -v --log-cli-level=INFO -k "efmtool_rref or jpype or java or parity or fba_equiv or fva_equiv" 2>&1 | tee pytest_output.txt
-          EXIT_CODE=${PIPESTATUS[0]}
-          set -e
-          if [ $EXIT_CODE -eq 0 ]; then
-            exit 0
-          fi
+          pytest tests/test_07_compression.py -v --log-cli-level=INFO -k "efmtool_rref or jpype or java or parity or fba_equiv or fva_equiv" 2>&1 | tee pytest_output.txt || true
           if grep -q ' FAILED' pytest_output.txt; then
             echo "Test failures detected."
             exit 1
           fi
-          echo "All completed tests passed; process crashed (exit $EXIT_CODE, known JPype issue)."
-          exit 0
