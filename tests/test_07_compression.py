@@ -147,6 +147,8 @@ def test_full_strain_design_without_java(model_gpr):
 @pytest.fixture
 def jpype_available():
     jpype = pytest.importorskip("jpype", reason="jpype not installed; skipping Java parity tests")
+    if "cplex" in sys.modules:
+        pytest.skip("JVM startup crashes when CPLEX native library is loaded (known JPype/CPLEX conflict)")
     return jpype
 
 
@@ -299,6 +301,8 @@ def test_mcs_e_coli_core(compression_backend):
     """
     if compression_backend == "efmtool_rref":
         pytest.importorskip("jpype", reason="jpype not installed; skipping efmtool backend")
+        if "cplex" in sys.modules:
+            pytest.skip("JVM startup crashes when CPLEX native library is loaded (known JPype/CPLEX conflict)")
     from straindesign.names import SUPPRESS, POPULATE, GLPK, SCIP, GUROBI, CPLEX
     # Solver priority: SCIP (no size limit) > CPLEX > GUROBI (both have free-tier limits)
     strong_solvers = sd.avail_solvers - {GLPK}
