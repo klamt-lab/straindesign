@@ -326,6 +326,48 @@ class Gurobi_MILP_LP(gp.Model):
             gvars[ub[i][0]].ub = ub[i][1]
         self.update()
 
+    def set_lp_method(self, method):
+        """Set the LP solving method.
+
+        Args:
+            method: LP_METHOD_AUTO, LP_METHOD_PRIMAL, LP_METHOD_DUAL, or LP_METHOD_BARRIER
+        """
+        _map = {LP_METHOD_AUTO: -1, LP_METHOD_PRIMAL: 0,
+                LP_METHOD_DUAL: 1, LP_METHOD_BARRIER: 2}
+        self.params.Method = _map.get(method, -1)
+
+    def get_lp_method(self):
+        """Return the current LP method as a solver-neutral string."""
+        _rmap = {-1: LP_METHOD_AUTO, 0: LP_METHOD_PRIMAL,
+                 1: LP_METHOD_DUAL, 2: LP_METHOD_BARRIER}
+        return _rmap.get(self.params.Method, LP_METHOD_AUTO)
+
+    def get_basis(self):
+        """Return the current LP basis (variable and constraint statuses).
+
+        Returns:
+            dict with 'vbasis' (list of int) and 'cbasis' (list of int).
+            Gurobi codes: -1=superbasic, 0=basic, -2=at lb, -3=at ub.
+        """
+        self.update()
+        vbasis = self.getAttr('VBasis', self.getVars())
+        cbasis = self.getAttr('CBasis', self.getConstrs())
+        return {'vbasis': list(vbasis), 'cbasis': list(cbasis)}
+
+    def set_basis(self, basis):
+        """Load a previously saved basis for warm-starting.
+
+        Args:
+            basis: dict from get_basis() with 'vbasis' and 'cbasis'.
+        """
+        gvars = self.getVars()
+        constrs = self.getConstrs()
+        for i, v in enumerate(basis['vbasis']):
+            gvars[i].VBasis = v
+        for i, v in enumerate(basis['cbasis']):
+            constrs[i].CBasis = v
+        self.update()
+
     def set_time_limit(self, t):
         """Set the computation time limit (in seconds)"""
         self.params.TimeLimit = t

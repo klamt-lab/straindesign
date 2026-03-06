@@ -39,7 +39,7 @@ StrainDesign
     :alt: GitHub Actions CI-test Status
    
 .. image:: https://img.shields.io/pypi/l/straindesign.svg
-   :target: https://www.gnu.org/licenses/old-licenses/lgpl-2.0.html
+   :target: https://www.apache.org/licenses/LICENSE-2.0
    :alt: Apache 2.0 License
 
 .. image:: https://img.shields.io/badge/code%20style-yapf-blue
@@ -75,7 +75,7 @@ The comprehensive StrainDesign package for MILP-based strain design computation 
   :width: 40%
   :alt: Plot animation
 
-The default compression uses a pure Python sparse RREF implementation. A legacy Java-based compression via EFMTool :html:`<a href="#ref6"><sup>[6]</sup></a>` is optionally available (see :doc:`legacy_methods`).
+The default compression uses a pure Python sparse RREF implementation. A legacy Java-based compression via EFMTool :html:`<a href="#ref6"><sup>[6]</sup></a>` is optionally available (see :doc:`legacy_methods`). Note that the Java backend (via JPype) is known to conflict with CPLEX's native library when both are loaded in the same Python session. If you use CPLEX, we recommend the default Python compression backend.
 
 :html:`<a id="installation"></a>`\ Installation:
 ================================================
@@ -95,7 +95,22 @@ Download the repository and run
 
 ``pip install -e .``
 
-in the main folder. Through the installation with -e, updates from a 'git pull' are at once available in your Python envrionment without the need for a reinstallation.
+in the main folder. Through the installation with -e, updates from a 'git pull' are at once available in your Python environment without the need for a reinstallation.
+
+Apple Silicon (ARM64) note:
+---------------------------
+
+On macOS with Apple Silicon (M1/M2/M3), the default GLPK solver (shipped with COBRApy) may produce
+inaccurate results for larger metabolic models due to numerical precision differences on the ARM64
+architecture. If you encounter unexpected infeasibility or incorrect flux values, we recommend
+installing an alternative solver:
+
+- **Gurobi** (free academic license): ``pip install gurobipy``
+- **SCIP** (open source): ``pip install pyscipopt``
+
+Then specify the solver explicitly when calling StrainDesign functions, e.g.
+``sd_setup = {..., 'solver': 'gurobi'}`` or ``sd_setup = {..., 'solver': 'scip'}``.
+For standalone analysis functions: ``fba(model, solver='gurobi')`` or ``fva(model, solver='scip')``.
 
 :html:`<a id="examples"></a>`\ Examples:
 ================================================

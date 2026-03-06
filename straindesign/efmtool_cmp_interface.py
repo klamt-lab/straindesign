@@ -150,6 +150,18 @@ def _init_java():
             finally:
                 if _fh_was_enabled:
                     _fh.enable()
+            # Register explicit JVM shutdown to avoid SIGSEGV during Python
+            # exit (known JPype race condition in _JTerminate, see
+            # https://github.com/jpype-project/jpype/issues/842).
+            import atexit
+            def _shutdown_jvm():
+                try:
+                    import jpype as _jp
+                    if _jp.isJVMStarted():
+                        _jp.shutdownJVM()
+                except Exception:
+                    pass
+            atexit.register(_shutdown_jvm)
         except Exception as e:
             extra_info = ""
             if not os.environ.get("JAVA_HOME"):
@@ -352,13 +364,9 @@ def compress_model_java(model, suppressed_reactions=None):
         r0_mi = active_to_model[rxn_ai[0]]
         model.reactions[r0_mi].subset_rxns = []
         model.reactions[r0_mi].subset_stoich = []
-        # Scale objective coefficient by POST factors
-        combined_obj = 0.0
         for ai in rxn_ai:
             mi = active_to_model[ai]
             factor = jBigFraction2sympyRat(comprec.post.getBigFractionValueAt(ai, j))
-            # Accumulate objective contribution before scaling
-            combined_obj += model.reactions[mi].objective_coefficient * float(factor)
             model.reactions[mi] *= factor
             if model.reactions[mi].lower_bound not in (0, -float('inf')):
                 model.reactions[mi].lower_bound /= abs(subset_matrix[ai, j])
@@ -369,7 +377,6 @@ def compress_model_java(model, suppressed_reactions=None):
                 model.reactions[r0_mi].subset_stoich.append(-factor)
             else:
                 model.reactions[r0_mi].subset_stoich.append(factor)
-        model.reactions[r0_mi].objective_coefficient = combined_obj
         for ai in rxn_ai[1:]:
             mi = active_to_model[ai]
             if len(model.reactions[r0_mi].id) + len(model.reactions[mi].id) < 220 and model.reactions[r0_mi].id[-3:] != '...':
@@ -382,6 +389,17 @@ def compress_model_java(model, suppressed_reactions=None):
             if model.reactions[mi].upper_bound < model.reactions[r0_mi].upper_bound:
                 model.reactions[r0_mi].upper_bound = model.reactions[mi].upper_bound
             del_model[mi] = True
+        # Update stored objective through compression factors
+        if len(rxn_ai) > 1:
+            _obj = getattr(model, '_suppressed_obj', None)
+            if _obj is not None:
+                merged_obj = 0.0
+                for ai in rxn_ai:
+                    mi = active_to_model[ai]
+                    factor = jBigFraction2sympyRat(comprec.post.getBigFractionValueAt(ai, j))
+                    merged_obj += _obj.pop(old_reac_ids[mi], 0.0) * float(factor)
+                if merged_obj != 0:
+                    _obj[model.reactions[r0_mi].id] = merged_obj
 
     # Add suppressed reactions as standalone entries
     from fractions import Fraction

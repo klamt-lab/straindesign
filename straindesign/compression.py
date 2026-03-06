@@ -1272,9 +1272,9 @@ def remove_conservation_relations(model) -> None:
     rm = RationalMatrix._from_sparse(num_sparse, den_sparse)
     basic_mets = basic_columns(rm)
 
-    dependent_mets = [model.metabolites[i].id for i in set(range(num_mets)) - set(basic_mets)]
-    for m_id in dependent_mets:
-        model.metabolites.get_by_id(m_id).remove_from_model()
+    dependent_mets = [model.metabolites[i] for i in set(range(num_mets)) - set(basic_mets)]
+    if dependent_mets:
+        model.remove_metabolites(dependent_mets)
 
 
 def compress_cobra_model(model,
@@ -1325,13 +1325,7 @@ def compress_cobra_model(model,
     compression_record = compressor.compress(stoich_matrix, metabolite_names, reaction_names, suppressed_reactions, bounds)
 
     # Apply to model (uses direct manipulation, bypasses solver)
-    reaction_map, objective_updates = _apply_compression_to_model(model, compression_record, reaction_names)
-
-    # Rebuild solver only if we're not inside a caller's suppress context
-    # (compress_model rebuilds once at the end instead of every iteration)
-    from straindesign.networktools import _is_lp_suppressed
-    if not _is_lp_suppressed():
-        _rebuild_solver(model, objective_updates)
+    reaction_map = _apply_compression_to_model(model, compression_record, reaction_names)
 
     pre_matrix = compression_record.pre.to_numpy()
     post_matrix = compression_record.post.to_numpy()
@@ -1349,48 +1343,6 @@ def compress_cobra_model(model,
                              original_reaction_names=original_reaction_names,
                              original_metabolite_names=original_metabolite_names,
                              flipped_reactions=[])
-
-
-def _rebuild_solver(model, objective_updates: dict) -> None:
-    """Rebuild solver after direct model modifications.
-
-    This creates a fresh solver and populates it with the current model state.
-    Must be called after using direct attribute manipulation that bypasses
-    solver updates (e.g., _metabolites, _lower_bound, _upper_bound).
-
-    If LP updates are currently suppressed, they are temporarily restored
-    so that the fresh solver receives correct coefficients and bounds,
-    then re-suppressed afterwards.
-
-    Args:
-        model: COBRA model with stale solver state
-        objective_updates: dict mapping reactions to their objective coefficients
-    """
-    # Temporarily restore real LP methods so _populate_solver sets correct
-    # coefficients and bounds on the fresh solver.
-    from straindesign.networktools import _is_lp_suppressed, _restore_lp_updates, _suppress_lp_updates
-    was_suppressed = _is_lp_suppressed()
-    if was_suppressed:
-        _restore_lp_updates()
-
-    # Get solver interface type
-    solver_interface = model.solver.interface
-
-    # Create fresh solver
-    new_solver = solver_interface.Model()
-    model._solver = new_solver
-
-    # Populate solver with current model state
-    model._populate_solver(model.reactions, model.metabolites)
-
-    # Set objective coefficients (must be done after solver is populated)
-    for rxn, obj_coeff in objective_updates.items():
-        if rxn in model.reactions:
-            rxn.objective_coefficient = obj_coeff
-
-    # Re-suppress if it was suppressed before
-    if was_suppressed:
-        _suppress_lp_updates(model)
 
 
 def _apply_compression_to_model(model, compression_record, original_reaction_names):
@@ -1416,9 +1368,6 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
     # Build metabolite lookup for compressed metabolites
     met_lookup = {name: model.metabolites.get_by_id(name) for name in meta_names}
 
-    # Track objective coefficients to set at end (bypass solver updates)
-    objective_updates = {}
-
     for j in range(num_compressed):
         # Find contributing original reactions from POST matrix (sparse iteration)
         contributing = list(post.iter_column_fractions(j))
@@ -1426,33 +1375,20 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
         if not contributing:
             continue
 
-        # Select "main" reaction: prefer one with non-zero objective coefficient
-        main_idx = contributing[0][0]
-        for idx, _ in contributing:
-            if model.reactions[idx].objective_coefficient != 0:
-                main_idx = idx
-                break
+        # Select "main" reaction: most metabolites (nonzeros), ties broken alphabetically
+        main_idx = min(
+            (idx for idx, _ in contributing),
+            key=lambda i: (-len(model.reactions[i]._metabolites), model.reactions[i].id),
+        )
         main_rxn = model.reactions[main_idx]
         keep_rxns[main_idx] = True
 
         if len(contributing) == 1:
-            # Standalone reaction — not merged with anything.  Keep its
-            # stoichiometry and bounds as-is (no model modification needed).
-            obj = main_rxn.objective_coefficient
-            if obj != 0:
-                objective_updates[main_rxn] = obj
+            # Standalone reaction — not merged with anything.
             reaction_map[main_rxn.id] = {original_reaction_names[main_idx]: Fraction(1)}
             continue
 
         # --- Merged group (2+ contributing reactions) ---
-
-        # Scale objective coefficient by POST factors (store for later)
-        combined_obj = Fraction(0)
-        for idx, coeff in contributing:
-            obj_coeff = model.reactions[idx].objective_coefficient
-            if obj_coeff != 0:
-                combined_obj += Fraction(obj_coeff).limit_denominator(10**12) * coeff
-        objective_updates[main_rxn] = combined_obj
 
         # Store subset info
         main_rxn.subset_rxns = [idx for idx, _ in contributing]
@@ -1513,6 +1449,16 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
         main_rxn._lower_bound = max(lb_candidates) if lb_candidates else -float('inf')
         main_rxn._upper_bound = min(ub_candidates) if ub_candidates else float('inf')
 
+        # Update stored objective through compression factors
+        obj_dict = getattr(model, '_suppressed_obj', None)
+        if obj_dict is not None:
+            merged_obj = sum(
+                obj_dict.pop(original_reaction_names[idx], 0.0) * float(coeff)
+                for idx, coeff in contributing
+            )
+            if merged_obj != 0:
+                obj_dict[main_rxn.id] = merged_obj
+
         # Build reaction map
         reaction_map[main_rxn.id] = {original_reaction_names[idx]: coeff for idx, coeff in contributing}
 
@@ -1558,7 +1504,7 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
     for met in model.metabolites:
         met._model = model
 
-    return reaction_map, objective_updates
+    return reaction_map
 
 
 # =============================================================================
@@ -1569,7 +1515,8 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
 def remove_blocked_reactions(model) -> List:
     """Remove blocked reactions (bounds == (0, 0)) from a network."""
     blocked_reactions = [reac for reac in model.reactions if reac.bounds == (0, 0)]
-    model.remove_reactions(blocked_reactions)
+    if blocked_reactions:
+        model.remove_reactions(blocked_reactions, remove_orphans=True)
     return blocked_reactions
 
 
@@ -1797,23 +1744,7 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
 
             run += 1
 
-    # Outside the suppress context: if we were the outermost caller
-    # (standalone use), LP methods are now restored.  Rebuild the
-    # solver so the model is usable with cobra's optimize()/FVA.
-    if not _is_lp_suppressed():
-        try:
-            obj_updates = {}
-            for rxn in model.reactions:
-                try:
-                    c = rxn.objective_coefficient
-                    if c != 0:
-                        obj_updates[rxn] = c
-                except Exception:
-                    pass
-            _rebuild_solver(model, obj_updates)
-        except Exception:
-            pass
-
+    # suppress_lp_context handles solver rebuild and objective restoration on exit
     return cmp_mapReac
 
 
@@ -1822,9 +1753,9 @@ def _remove_conservation_relations_java(model) -> None:
     from . import efmtool_cmp_interface as efm
     stoich_mat = create_stoichiometric_matrix(model, array_type='lil')
     basic_mets = efm.basic_columns_rat_java(stoich_mat.transpose().toarray(), tolerance=0)
-    dependent_mets = [model.metabolites[i].id for i in set(range(len(model.metabolites))) - set(basic_mets)]
-    for m_id in dependent_mets:
-        model.metabolites.get_by_id(m_id).remove_from_model()
+    dependent = [model.metabolites[i] for i in set(range(len(model.metabolites))) - set(basic_mets)]
+    if dependent:
+        model.remove_metabolites(dependent)
 
 
 def compress_model_coupled(model, compression_backend='sparse_rref', propagate_gpr=False,
@@ -1859,10 +1790,11 @@ def compress_model_coupled(model, compression_backend='sparse_rref', propagate_g
         reaction_map = compress_model_java(model, suppressed_reactions=suppressed_reactions)
         # Java backend handles contradicting groups internally (CoupledContradicting).
         # Clean up any remaining zero-flux reactions that the Java compressor created.
-        zero_flux = [r for r in model.reactions if r.lower_bound == 0 and r.upper_bound == 0]
+        zero_flux = {r for r in model.reactions if r.lower_bound == 0 and r.upper_bound == 0}
         for r in zero_flux:
             reaction_map.pop(r.id, None)
-            r.remove_from_model(remove_orphans=True)
+        if zero_flux:
+            model.remove_reactions(list(zero_flux), remove_orphans=True)
     else:
         # Clear gene rules to match Java behavior
         for r in model.reactions:
@@ -1905,7 +1837,6 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
         dict: Mapping {compressed_id: {orig_id: factor, ...}}
     """
     old_num_reac = len(model.reactions)
-    old_objective = [r.objective_coefficient for r in model.reactions]
     old_reac_ids = [r.id for r in model.reactions]
 
     if propagate_gpr:
@@ -1948,15 +1879,21 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
 
     # Lump parallel reactions
     del_rxns = [False] * len(model.reactions)
+    obj_dict = getattr(model, '_suppressed_obj', None)
     for rxn_idx in subset_list:
         for i in range(1, len(rxn_idx)):
             main_rxn = model.reactions[rxn_idx[0]]
             other_rxn = model.reactions[rxn_idx[i]]
-            if len(main_rxn.id) + len(other_rxn.id) < 220 and main_rxn.id[-3:] != '...':
+            if len(main_rxn.id) + len(other_rxn.id) < 220 and not main_rxn.id.endswith('...'):
                 main_rxn.id += '*' + other_rxn.id
-            elif main_rxn.id[-3:] != '...':
+            elif not main_rxn.id.endswith('...'):
                 main_rxn.id += '...'
             del_rxns[rxn_idx[i]] = True
+        # Update stored objective (parallel factor = 1.0, sum contributions)
+        if len(rxn_idx) > 1 and obj_dict is not None:
+            merged_obj = sum(obj_dict.pop(old_reac_ids[j], 0.0) for j in rxn_idx)
+            if merged_obj != 0:
+                obj_dict[model.reactions[rxn_idx[0]].id] = merged_obj
 
     # Pre-compute combined GPR for each group (OR logic) before deletions.
     # Save (surviving_rxn_object, combined_gpr_string) pairs.
@@ -1967,9 +1904,9 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
             gpr_bodies = [old_gpr_bodies.get(old_reac_ids[j]) for j in rxn_idx_group]
             group_gpr.append((main_rxn, _combine_gpr_or(gpr_bodies)))
 
-    del_indices = np.where(del_rxns)[0]
-    for i in reversed(del_indices):
-        model.reactions[i].remove_from_model(remove_orphans=True)
+    remove_list = [model.reactions[i] for i in np.where(del_rxns)[0]]
+    if remove_list:
+        model.remove_reactions(remove_list, remove_orphans=True)
 
     # Set combined GPR rules on surviving reactions
     if propagate_gpr:
@@ -1983,11 +1920,6 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
         for j in subset_list[i]:
             subT[j, i] = 1
         rational_map[model.reactions[i].id] = {old_reac_ids[j]: Rational(1) for j in subset_list[i]}
-
-    # Update objective
-    new_objective = old_objective @ subT
-    for r, c in zip(model.reactions, new_objective):
-        r.objective_coefficient = c
 
     return rational_map
 

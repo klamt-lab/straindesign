@@ -376,6 +376,50 @@ class GLPK_MILP_LP():
             elif t in [GLP_LO, GLP_DB, GLP_FX] and not isinf(u) and l == u:
                 glp_set_col_bnds(self.glpk, i + 1, GLP_FX, float(l), float(u))
 
+    def set_lp_method(self, method):
+        """Set the LP solving method.
+
+        Args:
+            method: LP_METHOD_AUTO, LP_METHOD_PRIMAL, LP_METHOD_DUAL, or LP_METHOD_BARRIER
+
+        Note: GLPK does not support barrier. LP_METHOD_BARRIER falls back to dual.
+        """
+        # GLPK meth: 1=primal, 2=dual, 3=dual+pricing
+        if method == LP_METHOD_BARRIER:
+            logging.warning('GLPK does not support barrier method, falling back to dual simplex.')
+        _map = {LP_METHOD_AUTO: 1, LP_METHOD_PRIMAL: 1,
+                LP_METHOD_DUAL: 2, LP_METHOD_BARRIER: 2}
+        self.lp_params.meth = _map.get(method, 1)
+
+    def get_lp_method(self):
+        """Return the current LP method as a solver-neutral string."""
+        _rmap = {1: LP_METHOD_PRIMAL, 2: LP_METHOD_DUAL, 3: LP_METHOD_DUAL}
+        return _rmap.get(self.lp_params.meth, LP_METHOD_AUTO)
+
+    def get_basis(self):
+        """Return the current LP basis (column and row statuses).
+
+        Returns:
+            dict with 'vbasis' (list of int) and 'cbasis' (list of int).
+            GLPK codes: 1=basic, 2=at lb, 3=at ub, 4=free, 5=fixed.
+        """
+        ncols = glp_get_num_cols(self.glpk)
+        nrows = glp_get_num_rows(self.glpk)
+        vbasis = [glp_get_col_stat(self.glpk, j + 1) for j in range(ncols)]
+        cbasis = [glp_get_row_stat(self.glpk, i + 1) for i in range(nrows)]
+        return {'vbasis': vbasis, 'cbasis': cbasis}
+
+    def set_basis(self, basis):
+        """Load a previously saved basis for warm-starting.
+
+        Args:
+            basis: dict from get_basis() with 'vbasis' and 'cbasis'.
+        """
+        for j, s in enumerate(basis['vbasis']):
+            glp_set_col_stat(self.glpk, j + 1, s)
+        for i, s in enumerate(basis['cbasis']):
+            glp_set_row_stat(self.glpk, i + 1, s)
+
     def set_time_limit(self, t):
         """Set the computation time limit (in seconds)"""
         if t * 1000 > self.max_tlim:

@@ -220,33 +220,48 @@ def fva_worker_compute_glpk(i) -> Tuple[int, float]:
 
 def fva(model, **kwargs) -> DataFrame:
     """Flux Variability Analysis (FVA)
-    
-    Flux Variability Analysis determines the global flux ranges of reactions by minimizing and 
+
+    Flux Variability Analysis determines the global flux ranges of reactions by minimizing and
     maximizing the flux through all reactions of a given metabolic network. This FVA function
     additionally allows the user to narrow down the flux states with additional constraints.
-    
+
+    Uses an accelerated two-phase approach: global scan LPs with dual simplex
+    warm-start resolve ~50% of bounds cheaply, then individual LPs for the rest.
+    Large models (>= 200 reactions) are automatically compressed via coupled
+    reaction lumping.  Multiprocessing is used when >= 1000 reactions and
+    cobra.Configuration().processes > 1.
+
     Example:
         flux_ranges = fva(model, constraints='EX_o2_e=0', solver='gurobi')
-    
+
     Args:
         model (cobra.Model):
             A metabolic model that is an instance of the cobra.Model class.
-            
+
         solver (optional (str)):
             The solver that should be used for FVA.
-            
+
         constraints (optional (str) or (list of str) or (list of [dict,str,float])): (Default: '')
-            List of *linear* constraints to be applied on top of the model: signs + or -, scalar 
-            factors for reaction rates, inclusive (in)equalities and a float value on the right hand 
-            side. The parsing of the constraints input allows for some flexibility. Correct (and 
-            identical) inputs are, for instance: 
+            List of *linear* constraints to be applied on top of the model: signs + or -, scalar
+            factors for reaction rates, inclusive (in)equalities and a float value on the right hand
+            side. The parsing of the constraints input allows for some flexibility. Correct (and
+            identical) inputs are, for instance:
             constraints='-EX_o2_e <= 5, ATPM = 20' or
             constraints=['-EX_o2_e <= 5', 'ATPM = 20'] or
             constraints=[[{'EX_o2_e':-1},'<=',5], [{'ATPM':1},'=',20]]
-            
+
     Returns:
         (pandas.DataFrame):
             A data frame containing the minimum and maximum attainable flux rates for all reactions.
+    """
+    from straindesign.speedy_fva import speedy_fva
+    return speedy_fva(model, **kwargs)
+
+
+def fva_legacy(model, **kwargs) -> DataFrame:
+    """Legacy FVA implementation (brute-force 2*n LPs, no scan/compression).
+
+    Kept as fallback for debugging. Use fva() for production.
     """
     reaction_ids = model.reactions.list_attr("id")
     numr = len(model.reactions)
@@ -259,7 +274,6 @@ def fva(model, **kwargs) -> DataFrame:
         kwargs[SOLVER] = None
     solver = select_solver(kwargs[SOLVER], model)
 
-    # prepare vectors and matrices
     A_eq_base = sparse.csr_matrix(create_stoichiometric_matrix(model))
     b_eq_base = [0] * len(model.metabolites)
     if 'A_eq' in locals():
@@ -274,56 +288,123 @@ def fva(model, **kwargs) -> DataFrame:
     lb = [v.lower_bound for v in model.reactions]
     ub = [v.upper_bound for v in model.reactions]
 
-    # build LP
     lp = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb, ub=ub, solver=solver)
     _, _, status = lp.solve()
-    if status not in [OPTIMAL, UNBOUNDED]:  # if problem not feasible or unbounded
+    if status not in [OPTIMAL, UNBOUNDED]:
         logging.error('FVA problem not feasible.')
         return DataFrame(
-            {
-                "minimum": [nan for i in range(1, 2 * numr, 2)],
-                "maximum": [nan for i in range(0, 2 * numr, 2)],
-            },
+            {"minimum": [nan] * numr, "maximum": [nan] * numr},
             index=reaction_ids,
         )
 
     processes = Configuration().processes
-    num_reactions = len(reaction_ids)
-    processes = min(processes, num_reactions)
-
+    processes = min(processes, numr)
     x = [nan] * 2 * numr
 
-    # Dummy to check if optimization runs
-    # worker_init(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver)
-    # worker_compute(1)
-    if processes > 1 and numr > 300:  #and solver != 'GLPK': # activate alternative routine with GLPK, if issues arise
-        # with Pool(processes,initializer=worker_init,initargs=(A_ineq,b_ineq,A_eq,b_eq,lb,ub,solver)) as pool:
-        with SDPool(processes, initializer=fva_worker_init, initargs=(A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver)) as pool:
+    if processes > 1 and numr > 300:
+        with SDPool(processes, initializer=fva_worker_init,
+                    initargs=(A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver)) as pool:
             chunk_size = len(reaction_ids) // processes
-            # x = pool.imap_unordered(worker_compute, range(2*numr), chunksize=chunk_size)
-            for i, value in pool.imap_unordered(fva_worker_compute, range(2 * numr), chunksize=chunk_size):
+            for i, value in pool.imap_unordered(fva_worker_compute, range(2 * numr),
+                                                chunksize=chunk_size):
                 x[i] = value
-    # GLPK works better when reinitializing the LP in every iteration. Unfortunately, this is slow
-    # but for now by far the most stable solution.
     elif processes > 1 and numr > 500 and solver == GLPK:
-        with SDPool(processes, initializer=fva_worker_init_glpk, initargs=(A_ineq, b_ineq, A_eq, b_eq, lb, ub)) as pool:
+        with SDPool(processes, initializer=fva_worker_init_glpk,
+                    initargs=(A_ineq, b_ineq, A_eq, b_eq, lb, ub)) as pool:
             chunk_size = len(reaction_ids) // processes
-            # # x = pool.imap_unordered(worker_compute, range(2*numr), chunksize=chunk_size)
-            for i, value in pool.imap_unordered(fva_worker_compute_glpk, range(2 * numr), chunksize=chunk_size):
+            for i, value in pool.imap_unordered(fva_worker_compute_glpk, range(2 * numr),
+                                                chunksize=chunk_size):
                 x[i] = value
     else:
         fva_worker_init(A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver)
         for i in range(2 * numr):
             _, x[i] = fva_worker_compute(i)
 
-    x = [v if abs(v) >= 1e-11 else 0.0 for v in x]  # cut off for very small absolute values
-    fva_result = DataFrame(
-        {
-            "minimum": [x[i] for i in range(1, 2 * numr, 2)],
-            "maximum": [-x[i] for i in range(0, 2 * numr, 2)],
-        },
+    # NaN retry
+    nan_remaining = [i for i in range(2 * numr) if isnan(x[i])]
+    if nan_remaining:
+        logging.warning(f'FVA: {len(nan_remaining)}/{2*numr} LP solves returned NaN, re-solving.')
+        _BATCH = 50
+        while nan_remaining:
+            lp_retry = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
+                               lb=lb, ub=ub, solver=solver)
+            prev_retry = 0
+            for i in nan_remaining[:_BATCH]:
+                C = idx2c(i, prev_retry)
+                if solver in ('cplex', 'gurobi'):
+                    lp_retry.backend.set_objective_idx(C)
+                    x[i] = lp_retry.backend.slim_solve()
+                else:
+                    lp_retry.set_objective_idx(C)
+                    x[i] = lp_retry.slim_solve()
+                prev_retry = C[0][0]
+            old_count = len(nan_remaining)
+            nan_remaining = [i for i in nan_remaining if isnan(x[i])]
+            if len(nan_remaining) == old_count:
+                break
+        if nan_remaining:
+            for i in list(nan_remaining):
+                col = int(floor(i / 2))
+                sig = sign(mod(i, 2) - 0.5)
+                c_vec = [0.0] * numr
+                c_vec[col] = sig
+                lp_last = MILP_LP(c=c_vec, A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
+                                  lb=lb, ub=ub, solver=solver)
+                x[i] = lp_last.slim_solve()
+            nan_remaining = [i for i in nan_remaining if isnan(x[i])]
+        if nan_remaining:
+            logging.warning(f'FVA: {len(nan_remaining)} LP solves still NaN after all retries.')
+
+    x = [v if abs(v) >= 1e-11 else 0.0 for v in x]
+    return DataFrame(
+        {"minimum": [x[i] for i in range(1, 2 * numr, 2)],
+         "maximum": [-x[i] for i in range(0, 2 * numr, 2)]},
         index=reaction_ids,
     )
+
+
+def remove_redundant_bounds(model, **kwargs) -> DataFrame:
+    """Remove non-binding bounds from a model using FVA.
+
+    Runs FVA and relaxes bounds that never bind at steady state:
+    - If fva_min > lb + tol: set lb = -inf  (lower bound is not binding)
+    - If fva_max < ub - tol: set ub = +inf  (upper bound is not binding)
+
+    Modifies the model IN-PLACE. Returns the FVA DataFrame.
+
+    Args:
+        model (cobra.Model):
+            A metabolic model. Modified in-place.
+
+        solver (optional (str)):
+            Solver for FVA.
+
+        constraints (optional):
+            Constraints passed through to fva().
+
+        compress (optional (bool)):
+            Compress before FVA (passed through).
+
+        threads (optional (int)):
+            Parallel threads for FVA (passed through).
+
+        tol (optional (float)): (Default: 1e-6)
+            Tolerance for considering a bound as binding.
+
+    Returns:
+        (pandas.DataFrame):
+            FVA results with 'minimum' and 'maximum' columns.
+    """
+    tol = kwargs.pop('tol', 1e-6)
+    fva_result = fva(model, **kwargs)
+
+    for rxn in model.reactions:
+        fva_min = fva_result.loc[rxn.id, 'minimum']
+        fva_max = fva_result.loc[rxn.id, 'maximum']
+        if fva_min > rxn.lower_bound + tol:
+            rxn.lower_bound = -float('inf')
+        if fva_max < rxn.upper_bound - tol:
+            rxn.upper_bound = float('inf')
 
     return fva_result
 
