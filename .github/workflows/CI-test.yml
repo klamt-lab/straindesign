@@ -127,7 +127,7 @@ jobs:
       - name: Install cplex (conda)
         if: matrix.package-manager == 'conda' && matrix.python-version != '3.13'
         run: |
-          micromamba install -c ibmdecisionoptimization cplex
+          pip install cplex
       - name: Install scip (conda)
         if: matrix.package-manager == 'conda'
         run: |
