@@ -1263,6 +1263,10 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
                 raise Exception('One of the specified yields is unbounded or undefined or problem is infeasible. Plot cannot be generated.')
         val_limits[i] = [ceil_dec(sol_min.objective_value, 8), floor_dec(sol_max.objective_value, 8)]
         ax_limits[i] = [min((0, val_limits[i][0])), max((0, val_limits[i][1]))]
+        # Ensure non-singular axis limits (avoid identical low/high)
+        if ax_limits[i][0] == ax_limits[i][1]:
+            pad = max(0.5, abs(ax_limits[i][0]) * 0.1)
+            ax_limits[i] = [ax_limits[i][0] - pad, ax_limits[i][1] + pad]
 
     # Detect degeneracy
     degen, degen_axes = _detect_degeneracy(val_limits, num_axes)
@@ -1329,6 +1333,59 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
 
         if not vertices:
             raise Exception('Could not trace any boundary. Problem may be infeasible.')
+
+        # Check for collinear degeneracy (polygon traced to a line or point)
+        unique_verts = []
+        for v in vertices:
+            if not any(abs(v[0] - u[0]) < 1e-10 and abs(v[1] - u[1]) < 1e-10 for u in unique_verts):
+                unique_verts.append(v)
+        is_collinear = False
+        if len(unique_verts) <= 2:
+            is_collinear = True
+        elif len(unique_verts) >= 3:
+            # Check if all points lie on a single line
+            x0, y0 = unique_verts[0]
+            dx, dy = unique_verts[1][0] - x0, unique_verts[1][1] - y0
+            span = max(abs(dx), abs(dy), 1e-12)
+            is_collinear = all(
+                abs((v[0] - x0) * dy - (v[1] - y0) * dx) / span < 1e-6
+                for v in unique_verts[2:])
+
+        if is_collinear and len(unique_verts) <= 1:
+            # Collapsed to a point
+            plot1 = plt.plot([unique_verts[0][0]], [unique_verts[0][1]], 'o')[0]
+            plot1.axes.set_xlabel(ax_name[0])
+            plot1.axes.set_ylabel(ax_name[1])
+            plot1.axes.set_xlim(ax_limits[0][0] * 1.05, ax_limits[0][1] * 1.05)
+            plot1.axes.set_ylim(ax_limits[1][0] * 1.05, ax_limits[1][1] * 1.05)
+            if show:
+                try:
+                    plt.show()
+                except UserWarning as e:
+                    if 'FigureCanvasTemplate is non-interactive' in str(e):
+                        logging.warning('warning: Interactive plot not supported in current execution environment.')
+            return [list(unique_verts[0])], [], plot1
+
+        if is_collinear:
+            # Collapsed to a line — sort along the line direction and draw
+            x0, y0 = unique_verts[0]
+            dx, dy = unique_verts[-1][0] - x0, unique_verts[-1][1] - y0
+            unique_verts.sort(key=lambda v: (v[0] - x0) * dx + (v[1] - y0) * dy)
+            x_pts = [v[0] for v in unique_verts]
+            y_pts = [v[1] for v in unique_verts]
+            plot1 = plt.plot(x_pts, y_pts, linewidth=1.5)[0]
+            plot1.axes.set_xlabel(ax_name[0])
+            plot1.axes.set_ylabel(ax_name[1])
+            plot1.axes.set_xlim(ax_limits[0][0] * 1.05, ax_limits[0][1] * 1.05)
+            plot1.axes.set_ylim(ax_limits[1][0] * 1.05, ax_limits[1][1] * 1.05)
+            if show:
+                try:
+                    plt.show()
+                except UserWarning as e:
+                    if 'FigureCanvasTemplate is non-interactive' in str(e):
+                        logging.warning('warning: Interactive plot not supported in current execution environment.')
+            datapoints = [[x, y] for x, y in zip(x_pts, y_pts)]
+            return datapoints, [], plot1
 
         # Build datapoints and triangulation for return value
         datapoints = [[v[0], v[1]] for v in vertices]
