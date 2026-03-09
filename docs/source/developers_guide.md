@@ -46,6 +46,7 @@
    - 8.3 [SDSolutions](#83-sdsolutions)
 9. [Constraint & Expression Parsing](#9-constraint--expression-parsing)
 10. [Supporting Utilities](#10-supporting-utilities)
+    - 10.1 [LP Suppression (`networktools.py`)](#networktoolspy--lp-suppression)
 11. [Known Issues, Urgent Actions & Future Work](#11-known-issues-urgent-actions--future-work)
 12. [MILP Performance Notes](#12-milp-performance-notes)
 13. [Testing](#13-testing)
@@ -104,7 +105,7 @@ straindesign/
 ├── strainDesignSolutions.py        # SDSolutions: result container, GPR translation
 │
 ├── compression.py                  # Network compression (RREF, RationalMatrix, nullspace)
-├── networktools.py                 # GPR extension, regulatory extension, compress wrappers
+├── networktools.py                 # GPR extension, regulatory extension, compress wrappers, LP suppression
 ├── lptools.py                      # FVA, flux space plotting, solver selection
 ├── parse_constr.py                 # Constraint/expression string → matrix conversion
 ├── indicatorConstraints.py         # IndicatorConstraints data class
@@ -233,14 +234,55 @@ After compress #1:
 
 ### 4.3 FVA
 
-**Function:** `bound_blocked_or_irrevers_fva`, `fva` (from `lptools.py`)
+**Function:** `bound_blocked_or_irrevers_fva`, `fva` (from `lptools.py`), `speedy_fva` (from `speedy_fva.py`)
 
 Now running on the **compressed model** (roughly half the reactions of the original), FVA identifies:
 - **Blocked reactions** (FVA min = FVA max = 0): forced to zero, removed from intervention candidates.
 - **Irreversible reactions** (FVA min >= 0 or FVA max <= 0): bounds tightened.
 - **Essential reactions** (cannot be zero under module constraints): excluded from knockout candidates.
 
-FVA is run in parallel using `SDPool` for large models.
+`fva()` in `lptools.py` delegates to `speedy_fva()`, which replaces the legacy implementation with a two-phase approach that reduces LP count by 70-80% on genome-scale models.
+
+#### speedy_fva algorithm
+
+**Phase 1 — Scan LPs** resolve the majority of bounds cheaply:
+
+1. **v=0 feasibility (Phase 1a):** If `lb[j] <= 0 <= ub[j]`, then zero flux is feasible, so `min x_j = 0` (or `max x_j = 0` when the bound is one-sided). No LP needed.
+
+2. **min(sum|x|) scan LP (Phase 1b):** Builds an extended LP with splitting variables for reversible reactions to minimize total absolute flux. The optimal vertex pushes many reactions to zero or their bounds. A vectorized **bound scan** marks any reaction whose flux equals its variable bound (within tolerance).
+
+3. **Push-to-bounds iteration (Phase 1c):** Using the same LP with dual simplex warm-start, iteratively sets directed objectives that push unresolved reactions toward their upper/lower bounds. Each round: set `c[j] = -1` for unresolved-max reactions, solve, scan; then `c[j] = +1` for unresolved-min reactions, solve, scan. Stops when a round resolves fewer than 5 new bounds. Warm-started dual simplex makes each re-solve near-instant (the basis stays primal feasible after objective changes).
+
+**Phase 2 — Individual LPs** for remaining unresolved objectives:
+- **Sequential mode** (default for small/medium models): warm-started dual simplex with periodic LP rebuild (every 200 solves) to limit degeneration. Each LP vertex is checked for **co-optimization**: a bound scan on the full solution vector that may resolve other unresolved directions for free.
+- **Parallel mode** (for large models, configurable via `threads`): process-based `SDPool` with per-worker LP instances.
+
+**Optional compression:** `speedy_fva` can compress the model internally (auto-enabled for n >= 200). This uses single-pass nullspace compression + conservation removal, with a fast model copy that avoids expensive `deepcopy(solver)`.
+
+**Benchmarks** (Gurobi, iML1515, compressed, single-threaded):
+
+| Configuration | Standard FVA | speedy_fva | LP count | Speedup |
+|---|---|---|---|---|
+| Unconstrained | 90s | 15s | 71% fewer | 6.0x |
+| Biomass >= 0.1 | 17s | 13s | 41% fewer | 1.3x |
+
+Phase 1 resolves 70-80% of objectives in the unconstrained case, but only ~40% when constraints limit the feasible space (fewer reactions can achieve their variable bounds).
+
+#### Design decisions and rejected alternatives
+
+**KKT dual certification (investigated, not pursued):**
+We explored using KKT optimality conditions to certify co-optimal reactions without solving additional LPs. After solving `min x_j`, we obtain a vertex solution and its basis. For another reaction k, optimality at the same vertex requires dual variables satisfying `S^T lambda + mu_ub - mu_lb = e_k` with correct complementarity. This can be checked by:
+
+1. Extracting the basis B from the solver
+2. Computing reduced costs for objective `e_k`: `pi = B^{-T} e_{pos(k)}`, then `r_i = -A_i^T pi` for nonbasic variables
+3. Verifying sign conditions: `r_i >= 0` for nonbasic-at-lb, `r_i <= 0` for nonbasic-at-ub
+
+The problem is that **bound scanning already handles nonbasic variables** (they are at their bounds by definition in a simplex vertex). KKT certification only adds value for *basic* variables (at interior points), which requires a sparse LU factorization of B per LP solve (1-5ms for m=900) — comparable to or exceeding the cost of the warm-started dual simplex LP itself (~0.5ms). The overhead exceeds the savings.
+
+An earlier implementation (`DualChecker`) used null-space projection to test dual feasibility via sparse LU. On **compressed models**, this produced zero certifications because compression creates linearly dependent column subsets (coupled reactions with diagonal values of 2/3 instead of 1), causing the factorization check to reject all candidates. On uncompressed models certifications were possible but the null-space dimension was too large (d=39-304 on iMLcore) for efficient LP-based certification. The approach was removed in favor of the simpler bound scan, which captures the same information for nonbasic variables at zero cost.
+
+**Intelligent objective ordering (considered, marginal benefit):**
+After each LP solve, the basis determines which variables are basic (interior) vs nonbasic (at bounds). Solving next for a basic variable should require fewer dual simplex pivots than jumping to a distant nonbasic variable. However, after bound scanning, the remaining unresolved reactions are precisely those that were basic (interior) in *every* solution seen — these "hard" reactions resist being pushed to bounds regardless of ordering. The objective change is always a rank-1 update, and pivot count depends more on problem structure than ordering. Warm-started dual simplex is already so fast per-LP (~0.5ms) that ordering heuristics cannot recover their own overhead.
 
 ### 4.4 GPR Integration
 
@@ -814,6 +856,72 @@ The `parse_constraints` function uses regex splitting on `','` and `'\n'` to sep
 - **`plot_flux_space(model, ...)`**: 2D/3D convex hull visualization using `scipy.spatial.ConvexHull` and Matplotlib.
 - **`DisableLogger`**: Context manager to suppress logging during FVA.
 
+### `networktools.py` — LP Suppression
+
+#### Problem
+
+COBRApy's `Model` is tightly coupled to its solver backend (optlang). Every mutation — setting a reaction's bounds, renaming a reaction, adding/removing metabolites — immediately updates the solver's LP representation via `set_bounds`, `set_linear_coefficients`, `_populate_solver`, etc. During compression and preprocessing, hundreds of such mutations occur on a model copy. Synchronizing each one to the solver is pure overhead: the LP is rebuilt from scratch at the end anyway.
+
+Early approaches patched optlang classes (`Constraint.set_linear_coefficients`, `Variable.set_bounds`, `Objective.set_linear_coefficients`) at the class level during suppression. This worked for optlang-level calls but missed cobra-level code paths: `Reaction.add_metabolites` accesses `self.forward_variable`, `self.reverse_variable`, and `model.constraints[met.id]` to build solver constraint updates. These paths reached the solver through cobra internals, not optlang's public API.
+
+#### Architecture: class-level cobra patching
+
+`suppress_lp_context(model)` is a context manager that patches **both optlang and cobra classes** at the class level for the duration of the block. All solver-bound operations become no-ops, and cobra methods that would access the solver are redirected to safe stubs.
+
+**Patches applied by `_suppress_lp_updates`:**
+
+| Target | Original | Suppressed replacement |
+|---|---|---|
+| `Reaction._set_id_with_model` | Renames solver variable | `_suppressed_set_id`: writes `_id` + updates `DictList._dict` index only |
+| `Reaction.lower_bound` (setter) | Calls `update_variable_bounds` → solver | `_suppressed_set_lb`: writes `_lower_bound` only |
+| `Reaction.upper_bound` (setter) | Calls `update_variable_bounds` → solver | `_suppressed_set_ub`: writes `_upper_bound` only |
+| `Reaction.update_variable_bounds` | Accesses `forward_variable.set_bounds(...)` | No-op |
+| `Model._populate_solver` | Full solver rebuild | No-op |
+| `Model.remove_reactions` | Removes solver variables/constraints | `_suppressed_remove_reactions`: removes from model lists only |
+| `Model.remove_metabolites` | Removes solver constraints | `_suppressed_remove_metabolites`: removes from model lists only |
+| `Container.__getitem__` | Raises `KeyError` for missing keys | `_permissive_container_getitem`: returns `_SolverStub` for missing keys |
+| optlang `Constraint.set_linear_coefficients` | Updates solver constraint | No-op |
+| optlang `Variable.set_bounds` | Updates solver variable bounds | No-op |
+| optlang `Objective.set_linear_coefficients` | Updates solver objective | No-op |
+
+**`_SolverStub`** is a lightweight null object returned by the permissive `Container.__getitem__` when cobra code tries to access a solver variable/constraint that doesn't exist (because `_populate_solver` is suppressed). It is hashable (used as a dict key in `set_linear_coefficients` calls) and has no-op `set_bounds`/`set_linear_coefficients` methods. This single class eliminates the need to patch every individual cobra method that might touch the solver.
+
+**`_suppressed_set_id` and DictList invariant:** cobra's `DictList._dict` maps `id → int index` (not `id → object`). The suppressed setter must maintain this invariant: it pops the old key and inserts the new key with the same integer index. Violating this causes `ValueError` in `DictList.__setitem__` due to its duplicate-check logic.
+
+#### Objective preservation through compression
+
+When `suppress_lp_context` enters, it captures the model's objective coefficients into `model._suppressed_obj` (a `dict` mapping `reaction_id → float coefficient`). This dict is updated by compression code as reactions are merged:
+
+- **Coupled compression** (`compression.py`, `_apply_compression_to_model`): when reactions are merged, their objective contributions are weighted by compression factors and summed into the surviving reaction's entry.
+- **Parallel compression** (`compression.py`, `compress_model_parallel`): when identical-stoichiometry reactions are merged, their objective contributions are summed directly.
+- **Legacy Java compression** (`efmtool_cmp_interface.py`, `compress_model_java`): same logic using `jBigFraction2sympyRat` conversion factors.
+
+On exit, if the model was modified (reaction IDs changed), the context manager rebuilds the solver from the model's current state and restores the objective from `_suppressed_obj`. If the model was not modified (e.g., `compute_strain_designs` only modifies a copy), no rebuild occurs — this is critical because an unconditional rebuild would produce a solver with the wrong objective direction for methods like RobustKnock that have inner/outer objectives.
+
+```python
+# Simplified exit logic
+current_ids = {r.id for r in model.reactions}
+if current_ids != pre_ids:
+    model._solver = solver_interface.Model()
+    model._populate_solver(model.reactions, model.metabolites)
+    for rxn in model.reactions:
+        c = final_obj.get(rxn.id, 0.0)
+        if c != 0:
+            rxn.objective_coefficient = c
+```
+
+#### Design principles
+
+1. **All plumbing in the context manager.** Compression code, GPR extension, and other preprocessing functions are backend-agnostic — they manipulate the cobra model without knowing whether LP updates are suppressed. The context manager handles all solver synchronization.
+
+2. **Class-level patching, not instance-level.** Patching at the class level (e.g., `Reaction.lower_bound = property(fget, suppressed_fset)`) ensures that ALL reactions are covered, including ones created during compression. Instance-level patches would miss newly created objects.
+
+3. **Conditional rebuild.** The solver is only rebuilt when the model was actually modified. This prevents regressions in methods like RobustKnock/OptKnock/OptCouple that have complex objective structures.
+
+#### Performance impact
+
+On iML1515, LP suppression reduces preprocessing time from ~131s to ~70s (46% reduction). The bulk of the savings comes from avoiding ~2000 `set_linear_coefficients` calls during compression, each of which would otherwise rebuild solver constraint data structures.
+
 ### `pool.py` — SDPool
 Windows-compatible `multiprocessing.Pool` subclass. On Windows, the initializer function is pickled to a temporary file and loaded by worker processes, avoiding a performance regression from passing the initializer directly (COBRApy issue #997). Uses `'spawn'` context universally to avoid `fork`-related instability.
 
@@ -884,8 +992,8 @@ RobustKnock with POPULATE is not well-tested. The three-level dual structure is 
 **Parallel FVA compression for large models:**
 For genome-scale models (> 2000 reactions), compression can be slow. The RREF step in `RationalMatrix` has `O(n²)` row operations. Potential improvement: use block-sparse RREF or exploit model structure (e.g., subsystems).
 
-**Compression for FVA bounds:**
-Currently, FVA is run on the full model before compression. Running FVA after compression (on the smaller model) would be faster. The challenge is that some blocked reactions are only detectable post-compression.
+**FVA Phase 2 parallelization for non-Gurobi solvers:**
+Gurobi releases the GIL during `model.optimize()`, enabling `ThreadPoolExecutor`-based parallelism with batched warm-start (4.3x speedup measured on iML1515). CPLEX, GLPK, and SCIP hold the GIL, so they must use process-based `SDPool` with its ~4-6s spawn overhead. Investigating ctypes/Cython wrappers that release the GIL for these solvers could enable thread-based parallelism across all backends.
 
 **Essential KI detection:**
 `essential_kis` is computed but may not always be passed correctly through the compression/GPR pipeline. Verify that the set persists through `compress_ki_ko_cost`.
@@ -917,6 +1025,46 @@ The three-level dual construction in ROBUSTKNOCK creates very large matrices wit
 
 **Integration of regulatory networks beyond simple T/F interventions:**
 The current regulatory intervention model (active/inactive) is binary. Future work could integrate thermodynamic constraints or kinetic feasibility checks.
+
+**SCIP native solution enumeration:**
+SCIP supports solution enumeration beyond the incidental pool (`limits/maxsol`, default 100).
+Since version 2.0, the `cons_countsols` constraint handler can count and enumerate all
+feasible solutions of a constraint integer program via the `count` command. Key details:
+
+- `constraints/countsols/collect = TRUE` stores detected solutions (default FALSE = count only).
+- To enumerate all *optimal* solutions: solve to optimality to get `c*`, add the objective
+  as a constraint with both bounds equal to `c*`, then run `count`.
+- Restarts must be turned off during counting (use `SCIPsetParamsCountsols()`).
+- SCIP uses unrestricted subtree detection, which can detect several solutions at once,
+  so a soft solution limit may be exceeded before SCIP stops.
+- Collected solutions are stored with respect to active (non-presolved) variables only;
+  they are lifted back into the original variable space when written to file.
+- This is *not* equivalent to Gurobi's ranked near-optimal pool (`PoolSearchMode`).
+  SCIP enumerates feasibility/optimality, not a ranked set of near-optimal solutions.
+
+Currently, StrainDesign's SCIP `populate` method uses a custom workaround
+(iterative solve with solution exclusion constraints). Replacing this with
+native `cons_countsols` enumeration could improve performance and correctness.
+However, pyscipopt does not yet expose the `count` command or `cons_countsols`
+parameters — this would require upstream pyscipopt changes or direct C API calls.
+
+**pyscipopt gaps for LP method and basis control:**
+Several SoPlex and SCIP features that would benefit StrainDesign are not exposed
+through the pyscipopt Python bindings:
+
+- *LP basis get/set:* SCIP internally maintains LP bases via SoPlex, but
+  pyscipopt does not expose `SCIPlpGetBasisInd`, `SCIPgetLPBasisInd`, or
+  the SoPlex `getBasis`/`setBasis` methods. This prevents explicit basis
+  warm-starting for LPs solved through the SCIP/SoPlex interface.
+- *LP algorithm selection for SCIP_LP (pure LP via `pyscipopt.LP`):*
+  The `pyscipopt.LP` class wraps SoPlex directly but does not expose
+  SoPlex's `setIntParam(ALGORITHM, ...)` for selecting primal vs dual
+  simplex. The SCIP_MILP path supports this via `lp/initalgorithm` and
+  `lp/resolvealgorithm` parameters, but the direct SoPlex LP wrapper does not.
+- *Solution enumeration:* The `count` command and `cons_countsols` constraint
+  handler (see above) are not accessible from pyscipopt.
+
+These gaps are candidates for upstream pyscipopt issues or contributions.
 
 **Improved CNApy integration:**
 The `sd_setup` dict format is designed for CNApy interoperability. Ensuring full round-trip serialization (JSON → `compute_strain_designs` → JSON) with all parameter types (modules, costs, constraints) is an ongoing compatibility concern.

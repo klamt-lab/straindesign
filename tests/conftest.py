@@ -1,4 +1,5 @@
 import pytest
+from importlib.util import find_spec
 from cobra import Configuration
 from straindesign.names import *
 
@@ -37,29 +38,14 @@ def pytest_collection_modifyitems(config, items):
 cobra_conf = Configuration()
 bound_thres = max((abs(cobra_conf.lower_bound), abs(cobra_conf.upper_bound)))
 
-# Initialize an empty list for solvers
+# Detect available solvers via find_spec (no eager import of native libraries)
 solvers = [GLPK]
-
-# Add GRUOBI to the list if the cplex package is installed
-try:
-    import gurobipy
+if find_spec("gurobipy"):
     solvers.append(GUROBI)
-except ImportError:
-    pass  # GUROBI is not installed
-
-# Add CPLEX to the list if the cplex package is installed
-try:
-    import cplex
+if find_spec("cplex"):
     solvers.append(CPLEX)
-except ImportError:
-    pass  # CPLEX is not installed
-
-# Add SCIP to the list if the pyscipopt package is installed
-try:
-    import pyscipopt
+if find_spec("pyscipopt"):
     solvers.append(SCIP)
-except ImportError:
-    pass  # SCIP is not installed
 
 
 @pytest.fixture(params=solvers, scope="session")

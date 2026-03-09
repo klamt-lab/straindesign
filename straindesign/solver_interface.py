@@ -341,8 +341,43 @@ class MILP_LP(object):
         self.b_ineq[idx] = b_ineq
         self.backend.set_ineq_constraint(idx, a_ineq, b_ineq)
 
+    def set_lp_method(self, method):
+        """Set the LP solving method.
+
+        Uses solver-neutral constants from straindesign.names:
+            LP_METHOD_AUTO    — solver default
+            LP_METHOD_PRIMAL  — primal simplex
+            LP_METHOD_DUAL    — dual simplex
+            LP_METHOD_BARRIER — barrier / interior point
+
+        Note: GLPK and SCIP_LP do not support barrier; it falls back to
+        dual simplex (GLPK) or is ignored (SCIP_LP).
+        """
+        self.backend.set_lp_method(method)
+
+    def get_lp_method(self):
+        """Return the current LP method as a solver-neutral string."""
+        return self.backend.get_lp_method()
+
+    def get_basis(self):
+        """Return the current LP basis for warm-starting.
+
+        Returns:
+            dict with solver-specific basis data, or None if not supported.
+            Pass the returned dict to set_basis() on the same solver type.
+        """
+        return self.backend.get_basis()
+
+    def set_basis(self, basis):
+        """Load a previously saved basis for warm-starting.
+
+        Args:
+            basis: dict from get_basis() (same solver type required).
+        """
+        self.backend.set_basis(basis)
+
     def clear_objective(self):
         """Clear objective
-        
+
         Set all coefficients in the objective vector to 0."""
         self.set_objective([0.0] * len(self.c))

@@ -1,5 +1,6 @@
 """Compression tests: unit tests, compression_backend parity, FVA equivalence, and MCS validation."""
 import sys
+import platform
 import pytest
 import numpy as np
 import warnings
@@ -147,6 +148,10 @@ def test_full_strain_design_without_java(model_gpr):
 @pytest.fixture
 def jpype_available():
     jpype = pytest.importorskip("jpype", reason="jpype not installed; skipping Java parity tests")
+    if "cplex" in sys.modules:
+        pytest.skip("JVM startup crashes when CPLEX native library is loaded (known JPype/CPLEX conflict)")
+    if platform.system() == "Darwin":
+        pytest.skip("JPype JVM startup is unreliable on macOS ARM64")
     return jpype
 
 
@@ -299,6 +304,10 @@ def test_mcs_e_coli_core(compression_backend):
     """
     if compression_backend == "efmtool_rref":
         pytest.importorskip("jpype", reason="jpype not installed; skipping efmtool backend")
+        if "cplex" in sys.modules:
+            pytest.skip("JVM startup crashes when CPLEX native library is loaded (known JPype/CPLEX conflict)")
+        if platform.system() == "Darwin":
+            pytest.skip("JPype JVM startup is unreliable on macOS ARM64")
     from straindesign.names import SUPPRESS, POPULATE, GLPK, SCIP, GUROBI, CPLEX
     # Solver priority: SCIP (no size limit) > CPLEX > GUROBI (both have free-tier limits)
     strong_solvers = sd.avail_solvers - {GLPK}
@@ -318,17 +327,31 @@ def test_mcs_e_coli_core(compression_backend):
         f"Expected 455 MCS for e_coli_core (compression_backend={compression_backend}), got {len(sols.reaction_sd)}")
 
 
-# iML1515 is excluded from CI: free solver tiers reject models of this size.
-# Run manually to validate the larger model:
-#
-# def test_mcs_iml1515():
-#     """MCS computation on iML1515 returns the expected 393 solutions."""
-#     from straindesign.names import SUPPRESS, POPULATE
-#     model = load_model('iML1515')
-#     modules = [sd.SDModule(model, SUPPRESS,
-#                            constraints='BIOMASS_Ec_iML1515_core_75p37M >= 0.001')]
-#     sols = sd.compute_strain_designs(model, sd_modules=modules, solution_approach=POPULATE,
-#                                      max_cost=3, gene_kos=True)
-#     assert len(sols.reaction_sd) == 393, (
-#         f"Expected 393 MCS for iML1515, got {len(sols.reaction_sd)}"
-#     )
+@pytest.mark.timeout(300)
+def test_imlcore_compression_parity(jpype_available):
+    """Both compression backends compress iMLcore to the same number of reactions."""
+    model_py = read_sbml_model(dirname(abspath(__file__)) + r"/iMLcore.xml")
+    nt.compress_model(model_py, compression_backend='sparse_rref')
+    model_java = read_sbml_model(dirname(abspath(__file__)) + r"/iMLcore.xml")
+    nt.compress_model(model_java, compression_backend='efmtool_rref')
+    assert len(model_py.reactions) == len(
+        model_java.reactions), (f"iMLcore reaction count mismatch: sparse_rref={len(model_py.reactions)}, efmtool_rref={len(model_java.reactions)}")
+
+
+@pytest.mark.timeout(600)
+def test_mcs_imlcore_parity(jpype_available):
+    """MCS on iMLcore returns the same solutions with both compression backends."""
+    from straindesign.names import SUPPRESS, POPULATE, GUROBI
+    if GUROBI not in sd.avail_solvers:
+        pytest.skip("iMLcore MCS parity test requires Gurobi")
+    results = {}
+    for backend in ['sparse_rref', 'efmtool_rref']:
+        model = read_sbml_model(dirname(abspath(__file__)) + r"/iMLcore.xml")
+        modules = [sd.SDModule(model, SUPPRESS,
+                               constraints='BIOMASS_Ec_iML1515_core_75p37M >= 0.001')]
+        sols = sd.compute_strain_designs(model, sd_modules=modules, solution_approach=POPULATE,
+                                         max_cost=3, solver=GUROBI,
+                                         compression_backend=backend)
+        results[backend] = len(sols.reaction_sd)
+    assert results['sparse_rref'] == results['efmtool_rref'], (
+        f"iMLcore MCS count mismatch: sparse_rref={results['sparse_rref']}, efmtool_rref={results['efmtool_rref']}")

@@ -165,6 +165,12 @@ POPULATE = 'populate'
 SEED = 'seed'
 MILP_THREADS = 'milp_threads'
 
+# LP method selection
+LP_METHOD_AUTO = 'auto'
+LP_METHOD_PRIMAL = 'primal'
+LP_METHOD_DUAL = 'dual'
+LP_METHOD_BARRIER = 'barrier'
+
 # Analysis
 MAXIMIZE = 'maximize'
 MINIMIZE = 'minimize'

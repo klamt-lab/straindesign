@@ -257,6 +257,13 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     if len(bilvl_modules) > 1:
         raise Exception("Only one of the module types 'OptKnock', 'RobustKnock' and 'OptCouple' can be defined per "\
                             "strain design setup.")
+    # Validate module constraints with the selected solver (the SDModule
+    # constructor validates with the model's default solver, which may differ).
+    from straindesign import fba as _fba
+    for m in sd_modules:
+        if m[CONSTRAINTS]:
+            if _fba(model, constraints=m[CONSTRAINTS], solver=kwargs[SOLVER]).status == INFEASIBLE:
+                raise Exception("There is no feasible solution of the model under the given constraints.")
     logging.info('  Using ' + kwargs[SOLVER] + ' for solving LPs during preprocessing.')
     with _silent_io():
         orig_model = model
@@ -335,13 +342,13 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         cmp_ki_cost = uncmp_ki_cost
     # --- FVAs on (possibly compressed) model ---
     logging.info('  FVA to identify blocked reactions and irreversibilities.')
-    bound_blocked_or_irrevers_fva(cmp_model, solver=kwargs[SOLVER])
+    bound_blocked_or_irrevers_fva(cmp_model, solver=kwargs[SOLVER], compress=False)
     logging.info('  FVA(s) to identify essential reactions.')
     essential_reacs = set()
     for m in sd_modules:
         if m[MODULE_TYPE] != SUPPRESS:  # Essential reactions can only be determined from desired
             # or opt-/robustknock modules
-            flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS])
+            flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS], compress=False)
             for (reac_id, limits) in flux_limits.iterrows():
                 if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0:  # find essential
                     essential_reacs.add(reac_id)
@@ -425,7 +432,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     for m in sd_modules:
         if m[MODULE_TYPE] != SUPPRESS:  # Essential reactions can only be determined from desired
             # or opt-/robustknock modules
-            flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS])
+            flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS], compress=False)
             for (reac_id, limits) in flux_limits.iterrows():
                 if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0:  # find essential
                     essential_reacs.add(reac_id)
