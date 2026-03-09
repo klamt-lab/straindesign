@@ -22,7 +22,8 @@ from cobra.core import Solution
 from cobra.util import create_stoichiometric_matrix
 from cobra import Configuration
 from scipy import sparse
-from scipy.spatial import Delaunay  #, ConvexHull
+from scipy.spatial import ConvexHull
+from math import log2
 from straindesign import MILP_LP, parse_constraints, parse_linexpr, lineqlist2mat, linexpr2dict, \
                          linexprdict2mat, SDPool, IndicatorConstraints, avail_solvers
 from re import search
@@ -30,12 +31,12 @@ from straindesign.names import *
 from typing import Dict, Tuple
 from pandas import DataFrame
 from numpy import floor, sign, mod, nan, isnan, unique, inf, isinf, full, linspace, \
-                  prod, array, mean, flip, ceil, floor
-from numpy.linalg import matrix_rank
+                  prod, array, mean, flip, ceil, floor, arctan2
 from contextlib import redirect_stdout, redirect_stderr
 from io import StringIO
 import matplotlib.pyplot as plt
 from matplotlib import use as set_matplotlib_backend
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import logging
 
 from straindesign.parse_constr import linexpr2mat, linexprdict2str
@@ -721,6 +722,419 @@ def yopt(model, **kwargs) -> Solution:
         status = INFEASIBLE
 
 
+def _make_fix_constraint(axes, ax_idx, ax_type, value):
+    """Create an equality constraint fixing axis ax_idx to value."""
+    if ax_type == 'rate':
+        return [axes[ax_idx][0], '=', value]
+    else:  # yield
+        merged = dict(axes[ax_idx][0])
+        for k, v in axes[ax_idx][1].items():
+            merged[k] = merged.get(k, 0) - v * value
+        return [merged, '=', 0]
+
+
+def _optimize_axis(model, ax_idx, axes, ax_type, constraints, solver, sense):
+    """Optimize one axis subject to constraints. Returns (value, status)."""
+    if ax_type == 'rate':
+        sol = fba(model, obj=axes[ax_idx][0], constraints=constraints, solver=solver, obj_sense=sense)
+    else:  # yield
+        sol = yopt(model, obj_num=axes[ax_idx][0], obj_den=axes[ax_idx][1],
+                   constraints=constraints, solver=solver, obj_sense=sense)
+    return sol
+
+
+def _detect_degeneracy(val_limits, num_axes):
+    """Classify solution space dimensionality based on axis ranges."""
+    degenerate = []
+    for vmin, vmax in val_limits:
+        scale = max(1.0, abs(vmin), abs(vmax))
+        degenerate.append(abs(vmax - vmin) < 1e-8 * scale)
+    n_degen = sum(degenerate)
+    if n_degen == num_axes:
+        return 'point', degenerate
+    elif n_degen == num_axes - 1:
+        return 'line', degenerate
+    elif n_degen == num_axes - 2:
+        return 'plane', degenerate
+    return 'full', degenerate
+
+
+def _trace_polygon_rate_rate(model, axes, constraints, solver):
+    """Trace the exact convex polygon boundary for rate-rate 2D plots.
+
+    Uses recursive normal-bisection: finds 4 initial extremes, then refines
+    each edge by optimizing along the outward normal. O(V) LPs for V vertices.
+    """
+    ax0_coeff = axes[0][0]
+    ax1_coeff = axes[1][0]
+
+    def _fba_project(obj_dict):
+        sol = fba(model, obj=obj_dict, constraints=constraints, solver=solver, obj_sense='maximize')
+        if sol.status not in [OPTIMAL]:
+            return None
+        x0 = sum(c * sol.fluxes.get(r, 0) for r, c in ax0_coeff.items())
+        x1 = sum(c * sol.fluxes.get(r, 0) for r, c in ax1_coeff.items())
+        return (ceil_dec(x0, 9), ceil_dec(x1, 9))
+
+    # Step 1: Find 4 extremes
+    extremes = []
+    for coeff, sense in [(ax0_coeff, 'maximize'), (ax0_coeff, 'minimize'),
+                         (ax1_coeff, 'maximize'), (ax1_coeff, 'minimize')]:
+        sol = fba(model, obj=coeff, constraints=constraints, solver=solver, obj_sense=sense)
+        if sol.status == OPTIMAL:
+            x0 = sum(c * sol.fluxes.get(r, 0) for r, c in ax0_coeff.items())
+            x1 = sum(c * sol.fluxes.get(r, 0) for r, c in ax1_coeff.items())
+            extremes.append((ceil_dec(x0, 9), ceil_dec(x1, 9)))
+
+    if len(extremes) < 2:
+        return extremes if extremes else [(0, 0)]
+
+    # Step 2: Deduplicate
+    tol = 1e-8
+    unique_pts = []
+    for p in extremes:
+        if not any(abs(p[0] - q[0]) < tol and abs(p[1] - q[1]) < tol for q in unique_pts):
+            unique_pts.append(p)
+
+    if len(unique_pts) == 1:
+        return unique_pts
+
+    # Step 3: Order counterclockwise via atan2
+    cx = sum(p[0] for p in unique_pts) / len(unique_pts)
+    cy = sum(p[1] for p in unique_pts) / len(unique_pts)
+    unique_pts.sort(key=lambda p: arctan2(p[1] - cy, p[0] - cx))
+
+    # Step 4: Recursive edge refinement
+    diameter = max(
+        ((a[0]-b[0])**2 + (a[1]-b[1])**2)**0.5
+        for a in unique_pts for b in unique_pts
+    )
+    min_edge = 1e-10 * diameter if diameter > 0 else 1e-10
+
+    def _refine(vi, vj, depth):
+        if depth > 50:
+            return [vi]
+        edge_len = ((vi[0]-vj[0])**2 + (vi[1]-vj[1])**2)**0.5
+        if edge_len < min_edge:
+            return [vi]
+        # Outward normal (perpendicular to edge, pointing outward from centroid)
+        dx, dy = vj[0] - vi[0], vj[1] - vi[1]
+        nx, ny = dy, -dx  # rotate 90 degrees
+        # Ensure normal points outward (away from centroid)
+        mid_x, mid_y = (vi[0] + vj[0]) / 2, (vi[1] + vj[1]) / 2
+        if nx * (mid_x - cx) + ny * (mid_y - cy) < 0:
+            nx, ny = -nx, -ny
+        # Combine into single LP objective
+        obj = {}
+        for r, c in ax0_coeff.items():
+            obj[r] = obj.get(r, 0) + nx * c
+        for r, c in ax1_coeff.items():
+            obj[r] = obj.get(r, 0) + ny * c
+        p_new = _fba_project(obj)
+        if p_new is None:
+            return [vi]
+        # Check if p_new is outside the edge (beyond tolerance)
+        # Project p_new onto edge normal direction
+        dist = nx * (p_new[0] - vi[0]) + ny * (p_new[1] - vi[1])
+        norm_len = (nx**2 + ny**2)**0.5
+        if norm_len > 0:
+            dist /= norm_len
+        if dist > tol and edge_len > min_edge:
+            # Check p_new is not a duplicate of vi or vj
+            if ((abs(p_new[0]-vi[0]) < tol and abs(p_new[1]-vi[1]) < tol) or
+                (abs(p_new[0]-vj[0]) < tol and abs(p_new[1]-vj[1]) < tol)):
+                return [vi]
+            left = _refine(vi, p_new, depth + 1)
+            right = _refine(p_new, vj, depth + 1)
+            return left + right
+        return [vi]
+
+    # Refine all edges of the polygon
+    refined = []
+    n = len(unique_pts)
+    for i in range(n):
+        vi = unique_pts[i]
+        vj = unique_pts[(i + 1) % n]
+        refined.extend(_refine(vi, vj, 0))
+
+    # Close polygon
+    if refined and refined[0] != refined[-1]:
+        refined.append(refined[0])
+    return refined
+
+
+def _trace_boundary_adaptive(model, axes, ax_types, constraints, solver, max_depth=15):
+    """Trace upper and lower boundaries adaptively for yield or mixed axes.
+
+    Returns (upper_boundary, lower_boundary) as sorted lists of (x, y) tuples.
+    Uses recursive midpoint refinement where linear interpolation error exceeds tolerance.
+    """
+    def _fix_and_opt(x_val, sense):
+        constr = constraints.copy()
+        constr.append(_make_fix_constraint(axes, 0, ax_types[0], x_val))
+        sol = _optimize_axis(model, 1, axes, ax_types[1], constr, solver, sense)
+        if sol.status in [OPTIMAL]:
+            return ceil_dec(sol.objective_value, 9) if sense == 'minimize' else floor_dec(sol.objective_value, 9)
+        return nan
+
+    # Step 1: axis-0 range endpoints (already known from val_limits, but we need y values)
+    x_min, x_max = ceil_dec(
+        _optimize_axis(model, 0, axes, ax_types[0], constraints, solver, 'minimize').objective_value, 8
+    ), floor_dec(
+        _optimize_axis(model, 0, axes, ax_types[0], constraints, solver, 'maximize').objective_value, 8
+    )
+
+    # Step 2: y values at endpoints
+    y_min_at_xmin = _fix_and_opt(x_min, 'minimize')
+    y_max_at_xmin = _fix_and_opt(x_min, 'maximize')
+    y_min_at_xmax = _fix_and_opt(x_max, 'minimize')
+    y_max_at_xmax = _fix_and_opt(x_max, 'maximize')
+
+    # Upper boundary
+    upper = [(x_min, y_max_at_xmin), (x_max, y_max_at_xmax)]
+    upper = [(x, y) for x, y in upper if not isnan(y)]
+    # Lower boundary
+    lower = [(x_min, y_min_at_xmin), (x_max, y_min_at_xmax)]
+    lower = [(x, y) for x, y in lower if not isnan(y)]
+
+    if not upper and not lower:
+        return [], []
+
+    # Compute y_range for tolerance
+    all_y = [y for _, y in upper + lower]
+    y_range = max(all_y) - min(all_y) if all_y else 0
+    abs_tol = max(1e-6, 1e-3 * abs(y_range))
+
+    def _refine_boundary(boundary, sense, depth):
+        if depth > max_depth or len(boundary) < 2:
+            return boundary
+        new_boundary = [boundary[0]]
+        changed = False
+        for i in range(len(boundary) - 1):
+            x_left, y_left = boundary[i]
+            x_right, y_right = boundary[i + 1]
+            if abs(x_right - x_left) < 1e-10:
+                new_boundary.append(boundary[i + 1])
+                continue
+            x_mid = (x_left + x_right) / 2
+            y_actual = _fix_and_opt(x_mid, sense)
+            if isnan(y_actual):
+                new_boundary.append(boundary[i + 1])
+                continue
+            y_interp = (y_left + y_right) / 2
+            if abs(y_actual - y_interp) > abs_tol:
+                new_boundary.append((x_mid, y_actual))
+                changed = True
+            new_boundary.append(boundary[i + 1])
+        if changed:
+            return _refine_boundary(new_boundary, sense, depth + 1)
+        return new_boundary
+
+    upper = _refine_boundary(upper, 'maximize', 0)
+    lower = _refine_boundary(lower, 'minimize', 0)
+    return upper, lower
+
+
+def _trace_polytope_3d_rate(model, axes, constraints, solver):
+    """Trace exact 3D convex polytope for all-rate axes via face-normal refinement.
+
+    Finds 6 initial extremes, builds convex hull, then iteratively refines
+    by optimizing along each face's outward normal. Converges when no face
+    produces a new vertex.
+    """
+    coeffs = [axes[i][0] for i in range(3)]
+    tol = 1e-8
+
+    def _project(sol):
+        return tuple(
+            ceil_dec(sum(c * sol.fluxes.get(r, 0) for r, c in coeffs[j].items()), 9)
+            for j in range(3)
+        )
+
+    def _is_dup(pt, pts):
+        return any(all(abs(pt[k] - q[k]) < tol for k in range(3)) for q in pts)
+
+    # Find 6 extremes (max/min of each axis)
+    vertices = []
+    for i in range(3):
+        for sense in ['maximize', 'minimize']:
+            sol = fba(model, obj=coeffs[i], constraints=constraints, solver=solver, obj_sense=sense)
+            if sol.status == OPTIMAL:
+                pt = _project(sol)
+                if not _is_dup(pt, vertices):
+                    vertices.append(pt)
+
+    if len(vertices) < 4:
+        return [array(v) for v in vertices], []
+
+    # Iterative face-normal refinement
+    for _ in range(20):
+        try:
+            hull = ConvexHull(array(vertices))
+        except Exception:
+            break
+        new_found = False
+        for eq in hull.equations:
+            normal = eq[:3]  # outward-pointing face normal from ConvexHull
+            obj = {}
+            for k in range(3):
+                for r, c in coeffs[k].items():
+                    obj[r] = obj.get(r, 0) + normal[k] * c
+            sol = fba(model, obj=obj, constraints=constraints, solver=solver, obj_sense='maximize')
+            if sol.status != OPTIMAL:
+                continue
+            p_new = _project(sol)
+            if not _is_dup(p_new, vertices):
+                vertices.append(p_new)
+                new_found = True
+        if not new_found:
+            break
+
+    # Final hull — extract triangles and merged polygon faces
+    try:
+        hull = ConvexHull(array(vertices))
+        triang = hull.simplices.tolist()
+        face_polys = _hull_face_polygons(hull)
+    except Exception:
+        triang = []
+        face_polys = None
+    return [array(v) for v in vertices], triang, face_polys
+
+
+def _hull_face_polygons(hull):
+    """Merge coplanar ConvexHull simplices into polygon faces.
+
+    Returns a list of faces, each face being a list of vertex indices
+    ordered counterclockwise (viewed from outside).
+    """
+    from collections import defaultdict
+    # Group simplices by face equation (rounded for coplanarity check)
+    face_groups = defaultdict(set)
+    for i, eq in enumerate(hull.equations):
+        key = tuple(round(v, 5) for v in eq)
+        for vi in hull.simplices[i]:
+            face_groups[key].add(vi)
+
+    faces = []
+    for eq_key, vertex_indices in face_groups.items():
+        verts = list(vertex_indices)
+        if len(verts) < 3:
+            continue
+        normal = array(eq_key[:3])
+        pts = hull.points[verts]
+        centroid = pts.mean(axis=0)
+        # Build orthonormal basis in the face plane
+        ref = array([1, 0, 0]) if abs(normal[0]) < 0.9 else array([0, 1, 0])
+        u = ref - normal * normal.dot(ref)
+        u = u / (u.dot(u) ** 0.5)
+        v = array([normal[1]*u[2] - normal[2]*u[1],
+                    normal[2]*u[0] - normal[0]*u[2],
+                    normal[0]*u[1] - normal[1]*u[0]])
+        # Sort by angle in face plane
+        angles = [arctan2((pt - centroid).dot(v), (pt - centroid).dot(u)) for pt in pts]
+        order = sorted(range(len(verts)), key=lambda i: angles[i])
+        faces.append([verts[i] for i in order])
+    return faces
+
+
+def _trace_3d_slice_polygon(model, axes, ax_type, val_limits, constraints, solver, points):
+    """3D surface for 1-yield + 2-rate: slice along yield axis, trace rate-rate polygon per slice."""
+    yield_idx = next(i for i, t in enumerate(ax_type) if t == 'yield')
+    rate_indices = [i for i, t in enumerate(ax_type) if t == 'rate']
+
+    y_space = linspace(val_limits[yield_idx][0], val_limits[yield_idx][1], num=points).tolist()
+
+    datapoints = []
+    slice_idx_lists = []
+
+    for y_val in y_space:
+        constr = constraints.copy()
+        constr.append(_make_fix_constraint(axes, yield_idx, ax_type[yield_idx], y_val))
+        sub_axes = [axes[rate_indices[0]], axes[rate_indices[1]]]
+        polygon_2d = _trace_polygon_rate_rate(model, sub_axes, constr, solver)
+
+        if not polygon_2d or len(polygon_2d) < 2:
+            continue
+
+        # Remove closing duplicate if present
+        if len(polygon_2d) > 1 and polygon_2d[0] == polygon_2d[-1]:
+            polygon_2d = polygon_2d[:-1]
+        if not polygon_2d:
+            continue
+
+        # Align polygons: rotate to start at max rate_indices[0] value
+        max_i = max(range(len(polygon_2d)), key=lambda i: (polygon_2d[i][0], polygon_2d[i][1]))
+        polygon_2d = polygon_2d[max_i:] + polygon_2d[:max_i]
+
+        # Convert 2D → 3D
+        idx_list = []
+        for pt in polygon_2d:
+            p3d = [0.0, 0.0, 0.0]
+            p3d[rate_indices[0]] = pt[0]
+            p3d[rate_indices[1]] = pt[1]
+            p3d[yield_idx] = y_val
+            idx_list.append(len(datapoints))
+            datapoints.append(array(p3d))
+        slice_idx_lists.append(idx_list)
+
+    if not slice_idx_lists:
+        return [], [], []
+
+    # Stitch adjacent slice polygons (close the ring by appending first index)
+    triang = []
+    for s in range(len(slice_idx_lists) - 1):
+        strip_a = slice_idx_lists[s] + [slice_idx_lists[s][0]]
+        strip_b = slice_idx_lists[s + 1] + [slice_idx_lists[s + 1][0]]
+        _triangulate_strips(strip_a, strip_b, datapoints, triang)
+
+    # Cap first and last slices (fan triangulation)
+    first = slice_idx_lists[0]
+    if len(first) >= 3:
+        for i in range(1, len(first) - 1):
+            triang.append([first[0], first[i + 1], first[i]])
+    last = slice_idx_lists[-1]
+    if len(last) >= 3:
+        for i in range(1, len(last) - 1):
+            triang.append([last[0], last[i], last[i + 1]])
+
+    return datapoints, triang, slice_idx_lists
+
+
+def _triangulate_strips(strip_a, strip_b, datapoints, triang, flip_winding=False):
+    """Connect two ordered index strips into triangles (for 3D mesh construction).
+
+    Walks both strips simultaneously, advancing whichever side has the shorter
+    diagonal, creating a triangle strip between two contours.
+    """
+    if len(strip_a) < 1 or len(strip_b) < 1:
+        return
+    i, j = 0, 0
+    while i < len(strip_a) - 1 or j < len(strip_b) - 1:
+        if i >= len(strip_a) - 1:
+            tri = [strip_a[i], strip_b[j], strip_b[j + 1]]
+            j += 1
+        elif j >= len(strip_b) - 1:
+            tri = [strip_a[i], strip_b[j], strip_a[i + 1]]
+            i += 1
+        else:
+            # Choose shorter diagonal
+            pa_next = datapoints[strip_a[i + 1]]
+            pb_next = datapoints[strip_b[j + 1]]
+            pa_curr = datapoints[strip_a[i]]
+            pb_curr = datapoints[strip_b[j]]
+            d1 = sum((pa_next[k] - pb_curr[k])**2 for k in range(len(pa_next)))
+            d2 = sum((pa_curr[k] - pb_next[k])**2 for k in range(len(pa_curr)))
+            if d1 < d2:
+                tri = [strip_a[i], strip_b[j], strip_a[i + 1]]
+                i += 1
+            else:
+                tri = [strip_a[i], strip_b[j], strip_b[j + 1]]
+                j += 1
+        if flip_winding:
+            tri = [tri[0], tri[2], tri[1]]
+        triang.append(tri)
+
+
 def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
     """Plot projections of the space of steady-state flux vectors onto two or three dimensions.
     
@@ -768,16 +1182,18 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
             multiple flux spaces should be plotted at once or the plot should be modified before been shown.
         
         points (optional (int)): (Default: 25 (3D) or 40 (2D))
-            The number of intervals in which the flux space should be sampled along each axis. A higher
-            number will increase resoltion but also computation time.
+            Controls resolution of non-exact (approximate) plot regions. For rate-only axes, boundary
+            tracing finds exact vertices and this parameter is ignored. For yield axes, this controls:
+            - 2D yield plots: max refinement depth = max(5, log2(points))
+            - 3D with 1 yield axis: number of slices along the yield axis
+            - 3D with 2+ yield axes: number of grid intervals per axis
 
     Returns:
         (Tuple):
             (datapoints, triang, plot1). The array of datapoints from which the plot was generated. These
             datapoints are optimal values for different optimizations within the flux space. The triang
             variable contains information about which datapoints need to be connected in triangles to
-            render a consistend 3-D surface with Delaunay triangles (Delaunay triangulation). The last
-            variable contains the matplotlib object.
+            render a closed surface. The last variable contains the matplotlib object.
     """
     reaction_ids = model.reactions.list_attr("id")
 
@@ -843,62 +1259,91 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
         val_limits[i] = [ceil_dec(sol_min.objective_value, 8), floor_dec(sol_max.objective_value, 8)]
         ax_limits[i] = [min((0, val_limits[i][0])), max((0, val_limits[i][1]))]
 
-    # compute points
-    x_space = linspace(val_limits[0][0], val_limits[0][1], num=points).tolist()
-    lb = full(points, nan)
-    ub = full(points, nan)
-    for i, x in enumerate(x_space):
-        constr = kwargs[CONSTRAINTS].copy()
-        if ax_type[0] == 'rate':
-            constr += [[axes[0][0], '=', x]]
-        elif ax_type[0] == 'yield':
-            constr += [[{**axes[0][0], **{k: -v * x for k, v in axes[0][1].items()}}, '=', 0]]
-        if ax_type[1] == 'rate':
-            sol_vmin = fba(model, constraints=constr, obj=axes[1][0], solver=solver, obj_sense='minimize')
-            sol_vmax = fba(model, constraints=constr, obj=axes[1][0], solver=solver, obj_sense='maximize')
-        elif ax_type[1] == 'yield':
-            sol_vmin = yopt(model, constraints=constr, obj_num=axes[1][0], obj_den=axes[1][1], solver=solver, obj_sense='minimize')
-            sol_vmax = yopt(model, constraints=constr, obj_num=axes[1][0], obj_den=axes[1][1], solver=solver, obj_sense='maximize')
-        lb[i] = ceil_dec(sol_vmin.objective_value, 9)
-        ub[i] = floor_dec(sol_vmax.objective_value, 9)
+    # Detect degeneracy
+    degen, degen_axes = _detect_degeneracy(val_limits, num_axes)
 
     if num_axes == 2:
-        datapoints = [[x, l] for x, l in zip(x_space, lb)] + [[x, u] for x, u in zip(x_space, ub)]
-        datapoints_bottom = [i for i, _ in enumerate(x_space)]
-        datapoints_top = [len(x_space) + i for i, _ in enumerate(x_space)]
-        # triangles 2D (only for return)
-        triang = []
-        for i in range(len(x_space) - 1):
-            temp_points = [datapoints_bottom[i], datapoints_top[i], datapoints_bottom[i + 1], datapoints_top[i + 1]]
-            pts = [array(datapoints[idx_p]) for idx_p in temp_points]
-            try:
-                if matrix_rank(pts - pts[0]) > 1:
-                    triang_temp = Delaunay(pts).simplices
-                    triang += [[temp_points[idx] for idx in p] for p in triang_temp]
-            except:
-                logging.warning('Computing matrix rank or Delaunay simplices failed.')
-        # Plot
-        x = [v for v in x_space] + [v for v in reversed(x_space)]
-        y = [v for v in lb] + [v for v in reversed(ub)]
-        if lb[0] != ub[0]:
-            x.extend([x_space[0], x_space[0]])
-            y.extend([lb[0], ub[0]])
-        plot1 = plt.fill(x, y, linewidth=0.5)  # edgecolor='mediumblue',
-        plot1 = plot1[0]
-        # plot1 = plt.plot(x, y)
+        # === 2D dispatch ===
+        if degen == 'point':
+            plot1 = plt.plot([val_limits[0][0]], [val_limits[1][0]], 'o')[0]
+            plot1.axes.set_xlabel(ax_name[0])
+            plot1.axes.set_ylabel(ax_name[1])
+            plot1.axes.set_xlim(ax_limits[0][0] * 1.05, ax_limits[0][1] * 1.05)
+            plot1.axes.set_ylim(ax_limits[1][0] * 1.05, ax_limits[1][1] * 1.05)
+            if show:
+                try:
+                    plt.show()
+                except UserWarning as e:
+                    if 'FigureCanvasTemplate is non-interactive' in str(e):
+                        logging.warning('warning: Interactive plot not supported in current execution environment.')
+            return [[val_limits[0][0], val_limits[1][0]]], [], plot1
 
-        # Alternatively, this can be plotted as triangles
-        # One may use this code-snippet to plot the return value of this function
-        # x = [d[0] for d in datapoints]
-        # y = [d[1] for d in datapoints]
-        # trg = tri.Triangulation(x,y,triangles=triang)
-        # colors = [1.0 for _ in trg.triangles]
-        # plot1 = plt.tripcolor(trg,colors,antialiased=True,cmap='Blues_r',shading='flat')
+        if degen == 'line':
+            # Determine which axis is degenerate and trace the other
+            if degen_axes[0]:
+                # x is fixed, trace y range
+                x_pts = [val_limits[0][0], val_limits[0][0]]
+                y_pts = [val_limits[1][0], val_limits[1][1]]
+            else:
+                # y is fixed, trace x range
+                x_pts = [val_limits[0][0], val_limits[0][1]]
+                y_pts = [val_limits[1][0], val_limits[1][0]]
+            plot1 = plt.plot(x_pts, y_pts, linewidth=1.5)[0]
+            plot1.axes.set_xlabel(ax_name[0])
+            plot1.axes.set_ylabel(ax_name[1])
+            plot1.axes.set_xlim(ax_limits[0][0] * 1.05, ax_limits[0][1] * 1.05)
+            plot1.axes.set_ylim(ax_limits[1][0] * 1.05, ax_limits[1][1] * 1.05)
+            if show:
+                try:
+                    plt.show()
+                except UserWarning as e:
+                    if 'FigureCanvasTemplate is non-interactive' in str(e):
+                        logging.warning('warning: Interactive plot not supported in current execution environment.')
+            datapoints = [[x, y] for x, y in zip(x_pts, y_pts)]
+            return datapoints, [], plot1
+
+        # Full 2D: choose algorithm based on axis types
+        if all(t == 'rate' for t in ax_type):
+            vertices = _trace_polygon_rate_rate(model, axes, kwargs[CONSTRAINTS], solver)
+        else:
+            adapt_depth = max(5, int(log2(max(points, 2))))
+            upper, lower = _trace_boundary_adaptive(
+                model, axes, ax_type, kwargs[CONSTRAINTS], solver, max_depth=adapt_depth)
+            # Build polygon from upper (left-to-right) + reversed lower (right-to-left)
+            if upper and lower:
+                vertices = upper + list(reversed(lower))
+            elif upper:
+                vertices = upper
+            elif lower:
+                vertices = lower
+            else:
+                vertices = []
+            # Close polygon if endpoints don't match
+            if len(vertices) > 1 and vertices[0] != vertices[-1]:
+                vertices.append(vertices[0])
+
+        if not vertices:
+            raise Exception('Could not trace any boundary. Problem may be infeasible.')
+
+        # Build datapoints and triangulation for return value
+        datapoints = [[v[0], v[1]] for v in vertices]
+        # Fan triangulation (for return compatibility)
+        n_v = len(vertices)
+        if n_v > 2 and vertices[0] == vertices[-1]:
+            n_v -= 1  # don't count the closing duplicate
+        triang = [[0, i, i + 1] for i in range(1, n_v - 1)] if n_v >= 3 else []
+
+        # Plot
+        x = [v[0] for v in vertices]
+        y = [v[1] for v in vertices]
+        plot1 = plt.fill(x, y, linewidth=0.5)[0]
 
         plot1.axes.set_xlabel(ax_name[0])
         plot1.axes.set_ylabel(ax_name[1])
         plot1.axes.set_xlim(ax_limits[0][0] * 1.05, ax_limits[0][1] * 1.05)
         plot1.axes.set_ylim(ax_limits[1][0] * 1.05, ax_limits[1][1] * 1.05)
+        if any(t == 'yield' for t in ax_type):
+            plot1.axes.set_title('approximate', fontsize=8, color='gray')
         if show:
             try:
                 plt.show()
@@ -908,119 +1353,228 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
         return datapoints, triang, plot1
 
     elif num_axes == 3:
-        max_diff_y = max([abs(l - u) for l, u in zip(lb, ub)])
-        datapoints = []
-        datapoints_top = []
-        datapoints_bottom = []
-        for i, (x, l, u) in enumerate(zip(x_space.copy(), lb, ub)):
-            if l != u:
-                y_space = linspace(l, u, int(-(-points // (max_diff_y / abs(l - u)))))
+        # === 3D dispatch ===
+        if degen == 'point':
+            ax3 = plt.figure().add_subplot(projection='3d')
+            ax3.scatter([val_limits[0][0]], [val_limits[1][0]], [val_limits[2][0]], s=50)
+            ax3.set_xlabel(ax_name[0])
+            ax3.set_ylabel(ax_name[1])
+            ax3.set_zlabel(ax_name[2])
+            ax3.set_xlim(ax_limits[0])
+            ax3.set_ylim(ax_limits[1])
+            ax3.set_zlim(ax_limits[2])
+            if show:
+                try:
+                    plt.show()
+                except UserWarning as e:
+                    if 'FigureCanvasTemplate is non-interactive' in str(e):
+                        logging.warning('warning: Interactive plot not supported in current execution environment.')
+            return [[val_limits[0][0], val_limits[1][0], val_limits[2][0]]], [], ax3
+
+        if degen == 'line':
+            # Find the non-degenerate axis and trace it
+            free_ax = [i for i, d in enumerate(degen_axes) if not d][0]
+            pts_3d = []
+            for val in [val_limits[free_ax][0], val_limits[free_ax][1]]:
+                pt = [val_limits[i][0] for i in range(3)]
+                pt[free_ax] = val
+                pts_3d.append(pt)
+            ax3 = plt.figure().add_subplot(projection='3d')
+            ax3.plot3D([p[0] for p in pts_3d], [p[1] for p in pts_3d], [p[2] for p in pts_3d], linewidth=1.5)
+            ax3.set_xlabel(ax_name[0])
+            ax3.set_ylabel(ax_name[1])
+            ax3.set_zlabel(ax_name[2])
+            ax3.set_xlim(ax_limits[0])
+            ax3.set_ylim(ax_limits[1])
+            ax3.set_zlim(ax_limits[2])
+            if show:
+                try:
+                    plt.show()
+                except UserWarning as e:
+                    if 'FigureCanvasTemplate is non-interactive' in str(e):
+                        logging.warning('warning: Interactive plot not supported in current execution environment.')
+            return pts_3d, [], ax3
+
+        if degen == 'plane':
+            # One axis is degenerate — trace 2D boundary in the free plane
+            free_axes = [i for i, d in enumerate(degen_axes) if not d]
+            fixed_axis = [i for i, d in enumerate(degen_axes) if d][0]
+            fixed_val = val_limits[fixed_axis][0]
+            constr_plane = kwargs[CONSTRAINTS].copy()
+            constr_plane.append(_make_fix_constraint(axes, fixed_axis, ax_type[fixed_axis], fixed_val))
+            sub_axes = [axes[free_axes[0]], axes[free_axes[1]]]
+            sub_types = [ax_type[free_axes[0]], ax_type[free_axes[1]]]
+            if all(t == 'rate' for t in sub_types):
+                polygon_2d = _trace_polygon_rate_rate(model, sub_axes, constr_plane, solver)
             else:
-                y_space = [l]
-            datapoints_top += [[]]
-            datapoints_bottom += [[]]
-            for j, y in enumerate(y_space):
-                constr = kwargs[CONSTRAINTS].copy()
-                if ax_type[0] == 'rate':
-                    constr += [[axes[0][0], '=', x]]
-                elif ax_type[0] == 'yield':
-                    constr += [[{**axes[0][0], **{k: -v * x for k, v in axes[0][1].items()}}, '=', 0]]
-                if ax_type[1] == 'rate':
-                    constr += [[axes[1][0], '=', y]]
-                elif ax_type[1] == 'yield':
-                    constr += [[{**axes[1][0], **{k: -v * y for k, v in axes[1][1].items()}}, '=', 0]]
-                if ax_type[2] == 'rate':
-                    sol_vmin = fba(model, constraints=constr, obj=axes[2][0], obj_sense='minimize')
-                    sol_vmax = fba(model, constraints=constr, obj=axes[2][0], obj_sense='maximize')
-                elif ax_type[2] == 'yield':
-                    sol_vmin = yopt(model, constraints=constr, obj_num=axes[2][0], obj_den=axes[2][1], obj_sense='minimize')
-                    sol_vmax = yopt(model, constraints=constr, obj_num=axes[2][0], obj_den=axes[2][1], obj_sense='maximize')
-                datapoints_top[-1] += [len(datapoints)]
-                datapoints += [array([x, y, floor_dec(sol_vmax.objective_value, 9)])]
-                datapoints_bottom[-1] += [len(datapoints)]
-                datapoints += [array([x, y, ceil_dec(sol_vmin.objective_value, 9)])]
-            if any([isnan(datapoints[d][2]) for d in datapoints_top[-1] + datapoints_bottom[-1]]):
-                logging.warning('warning: An optimization finished infeasible. Some sample points are missing.')
-                datapoints_top = datapoints_top[:-1]
-                datapoints_bottom = datapoints_bottom[:-1]
-                x_space.remove(x)
+                upper, lower = _trace_boundary_adaptive(model, sub_axes, sub_types, constr_plane, solver)
+                polygon_2d = (upper + list(reversed(lower))) if upper and lower else (upper or lower)
+                if len(polygon_2d) > 1 and polygon_2d[0] != polygon_2d[-1]:
+                    polygon_2d.append(polygon_2d[0])
+            datapoints = []
+            for pt in polygon_2d:
+                p3d = [0.0, 0.0, 0.0]
+                p3d[free_axes[0]] = pt[0]
+                p3d[free_axes[1]] = pt[1]
+                p3d[fixed_axis] = fixed_val
+                datapoints.append(array(p3d))
+            n_pts = len(datapoints)
+            if n_pts > 1 and all(abs(datapoints[0][k] - datapoints[-1][k]) < 1e-8 for k in range(3)):
+                n_pts -= 1
+            triang = [[0, i, i + 1] for i in range(1, n_pts - 1)] if n_pts >= 3 else []
+            face_polys = None
 
-        # Construct Denaunay triangles for plotting from all 6 perspectives
-        triang = []
-        # triangles top
-        for i in range(len(datapoints_top) - 1):
-            temp_points = datapoints_top[i] + datapoints_top[i + 1]
-            pts = [array([datapoints[idx_p][0], datapoints[idx_p][1]]) for idx_p in temp_points]
-            if matrix_rank(pts - pts[0]) > 1:
-                triang_temp = Delaunay(pts).simplices
-                triang += [[temp_points[idx] for idx in p] for p in triang_temp]
-        # triangles bottom
-        for i in range(len(datapoints_bottom) - 1):
-            temp_points = datapoints_bottom[i] + datapoints_bottom[i + 1]
-            pts = [array([datapoints[idx_p][0], datapoints[idx_p][1]]) for idx_p in temp_points]
-            if matrix_rank(pts - pts[0]) > 1:
-                triang_temp = Delaunay(pts).simplices
-                triang += [[temp_points[idx] for idx in flip(p)] for p in triang_temp]
-        # triangles front
-        for i in range(len(x_space) - 1):
-            temp_points = [datapoints_top[i][0], datapoints_top[i + 1][0], datapoints_bottom[i][0], datapoints_bottom[i + 1][0]]
-            pts = [array([datapoints[idx_p][0], datapoints[idx_p][2]]) for idx_p in temp_points]
-            if matrix_rank(pts - pts[0]) > 1:
-                triang_temp = Delaunay(pts).simplices
-                triang += [[temp_points[idx] for idx in flip(p)] for p in triang_temp]
-        # triangles back
-        for i in range(len(x_space) - 1):
-            temp_points = [datapoints_top[i][-1], datapoints_top[i + 1][-1], datapoints_bottom[i][-1], datapoints_bottom[i + 1][-1]]
-            pts = [array([datapoints[idx_p][0], datapoints[idx_p][2]]) for idx_p in temp_points]
-            if matrix_rank(pts - pts[0]) > 1:
-                triang_temp = Delaunay(pts).simplices
-                triang += [[temp_points[idx] for idx in flip(p)] for p in triang_temp]
-        # triangles left
-        for i in range(len(datapoints_top[0]) - 1):
-            temp_points = [datapoints_top[0][i], datapoints_top[0][i + 1], datapoints_bottom[0][i], datapoints_bottom[0][i + 1]]
-            pts = [array([datapoints[idx_p][1], datapoints[idx_p][2]]) for idx_p in temp_points]
-            if matrix_rank(pts - pts[0]) > 1:
-                triang_temp = Delaunay(pts).simplices
-                triang += [[temp_points[idx] for idx in p] for p in triang_temp]
-        # triangles right
-        for i in range(len(datapoints_top[-1]) - 1):
-            temp_points = [datapoints_top[-1][i], datapoints_top[-1][i + 1], datapoints_bottom[-1][i], datapoints_bottom[-1][i + 1]]
-            pts = [array([datapoints[idx_p][1], datapoints[idx_p][2]]) for idx_p in temp_points]
-            if matrix_rank(pts - pts[0]) > 1:
-                triang_temp = Delaunay(pts).simplices
-                triang += [[temp_points[idx] for idx in p] for p in triang_temp]
+        else:
+            # 'full' — dispatch based on number of yield axes
+            n_yields = sum(1 for t in ax_type if t == 'yield')
 
-        # hull = ConvexHull(datapoints)
+            face_polys = None  # set by polytope path only
+            slice_outlines = None  # set by slice path only
+
+            if n_yields == 0:
+                # All rate: exact 3D polytope via face-normal refinement
+                datapoints, triang, face_polys = _trace_polytope_3d_rate(model, axes, kwargs[CONSTRAINTS], solver)
+
+            elif n_yields == 1:
+                # 1 yield + 2 rate: slice along yield, trace rate-rate polygon per slice
+                datapoints, triang, slice_outlines = _trace_3d_slice_polygon(
+                    model, axes, ax_type, val_limits, kwargs[CONSTRAINTS], solver, points)
+
+            else:
+                # 2+ yields: grid-based scanning (fallback)
+                x_space = linspace(val_limits[0][0], val_limits[0][1], num=points).tolist()
+                slices = []
+                for x_val in x_space:
+                    constr_x = kwargs[CONSTRAINTS].copy()
+                    constr_x.append(_make_fix_constraint(axes, 0, ax_type[0], x_val))
+                    sol_y_min = _optimize_axis(model, 1, axes, ax_type[1], constr_x, solver, 'minimize')
+                    sol_y_max = _optimize_axis(model, 1, axes, ax_type[1], constr_x, solver, 'maximize')
+                    if sol_y_min.status not in [OPTIMAL] or sol_y_max.status not in [OPTIMAL]:
+                        continue
+                    y_lo = ceil_dec(sol_y_min.objective_value, 9)
+                    y_hi = floor_dec(sol_y_max.objective_value, 9)
+                    if isnan(y_lo) or isnan(y_hi):
+                        continue
+                    if abs(y_hi - y_lo) < 1e-10:
+                        y_space = [y_lo]
+                    else:
+                        n_pts = max(3, int(points * abs(y_hi - y_lo) / max(1e-10,
+                            max(abs(val_limits[1][1] - val_limits[1][0]), 1e-10))))
+                        n_pts = min(n_pts, points)
+                        y_space = linspace(y_lo, y_hi, n_pts).tolist()
+                    upper_slice = []
+                    lower_slice = []
+                    for y_val in y_space:
+                        constr_xy = constr_x.copy()
+                        constr_xy.append(_make_fix_constraint(axes, 1, ax_type[1], y_val))
+                        sol_z_min = _optimize_axis(model, 2, axes, ax_type[2], constr_xy, solver, 'minimize')
+                        sol_z_max = _optimize_axis(model, 2, axes, ax_type[2], constr_xy, solver, 'maximize')
+                        z_lo = ceil_dec(sol_z_min.objective_value, 9) if sol_z_min.status in [OPTIMAL] else nan
+                        z_hi = floor_dec(sol_z_max.objective_value, 9) if sol_z_max.status in [OPTIMAL] else nan
+                        if not isnan(z_lo) and not isnan(z_hi):
+                            upper_slice.append((y_val, z_hi))
+                            lower_slice.append((y_val, z_lo))
+                    if upper_slice:
+                        slices.append((x_val, upper_slice, lower_slice))
+                if not slices:
+                    raise Exception('No feasible slices found. Problem may be infeasible.')
+                datapoints = []
+                datapoints_top = []
+                datapoints_bottom = []
+                for x_val, upper_slice, lower_slice in slices:
+                    top_ids = []
+                    bot_ids = []
+                    for (y_val, z_hi), (_, z_lo) in zip(upper_slice, lower_slice):
+                        top_ids.append(len(datapoints))
+                        datapoints.append(array([x_val, y_val, z_hi]))
+                        bot_ids.append(len(datapoints))
+                        datapoints.append(array([x_val, y_val, z_lo]))
+                    datapoints_top.append(top_ids)
+                    datapoints_bottom.append(bot_ids)
+                triang = []
+                for s in range(len(slices) - 1):
+                    _triangulate_strips(datapoints_top[s], datapoints_top[s + 1], datapoints, triang)
+                    _triangulate_strips(datapoints_bottom[s], datapoints_bottom[s + 1], datapoints, triang,
+                                        flip_winding=True)
+                front_top = [t[0] for t in datapoints_top]
+                front_bot = [b[0] for b in datapoints_bottom]
+                _triangulate_strips(front_top, front_bot, datapoints, triang, flip_winding=True)
+                back_top = [t[-1] for t in datapoints_top]
+                back_bot = [b[-1] for b in datapoints_bottom]
+                _triangulate_strips(back_top, back_bot, datapoints, triang)
+                _triangulate_strips(datapoints_top[0], datapoints_bottom[0], datapoints, triang)
+                _triangulate_strips(datapoints_top[-1], datapoints_bottom[-1], datapoints, triang,
+                                    flip_winding=True)
+
+        if not datapoints:
+            raise Exception('No feasible points found. Problem may be infeasible.')
+
+        # 3D plot
         x = [d[0] for d in datapoints]
         y = [d[1] for d in datapoints]
         z = [d[2] for d in datapoints]
-        # ax = a3.Axes3D(plt.figure())
-        ax = plt.figure().add_subplot(projection='3d')
-        ax.dist = 10
-        ax.azim = 30
-        ax.elev = 10
-        ax.set_xlim(ax_limits[0])
-        ax.set_ylim(ax_limits[1])
-        ax.set_zlim(ax_limits[2])
-        ax.set_xlabel(ax_name[0])
-        ax.set_ylabel(ax_name[1])
-        ax.set_zlabel(ax_name[2])
-        # set higher color value for 'larger' values in all dimensions
-        # use middle value of triangles instead of means and then norm
-        colors = [nan for _ in triang]
-        for i, t in enumerate(triang):
-            p = [datapoints[i] for i in t]
-            interior_point = [0.0, 0.0, 0.0]
-            for d in range(3):
-                v = [q[d] for q in p]
-                interior_point[d] = mean([max(v), min(v)]) / max(abs(array(ax_limits[d])))
-            colors[i] = sum(interior_point)  # norm(interior_point)
-        lw = min([1, 6.0 / len(triang)])
-        plot1 = ax.plot_trisurf(x, y, z, triangles=triang, linewidth=lw, edgecolors='black', antialiased=True,
-                                alpha=0.90)  #  array=colors, cmap=plt.cm.winter
-        colors = colors / max(colors)
-        colors = plt.get_cmap("Spectral")(colors)
-        plot1.set_fc(colors)
+        ax3 = plt.figure().add_subplot(projection='3d')
+        ax3.dist = 10
+        ax3.azim = 30
+        ax3.elev = 10
+        ax3.set_xlim(ax_limits[0])
+        ax3.set_ylim(ax_limits[1])
+        ax3.set_zlim(ax_limits[2])
+        ax3.set_xlabel(ax_name[0])
+        ax3.set_ylabel(ax_name[1])
+        ax3.set_zlabel(ax_name[2])
+        if any(t == 'yield' for t in ax_type):
+            ax3.set_title('approximate', fontsize=8, color='gray')
+
+        def _normal_color(face_pts):
+            """Compute color value from face normal direction."""
+            pts = array(face_pts)
+            if len(pts) < 3:
+                return 0.5
+            e1 = pts[1] - pts[0]
+            e2 = pts[2] - pts[0]
+            normal = array([e1[1]*e2[2] - e1[2]*e2[1],
+                            e1[2]*e2[0] - e1[0]*e2[2],
+                            e1[0]*e2[1] - e1[1]*e2[0]])
+            length = (normal.dot(normal)) ** 0.5
+            if length > 0:
+                normal = normal / length
+            # Map normal direction to scalar: use spherical angles
+            return arctan2(normal[1], normal[0]) + 1.5 * normal[2]
+
+        if face_polys is not None and face_polys:
+            # Polytope: render merged polygon faces with Poly3DCollection
+            poly_verts = [[datapoints[i].tolist() for i in face] for face in face_polys]
+            color_vals = [_normal_color(verts) for verts in poly_verts]
+            mn, mx = min(color_vals), max(color_vals)
+            rng = mx - mn if mx > mn else 1
+            face_colors = plt.get_cmap("Spectral")([(c - mn) / rng for c in color_vals])
+            face_colors[:, 3] = 0.85  # bake alpha into RGBA (avoid alpha= which affects edges)
+            collection = Poly3DCollection(poly_verts, facecolors=face_colors,
+                                          edgecolors='black', linewidths=1.0)
+            ax3.add_collection3d(collection)
+            plot1 = collection
+        elif triang:
+            # Triangle mesh: render edgeless faces, color by normal
+            tri_verts = [[datapoints[i].tolist() for i in t] for t in triang]
+            color_vals = [_normal_color(verts) for verts in tri_verts]
+            mn, mx = min(color_vals), max(color_vals)
+            rng = mx - mn if mx > mn else 1
+            face_colors = plt.get_cmap("Spectral")([(c - mn) / rng for c in color_vals])
+            face_colors[:, 3] = 0.85
+            collection = Poly3DCollection(tri_verts, facecolors=face_colors,
+                                          edgecolors='none', linewidths=0)
+            ax3.add_collection3d(collection)
+            # Draw slice polygon outlines (exact contour at each yield level)
+            if slice_outlines:
+                for idx_list in slice_outlines:
+                    pts = array([datapoints[i] for i in idx_list])
+                    pts = array(list(pts) + [pts[0]])  # close the loop
+                    ax3.plot(pts[:, 0], pts[:, 1], pts[:, 2],
+                             color='gray', linewidth=0.4)
+            plot1 = collection
+        else:
+            plot1 = ax3.scatter(x, y, z, s=20)
         if show:
             try:
                 plt.show()
