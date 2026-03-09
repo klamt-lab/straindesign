@@ -1181,6 +1181,9 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
             be useful if flux spaces should be plotted and saved in a non-interactive environment, 
             multiple flux spaces should be plotted at once or the plot should be modified before been shown.
         
+        cmap (optional (str)): (Default: 'managua')
+            The matplotlib colormap used for 3D face coloring.
+
         points (optional (int)): (Default: 25 (3D) or 40 (2D))
             Controls resolution of non-exact (approximate) plot regions. For rate-only axes, boundary
             tracing finds exact vertices and this parameter is ignored. For yield axes, this controls:
@@ -1213,6 +1216,8 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
         show = True
     else:
         show = kwargs['show']
+
+    cmap = kwargs.get('cmap', 'managua')
 
     axes = [list(ax) if not isinstance(ax, str) else [ax] for ax in axes]  # cast to list of lists
     num_axes = len(axes)
@@ -1548,8 +1553,8 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
             color_vals = [_normal_color(verts) for verts in poly_verts]
             mn, mx = min(color_vals), max(color_vals)
             rng = mx - mn if mx > mn else 1
-            face_colors = plt.get_cmap("Spectral")([(c - mn) / rng for c in color_vals])
-            face_colors[:, 3] = 0.85  # bake alpha into RGBA (avoid alpha= which affects edges)
+            face_colors = plt.get_cmap(cmap)([(c - mn) / rng for c in color_vals])
+            face_colors[:, 3] = 1.0
             collection = Poly3DCollection(poly_verts, facecolors=face_colors,
                                           edgecolors='black', linewidths=1.0)
             ax3.add_collection3d(collection)
@@ -1560,8 +1565,8 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
             color_vals = [_normal_color(verts) for verts in tri_verts]
             mn, mx = min(color_vals), max(color_vals)
             rng = mx - mn if mx > mn else 1
-            face_colors = plt.get_cmap("Spectral")([(c - mn) / rng for c in color_vals])
-            face_colors[:, 3] = 0.85
+            face_colors = plt.get_cmap(cmap)([(c - mn) / rng for c in color_vals])
+            face_colors[:, 3] = 1.0
             collection = Poly3DCollection(tri_verts, facecolors=face_colors,
                                           edgecolors='none', linewidths=0)
             ax3.add_collection3d(collection)
