@@ -128,11 +128,25 @@ def idx2c(i, prev) -> 'list':
     return C
 
 
+def _fva_worker_cleanup():
+    """Dispose the global LP and Gurobi default environment on worker exit."""
+    global lp_glob
+    try:
+        if lp_glob is not None and hasattr(lp_glob, 'solver') and lp_glob.solver == 'gurobi':
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                lp_glob.backend.dispose()
+                import gurobipy as gp
+                gp.disposeDefaultEnv()
+        lp_glob = None
+    except Exception:
+        pass
+
+
 def fva_worker_init(A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver):
     """Helper function for parallel FVA
-    
+
     Initialize the LP that will be solved iteratively. Is executed on workers, not on main thread.
-    
+
     Args:
         A_ineq, b_ineq, A_eq, b_eq, lb, ub:
             The LP.
@@ -146,7 +160,13 @@ def fva_worker_init(A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver):
         if lp_glob.solver == 'cplex':
             lp_glob.backend.parameters.threads.set(1)
             #lp_glob.backend.parameters.lpmethod.set(1)
+        elif lp_glob.solver == 'gurobi':
+            lp_glob.backend.params.Threads = 1
         lp_glob.prev = 0
+    # Register cleanup to properly release Gurobi WLS sessions on worker exit
+    if solver == 'gurobi':
+        import atexit
+        atexit.register(_fva_worker_cleanup)
 
 
 def fva_worker_compute(i) -> Tuple[int, float]:
