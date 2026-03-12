@@ -1177,6 +1177,57 @@ def compress_ki_ko_cost(kocost, kicost, cmp_mapReac):
     return kocost, kicost, cmp_mapReac
 
 
+def estimate_expansion_size(compressed_sds, cmp_mapReac):
+    """Estimate total expanded solutions without doing the expansion.
+
+    Walks cmp_mapReac in reverse for each compressed solution. For each
+    compression step, for each reaction that maps to multiple originals:
+    - KO + parallel -> factor 1 (all ko'd together)
+    - KO + coupled  -> factor = count of knockable originals
+    - KI + parallel -> factor = count of KI-able originals
+    - KI + coupled  -> factor 1
+
+    Returns int (upper bound, exact for single-step compression).
+    """
+    if not cmp_mapReac:
+        return len(compressed_sds)
+
+    total = 0
+    cmp_map = cmp_mapReac[::-1]
+    for cmp_s in compressed_sds:
+        # Track keys and their values through expansion steps
+        key_vals = dict(cmp_s)
+        factor = 1
+        for exp in cmp_map:
+            reac_map_exp = exp["reac_map_exp"]
+            ko_cost = exp[KOCOST]
+            ki_cost = exp[KICOST]
+            par_reac_cmp = exp["parallel"]
+            updates = {}
+            removals = set()
+            for r_cmp, r_orig in reac_map_exp.items():
+                if r_cmp not in key_vals:
+                    continue
+                val = key_vals[r_cmp]
+                removals.add(r_cmp)
+                if len(r_orig) > 1:
+                    if val < 0:  # KO
+                        if not par_reac_cmp:  # coupled
+                            knockable = sum(1 for d in r_orig if d in ko_cost)
+                            factor *= max(knockable, 1)
+                    elif val > 0:  # KI
+                        if par_reac_cmp:  # parallel
+                            ki_able = sum(1 for d in r_orig if d in ki_cost)
+                            factor *= max(ki_able, 1)
+                for d in r_orig:
+                    updates[d] = val
+            for r in removals:
+                key_vals.pop(r, None)
+            key_vals.update(updates)
+        total += factor
+    return total
+
+
 def expand_sd(sd, cmp_mapReac):
     """Expand computed strain designs from a compressed to a full model
     

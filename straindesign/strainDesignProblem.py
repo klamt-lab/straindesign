@@ -198,7 +198,7 @@ class SDProblem:
 
         # if there are only mcs modules, minimize the knockout costs,
         # otherwise use objective function(s) from modules
-        if all([mod[MODULE_TYPE] in [PROTECT, SUPPRESS] for mod in sd_modules]):
+        if all([mod[MODULE_TYPE] in [PROTECT, SUPPRESS, DOUBLEOPT] for mod in sd_modules]):
             for i in self.idx_z:
                 self.c[i] = self.cost[i]
             self.is_mcs_computation = True

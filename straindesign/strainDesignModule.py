@@ -351,6 +351,8 @@ class SDModule(Dict):
                         inner_opt_sense=deepcopy(self[INNER_OPT_SENSE]),
                         outer_objective=deepcopy(self[OUTER_OBJECTIVE]),
                         outer_opt_sense=deepcopy(self[OUTER_OPT_SENSE]),
+                        inner_opt_tol=self[INNER_OPT_TOL],
+                        outer_opt_tol=self[OUTER_OPT_TOL],
                         prod_id=deepcopy(self[PROD_ID]),
                         min_gcp=self[MIN_GCP],
                         skip_checks=True,
