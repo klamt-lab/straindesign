@@ -291,6 +291,8 @@ def fva_legacy(model, **kwargs) -> DataFrame:
     numr = len(model.reactions)
 
     if CONSTRAINTS in kwargs and kwargs[CONSTRAINTS]:
+        from straindesign.networktools import resolve_gene_constraints
+        kwargs[CONSTRAINTS] = resolve_gene_constraints(model, kwargs[CONSTRAINTS])
         kwargs[CONSTRAINTS] = parse_constraints(kwargs[CONSTRAINTS], reaction_ids)
         A_ineq, b_ineq, A_eq, b_eq = lineqlist2mat(kwargs[CONSTRAINTS], reaction_ids)
 
@@ -484,9 +486,11 @@ def fba(model, **kwargs) -> Solution:
             A solution object that contains the objective value, an optimal flux vector and the optmization
             status.
     """
+    from straindesign.networktools import resolve_gene_constraints
     reaction_ids = model.reactions.list_attr("id")
 
     if CONSTRAINTS in kwargs:
+        kwargs[CONSTRAINTS] = resolve_gene_constraints(model, kwargs[CONSTRAINTS])
         kwargs[CONSTRAINTS] = parse_constraints(kwargs[CONSTRAINTS], reaction_ids)
         A_ineq, b_ineq, A_eq, b_eq = lineqlist2mat(kwargs[CONSTRAINTS], reaction_ids)
     else:

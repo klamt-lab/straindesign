@@ -313,6 +313,8 @@ def speedy_fva(model, **kwargs):
 
     has_constraints = CONSTRAINTS in kwargs and kwargs[CONSTRAINTS]
     if has_constraints:
+        from straindesign.networktools import resolve_gene_constraints
+        kwargs[CONSTRAINTS] = resolve_gene_constraints(model, kwargs[CONSTRAINTS])
         kwargs[CONSTRAINTS] = parse_constraints(kwargs[CONSTRAINTS], orig_reaction_ids)
         if cmp_maps:
             kwargs[CONSTRAINTS] = _map_constraints(

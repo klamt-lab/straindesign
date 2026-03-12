@@ -254,9 +254,9 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         uncmp_reg_cost = {}
     # check that at most one bilevel module is provided
     bilvl_modules = [i for i,m in enumerate(sd_modules) \
-                if m[MODULE_TYPE] in [OPTKNOCK,ROBUSTKNOCK,OPTCOUPLE]]
+                if m[MODULE_TYPE] in [OPTKNOCK,ROBUSTKNOCK,OPTCOUPLE,DOUBLEOPT]]
     if len(bilvl_modules) > 1:
-        raise Exception("Only one of the module types 'OptKnock', 'RobustKnock' and 'OptCouple' can be defined per "\
+        raise Exception("Only one of the module types 'OptKnock', 'RobustKnock', 'OptCouple' and 'DoubleOpt' can be defined per "\
                             "strain design setup.")
     # Validate module constraints with the selected solver (the SDModule
     # constructor validates with the model's default solver, which may differ).

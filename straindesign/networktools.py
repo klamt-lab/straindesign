@@ -397,6 +397,205 @@ from straindesign.compression import (
 )
 
 
+def evaluate_gpr_ast(node, gene_states):
+    """Evaluate a GPR AST node with given gene states.
+
+    Supports arbitrary nesting of AND/OR operators (not limited to DNF/CNF).
+    Used by both gene_kos_to_constraints and reduce_gpr.
+
+    Args:
+        node: An ast.Name or ast.BoolOp node from a parsed GPR rule
+              (e.g. reaction.gpr.body).
+        gene_states (dict): Maps gene IDs to True, False, or None.
+            Genes not in the dict are treated as None (undetermined).
+
+    Returns:
+        True if the GPR is satisfied, False if knocked out, None if undetermined.
+    """
+    if isinstance(node, ast.Name):
+        return gene_states.get(node.id, None)
+    elif isinstance(node, ast.BoolOp):
+        if isinstance(node.op, ast.And):
+            results = [evaluate_gpr_ast(child, gene_states) for child in node.values]
+            if any(r is False for r in results):
+                return False
+            elif all(r is True for r in results):
+                return True
+            else:
+                return None
+        elif isinstance(node.op, ast.Or):
+            results = [evaluate_gpr_ast(child, gene_states) for child in node.values]
+            if any(r is True for r in results):
+                return True
+            elif all(r is False for r in results):
+                return False
+            else:
+                return None
+    raise ValueError(f"Unsupported AST node type: {type(node)}")
+
+
+def gene_kos_to_constraints(model, gene_kos):
+    """Translate gene knockouts to reaction-level constraints.
+
+    Given a cobra model and a set of knocked-out genes, evaluates GPR rules
+    (via AST parsing) to determine which reactions become non-functional.
+    Returns a list of constraints (in straindesign list format) that fix
+    those reactions to zero flux.
+
+    Supports arbitrary GPR nesting (not limited to DNF/CNF).
+
+    Gene identifiers can be gene IDs or gene names (case-sensitive).  Unknown
+    identifiers are silently ignored.
+
+    Note on the SD solution grammar:
+        SDSolutions uses the following convention for intervention values:
+        -1 = knockout (KO), +1 = knock-in (KI), 0 = non-added KI.
+
+        When passing gene constraints to ``fba()`` or ``fva()``, both
+        ``gene = 0`` and ``gene = -1`` are treated as knockouts, and
+        ``gene = 1`` is ignored (the gene is active).  This means SD
+        solution values can be used directly as constraints.
+
+        The returned *reaction* constraints use the linear constraint
+        format ``[{reaction_id: 1}, '=', 0]``, meaning ``1 * v = 0``.
+
+    Example:
+        >>> constraints = gene_kos_to_constraints(model, ['b0727', 'b1241'])
+        >>> fba(model, constraints=constraints)
+
+    Args:
+        model (cobra.Model): A metabolic model.
+        gene_kos (list or set): Gene IDs or names to knock out.
+
+    Returns:
+        list: Constraints in list format, e.g.
+              [[{'AKGDH': 1}, '=', 0], [{'PDH': 1}, '=', 0], ...]
+    """
+    # Map gene names to IDs where needed
+    gene_ids = set()
+    name_to_id = {g.name: g.id for g in model.genes if g.name}
+    for g in gene_kos:
+        if g in name_to_id:
+            gene_ids.add(name_to_id[g])
+        elif any(mg.id == g for mg in model.genes):
+            gene_ids.add(g)
+        # else: unknown gene, skip
+
+    if not gene_ids:
+        return []
+
+    # Build gene state dict: knocked-out genes → False
+    gene_states = {g: False for g in gene_ids}
+
+    # Find affected reactions via gene→reaction links
+    affected_reacs = set()
+    for g_id in gene_ids:
+        try:
+            gene_obj = model.genes.get_by_id(g_id)
+            for r in gene_obj.reactions:
+                affected_reacs.add(r.id)
+        except KeyError:
+            pass
+
+    # Evaluate GPR rules using AST
+    knocked_out_reactions = []
+    for r_id in affected_reacs:
+        reaction = model.reactions.get_by_id(r_id)
+        if not reaction.gene_reaction_rule or not reaction.gene_reaction_rule.strip():
+            continue
+        if not reaction.gpr or not reaction.gpr.body:
+            continue
+        result = evaluate_gpr_ast(reaction.gpr.body, gene_states)
+        if result is False:
+            knocked_out_reactions.append(r_id)
+
+    return [[{r: 1}, '=', 0] for r in sorted(knocked_out_reactions)]
+
+
+def resolve_gene_constraints(model, constraints):
+    """Scan constraints for gene IDs/names and replace with reaction constraints.
+
+    Constraints that reference gene identifiers (rather than reaction IDs) are
+    interpreted using the strain design solution grammar:
+
+    - ``gene = -1`` — knockout (KO)
+    - ``gene = 0``  — knockout (non-added, absence of knock-in)
+    - ``gene = 1``  — ignored (knock-in, gene is active)
+
+    This is consistent with the SDSolutions convention, so values from
+    solution dicts can be passed directly as constraints.
+
+    Non-gene constraints are passed through unchanged.
+
+    Accepted gene constraint formats::
+
+        'b0727 = 0'                          # string — KO
+        'b0727 = -1'                         # string — KO (SD grammar)
+        'b1241 = 1'                          # string — ignored (KI)
+        ['b0727 = 0', 'b1241 = 0']           # list of strings
+        [[{'b0727': 1}, '=', 0]]             # list format
+
+    Gene identifiers are matched case-sensitively against both gene IDs
+    and gene names in the model.
+
+    This function is called automatically by ``fba()``, ``fva()``, and
+    ``fva_legacy()`` before constraint parsing, so users can pass gene
+    knockouts directly::
+
+        fba(model, constraints='b0727 = 0')
+        fva(model, constraints=['b0727 = 0', 'EX_o2_e <= 5'])
+
+    Args:
+        model (cobra.Model): A metabolic model.
+        constraints: Constraints in any format accepted by straindesign
+                     (str, list of str, or list of [dict, str, float]).
+
+    Returns:
+        list: Constraints with gene entries replaced by reaction entries.
+    """
+    from straindesign.parse_constr import lineq2list
+    # Normalise to list format
+    reac_ids = set(r.id for r in model.reactions)
+    gene_ids = set(g.id for g in model.genes)
+    gene_names = set(g.name for g in model.genes if g.name)
+    all_ids = reac_ids | gene_ids | gene_names
+
+    if not constraints:
+        return []
+    if isinstance(constraints, str):
+        constraints = lineq2list([constraints], list(all_ids))
+    elif isinstance(constraints, list) and constraints and isinstance(constraints[0], str):
+        constraints = lineq2list(constraints, list(all_ids))
+    # constraints is now list of [dict, str, float]
+
+    gene_kos = set()
+    clean_constraints = []
+    for c in constraints:
+        lhs, sign, rhs = c[0], c[1], c[2]
+        keys = set(lhs.keys())
+        # Check if this constraint references only genes (not reactions)
+        gene_keys = keys & (gene_ids | gene_names)
+        if gene_keys and not (keys & reac_ids):
+            if sign == '=' and rhs <= 0:
+                # KO: gene = 0 or gene = -1 (SD grammar)
+                gene_kos.update(gene_keys)
+            elif sign == '=' and rhs > 0:
+                # KI: gene = 1 — gene is active, nothing to do
+                pass
+            else:
+                # Inequality on gene — not meaningful
+                logging.warning(f'Gene constraint with inequality ignored: {c}')
+                clean_constraints.append(c)
+        else:
+            clean_constraints.append(c)
+
+    if gene_kos:
+        reaction_constraints = gene_kos_to_constraints(model, gene_kos)
+        clean_constraints.extend(reaction_constraints)
+
+    return clean_constraints
+
+
 def reduce_gpr(model, essential_reacs, gkis, gkos):
     """Simplify GPR rules by removing non-targetable genes and reducing boolean expressions
 
@@ -429,36 +628,6 @@ def reduce_gpr(model, essential_reacs, gkis, gkos):
         (dict):
         An updated dictionary of the knockout costs in which irrelevant genes are removed.
     """
-
-    def evaluate_gpr_ast(node, gene_states):
-        """
-        Evaluate GPR AST with given gene states.
-        gene_states: dict of {gene_id: True/False/None}
-        Returns True, False, or None (undetermined)
-        """
-        if isinstance(node, ast.Name):
-            return gene_states.get(node.id, None)
-        elif isinstance(node, ast.BoolOp):
-            if isinstance(node.op, ast.And):
-                # AND: all children must be True, any False makes it False
-                results = [evaluate_gpr_ast(child, gene_states) for child in node.values]
-                if any(r is False for r in results):
-                    return False
-                elif all(r is True for r in results):
-                    return True
-                else:
-                    return None  # undetermined
-            elif isinstance(node.op, ast.Or):
-                # OR: any child True makes it True, all False makes it False
-                results = [evaluate_gpr_ast(child, gene_states) for child in node.values]
-                if any(r is True for r in results):
-                    return True
-                elif all(r is False for r in results):
-                    return False
-                else:
-                    return None  # undetermined
-        else:
-            raise ValueError(f"Unsupported AST node type: {type(node)}")
 
     def ast_to_gene_reaction_rule(node):
         """
