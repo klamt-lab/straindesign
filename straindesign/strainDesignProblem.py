@@ -1345,16 +1345,39 @@ def prevent_boundary_knockouts(A_ineq, b_ineq, lb, ub, z_map_constr_ineq, z_map_
     return A_ineq, b_ineq, lb, ub, z_map_constr_ineq
 
 
+def _worker_cleanup():
+    """Dispose the global LP and solver environment on worker exit."""
+    global lp_glob
+    try:
+        if lp_glob is not None and hasattr(lp_glob, 'solver'):
+            from io import StringIO
+            from contextlib import redirect_stdout, redirect_stderr
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                if lp_glob.solver == 'gurobi':
+                    lp_glob.backend.dispose()
+                    import gurobipy as gp
+                    gp.disposeDefaultEnv()
+                elif lp_glob.solver == 'cplex':
+                    lp_glob.backend.end()
+        lp_glob = None
+    except Exception:
+        pass
+
+
 def worker_init(A, A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver, seed):
     """Helper function for determining bounds on linear expressions"""
     global lp_glob
     lp_glob = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb, ub=ub, solver=solver, seed=seed)
     if lp_glob == CPLEX:
         lp_glob.backend.parameters.lpmethod.set(1)
-        if Configuration().processes > 1:
-            lp_glob.backend.parameters.threads.set(2)
+        lp_glob.backend.parameters.threads.set(1)
+    elif solver == 'gurobi':
+        lp_glob.backend.params.Threads = 1
     lp_glob.solver = solver
     lp_glob.A = A
+    if solver in ('gurobi', 'cplex'):
+        import atexit
+        atexit.register(_worker_cleanup)
 
 
 def worker_compute(i) -> Tuple[int, float]:
