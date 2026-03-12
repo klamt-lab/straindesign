@@ -94,6 +94,25 @@ class TestResolveGeneConstraints:
         assert resolve_gene_constraints(ecoli_core, []) == []
         assert resolve_gene_constraints(ecoli_core, '') == []
 
+    def test_sd_grammar_minus_one_is_ko(self, ecoli_core):
+        """gene = -1 (SD grammar: knockout) should produce same result as gene = 0."""
+        c0 = resolve_gene_constraints(ecoli_core, 'b0727 = 0')
+        c1 = resolve_gene_constraints(ecoli_core, 'b0727 = -1')
+        assert c0 == c1
+
+    def test_sd_grammar_plus_one_ignored(self, ecoli_core):
+        """gene = 1 (SD grammar: knock-in/active) produces no constraints."""
+        c = resolve_gene_constraints(ecoli_core, 'b1241 = 1')
+        assert c == []
+
+    def test_sd_grammar_mixed(self, ecoli_core):
+        """Mix of KO (-1) and KI (1): only the KO produces constraints."""
+        c = resolve_gene_constraints(ecoli_core, ['b0727 = -1', 'b1241 = 1'])
+        knocked = {list(x[0].keys())[0] for x in c}
+        assert 'AKGDH' in knocked
+        # b1241 = 1 should not add any constraints
+        assert all(list(x[0].keys())[0] != 'b1241' for x in c)
+
 
 # ── FBA integration tests ────────────────────────────────────────────
 
@@ -131,6 +150,12 @@ class TestFbaWithGeneKO:
         sol = sd.fba(ecoli_core, constraints=['b0727 = 0', 'EX_glc__D_e >= -5'])
         assert sol.status == sd.OPTIMAL
         assert sol.objective_value < wt_growth  # more constrained
+
+    def test_sd_grammar_minus_one_in_fba(self, ecoli_core, wt_growth):
+        """FBA with gene = -1 (SD grammar) should match gene = 0."""
+        sol0 = sd.fba(ecoli_core, constraints='b0727 = 0')
+        sol1 = sd.fba(ecoli_core, constraints='b0727 = -1')
+        assert abs(sol0.objective_value - sol1.objective_value) < 1e-9
 
 
 # ── FVA integration tests ────────────────────────────────────────────
