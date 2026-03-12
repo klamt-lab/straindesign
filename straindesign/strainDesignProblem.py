@@ -34,7 +34,7 @@ from cobra.util import create_stoichiometric_matrix
 from cobra import Model, Configuration
 from typing import List, Tuple
 from straindesign import SDModule, IndicatorConstraints, lineqlist2mat, linexprdict2mat, MILP_LP, SDPool, \
-                         avail_solvers, select_solver, remove_dummy_bounds, SDModule
+                         avail_solvers, select_solver, SDModule
 from straindesign.names import *
 import logging
 
@@ -170,8 +170,6 @@ class SDProblem:
         self.indic_constr = []  # Add instances of the class 'Indicator_constraint' later
         # Initialize association between z and variables and variables
         self.z_map_vars = sparse.csc_matrix((numr, numr))
-        # replace bounds with inf if above a cobra bound threshold
-        remove_dummy_bounds(self.model)
         logging.info('Constructing strain design MILP for solver: ' + self.solver + '.')
         for i in range(len(sd_modules)):
             self.addModule(sd_modules[i])
@@ -262,17 +260,42 @@ class SDProblem:
             A_ineq_dual, b_ineq_dual, A_eq_dual, b_eq_dual, lb_dual, ub_dual, c_inner_dual, z_map_constr_ineq_dual, z_map_constr_eq_dual, z_map_vars_dual \
                 = LP_dualize(A_ineq_inner, b_ineq_inner, A_eq_inner, b_eq_inner, lb_inner, ub_inner, c_inner, z_map_constr_ineq_inner, z_map_constr_eq_inner, z_map_vars_inner)
             # 4. connect primal w/ undesired region and dual w/o undesired region (i.e. biomass) via c = c_inner.
-            A_ineq_p = sparse.block_diag((A_ineq_v, A_ineq_dual)).tocsr()
-            b_ineq_p = b_ineq_v + b_ineq_dual
-            A_eq_p = sparse.vstack((sparse.block_diag(
-                (A_eq_v, A_eq_dual)), sparse.hstack((sparse.csr_matrix(c_v), sparse.csr_matrix(c_inner_dual))))).tocsr()
-            b_eq_p = b_eq_v + b_eq_dual + [0.0]
-            lb_p = lb_v + lb_dual
-            ub_p = ub_v + ub_dual
-            # 5. Update z-associations
-            z_map_vars_p = sparse.hstack((z_map_vars_v, z_map_vars_dual))
-            z_map_constr_ineq_p = sparse.hstack((z_map_constr_ineq_v, z_map_constr_ineq_dual))
-            z_map_constr_eq_p = sparse.hstack((z_map_constr_eq_v, z_map_constr_eq_dual, sparse.csc_matrix((self.num_z, 1))))
+            inner_opt_tol = sd_module[INNER_OPT_TOL] if sd_module[INNER_OPT_TOL] is not None else 1.0
+            if inner_opt_tol < 1.0:
+                # Relaxed inner optimality: include reference primal to anchor dual.
+                # Equality: c_inner · x_ref + c_dual · d = 0  (dual at optimum)
+                # Inequality: c_v · x_v + tol · c_dual · d <= 0  (actual >= tol * optimal)
+                n_v, n_ref, n_d = len(c_v), len(c_inner), len(c_inner_dual)
+                c_dual_scaled = [inner_opt_tol * c for c in c_inner_dual]
+                ineq_link = sparse.hstack((sparse.csr_matrix(c_v), sparse.csr_matrix((1, n_ref)),
+                                           sparse.csr_matrix(c_dual_scaled)))
+                eq_link = sparse.hstack((sparse.csr_matrix((1, n_v)), sparse.csr_matrix(c_inner),
+                                          sparse.csr_matrix(c_inner_dual)))
+                A_ineq_p = sparse.vstack((sparse.block_diag((A_ineq_v, A_ineq_inner, A_ineq_dual)),
+                                          ineq_link)).tocsr()
+                b_ineq_p = b_ineq_v + b_ineq_inner + b_ineq_dual + [0.0]
+                A_eq_p = sparse.vstack((sparse.block_diag((A_eq_v, A_eq_inner, A_eq_dual)),
+                                        eq_link)).tocsr()
+                b_eq_p = b_eq_v + b_eq_inner + b_eq_dual + [0.0]
+                lb_p = lb_v + lb_inner + lb_dual
+                ub_p = ub_v + ub_inner + ub_dual
+                z_map_vars_p = sparse.hstack((z_map_vars_v, z_map_vars_inner, z_map_vars_dual))
+                z_map_constr_ineq_p = sparse.hstack((z_map_constr_ineq_v, z_map_constr_ineq_inner,
+                    z_map_constr_ineq_dual, sparse.csc_matrix((self.num_z, 1))))
+                z_map_constr_eq_p = sparse.hstack((z_map_constr_eq_v, z_map_constr_eq_inner,
+                    z_map_constr_eq_dual, sparse.csc_matrix((self.num_z, 1))))
+            else:
+                # Exact inner optimality (original code)
+                A_ineq_p = sparse.block_diag((A_ineq_v, A_ineq_dual)).tocsr()
+                b_ineq_p = b_ineq_v + b_ineq_dual
+                A_eq_p = sparse.vstack((sparse.block_diag(
+                    (A_eq_v, A_eq_dual)), sparse.hstack((sparse.csr_matrix(c_v), sparse.csr_matrix(c_inner_dual))))).tocsr()
+                b_eq_p = b_eq_v + b_eq_dual + [0.0]
+                lb_p = lb_v + lb_dual
+                ub_p = ub_v + ub_dual
+                z_map_vars_p = sparse.hstack((z_map_vars_v, z_map_vars_dual))
+                z_map_constr_ineq_p = sparse.hstack((z_map_constr_ineq_v, z_map_constr_ineq_dual))
+                z_map_constr_eq_p = sparse.hstack((z_map_constr_eq_v, z_map_constr_eq_dual, sparse.csc_matrix((self.num_z, 1))))
         elif sd_module[MODULE_TYPE] == ROBUSTKNOCK:
             # RobustKnock has three layers, inner maximization and an outer min-max problem
             c_in = linexprdict2mat(sd_module[INNER_OBJECTIVE], self.model.reactions.list_attr('id'))
@@ -335,6 +358,183 @@ class SDProblem:
             c_i = sparse.csr_matrix(c_out)
             c_i.resize((1, A_ineq_i.shape[1]))
             c_i = c_i.toarray()[0].tolist()
+        elif sd_module[MODULE_TYPE] == DOUBLEOPT:
+            # DOUBLEOPT: two parallel optimality conditions on the same primal.
+            # Both inner_objective (c_in1) and outer_objective (c_in2) are enforced
+            # simultaneously via independent KKT/strong-duality links.
+            c_in = linexprdict2mat(sd_module[INNER_OBJECTIVE], self.model.reactions.list_attr('id'))
+            if not hasattr(sd_module,INNER_OPT_SENSE) or sd_module[INNER_OPT_SENSE] is None or \
+                sd_module[INNER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE] or sd_module[INNER_OPT_SENSE] == MAXIMIZE:
+                c_in = -c_in
+            c_in = c_in.toarray()[0].tolist()
+            c_in2 = linexprdict2mat(sd_module[OUTER_OBJECTIVE], self.model.reactions.list_attr('id'))
+            if not hasattr(sd_module,OUTER_OPT_SENSE) or sd_module[OUTER_OPT_SENSE] is None or \
+                sd_module[OUTER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE] or sd_module[OUTER_OPT_SENSE] == MAXIMIZE:
+                c_in2 = -c_in2
+            c_in2 = c_in2.toarray()[0].tolist()
+            # 1. build primal with module constraints (using c_in as objective)
+            A_ineq_v, b_ineq_v, A_eq_v, b_eq_v, lb_v, ub_v, c_v, z_map_constr_ineq_v, z_map_constr_eq_v, z_map_vars_v \
+                = build_primal_from_cbm(self.model, V_ineq, v_ineq, V_eq, v_eq, c_in)
+            # 2. build and dualize unconstrained primal for inner objective (c_in)
+            A_ineq_inner1, b_ineq_inner1, A_eq_inner1, b_eq_inner1, lb_inner1, ub_inner1, c_inner1, z_map_constr_ineq_inner1, z_map_constr_eq_inner1, z_map_vars_inner1 \
+                = build_primal_from_cbm(self.model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None, c=c_in)
+            A_ineq_dual1, b_ineq_dual1, A_eq_dual1, b_eq_dual1, lb_dual1, ub_dual1, c_dual1, z_map_constr_ineq_dual1, z_map_constr_eq_dual1, z_map_vars_dual1 \
+                = LP_dualize(A_ineq_inner1, b_ineq_inner1, A_eq_inner1, b_eq_inner1, lb_inner1, ub_inner1, c_inner1, z_map_constr_ineq_inner1, z_map_constr_eq_inner1, z_map_vars_inner1)
+            # 3. build and dualize unconstrained primal for outer objective (c_in2)
+            A_ineq_inner2, b_ineq_inner2, A_eq_inner2, b_eq_inner2, lb_inner2, ub_inner2, c_inner2, z_map_constr_ineq_inner2, z_map_constr_eq_inner2, z_map_vars_inner2 \
+                = build_primal_from_cbm(self.model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None, c=c_in2)
+            A_ineq_dual2, b_ineq_dual2, A_eq_dual2, b_eq_dual2, lb_dual2, ub_dual2, c_dual2, z_map_constr_ineq_dual2, z_map_constr_eq_dual2, z_map_vars_dual2 \
+                = LP_dualize(A_ineq_inner2, b_ineq_inner2, A_eq_inner2, b_eq_inner2, lb_inner2, ub_inner2, c_inner2, z_map_constr_ineq_inner2, z_map_constr_eq_inner2, z_map_vars_inner2)
+            # 4. connect primal with both duals via two strong duality links
+            inner_opt_tol = sd_module[INNER_OPT_TOL] if sd_module[INNER_OPT_TOL] is not None else 1.0
+            outer_opt_tol = sd_module[OUTER_OPT_TOL] if sd_module[OUTER_OPT_TOL] is not None else 1.0
+            n_v = len(c_v)
+            n_dual1 = len(c_dual1)
+            n_dual2 = len(c_dual2)
+            # Collect blocks: [x_v, (x_ref1?), dual1, (x_ref2?), dual2]
+            # Reference primals are inserted only when corresponding opt_tol < 1.0
+            blk_ineq = [A_ineq_v]
+            blk_eq = [A_eq_v]
+            blk_lb = list(lb_v)
+            blk_ub = list(ub_v)
+            blk_zmv = [z_map_vars_v]
+            blk_zci = [z_map_constr_ineq_v]
+            blk_zce = [z_map_constr_eq_v]
+            # Track column offsets for link construction
+            col_offset_ref1 = n_v  # where ref1 starts (if needed)
+            n_ref1 = len(c_inner1) if inner_opt_tol < 1.0 else 0
+            if inner_opt_tol < 1.0:
+                blk_ineq.append(A_ineq_inner1)
+                blk_eq.append(A_eq_inner1)
+                blk_lb.extend(lb_inner1)
+                blk_ub.extend(ub_inner1)
+                blk_zmv.append(z_map_vars_inner1)
+                blk_zci.append(z_map_constr_ineq_inner1)
+                blk_zce.append(z_map_constr_eq_inner1)
+            blk_ineq.append(A_ineq_dual1)
+            blk_eq.append(A_eq_dual1)
+            blk_lb.extend(lb_dual1)
+            blk_ub.extend(ub_dual1)
+            blk_zmv.append(z_map_vars_dual1)
+            blk_zci.append(z_map_constr_ineq_dual1)
+            blk_zce.append(z_map_constr_eq_dual1)
+            n_ref2 = len(c_inner2) if outer_opt_tol < 1.0 else 0
+            if outer_opt_tol < 1.0:
+                blk_ineq.append(A_ineq_inner2)
+                blk_eq.append(A_eq_inner2)
+                blk_lb.extend(lb_inner2)
+                blk_ub.extend(ub_inner2)
+                blk_zmv.append(z_map_vars_inner2)
+                blk_zci.append(z_map_constr_ineq_inner2)
+                blk_zce.append(z_map_constr_eq_inner2)
+            blk_ineq.append(A_ineq_dual2)
+            blk_eq.append(A_eq_dual2)
+            blk_lb.extend(lb_dual2)
+            blk_ub.extend(ub_dual2)
+            blk_zmv.append(z_map_vars_dual2)
+            blk_zci.append(z_map_constr_ineq_dual2)
+            blk_zce.append(z_map_constr_eq_dual2)
+            # Total columns: n_v + n_ref1 + n_dual1 + n_ref2 + n_dual2
+            n_total = n_v + n_ref1 + n_dual1 + n_ref2 + n_dual2
+            A_ineq_p = sparse.block_diag(blk_ineq).tocsr()
+            b_ineq_p = b_ineq_v + (b_ineq_inner1 if inner_opt_tol < 1.0 else []) + b_ineq_dual1 + \
+                       (b_ineq_inner2 if outer_opt_tol < 1.0 else []) + b_ineq_dual2
+            A_eq_base = sparse.block_diag(blk_eq)
+            b_eq_p = b_eq_v + (b_eq_inner1 if inner_opt_tol < 1.0 else []) + b_eq_dual1 + \
+                     (b_eq_inner2 if outer_opt_tol < 1.0 else []) + b_eq_dual2
+            lb_p = blk_lb
+            ub_p = blk_ub
+            # Build strong duality links
+            # Column layout: [x_v | (x_ref1) | dual1 | (x_ref2) | dual2]
+            extra_eq_rows = []
+            extra_ineq_rows = []
+            n_extra_eq = 0
+            n_extra_ineq = 0
+            # --- Link 1: inner objective ---
+            if inner_opt_tol < 1.0:
+                # Equality anchor: c_inner1 · x_ref1 + c_dual1 · d1 = 0
+                eq1 = sparse.lil_matrix((1, n_total))
+                off = n_v  # x_ref1 starts here
+                for j, v in enumerate(c_inner1):
+                    if v != 0: eq1[0, off + j] = v
+                off = n_v + n_ref1  # dual1 starts here
+                for j, v in enumerate(c_dual1):
+                    if v != 0: eq1[0, off + j] = v
+                extra_eq_rows.append(eq1.tocsr())
+                b_eq_p.append(0.0)
+                n_extra_eq += 1
+                # Relaxed inequality: c_v · x_v + tol * c_dual1 · d1 <= 0
+                iq1 = sparse.lil_matrix((1, n_total))
+                for j, v in enumerate(c_v):
+                    if v != 0: iq1[0, j] = v
+                off = n_v + n_ref1  # dual1 starts here
+                for j, v in enumerate(c_dual1):
+                    if v != 0: iq1[0, off + j] = inner_opt_tol * v
+                extra_ineq_rows.append(iq1.tocsr())
+                b_ineq_p.append(0.0)
+                n_extra_ineq += 1
+            else:
+                # Exact: c_v · x_v + c_dual1 · d1 = 0
+                eq1 = sparse.lil_matrix((1, n_total))
+                for j, v in enumerate(c_v):
+                    if v != 0: eq1[0, j] = v
+                off = n_v + n_ref1  # dual1 starts here (n_ref1=0 when exact)
+                for j, v in enumerate(c_dual1):
+                    if v != 0: eq1[0, off + j] = v
+                extra_eq_rows.append(eq1.tocsr())
+                b_eq_p.append(0.0)
+                n_extra_eq += 1
+            # --- Link 2: outer objective ---
+            off_ref2 = n_v + n_ref1 + n_dual1  # where ref2 or dual2 starts
+            if outer_opt_tol < 1.0:
+                # Equality anchor: c_inner2 · x_ref2 + c_dual2 · d2 = 0
+                eq2 = sparse.lil_matrix((1, n_total))
+                off = off_ref2  # x_ref2 starts here
+                for j, v in enumerate(c_inner2):
+                    if v != 0: eq2[0, off + j] = v
+                off = off_ref2 + n_ref2  # dual2 starts here
+                for j, v in enumerate(c_dual2):
+                    if v != 0: eq2[0, off + j] = v
+                extra_eq_rows.append(eq2.tocsr())
+                b_eq_p.append(0.0)
+                n_extra_eq += 1
+                # Relaxed inequality: c_in2 · x_v + tol * c_dual2 · d2 <= 0
+                iq2 = sparse.lil_matrix((1, n_total))
+                for j, v in enumerate(c_in2):
+                    if v != 0: iq2[0, j] = v
+                off = off_ref2 + n_ref2  # dual2 starts here
+                for j, v in enumerate(c_dual2):
+                    if v != 0: iq2[0, off + j] = outer_opt_tol * v
+                extra_ineq_rows.append(iq2.tocsr())
+                b_ineq_p.append(0.0)
+                n_extra_ineq += 1
+            else:
+                # Exact: c_in2 · x_v + c_dual2 · d2 = 0
+                eq2 = sparse.lil_matrix((1, n_total))
+                for j, v in enumerate(c_in2):
+                    if v != 0: eq2[0, j] = v
+                off = off_ref2  # dual2 starts here (n_ref2=0 when exact)
+                for j, v in enumerate(c_dual2):
+                    if v != 0: eq2[0, off + j] = v
+                extra_eq_rows.append(eq2.tocsr())
+                b_eq_p.append(0.0)
+                n_extra_eq += 1
+            # Assemble final equality and inequality matrices
+            if extra_ineq_rows:
+                A_ineq_p = sparse.vstack([A_ineq_p] + extra_ineq_rows).tocsr()
+            if extra_eq_rows:
+                A_eq_p = sparse.vstack([A_eq_base] + extra_eq_rows).tocsr()
+            else:
+                A_eq_p = A_eq_base.tocsr()
+            # 5. update z-associations
+            z_map_vars_p = sparse.hstack(blk_zmv)
+            z_map_constr_ineq_p = sparse.hstack(blk_zci + [sparse.csc_matrix((self.num_z, n_extra_ineq))])
+            z_map_constr_eq_p = sparse.hstack(blk_zce + [sparse.csc_matrix((self.num_z, n_extra_eq))])
+            # PROTECT-style dispatch: feasibility requirement, no MILP objective
+            A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = reassign_lb_ub_from_ineq(
+                A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
+            z_map_vars_i = z_map_vars_p
+            c_i = [0 for _ in range(A_ineq_i.shape[1])]
         if sd_module[MODULE_TYPE] == OPTCOUPLE:
             c_p = c_v + [0 for _ in c_inner_dual]
             # (continued from optknock)
@@ -380,6 +580,67 @@ class SDProblem:
             # 11. objective: maximize distance between growth rate at production and no production
             c_i = c_p + [-c for c in c_b]
 
+        # 2b. Extend bilevel _p with outer objective for PROTECT/SUPPRESS
+        if sd_module[MODULE_TYPE] in [PROTECT, SUPPRESS] and sd_module[OUTER_OBJECTIVE] is not None:
+            c_out = linexprdict2mat(sd_module[OUTER_OBJECTIVE], self.model.reactions.list_attr('id'))
+            if not hasattr(sd_module,OUTER_OPT_SENSE) or sd_module[OUTER_OPT_SENSE] is None or \
+                sd_module[OUTER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE] or sd_module[OUTER_OPT_SENSE] == MAXIMIZE:
+                c_out = -c_out
+            c_out = c_out.toarray()[0].tolist()
+            # c_out is in minimization form (negated if MAXIMIZE).
+            # Passing it to LP_dualize enforces maximization of the original objective
+            # over the inner-optimal set (min(-c_original) = max(c_original)).
+            c_out_in_p = sparse.csr_matrix(c_out)
+            c_out_in_p.resize((1, A_ineq_p.shape[1]))
+            c_out_in_p = c_out_in_p.toarray()[0].tolist()
+            # Dualize the inner bilevel with outer objective
+            A_ineq_dl, b_ineq_dl, A_eq_dl, b_eq_dl, lb_dl, ub_dl, c_dl, \
+                z_map_constr_ineq_dl, z_map_constr_eq_dl, z_map_vars_dl \
+                = LP_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_out_in_p,
+                             z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
+            # Connect _p + dual via strong duality (with optional outer opt_tol)
+            outer_opt_tol = sd_module[OUTER_OPT_TOL] if sd_module[OUTER_OPT_TOL] is not None else 1.0
+            if outer_opt_tol < 1.0:
+                # Reference primal approach: [_p_actual, _p_ref, _dl]
+                # _p_ref is an exact copy of _p that anchors the dual at the true optimum
+                n_p = A_ineq_p.shape[1]
+                n_dl = A_ineq_dl.shape[1]
+                # Build reference copy of _p (same constraints, bounds)
+                A_ineq_ext = sparse.block_diag((A_ineq_p, A_ineq_p, A_ineq_dl)).tocsr()
+                b_ineq_ext = b_ineq_p + b_ineq_p + b_ineq_dl
+                A_eq_base = sparse.block_diag((A_eq_p, A_eq_p, A_eq_dl))
+                b_eq_ext = b_eq_p + b_eq_p + b_eq_dl
+                # Equality anchor: c_out · x_ref + c_dl · d_out = 0
+                eq_link = sparse.hstack((sparse.csr_matrix((1, n_p)),
+                    sparse.csr_matrix(c_out_in_p), sparse.csr_matrix(c_dl)))
+                # Relaxed inequality: c_out · x_actual + tol * c_dl · d_out <= 0
+                c_dl_scaled = [outer_opt_tol * v for v in c_dl]
+                iq_link = sparse.hstack((sparse.csr_matrix(c_out_in_p),
+                    sparse.csr_matrix((1, n_p)), sparse.csr_matrix(c_dl_scaled)))
+                A_eq_p = sparse.vstack((A_eq_base, eq_link)).tocsr()
+                b_eq_p = b_eq_ext + [0.0]
+                A_ineq_p = sparse.vstack((A_ineq_ext, iq_link)).tocsr()
+                b_ineq_p = b_ineq_ext + [0.0]
+                lb_p = lb_p + lb_p + lb_dl
+                ub_p = ub_p + ub_p + ub_dl
+                z_map_vars_p = sparse.hstack((z_map_vars_p, z_map_vars_p, z_map_vars_dl))
+                z_map_constr_ineq_p = sparse.hstack((z_map_constr_ineq_p, z_map_constr_ineq_p,
+                    z_map_constr_ineq_dl, sparse.csc_matrix((self.num_z, 1))))
+                z_map_constr_eq_p = sparse.hstack((z_map_constr_eq_p, z_map_constr_eq_p,
+                    z_map_constr_eq_dl, sparse.csc_matrix((self.num_z, 1))))
+            else:
+                # Exact outer optimality (original code)
+                A_ineq_p = sparse.block_diag((A_ineq_p, A_ineq_dl)).tocsr()
+                b_ineq_p = b_ineq_p + b_ineq_dl
+                A_eq_p = sparse.vstack((sparse.block_diag((A_eq_p, A_eq_dl)),
+                    sparse.hstack((sparse.csr_matrix(c_out_in_p), sparse.csr_matrix(c_dl))))).tocsr()
+                b_eq_p = b_eq_p + b_eq_dl + [0.0]
+                lb_p = lb_p + lb_dl
+                ub_p = ub_p + ub_dl
+                z_map_vars_p = sparse.hstack((z_map_vars_p, z_map_vars_dl))
+                z_map_constr_ineq_p = sparse.hstack((z_map_constr_ineq_p, z_map_constr_ineq_dl))
+                z_map_constr_eq_p = sparse.hstack((z_map_constr_eq_p, z_map_constr_eq_dl, sparse.csc_matrix((self.num_z, 1))))
+
         # 3. Prepare module as undesired, desired or other
         if sd_module[MODULE_TYPE] == PROTECT:
             A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = reassign_lb_ub_from_ineq(
@@ -413,6 +674,50 @@ class SDProblem:
         self.c += c_i
         self.lb += lb_i
         self.ub += ub_i
+
+    def save_debug(self, path):
+        """Save MILP problem matrices for debugging.
+
+        Saves all matrix attributes (A_ineq, b_ineq, A_eq, b_eq, lb, ub, c, idx_z,
+        cost, indic_constr, z_map_*, z_inverted, z_non_targetable) and the model to a
+        pickle file. The solver backend itself is not saved (not picklable).
+
+        Args:
+            path (str): File path for the pickle dump.
+        """
+        import pickle
+        data = {
+            'A_ineq': self.A_ineq,
+            'b_ineq': self.b_ineq,
+            'A_eq': self.A_eq,
+            'b_eq': self.b_eq,
+            'lb': self.lb,
+            'ub': self.ub,
+            'c': self.c,
+            'idx_z': self.idx_z,
+            'cost': self.cost,
+            'z_inverted': self.z_inverted,
+            'z_non_targetable': self.z_non_targetable,
+            'z_map_constr_ineq': self.z_map_constr_ineq,
+            'z_map_constr_eq': self.z_map_constr_eq,
+            'z_map_vars': self.z_map_vars,
+            'num_z': self.num_z,
+            'solver': self.solver,
+            'M': self.M,
+            'max_cost': self.max_cost,
+            'sd_modules': self.sd_modules,
+            'model_reactions': [r.id for r in self.model.reactions],
+            'model_metabolites': [m.id for m in self.model.metabolites],
+        }
+        if hasattr(self, 'indic_constr') and self.indic_constr:
+            ic = self.indic_constr
+            data['indic_constr'] = {
+                'A': ic.A, 'b': ic.b, 'sense': ic.sense,
+                'binv': ic.binv, 'indicval': ic.indicval,
+            }
+        with open(path, 'wb') as f:
+            pickle.dump(data, f)
+        logging.info('Debug dump saved to ' + str(path))
 
     def link_z(self):
         """Connect binary intervention variables to variables and constraints of the strain design problem

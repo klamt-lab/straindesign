@@ -23,13 +23,13 @@ from typing import Dict, List, Tuple
 import numpy as np
 import logging
 import json
+import time
 from copy import deepcopy
-import logging
 from cobra import Model
 from cobra.manipulation import rename_genes
 from straindesign import SDModule, SDSolutions, select_solver, fva, DisableLogger, SDProblem, SDMILP
 from straindesign.names import *
-from straindesign.networktools import   remove_ext_mets, remove_dummy_bounds, bound_blocked_or_irrevers_fva, \
+from straindesign.networktools import   remove_ext_mets, bound_blocked_or_irrevers_fva, \
                                         reduce_gpr, extend_model_gpr, extend_model_regulatory, \
                                         compress_model, compress_modules, compress_ki_ko_cost, expand_sd, filter_sd_maxcost, \
                                         with_suppressed_lp, _silent_io
@@ -156,7 +156,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
-        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'compression_backend'
+        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'compression_backend', 'debug_dump_path'
     }
     logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
@@ -328,6 +328,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                             no_par_compress_reacs.add(k)
         compression_backend = kwargs.get('compression_backend', 'sparse_rref')
         logging.info('Compressing Network (' + str(len(cmp_model.reactions)) + ' reactions).')
+        t0 = time.time()
         cmp_mapReac_1 = compress_model(cmp_model, no_par_compress_reacs,
                                         compression_backend=compression_backend,
                                         propagate_gpr=True)
@@ -335,14 +336,16 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         # Compress reaction + regulatory costs only (gene costs not yet added)
         cmp_ko_cost, cmp_ki_cost, cmp_mapReac_1 = compress_ki_ko_cost(
             uncmp_ko_cost, uncmp_ki_cost, cmp_mapReac_1)
-        logging.info('  Compressed to ' + str(len(cmp_model.reactions)) + ' reactions.')
+        logging.info('  Compressed to ' + str(len(cmp_model.reactions)) + ' reactions (%.1fs).' % (time.time() - t0))
     else:
         cmp_mapReac_1 = []
         cmp_ko_cost = uncmp_ko_cost
         cmp_ki_cost = uncmp_ki_cost
     # --- FVAs on (possibly compressed) model ---
     logging.info('  FVA to identify blocked reactions and irreversibilities.')
+    t0 = time.time()
     bound_blocked_or_irrevers_fva(cmp_model, solver=kwargs[SOLVER], compress=False)
+    logging.info('  FVA done (%.1fs).' % (time.time() - t0))
     logging.info('  FVA(s) to identify essential reactions.')
     essential_reacs = set()
     for m in sd_modules:
@@ -404,6 +407,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     # --- COMPRESS #2: after GPR extension ---
     if kwargs['compress'] is True or kwargs['compress'] is None:
         logging.info('Compressing after GPR extension (' + str(len(cmp_model.reactions)) + ' reactions).')
+        t0 = time.time()
         # Rebuild no_par_compress_reacs from updated sd_modules
         no_par_compress_reacs = set()
         for m in sd_modules:
@@ -423,19 +427,48 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2 = compress_ki_ko_cost(
             cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2)
         cmp_mapReac = cmp_mapReac_1 + cmp_mapReac_2
+        logging.info('  Compressed to ' + str(len(cmp_model.reactions)) + ' reactions (%.1fs).' % (time.time() - t0))
     else:
         cmp_mapReac = []
 
-    # An FVA to identify essentials before building and launching MILP (not sure if this has an effect)
+    # FVA to identify essential reactions and size-1 MCS before building MILP
     logging.info('  FVA(s) in compressed model to identify essential reactions.')
     essential_reacs = set()
+    suppress_essential = set()
+    cmp_size1_mcs = []
     for m in sd_modules:
-        if m[MODULE_TYPE] != SUPPRESS:  # Essential reactions can only be determined from desired
-            # or opt-/robustknock modules
-            flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS], compress=False)
-            for (reac_id, limits) in flux_limits.iterrows():
-                if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0:  # find essential
-                    essential_reacs.add(reac_id)
+        flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS], compress=False)
+        m['flux_limits'] = flux_limits  # store for potential future use (e.g. M-bounding)
+        essentials_in_module = set()
+        for (reac_id, limits) in flux_limits.iterrows():
+            if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0:
+                essentials_in_module.add(reac_id)
+        if m[MODULE_TYPE] != SUPPRESS:
+            essential_reacs.update(essentials_in_module)
+        else:
+            suppress_essential.update(essentials_in_module)
+
+    # Size-1 MCS detection: only for classical MCS problems (one SUPPRESS + any PROTECT)
+    is_classical_mcs = (len([m for m in sd_modules if m[MODULE_TYPE] == SUPPRESS]) == 1 and
+                        all(m[MODULE_TYPE] == PROTECT for m in [m for m in sd_modules if m[MODULE_TYPE] != SUPPRESS]))
+    if is_classical_mcs and suppress_essential:
+        # Essential for SUPPRESS but NOT for PROTECT → size-1 MCS
+        size1_mcs = suppress_essential - essential_reacs
+        # Filter to only knockable reactions (in ko_cost, not ki_cost or regulatory)
+        size1_mcs_knockable = {r for r in size1_mcs if r in cmp_ko_cost}
+        if size1_mcs_knockable:
+            cmp_size1_mcs = [{r: -1} for r in size1_mcs_knockable]
+            logging.info('  Found ' + str(len(cmp_size1_mcs)) + ' size-1 MCS via SUPPRESS FVA.')
+        # Reactions essential for BOTH SUPPRESS and PROTECT are non-knockable
+        both_essential = suppress_essential & essential_reacs
+        essential_reacs.update(both_essential)
+        # Size-1 MCS reactions: remove from ko_cost only (not from ki/reg costs)
+        # They are already found; any larger MCS containing them is non-minimal.
+        # But we only remove pure KO candidates — reactions with regulatory or KI
+        # interventions may still participate in non-KO solutions.
+        for r in size1_mcs_knockable:
+            cmp_ko_cost.pop(r, None)
+
     # remove ko-costs (and thus knockability) of essential reactions
     [cmp_ko_cost.pop(er) for er in essential_reacs if er in cmp_ko_cost]
     essential_kis = set(cmp_ki_cost[er] for er in essential_reacs if er in cmp_ki_cost)
@@ -460,7 +493,9 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     logging.info("  Model size: " + str(len(cmp_model.reactions)) + " reactions, " + str(len(cmp_model.metabolites)) + " metabolites")
     logging.info("  " + str(len(cmp_ko_cost) + len(cmp_ki_cost) - len(essential_kis)) + " targetable reactions")
 
+    t0 = time.time()
     sd_milp = SDMILP(cmp_model, sd_modules, **kwargs_milp)
+    logging.info('  MILP constructed (%.1fs).' % (time.time() - t0))
 
     kwargs_computation = {}
     if MAX_SOLUTIONS in kwargs:
@@ -475,27 +510,85 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     else:
         solution_approach = BEST
 
+    debug_dump_path = kwargs.pop('debug_dump_path', None)
+    if debug_dump_path:
+        import os, pickle
+        pre_path = os.path.splitext(debug_dump_path)[0] + '_pre.pkl'
+        with open(pre_path, 'wb') as f:
+            pickle.dump({
+                'cmp_model': cmp_model,
+                'sd_modules': sd_modules,
+                'kwargs_milp': kwargs_milp,
+                'kwargs_computation': kwargs_computation,
+                'solution_approach': solution_approach,
+                'cmp_mapReac': cmp_mapReac,
+            }, f)
+        logging.info('Pre-MILP debug dump saved to ' + pre_path)
+        logging.info('  Reload & re-run with a different seed:')
+        logging.info('    import pickle')
+        logging.info('    from straindesign import SDMILP')
+        logging.info("    d = pickle.load(open('%s', 'rb'))" % pre_path.replace('\\', '\\\\'))
+        logging.info("    d['kwargs_milp']['seed'] = 42  # change seed")
+        logging.info("    milp = SDMILP(d['cmp_model'], d['sd_modules'], **d['kwargs_milp'])")
+        logging.info("    sol = milp.compute_optimal(**d['kwargs_computation'])  # or .compute / .enumerate")
+        # Save post-MILP data (problem matrices)
+        post_path = os.path.splitext(debug_dump_path)[0] + '_post.pkl'
+        sd_milp.save_debug(post_path)
+
     # solve MILP
+    logging.info('  Solving MILP (%s)...' % solution_approach)
+    t0 = time.time()
     if solution_approach == ANY:
         cmp_sd_solution = sd_milp.compute(**kwargs_computation)
     elif solution_approach == BEST:
         cmp_sd_solution = sd_milp.compute_optimal(**kwargs_computation)
     elif solution_approach == POPULATE:
         cmp_sd_solution = sd_milp.enumerate(**kwargs_computation)
+    logging.info('  MILP solved (%.1fs).' % (time.time() - t0))
 
     logging.info('  Decompressing.')
+    compressed_sd = []
+    group_map = []
     if cmp_sd_solution.status in [OPTIMAL, TIME_LIMIT_W_SOL]:
-        sd = expand_sd(cmp_sd_solution.get_reaction_sd_mark_no_ki(), cmp_mapReac)
-        sd = filter_sd_maxcost(sd, kwargs[MAX_COST], uncmp_ko_cost, uncmp_ki_cost)
-        sd = postprocess_reg_sd(uncmp_reg_cost, sd)
+        cmp_sds = cmp_sd_solution.get_reaction_sd_mark_no_ki()
+        compressed_sd = [s.copy() for s in cmp_sds]
+        # Expand each compressed solution individually to track group membership
+        sd = []
+        for grp_idx, cmp_s in enumerate(cmp_sds):
+            expanded = expand_sd([cmp_s], cmp_mapReac)
+            expanded = filter_sd_maxcost(expanded, kwargs[MAX_COST], uncmp_ko_cost, uncmp_ki_cost)
+            expanded = postprocess_reg_sd(uncmp_reg_cost, expanded)
+            for s in expanded:
+                sd.append(s)
+                group_map.append(grp_idx)
     else:
         sd = []
+    # Add size-1 MCS found via SUPPRESS FVA (expand from compressed to original space)
+    next_grp = len(compressed_sd)
+    if cmp_size1_mcs:
+        existing = [frozenset(s.items()) for s in sd]
+        for grp_idx, cmp_s in enumerate(cmp_size1_mcs):
+            expanded = expand_sd([cmp_s], cmp_mapReac)
+            expanded = filter_sd_maxcost(expanded, kwargs[MAX_COST], uncmp_ko_cost, uncmp_ki_cost)
+            expanded = postprocess_reg_sd(uncmp_reg_cost, expanded)
+            for s in expanded:
+                if frozenset(s.items()) not in existing:
+                    sd.append(s)
+                    group_map.append(next_grp + grp_idx)
+                    existing.append(frozenset(s.items()))
+            compressed_sd.append(cmp_s)
+        if cmp_sd_solution.status not in [OPTIMAL, TIME_LIMIT_W_SOL] and sd:
+            cmp_sd_solution.status = OPTIMAL
 
     setup = deepcopy(cmp_sd_solution.sd_setup)
     setup.update({MODULES: orig_sd_modules, KOCOST: orig_ko_cost, KICOST: orig_ki_cost, REGCOST: orig_reg_cost})
     if kwargs['gene_kos']:
         setup.update({GKOCOST: orig_gko_cost, GKICOST: orig_gki_cost})
     sd_solutions = SDSolutions(orig_model, sd, cmp_sd_solution.status, setup)
+    # Attach compressed solution data for design group analysis
+    sd_solutions.compressed_sd = compressed_sd
+    sd_solutions.compression_map = cmp_mapReac
+    sd_solutions.group_map = group_map
     logging.info(str(len(sd)) + ' solutions found.')
 
     return sd_solutions

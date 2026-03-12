@@ -1209,6 +1209,12 @@ When BEST generates multiple solutions iteratively, each call starts cold. Warm-
 **Improving RobustKnock numerics:**
 The three-level dual construction in ROBUSTKNOCK creates very large matrices with potential for numerical blow-up. Applying scaling (row/column normalization) to the LP before and after dualization could help. Alternatively, use iterative refinement at the inner LP level.
 
+**SOS1/SOS2 constraints for bilevel formulations:**
+Gurobi, CPLEX, and SCIP support SOS1 (Special Ordered Sets type 1) and SOS2 constraints natively. These could be useful for connecting variables of primal and KKT parts of multi-level optimization problems, encoding complementarity conditions (primal-dual coupling) more efficiently, or as an alternative to big-M for disjunctive constraints in bilevel formulations. SOS1 constraints enforce that at most one variable in a set is nonzero, which is exactly the complementarity condition in KKT-based reformulations.
+
+**Sparse matrix format conversions:**
+The computation pipeline contains many sparse matrix format conversions (`tocsr`, `tocsc`, `todok`, `tocoo`) that may not all be necessary. A profiling pass could identify redundant conversions. Key areas: `SDProblem.__init__` performs multiple `tocsc`/`tocsr` conversions during `link_z`; `addModule` builds matrices in one format then converts for block assembly; `compression.py` converts between formats during RREF and coupled-reaction detection. Eliminating unnecessary conversions could reduce preprocessing time, especially for large models.
+
 **Integration of regulatory networks beyond simple T/F interventions:**
 The current regulatory intervention model (active/inactive) is binary. Future work could integrate thermodynamic constraints or kinetic feasibility checks.
 

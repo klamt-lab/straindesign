@@ -342,6 +342,38 @@ class SDSolutions(object):
             assoc.append(reacs_sd_hash.index(hs))
         return reacs_sd, assoc, gene_sd
 
+    def get_group(self, i):
+        """Get all expanded solution indices that belong to the same compressed group as solution i.
+
+        Returns a list of indices into reaction_sd that share the same compressed solution origin.
+        Requires that compute_strain_designs was called with compression enabled.
+        """
+        if not hasattr(self, 'group_map') or not self.group_map:
+            raise AttributeError('No group information available. Run compute_strain_designs with compression enabled.')
+        grp = self.group_map[i]
+        return [j for j, g in enumerate(self.group_map) if g == grp]
+
+    def get_num_groups(self):
+        """Get the number of distinct compressed solution groups."""
+        if not hasattr(self, 'group_map') or not self.group_map:
+            return len(self.reaction_sd)
+        return len(set(self.group_map))
+
+    def get_representative_sd(self):
+        """Get one representative expanded solution per compressed group.
+
+        Returns a list of dicts, one per unique compressed solution.
+        """
+        if not hasattr(self, 'group_map') or not self.group_map:
+            return self.get_reaction_sd()
+        seen = set()
+        reps = []
+        for i, grp in enumerate(self.group_map):
+            if grp not in seen:
+                seen.add(grp)
+                reps.append(strip_non_ki(self.reaction_sd[i]))
+        return reps
+
     def save(self, filename):
         """Save strain design solutions to a file."""
         with open(filename, 'wb') as f:

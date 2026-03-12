@@ -152,6 +152,12 @@ class Gurobi_MILP_LP(gp.Model):
             self.params.MIPFocus = 0
         self.update()
 
+    def __del__(self):
+        try:
+            self.dispose()
+        except Exception:
+            pass
+
     def _safe_optimize(self):
         """Call optimize(), retrying with Presolve=0 on Gurobi 13 ObjBound bug.
 
