@@ -129,14 +129,17 @@ def idx2c(i, prev) -> 'list':
 
 
 def _fva_worker_cleanup():
-    """Dispose the global LP and Gurobi default environment on worker exit."""
+    """Dispose the global LP and solver environment on worker exit."""
     global lp_glob
     try:
-        if lp_glob is not None and hasattr(lp_glob, 'solver') and lp_glob.solver == 'gurobi':
+        if lp_glob is not None and hasattr(lp_glob, 'solver'):
             with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
-                lp_glob.backend.dispose()
-                import gurobipy as gp
-                gp.disposeDefaultEnv()
+                if lp_glob.solver == 'gurobi':
+                    lp_glob.backend.dispose()
+                    import gurobipy as gp
+                    gp.disposeDefaultEnv()
+                elif lp_glob.solver == 'cplex':
+                    lp_glob.backend.end()
         lp_glob = None
     except Exception:
         pass
@@ -163,8 +166,8 @@ def fva_worker_init(A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver):
         elif lp_glob.solver == 'gurobi':
             lp_glob.backend.params.Threads = 1
         lp_glob.prev = 0
-    # Register cleanup to properly release Gurobi WLS sessions on worker exit
-    if solver == 'gurobi':
+    # Register cleanup to properly release solver resources on worker exit
+    if solver in ('gurobi', 'cplex'):
         import atexit
         atexit.register(_fva_worker_cleanup)
 
