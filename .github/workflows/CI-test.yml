@@ -100,7 +100,7 @@ jobs:
           pip install pytest pytest-timeout
       - name: Set up Conda Environment with Micromamba
         if: matrix.package-manager == 'conda'
-        uses: mamba-org/setup-micromamba@v1
+        uses: mamba-org/setup-micromamba@v2
         with:
           environment-name: straindesign
           micromamba-version: latest
@@ -142,7 +142,7 @@ jobs:
           micromamba install pytest pytest-timeout
       - name: Test with pytest
         run: |
-          pytest tests -v --log-cli-level=INFO 2>&1 | tee pytest_output.txt || true
+          pytest tests -v --medium --log-cli-level=INFO 2>&1 | tee pytest_output.txt || true
           if grep -q ' FAILED' pytest_output.txt; then
             echo "Test failures detected."
             exit 1

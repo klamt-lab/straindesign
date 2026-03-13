@@ -182,7 +182,7 @@ class SDProblem:
             1 if (not self.z_non_targetable[i]) and (not self.z_inverted[i]) else -1 if self.z_inverted[i] else 0
             for i in range(0, self.num_z)
         ]
-        z_kos_kis = sparse.diags(z_kos_kis)
+        z_kos_kis = sparse.diags(z_kos_kis, dtype=float)
         self.z_map_constr_ineq = z_kos_kis * self.z_map_constr_ineq
         self.z_map_constr_eq = z_kos_kis * self.z_map_constr_eq
         self.z_map_vars = z_kos_kis * self.z_map_vars

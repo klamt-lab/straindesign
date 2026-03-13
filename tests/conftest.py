@@ -25,6 +25,11 @@ def pytest_configure(config):
         ("large",  "large-model benchmark; enable with --large"),
     ]:
         config.addinivalue_line("markers", f"{marker}: {desc}")
+    # Suppress known third-party warnings
+    config.addinivalue_line("filterwarnings",
+        "ignore:FigureCanvasTemplate is non-interactive:UserWarning")
+    config.addinivalue_line("filterwarnings",
+        "ignore:builtin type Swig.*has no __module__ attribute:DeprecationWarning")
 
 
 def pytest_collection_modifyitems(config, items):
