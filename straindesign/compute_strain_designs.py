@@ -439,7 +439,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     cmp_size1_mcs = []
     for m in sd_modules:
         flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS], compress=False)
-        m['flux_limits'] = flux_limits  # store for potential future use (e.g. M-bounding)
         essentials_in_module = set()
         for (reac_id, limits) in flux_limits.iterrows():
             if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0:

@@ -675,50 +675,6 @@ class SDProblem:
         self.lb += lb_i
         self.ub += ub_i
 
-    def save_debug(self, path):
-        """Save MILP problem matrices for debugging.
-
-        Saves all matrix attributes (A_ineq, b_ineq, A_eq, b_eq, lb, ub, c, idx_z,
-        cost, indic_constr, z_map_*, z_inverted, z_non_targetable) and the model to a
-        pickle file. The solver backend itself is not saved (not picklable).
-
-        Args:
-            path (str): File path for the pickle dump.
-        """
-        import pickle
-        data = {
-            'A_ineq': self.A_ineq,
-            'b_ineq': self.b_ineq,
-            'A_eq': self.A_eq,
-            'b_eq': self.b_eq,
-            'lb': self.lb,
-            'ub': self.ub,
-            'c': self.c,
-            'idx_z': self.idx_z,
-            'cost': self.cost,
-            'z_inverted': self.z_inverted,
-            'z_non_targetable': self.z_non_targetable,
-            'z_map_constr_ineq': self.z_map_constr_ineq,
-            'z_map_constr_eq': self.z_map_constr_eq,
-            'z_map_vars': self.z_map_vars,
-            'num_z': self.num_z,
-            'solver': self.solver,
-            'M': self.M,
-            'max_cost': self.max_cost,
-            'sd_modules': self.sd_modules,
-            'model_reactions': [r.id for r in self.model.reactions],
-            'model_metabolites': [m.id for m in self.model.metabolites],
-        }
-        if hasattr(self, 'indic_constr') and self.indic_constr:
-            ic = self.indic_constr
-            data['indic_constr'] = {
-                'A': ic.A, 'b': ic.b, 'sense': ic.sense,
-                'binv': ic.binv, 'indicval': ic.indicval,
-            }
-        with open(path, 'wb') as f:
-            pickle.dump(data, f)
-        logging.info('Debug dump saved to ' + str(path))
-
     def link_z(self):
         """Connect binary intervention variables to variables and constraints of the strain design problem
         

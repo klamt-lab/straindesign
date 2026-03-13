@@ -1,6 +1,5 @@
 """Compression tests: unit tests, compression_backend parity, FVA equivalence, and MCS validation."""
 import sys
-import platform
 import pytest
 import numpy as np
 import warnings
@@ -148,10 +147,6 @@ def test_full_strain_design_without_java(model_gpr):
 @pytest.fixture
 def jpype_available():
     jpype = pytest.importorskip("jpype", reason="jpype not installed; skipping Java parity tests")
-    if "cplex" in sys.modules:
-        pytest.skip("JVM startup crashes when CPLEX native library is loaded (known JPype/CPLEX conflict)")
-    if platform.system() == "Darwin":
-        pytest.skip("JPype JVM startup is unreliable on macOS ARM64")
     return jpype
 
 
@@ -304,10 +299,6 @@ def test_mcs_e_coli_core(compression_backend):
     """
     if compression_backend == "efmtool_rref":
         pytest.importorskip("jpype", reason="jpype not installed; skipping efmtool backend")
-        if "cplex" in sys.modules:
-            pytest.skip("JVM startup crashes when CPLEX native library is loaded (known JPype/CPLEX conflict)")
-        if platform.system() == "Darwin":
-            pytest.skip("JPype JVM startup is unreliable on macOS ARM64")
     from straindesign.names import SUPPRESS, POPULATE, GLPK, SCIP, GUROBI, CPLEX
     # Solver priority: SCIP (no size limit) > CPLEX > GUROBI (both have free-tier limits)
     strong_solvers = sd.avail_solvers - {GLPK}
@@ -341,16 +332,18 @@ def test_imlcore_compression_parity(jpype_available):
 @pytest.mark.timeout(600)
 def test_mcs_imlcore_parity(jpype_available):
     """MCS on iMLcore returns the same solutions with both compression backends."""
-    from straindesign.names import SUPPRESS, POPULATE, GUROBI
-    if GUROBI not in sd.avail_solvers:
-        pytest.skip("iMLcore MCS parity test requires Gurobi")
+    from straindesign.names import SUPPRESS, POPULATE, GLPK
+    strong_solvers = sd.avail_solvers - {GLPK}
+    if not strong_solvers:
+        pytest.skip("iMLcore MCS parity test requires Gurobi, CPLEX, or SCIP")
+    solver = next(iter(strong_solvers))
     results = {}
     for backend in ['sparse_rref', 'efmtool_rref']:
         model = read_sbml_model(dirname(abspath(__file__)) + r"/iMLcore.xml")
         modules = [sd.SDModule(model, SUPPRESS,
                                constraints='BIOMASS_Ec_iML1515_core_75p37M >= 0.001')]
         sols = sd.compute_strain_designs(model, sd_modules=modules, solution_approach=POPULATE,
-                                         max_cost=3, solver=GUROBI,
+                                         max_cost=3, solver=solver,
                                          compression_backend=backend)
         results[backend] = len(sols.reaction_sd)
     assert results['sparse_rref'] == results['efmtool_rref'], (

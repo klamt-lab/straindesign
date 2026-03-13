@@ -295,9 +295,7 @@ def test_doubleopt(curr_solver, model_doubleopt):
 @pytest.mark.timeout(30)
 def test_solution_merging(model_small_example):
     """Test SDSolutions __add__ and __iadd__ operators."""
-    solver = next((s for s in [CPLEX, GUROBI, SCIP, GLPK] if s in sd.avail_solvers), None)
-    if solver is None:
-        pytest.skip("No solver available")
+    solver = next(s for s in [CPLEX, GUROBI, SCIP, GLPK] if s in sd.avail_solvers)
     modules = [sd.SDModule(model_small_example, SUPPRESS, constraints=["R3 - 0.5 R1 <= 0.0", "R2 <= 0", "R1 >= 0.1"])]
     modules += [
         sd.SDModule(model_small_example, SUPPRESS, constraints=["1.0 R3 - 0.5 R1 - 0.5 R2 <= 0.0 ", "1.0 R2 >= 0.0 ", "1.0 R1 >= 0.1 "])
@@ -339,9 +337,7 @@ def test_solution_merging(model_small_example):
 @pytest.mark.timeout(30)
 def test_dump_preprocessed(model_small_example, tmp_path):
     """Test dump_preprocessed and compute_strain_designs_from_preprocessed workflow."""
-    solver = next((s for s in [CPLEX, GUROBI, SCIP, GLPK] if s in sd.avail_solvers), None)
-    if solver is None:
-        pytest.skip("No solver available")
+    solver = next(s for s in [CPLEX, GUROBI, SCIP, GLPK] if s in sd.avail_solvers)
     modules = [sd.SDModule(model_small_example, SUPPRESS, constraints=["R3 - 0.5 R1 <= 0.0", "R2 <= 0", "R1 >= 0.1"])]
     modules += [
         sd.SDModule(model_small_example, SUPPRESS, constraints=["1.0 R3 - 0.5 R1 - 0.5 R2 <= 0.0 ", "1.0 R2 >= 0.0 ", "1.0 R1 >= 0.1 "])
@@ -374,9 +370,7 @@ def test_dump_preprocessed(model_small_example, tmp_path):
 @pytest.mark.timeout(15)
 def test_lazy_expansion(model_small_example):
     """Test lazy expansion by temporarily lowering the threshold."""
-    solver = next((s for s in [CPLEX, GUROBI, SCIP, GLPK] if s in sd.avail_solvers), None)
-    if solver is None:
-        pytest.skip("No solver available")
+    solver = next(s for s in [CPLEX, GUROBI, SCIP, GLPK] if s in sd.avail_solvers)
     modules = [sd.SDModule(model_small_example, SUPPRESS, constraints=["R3 - 0.5 R1 <= 0.0", "R2 <= 0", "R1 >= 0.1"])]
     modules += [
         sd.SDModule(model_small_example, SUPPRESS, constraints=["1.0 R3 - 0.5 R1 - 0.5 R2 <= 0.0 ", "1.0 R2 >= 0.0 ", "1.0 R1 >= 0.1 "])
