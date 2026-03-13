@@ -398,27 +398,28 @@ def compress_model_java(model, suppressed_reactions=None):
     active_to_model = [i for i in range(num_reac) if old_reac_ids[i] not in suppressed_set]
     num_active = len(active_to_model)
 
-    stoich_mat = DefaultBigIntegerRationalMatrix(num_met, num_active)
-    reversible = jpype.JBoolean[:]([model.reactions[active_to_model[ai]].reversibility for ai in range(num_active)])
-    flipped = set()
-    for ai in range(num_active):
-        mi = active_to_model[ai]
-        if model.reactions[mi].upper_bound <= 0:
-            model.reactions[mi] *= -1
-            flipped.add(ai)
-            logging.debug("Flipped " + model.reactions[mi].id)
-        for k, v in model.reactions[mi]._metabolites.items():
-            n, d = sympyRat2jBigIntegerPair(v)
-            stoich_mat.setValueAt(model.metabolites.index(k.id), ai, BigFraction(n, d))
-
-    # Compress active reactions only.
-    # Disable GC during heavy Java calls — Python's garbage collector can
-    # finalize JPype proxy objects mid-computation, causing Bus error / SIGSEGV.
+    # Disable GC for the entire Java interaction block — Python's garbage
+    # collector can finalize JPype proxy objects mid-JNI call, causing
+    # Bus error / SIGSEGV (non-deterministic, see jpype-project/jpype#934).
     import gc
-    smc = StoichMatrixCompressor(subset_compression)
-    reacNames = jpype.JString[:]([old_reac_ids[active_to_model[ai]] for ai in range(num_active)])
     gc.disable()
     try:
+        stoich_mat = DefaultBigIntegerRationalMatrix(num_met, num_active)
+        reversible = jpype.JBoolean[:]([model.reactions[active_to_model[ai]].reversibility for ai in range(num_active)])
+        flipped = set()
+        for ai in range(num_active):
+            mi = active_to_model[ai]
+            if model.reactions[mi].upper_bound <= 0:
+                model.reactions[mi] *= -1
+                flipped.add(ai)
+                logging.debug("Flipped " + model.reactions[mi].id)
+            for k, v in model.reactions[mi]._metabolites.items():
+                n, d = sympyRat2jBigIntegerPair(v)
+                stoich_mat.setValueAt(model.metabolites.index(k.id), ai, BigFraction(n, d))
+
+        # Compress active reactions only
+        smc = StoichMatrixCompressor(subset_compression)
+        reacNames = jpype.JString[:]([old_reac_ids[active_to_model[ai]] for ai in range(num_active)])
         comprec = smc.compress(stoich_mat, reversible, jpype.JString[num_met], reacNames, None)
         subset_matrix = jpypeArrayOfArrays2numpy_mat(comprec.post.getDoubleRows())
     finally:

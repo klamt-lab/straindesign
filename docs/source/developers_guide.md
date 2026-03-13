@@ -939,6 +939,56 @@ try: import swiglpk; avail_solvers.add('glpk')
 ```
 Exports: all public classes, functions, and the `avail_solvers` set.
 
+Also calls `_start_jvm()` from `efmtool_cmp_interface.py` — see next section.
+
+### `efmtool_cmp_interface.py` — JPype/JVM Initialization
+
+**JPype and Java are optional dependencies.** StrainDesign works without them; the
+default compression backend is `sparse_rref` (pure Python). The efmtool Java backend
+(`compression_backend='efmtool_rref'`) requires `jpype1` and a JVM.
+
+#### Conditional eager JVM startup
+
+`__init__.py` calls `_start_jvm()` at package import time. This function:
+
+1. Checks if `jpype1` is installed (via `find_spec`). If not → immediate return, no-op.
+2. Adds `efmtool.jar` to the classpath.
+3. Starts the JVM with `jpype.startJVM("--enable-native-access=ALL-UNNAMED")`.
+4. Loads all Java classes via `import jpype.imports` + Python import statements.
+5. Registers `atexit` handler for clean JVM shutdown.
+
+If any step fails (no Java installed, jar missing, etc.), the function returns silently.
+Users who never use `efmtool_rref` are unaffected. When `_init_java()` is later called
+(on first efmtool use), it checks `_JAVA_INITIALIZED` and falls back to `JClass()` loading.
+
+#### Why eager, not lazy?
+
+This design is critical for stability. In v1.14, `from .efmtool import *` in `__init__.py`
+started the JVM at import time. When we switched to lazy initialization (JVM started on
+first efmtool use), JPype began crashing with SIGBUS/SIGSEGV on Linux and macOS CI
+runners when processing larger matrices (iMLcore, 586 reactions).
+
+Root causes identified:
+- **JVM + OpenBLAS pthread conflict** ([jpype#808](https://github.com/jpype-project/jpype/issues/808)):
+  The JVM modifies pthread stack allocation. If started after NumPy/OpenBLAS has already
+  spawned worker threads, subsequent JNI calls can trigger SIGSEGV.
+- **GC finalization race** ([jpype#934](https://github.com/jpype-project/jpype/issues/934)):
+  Python's garbage collector can attempt to finalize JPype proxy objects during a JNI
+  call, causing Bus error. Mitigated with `gc.disable()`/`gc.enable()` around heavy
+  Java calls in `basic_columns_rat_java` and `compress_model_java`.
+- **`import jpype.imports` vs `JClass()`**: The Python import-style class loading
+  (`import ch.javasoft...`) sets up JNI references differently from `JClass()`. The
+  import style (used in v1.14) is more stable on CI runners.
+
+#### CI considerations
+
+Java 21 (Temurin) is used on all CI platforms. The `--enable-native-access=ALL-UNNAMED`
+flag suppresses Java 17+ warnings about JPype's `System.load()` calls. Despite all
+mitigations, JPype JNI crashes remain non-deterministic at ~1-in-20 frequency on some
+Linux runners ([jpype#934](https://github.com/jpype-project/jpype/issues/934)). The
+iMLcore efmtool parity tests are marked `--large` (skipped on CI) since the e_coli_core
+tests exercise the same code path on a smaller, more reliable matrix size.
+
 ---
 
 ## 11. Known Issues, Urgent Actions & Future Work
