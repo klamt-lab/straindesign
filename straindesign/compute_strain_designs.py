@@ -727,13 +727,14 @@ def _build_lazy_representatives(cmp_sds, cmp_size1_mcs, cmp_mapReac, max_cost,
     return sd, group_map, compressed_sd
 
 
-def compute_strain_designs_from_preprocessed(dump_path, seed=None, solver=None,
+def compute_strain_designs_from_preprocessed(dump, seed=None, solver=None,
                                              solution_approach=None, max_solutions=None,
                                              time_limit=None):
     """Load preprocessed model and run MILP solve with optional overrides.
 
     Args:
-        dump_path (str): Path to pickle file created by dump_preprocessed.
+        dump (str or dict): Path to pickle file created by dump_preprocessed,
+            or the dict itself (e.g. after unpickling and modifying).
         seed (int, optional): Override MILP solver seed.
         solver (str, optional): Override solver.
         solution_approach (str, optional): Override solution approach ('any', 'best', 'populate').
@@ -743,9 +744,12 @@ def compute_strain_designs_from_preprocessed(dump_path, seed=None, solver=None,
     Returns:
         (SDSolutions): Strain design solutions.
     """
-    import pickle as _pickle
-    with open(dump_path, 'rb') as f:
-        d = _pickle.load(f)
+    if isinstance(dump, dict):
+        d = dump
+    else:
+        import pickle as _pickle
+        with open(dump, 'rb') as f:
+            d = _pickle.load(f)
 
     cmp_model = d['cmp_model']
     sd_modules = d['sd_modules']
