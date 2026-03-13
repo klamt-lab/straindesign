@@ -146,7 +146,11 @@ def _init_java():
                 _fh.disable()
             try:
                 with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                    jpype.startJVM()
+                    # Reduce thread stack size from the macOS ARM64 default (2048 KB)
+                    # to avoid OS-level SIGKILL from virtual memory exhaustion on
+                    # larger workloads (e.g. iMLcore RREF). See:
+                    # https://github.com/adoptium/adoptium-support/issues/951
+                    jpype.startJVM("-Xss512k")
             finally:
                 if _fh_was_enabled:
                     _fh.enable()
