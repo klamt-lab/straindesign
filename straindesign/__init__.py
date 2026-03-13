@@ -43,6 +43,13 @@ if module_exists("gurobipy"):
 if module_exists("pyscipopt"):
     avail_solvers.add(SCIP)
 
+# Start JVM early (before NumPy/OpenBLAS spawns worker threads) to avoid
+# SIGSEGV from pthread stack conflicts.  See jpype-project/jpype#808.
+# This is a no-op when jpype or Java is not installed.
+from .efmtool_cmp_interface import _start_jvm as _start_jvm
+_start_jvm()
+del _start_jvm
+
 from .solver_interface import *
 from .indicatorConstraints import *
 from .pool import *

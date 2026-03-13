@@ -90,12 +90,77 @@ def _search_for_jvm():
     return None
 
 
-def _init_java():
-    """
-    Initialize JVM and Java classes.
+def _start_jvm():
+    """Start the JVM if jpype is available and a JVM is not already running.
 
-    This function is called lazily only when compression_backend='efmtool_rref'.
-    Raises ImportError if jpype is not installed.
+    Called eagerly at package import time (from __init__.py) so that the JVM
+    is initialised before NumPy/OpenBLAS spawns worker threads.  Starting the
+    JVM *after* heavy OpenBLAS use causes SIGSEGV on Linux/macOS due to
+    pthread stack modifications (https://github.com/jpype-project/jpype/issues/808).
+
+    This only starts the JVM — Java class loading is still deferred to
+    ``_init_java()`` which is called on first use of the efmtool backend.
+    """
+    if not _check_jpype_available():
+        return  # jpype not installed — nothing to do
+
+    import jpype
+    import io
+    from contextlib import redirect_stdout, redirect_stderr
+
+    # Add efmtool.jar to classpath
+    efmtool_jar = os.path.join(os.path.dirname(__file__), 'efmtool.jar')
+    if os.path.exists(efmtool_jar):
+        jpype.addClassPath(efmtool_jar)
+
+    if jpype.isJVMStarted():
+        return
+
+    # Look up JVM at different locations
+    if not os.environ.get("JAVA_HOME"):
+        candidate = _search_for_jvm()
+        if candidate:
+            os.environ["JAVA_HOME"] = candidate
+
+    try:
+        # Suppress faulthandler during JVM startup to prevent ugly
+        # "Windows fatal exception: access violation" messages.
+        # On Windows, jpype.startJVM() can trigger an access violation
+        # that is caught by Python's structured exception handler, but
+        # faulthandler prints a stack trace before the exception is raised.
+        import faulthandler as _fh
+        _fh_was_enabled = _fh.is_enabled()
+        if _fh_was_enabled:
+            _fh.disable()
+        try:
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                # --enable-native-access: allow JPype's System.load() calls
+                #   without warnings on Java 17+ and prevent blocking on 24+.
+                jpype.startJVM("--enable-native-access=ALL-UNNAMED")
+        finally:
+            if _fh_was_enabled:
+                _fh.enable()
+        # Register explicit JVM shutdown to avoid SIGSEGV during Python
+        # exit (known JPype race condition in _JTerminate, see
+        # https://github.com/jpype-project/jpype/issues/842).
+        import atexit
+        def _shutdown_jvm():
+            try:
+                import jpype as _jp
+                if _jp.isJVMStarted():
+                    _jp.shutdownJVM()
+            except Exception:
+                pass
+        atexit.register(_shutdown_jvm)
+    except Exception:
+        pass  # JVM startup failed — will raise a clear error in _init_java()
+
+
+def _init_java():
+    """Load Java classes for efmtool compression.
+
+    Called lazily on first use of compression_backend='efmtool_rref'.
+    The JVM itself is already running (started eagerly by _start_jvm).
     """
     global _JAVA_INITIALIZED
     global DefaultBigIntegerRationalMatrix, Gauss, CompressionMethod
@@ -116,74 +181,24 @@ def _init_java():
                           "Or use the default Python compression (compression_backend='sparse_rref').")
 
     import jpype
-    import io
-    from contextlib import redirect_stdout, redirect_stderr
 
-    # Add efmtool.jar to classpath
+    # Ensure JVM is running (in case _start_jvm was not called or failed silently)
+    if not jpype.isJVMStarted():
+        _start_jvm()
+    if not jpype.isJVMStarted():
+        extra_info = ""
+        if not os.environ.get("JAVA_HOME"):
+            extra_info = " JAVA_HOME is not defined."
+        raise RuntimeError(
+            "Failed to start JVM. Please ensure that Java (OpenJDK) is installed." + extra_info +
+            " If using conda, install openjdk from conda-forge and set JAVA_HOME to the OpenJDK installation path.")
+
+    # Add efmtool.jar to classpath (in case _start_jvm didn't find it)
     efmtool_jar = os.path.join(os.path.dirname(__file__), 'efmtool.jar')
     if not os.path.exists(efmtool_jar):
         raise FileNotFoundError(f"efmtool.jar not found at {efmtool_jar}. "
                                 "Legacy Java compression requires the efmtool.jar file.")
-
     jpype.addClassPath(efmtool_jar)
-
-    if not jpype.isJVMStarted():
-        # Force NumPy/OpenBLAS initialization before JVM startup.
-        # The JVM modifies pthread stack allocation, which can cause SIGSEGV
-        # in OpenBLAS multithreaded operations if NumPy is not yet initialized.
-        # See https://github.com/jpype-project/jpype/issues/808
-        try:
-            import numpy as _np
-            _np.linalg.inv(_np.eye(2))
-        except Exception:
-            pass
-
-        # Look up JVM at different locations
-        if not os.environ.get("JAVA_HOME"):
-            candidate = _search_for_jvm()
-            if candidate:
-                os.environ["JAVA_HOME"] = candidate
-
-        try:
-            # Suppress faulthandler during JVM startup to prevent ugly
-            # "Windows fatal exception: access violation" messages.
-            # On Windows, jpype.startJVM() can trigger an access violation
-            # that is caught by Python's structured exception handler, but
-            # faulthandler prints a stack trace before the exception is raised.
-            import faulthandler as _fh
-            _fh_was_enabled = _fh.is_enabled()
-            if _fh_was_enabled:
-                _fh.disable()
-            try:
-                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                    # -Xss4m: JPype+OpenBLAS interaction requires larger
-                    #   thread stacks to avoid SIGSEGV (jpype#808).
-                    # --enable-native-access: allow JPype's System.load() calls
-                    #   without warnings on Java 17+ and prevent blocking on 24+.
-                    jpype.startJVM("-Xss4m",
-                                  "--enable-native-access=ALL-UNNAMED")
-            finally:
-                if _fh_was_enabled:
-                    _fh.enable()
-            # Register explicit JVM shutdown to avoid SIGSEGV during Python
-            # exit (known JPype race condition in _JTerminate, see
-            # https://github.com/jpype-project/jpype/issues/842).
-            import atexit
-            def _shutdown_jvm():
-                try:
-                    import jpype as _jp
-                    if _jp.isJVMStarted():
-                        _jp.shutdownJVM()
-                except Exception:
-                    pass
-            atexit.register(_shutdown_jvm)
-        except Exception as e:
-            extra_info = ""
-            if not os.environ.get("JAVA_HOME"):
-                extra_info = " JAVA_HOME is not defined."
-            raise RuntimeError(
-                "Failed to start JVM. Please ensure that Java (OpenJDK) is installed." + extra_info +
-                " If using conda, install openjdk from conda-forge and set JAVA_HOME to the OpenJDK installation path.") from e
 
     # Load Java classes via JClass (not `import` statements) to avoid
     # jpype.imports.find_spec which can segfault on Windows.
@@ -446,6 +461,7 @@ __all__ = [
     # Pure Python
     'basic_columns_rat',
     # Java initialization
+    '_start_jvm',
     '_init_java',
     '_check_jpype_available',
     # Java compression
