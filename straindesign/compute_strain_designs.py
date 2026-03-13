@@ -791,7 +791,7 @@ def compute_strain_designs_from_preprocessed(dump, seed=None, solver=None,
     # Re-apply suppression so SDMILP construction can access variables safely.
     from straindesign.networktools import suppress_lp_context
     with suppress_lp_context(cmp_model):
-        logging.info('Loading preprocessed data from ' + dump_path)
+        logging.info('Loading preprocessed data from ' + (dump if isinstance(dump, str) else 'dict input.'))
         logging.info('  Seed: %s, Solver: %s, Approach: %s' % (
             kwargs_milp.get(SEED), kwargs_milp.get(SOLVER), sol_approach))
 
