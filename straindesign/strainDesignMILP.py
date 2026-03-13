@@ -181,12 +181,21 @@ class SDMILP(SDProblem, MILP_LP):
                 self.add_ineq_constraints(A_ineq, [b_ineq])
 
     def add_exclusion_constraints_ineq(self, z):
-        """Exclude binary solution in z (but not its supersets) from MILP"""
+        """Exclude exact binary solution in z (but not its supersets) from MILP.
+
+        For each solution row in z, adds: sum(z_active) - sum(z_inactive) <= |active| - 1
+        This excludes the exact pattern without blocking supersets or subsets.
+        """
+        z_dense = z.toarray()
         for j in range(z.shape[0]):
-            A_ineq = [1.0 if z[j, i] else -1.0 for i in self.idx_z]
-            A_ineq.resize((1, self.A_ineq.shape[1]))
-            b_ineq = np.sum(z[j]) - 1
-            self.add_ineq_constraints(A_ineq, [b_ineq])
+            n_active = int(np.sum(z_dense[j] != 0))
+            if n_active == 0:
+                continue
+            coeffs = [1.0 if z_dense[j, i] else -1.0 for i in range(z.shape[1])]
+            A_row = sparse.csr_matrix([coeffs])
+            A_row.resize((1, self.A_ineq.shape[1]))
+            b_ineq = n_active - 1
+            self.add_ineq_constraints(A_row, [b_ineq])
 
     def sd2dict(self, sol, *args) -> Dict:
         """Translate binary solution vector to dictionary for human-readable output"""
@@ -359,7 +368,7 @@ class SDMILP(SDProblem, MILP_LP):
                         sols = sparse.vstack((sols, z1))
                     elif status1 in [OPTIMAL, TIME_LIMIT_W_SOL]:
                         logging.warning('Invalid minimal solution found: ' + str(output))
-                        self.add_exclusion_constraints(z)
+                        self.add_exclusion_constraints_ineq(z1)
                     else:  # return to outside loop
                         break
         if status == INFEASIBLE and sols.shape[0] > 0:  # all solutions found
@@ -449,8 +458,8 @@ class SDMILP(SDProblem, MILP_LP):
                     logging.warning('Invalid minimal solution found: ' + str(output))
                     continue
                 if status1 != OPTIMAL and not self.verify_sd(z1):
-                    self.add_exclusion_constraints_ineq(z)
-                    output = self.sd2dict(z)
+                    self.add_exclusion_constraints_ineq(z1)
+                    output = self.sd2dict(z1)
                     logging.warning('Invalid minimal solution found: ' + str(output))
                     continue
                 else:
@@ -478,7 +487,7 @@ class SDMILP(SDProblem, MILP_LP):
                     sols = sparse.vstack((sols, z1))
                 elif status1 in [OPTIMAL, TIME_LIMIT_W_SOL]:
                     logging.warning('Invalid minimal solution found: ' + str(output))
-                    self.add_exclusion_constraints(z)
+                    self.add_exclusion_constraints_ineq(z1)
                 else:  # return to outside loop
                     break
         if status == INFEASIBLE and sols.shape[0] > 0:  # all solutions found

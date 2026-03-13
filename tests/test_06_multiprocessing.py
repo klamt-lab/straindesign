@@ -20,8 +20,8 @@ def test_mcs_larger_model(curr_solver, model_core):
     modules += [sd.SDModule(model_core, SUPPRESS, constraints=["EX_etoh_e <= 0.5"], skip_checks=skip)]
     modules += [sd.SDModule(model_core, PROTECT, constraints=["BIOMASS_Ec_iML1515_core_75p37M >= 0.1"], skip_checks=skip)]
     sd_setup = {MODULES: modules, MAX_COST: 4, MAX_SOLUTIONS: 0, SOLUTION_APPROACH: ANY, SOLVER: curr_solver, 'compress': False}
-    if curr_solver == GUROBI:
-        logging.info("Enabling compression for Gurobi (uncompressed model exceeds community license limit).")
+    if curr_solver in (GUROBI, CPLEX):
+        logging.info(f"Enabling compression for {curr_solver} (uncompressed model exceeds community license limit).")
         sd_setup['compress'] = True
     solution = sd.compute_strain_designs(model_core, sd_setup=sd_setup)
     assert (len(solution.get_reaction_sd()) == 0)

@@ -1,6 +1,5 @@
 """Compression tests: unit tests, compression_backend parity, FVA equivalence, and MCS validation."""
 import sys
-import platform
 import pytest
 import numpy as np
 import warnings
@@ -148,13 +147,10 @@ def test_full_strain_design_without_java(model_gpr):
 @pytest.fixture
 def jpype_available():
     jpype = pytest.importorskip("jpype", reason="jpype not installed; skipping Java parity tests")
-    if "cplex" in sys.modules:
-        pytest.skip("JVM startup crashes when CPLEX native library is loaded (known JPype/CPLEX conflict)")
-    if platform.system() == "Darwin":
-        pytest.skip("JPype JVM startup is unreliable on macOS ARM64")
     return jpype
 
 
+@pytest.mark.java
 def test_compression_parity_reaction_count(jpype_available):
     """Both compression backends compress e_coli_core to the same number of reactions."""
     model_py = load_model("e_coli_core")
@@ -165,6 +161,7 @@ def test_compression_parity_reaction_count(jpype_available):
         model_java.reactions), (f"Reaction count mismatch: sparse_rref={len(model_py.reactions)}, efmtool_rref={len(model_java.reactions)}")
 
 
+@pytest.mark.java
 def test_fba_equivalence(jpype_available):
     """Both compression backends produce compressed models with the same optimal FBA value (straindesign FBA)."""
     model_py = load_model("e_coli_core")
@@ -216,6 +213,7 @@ def test_cobra_optimize_after_compression():
         f"Expanded objective mismatch: original={val_orig}, expanded={val_expanded}")
 
 
+@pytest.mark.java
 def test_fva_equivalence(jpype_available):
     """Both compression backends produce flux spaces with no true FVA mismatches.
 
@@ -291,7 +289,7 @@ def test_fva_expansion():
 
 @pytest.mark.parametrize("compression_backend", [
     "sparse_rref",
-    "efmtool_rref",
+    pytest.param("efmtool_rref", marks=pytest.mark.java),
 ])
 def test_mcs_e_coli_core(compression_backend):
     """MCS computation on e_coli_core returns the expected 455 solutions.
@@ -304,10 +302,6 @@ def test_mcs_e_coli_core(compression_backend):
     """
     if compression_backend == "efmtool_rref":
         pytest.importorskip("jpype", reason="jpype not installed; skipping efmtool backend")
-        if "cplex" in sys.modules:
-            pytest.skip("JVM startup crashes when CPLEX native library is loaded (known JPype/CPLEX conflict)")
-        if platform.system() == "Darwin":
-            pytest.skip("JPype JVM startup is unreliable on macOS ARM64")
     from straindesign.names import SUPPRESS, POPULATE, GLPK, SCIP, GUROBI, CPLEX
     # Solver priority: SCIP (no size limit) > CPLEX > GUROBI (both have free-tier limits)
     strong_solvers = sd.avail_solvers - {GLPK}
@@ -328,8 +322,15 @@ def test_mcs_e_coli_core(compression_backend):
 
 
 @pytest.mark.timeout(300)
+@pytest.mark.large
 def test_imlcore_compression_parity(jpype_available):
-    """Both compression backends compress iMLcore to the same number of reactions."""
+    """Both compression backends compress iMLcore to the same number of reactions.
+
+    Marked --large: JPype's JNI bridge crashes (SIGBUS/SIGSEGV) on GitHub Actions
+    runners when processing iMLcore-sized matrices through the Java RREF.
+    The e_coli_core parity tests above cover the same code path on a smaller matrix.
+    Run locally with: pytest --large -k test_imlcore_compression_parity
+    """
     model_py = read_sbml_model(dirname(abspath(__file__)) + r"/iMLcore.xml")
     nt.compress_model(model_py, compression_backend='sparse_rref')
     model_java = read_sbml_model(dirname(abspath(__file__)) + r"/iMLcore.xml")
@@ -339,18 +340,26 @@ def test_imlcore_compression_parity(jpype_available):
 
 
 @pytest.mark.timeout(600)
+@pytest.mark.large
 def test_mcs_imlcore_parity(jpype_available):
-    """MCS on iMLcore returns the same solutions with both compression backends."""
-    from straindesign.names import SUPPRESS, POPULATE, GUROBI
-    if GUROBI not in sd.avail_solvers:
-        pytest.skip("iMLcore MCS parity test requires Gurobi")
+    """MCS on iMLcore returns the same solutions with both compression backends.
+
+    Marked --large: JPype's JNI bridge crashes on CI runners with iMLcore-sized
+    matrices (see test_imlcore_compression_parity docstring).
+    Run locally with: pytest --large -k test_mcs_imlcore_parity
+    """
+    from straindesign.names import SUPPRESS, POPULATE, GLPK
+    strong_solvers = sd.avail_solvers - {GLPK}
+    if not strong_solvers:
+        pytest.skip("iMLcore MCS parity test requires Gurobi, CPLEX, or SCIP")
+    solver = next(iter(strong_solvers))
     results = {}
     for backend in ['sparse_rref', 'efmtool_rref']:
         model = read_sbml_model(dirname(abspath(__file__)) + r"/iMLcore.xml")
         modules = [sd.SDModule(model, SUPPRESS,
                                constraints='BIOMASS_Ec_iML1515_core_75p37M >= 0.001')]
         sols = sd.compute_strain_designs(model, sd_modules=modules, solution_approach=POPULATE,
-                                         max_cost=3, solver=GUROBI,
+                                         max_cost=3, solver=solver,
                                          compression_backend=backend)
         results[backend] = len(sols.reaction_sd)
     assert results['sparse_rref'] == results['efmtool_rref'], (

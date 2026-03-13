@@ -90,13 +90,108 @@ def _search_for_jvm():
     return None
 
 
-def _init_java():
-    """
-    Initialize JVM and Java classes.
+def _start_jvm():
+    """Start the JVM and load Java classes, matching the v1.14 eager init pattern.
 
-    This function is called lazily only when compression_backend='efmtool_rref'.
-    Raises ImportError if jpype is not installed.
+    Called eagerly at package import time (from __init__.py) when jpype and Java
+    are available.  This replicates the v1.14 behaviour where ``import straindesign``
+    immediately started the JVM and loaded all efmtool Java classes via
+    ``import jpype.imports``.  That approach is the only one known to be stable
+    on Linux/macOS CI runners; deferred JVM startup or JClass-based loading
+    causes SIGBUS/SIGSEGV on larger matrices (iMLcore+).
+
+    No-op when jpype or Java is not installed.
     """
+    global _JAVA_INITIALIZED
+    global DefaultBigIntegerRationalMatrix, Gauss, CompressionMethod
+    global StoichMatrixCompressor, BigFraction, BigInteger
+    global subset_compression, jTrue, jSystem
+
+    if _JAVA_INITIALIZED:
+        return
+
+    if not _check_jpype_available():
+        return  # jpype not installed — nothing to do
+
+    import jpype
+    import io
+    from contextlib import redirect_stdout, redirect_stderr
+
+    # Add efmtool.jar to classpath
+    efmtool_jar = os.path.join(os.path.dirname(__file__), 'efmtool.jar')
+    if os.path.exists(efmtool_jar):
+        jpype.addClassPath(efmtool_jar)
+
+    if not jpype.isJVMStarted():
+        # Look up JVM at different locations
+        if not os.environ.get("JAVA_HOME"):
+            candidate = _search_for_jvm()
+            if candidate:
+                os.environ["JAVA_HOME"] = candidate
+
+        try:
+            # Suppress faulthandler during JVM startup to prevent ugly
+            # "Windows fatal exception: access violation" messages.
+            import faulthandler as _fh
+            _fh_was_enabled = _fh.is_enabled()
+            if _fh_was_enabled:
+                _fh.disable()
+            try:
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    # --enable-native-access: allow JPype's System.load() calls
+                    #   without warnings on Java 17+ and prevent blocking on 24+.
+                    jpype.startJVM("--enable-native-access=ALL-UNNAMED")
+            finally:
+                if _fh_was_enabled:
+                    _fh.enable()
+            # Register explicit JVM shutdown to avoid SIGSEGV during Python
+            # exit (known JPype race condition in _JTerminate, see
+            # https://github.com/jpype-project/jpype/issues/842).
+            import atexit
+            def _shutdown_jvm():
+                try:
+                    import jpype as _jp
+                    if _jp.isJVMStarted():
+                        _jp.shutdownJVM()
+                except Exception:
+                    pass
+            atexit.register(_shutdown_jvm)
+        except Exception:
+            return  # JVM startup failed — will raise a clear error in _init_java()
+
+    # Load Java classes via import (v1.14 pattern) — this activates JPype's
+    # import hook which sets up JNI references differently from JClass().
+    try:
+        import jpype.imports  # noqa: F401 — activates the import hook
+
+        import ch.javasoft.smx.impl.DefaultBigIntegerRationalMatrix as _DBIRM
+        import ch.javasoft.smx.ops.Gauss as _Gauss
+        import ch.javasoft.metabolic.compress.CompressionMethod as _CM
+        import ch.javasoft.metabolic.compress.StoichMatrixCompressor as _SMC
+        import ch.javasoft.math.BigFraction as _BF
+        import java.math.BigInteger as _BI
+
+        DefaultBigIntegerRationalMatrix = _DBIRM
+        Gauss = _Gauss
+        CompressionMethod = _CM
+        StoichMatrixCompressor = _SMC
+        BigFraction = _BF
+        BigInteger = _BI
+
+        subset_compression = CompressionMethod[:](
+            [CompressionMethod.CoupledZero, CompressionMethod.CoupledCombine,
+             CompressionMethod.CoupledContradicting])
+        jTrue = jpype.JBoolean(True)
+        jSystem = jpype.JClass("java.lang.System")
+
+        _JAVA_INITIALIZED = True
+    except Exception:
+        pass  # class loading failed — _init_java() will retry or raise
+
+
+def _init_java():
+    """Ensure Java classes are loaded.  Usually a no-op (classes loaded eagerly
+    by _start_jvm).  Falls back to JClass loading if eager init was skipped."""
     global _JAVA_INITIALIZED
     global DefaultBigIntegerRationalMatrix, Gauss, CompressionMethod
     global StoichMatrixCompressor, BigFraction, BigInteger
@@ -116,62 +211,27 @@ def _init_java():
                           "Or use the default Python compression (compression_backend='sparse_rref').")
 
     import jpype
-    import io
-    from contextlib import redirect_stdout, redirect_stderr
 
-    # Add efmtool.jar to classpath
+    # Try eager init first (may have been skipped if _start_jvm wasn't called)
+    _start_jvm()
+    if _JAVA_INITIALIZED:
+        return
+
+    # Fallback: start JVM and load classes via JClass
+    if not jpype.isJVMStarted():
+        extra_info = ""
+        if not os.environ.get("JAVA_HOME"):
+            extra_info = " JAVA_HOME is not defined."
+        raise RuntimeError(
+            "Failed to start JVM. Please ensure that Java (OpenJDK) is installed." + extra_info +
+            " If using conda, install openjdk from conda-forge and set JAVA_HOME to the OpenJDK installation path.")
+
     efmtool_jar = os.path.join(os.path.dirname(__file__), 'efmtool.jar')
     if not os.path.exists(efmtool_jar):
         raise FileNotFoundError(f"efmtool.jar not found at {efmtool_jar}. "
                                 "Legacy Java compression requires the efmtool.jar file.")
-
     jpype.addClassPath(efmtool_jar)
 
-    if not jpype.isJVMStarted():
-        # Look up JVM at different locations
-        if not os.environ.get("JAVA_HOME"):
-            candidate = _search_for_jvm()
-            if candidate:
-                os.environ["JAVA_HOME"] = candidate
-
-        try:
-            # Suppress faulthandler during JVM startup to prevent ugly
-            # "Windows fatal exception: access violation" messages.
-            # On Windows, jpype.startJVM() can trigger an access violation
-            # that is caught by Python's structured exception handler, but
-            # faulthandler prints a stack trace before the exception is raised.
-            import faulthandler as _fh
-            _fh_was_enabled = _fh.is_enabled()
-            if _fh_was_enabled:
-                _fh.disable()
-            try:
-                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                    jpype.startJVM()
-            finally:
-                if _fh_was_enabled:
-                    _fh.enable()
-            # Register explicit JVM shutdown to avoid SIGSEGV during Python
-            # exit (known JPype race condition in _JTerminate, see
-            # https://github.com/jpype-project/jpype/issues/842).
-            import atexit
-            def _shutdown_jvm():
-                try:
-                    import jpype as _jp
-                    if _jp.isJVMStarted():
-                        _jp.shutdownJVM()
-                except Exception:
-                    pass
-            atexit.register(_shutdown_jvm)
-        except Exception as e:
-            extra_info = ""
-            if not os.environ.get("JAVA_HOME"):
-                extra_info = " JAVA_HOME is not defined."
-            raise RuntimeError(
-                "Failed to start JVM. Please ensure that Java (OpenJDK) is installed." + extra_info +
-                " If using conda, install openjdk from conda-forge and set JAVA_HOME to the OpenJDK installation path.") from e
-
-    # Load Java classes via JClass (not `import` statements) to avoid
-    # jpype.imports.find_spec which can segfault on Windows.
     try:
         DefaultBigIntegerRationalMatrix = jpype.JClass('ch.javasoft.smx.impl.DefaultBigIntegerRationalMatrix')
         Gauss = jpype.JClass('ch.javasoft.smx.ops.Gauss')
@@ -284,6 +344,7 @@ def basic_columns_rat_java(mx, tolerance=0):
         Array of indices of basic columns
     """
     _init_java()
+    import gc
     import jpype
 
     if isinstance(mx, np.ndarray):
@@ -291,7 +352,14 @@ def basic_columns_rat_java(mx, tolerance=0):
 
     row_map = jpype.JInt[mx.getRowCount()]
     col_map = jpype.JInt[:](range(mx.getColumnCount()))
-    rank = Gauss.getRationalInstance().rowEchelon(mx, False, row_map, col_map)
+    # Disable GC during the Java call — Python's garbage collector can
+    # attempt to finalize JPype proxy objects mid-computation, causing
+    # Bus error / SIGSEGV on macOS and Linux.
+    gc.disable()
+    try:
+        rank = Gauss.getRationalInstance().rowEchelon(mx, False, row_map, col_map)
+    finally:
+        gc.enable()
 
     return col_map[0:rank]
 
@@ -330,24 +398,32 @@ def compress_model_java(model, suppressed_reactions=None):
     active_to_model = [i for i in range(num_reac) if old_reac_ids[i] not in suppressed_set]
     num_active = len(active_to_model)
 
-    stoich_mat = DefaultBigIntegerRationalMatrix(num_met, num_active)
-    reversible = jpype.JBoolean[:]([model.reactions[active_to_model[ai]].reversibility for ai in range(num_active)])
-    flipped = set()
-    for ai in range(num_active):
-        mi = active_to_model[ai]
-        if model.reactions[mi].upper_bound <= 0:
-            model.reactions[mi] *= -1
-            flipped.add(ai)
-            logging.debug("Flipped " + model.reactions[mi].id)
-        for k, v in model.reactions[mi]._metabolites.items():
-            n, d = sympyRat2jBigIntegerPair(v)
-            stoich_mat.setValueAt(model.metabolites.index(k.id), ai, BigFraction(n, d))
+    # Disable GC for the entire Java interaction block — Python's garbage
+    # collector can finalize JPype proxy objects mid-JNI call, causing
+    # Bus error / SIGSEGV (non-deterministic, see jpype-project/jpype#934).
+    import gc
+    gc.disable()
+    try:
+        stoich_mat = DefaultBigIntegerRationalMatrix(num_met, num_active)
+        reversible = jpype.JBoolean[:]([model.reactions[active_to_model[ai]].reversibility for ai in range(num_active)])
+        flipped = set()
+        for ai in range(num_active):
+            mi = active_to_model[ai]
+            if model.reactions[mi].upper_bound <= 0:
+                model.reactions[mi] *= -1
+                flipped.add(ai)
+                logging.debug("Flipped " + model.reactions[mi].id)
+            for k, v in model.reactions[mi]._metabolites.items():
+                n, d = sympyRat2jBigIntegerPair(v)
+                stoich_mat.setValueAt(model.metabolites.index(k.id), ai, BigFraction(n, d))
 
-    # Compress active reactions only
-    smc = StoichMatrixCompressor(subset_compression)
-    reacNames = jpype.JString[:]([old_reac_ids[active_to_model[ai]] for ai in range(num_active)])
-    comprec = smc.compress(stoich_mat, reversible, jpype.JString[num_met], reacNames, None)
-    subset_matrix = jpypeArrayOfArrays2numpy_mat(comprec.post.getDoubleRows())
+        # Compress active reactions only
+        smc = StoichMatrixCompressor(subset_compression)
+        reacNames = jpype.JString[:]([old_reac_ids[active_to_model[ai]] for ai in range(num_active)])
+        comprec = smc.compress(stoich_mat, reversible, jpype.JString[num_met], reacNames, None)
+        subset_matrix = jpypeArrayOfArrays2numpy_mat(comprec.post.getDoubleRows())
+    finally:
+        gc.enable()
 
     # subset_matrix shape: (num_active, num_compressed)
     del_model = np.zeros(num_reac, dtype=bool)
@@ -431,6 +507,7 @@ __all__ = [
     # Pure Python
     'basic_columns_rat',
     # Java initialization
+    '_start_jvm',
     '_init_java',
     '_check_jpype_available',
     # Java compression

@@ -222,7 +222,8 @@ class SDModule(Dict):
         self[MODEL_ID] = model.id
         self[MODULE_TYPE] = module_type
         allowed_keys = {
-            CONSTRAINTS, INNER_OBJECTIVE, INNER_OPT_SENSE, OUTER_OBJECTIVE, OUTER_OPT_SENSE, PROD_ID, 'skip_checks', MIN_GCP, 'reac_ids'
+            CONSTRAINTS, INNER_OBJECTIVE, INNER_OPT_SENSE, OUTER_OBJECTIVE, OUTER_OPT_SENSE,
+            INNER_OPT_TOL, OUTER_OPT_TOL, PROD_ID, 'skip_checks', MIN_GCP, 'reac_ids'
         }
         # set all keys passed in kwargs as properties of the SD_Module object
         for key, value in kwargs.items():
@@ -241,10 +242,10 @@ class SDModule(Dict):
                             'reaction list.')
 
         # check if there is sufficient information for each module type
-        if self[MODULE_TYPE] not in [PROTECT, SUPPRESS, OPTKNOCK, ROBUSTKNOCK, OPTCOUPLE]:
+        if self[MODULE_TYPE] not in [PROTECT, SUPPRESS, OPTKNOCK, ROBUSTKNOCK, OPTCOUPLE, DOUBLEOPT]:
             raise Exception('"' + MODULE_TYPE + '" must be "' + PROTECT + '", "' + SUPPRESS + '", "' + OPTKNOCK + '", "' + ROBUSTKNOCK +
-                            '", "' + OPTCOUPLE + '".')
-        if (self[MODULE_TYPE] in [OPTKNOCK, ROBUSTKNOCK]):
+                            '", "' + OPTCOUPLE + '" or "' + DOUBLEOPT + '".')
+        if (self[MODULE_TYPE] in [OPTKNOCK, ROBUSTKNOCK, DOUBLEOPT]):
             if self[INNER_OPT_SENSE] is None:
                 self[INNER_OPT_SENSE] = MAXIMIZE
             if self[OUTER_OPT_SENSE] is None:
@@ -252,8 +253,8 @@ class SDModule(Dict):
             elif self[INNER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE] or self[OUTER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE]:
                 raise Exception('Inner and outer optimization sense must be "' + MINIMIZE + '" or "' + MAXIMIZE + '" (default).')
             if ((self[INNER_OBJECTIVE] == None) or (self[OUTER_OBJECTIVE] == None)):
-                raise Exception('When module type is "' + OPTKNOCK + '" or "' + ROBUSTKNOCK +
-                                '", an inner and outer objective function must be provided.')
+                raise Exception('When module type is "' + OPTKNOCK + '", "' + ROBUSTKNOCK +
+                                '" or "' + DOUBLEOPT + '", an inner and outer objective function must be provided.')
         elif (self[MODULE_TYPE] == OPTCOUPLE):
             if self[INNER_OPT_SENSE] is None:
                 self[INNER_OPT_SENSE] = MAXIMIZE
@@ -265,6 +266,20 @@ class SDModule(Dict):
                 raise Exception('When module type is "' + OPTCOUPLE + '", an inner objective function must be provided.')
             if self[PROD_ID] == None:
                 raise Exception('When module type is "' + OPTCOUPLE + '", the production reaction id must be provided.')
+        if self[MODULE_TYPE] in [PROTECT, SUPPRESS] and self[OUTER_OBJECTIVE] is not None:
+            if self[INNER_OBJECTIVE] is None:
+                raise Exception('When outer_objective is set for "' + self[MODULE_TYPE] +
+                                '", inner_objective must also be provided.')
+            if self[OUTER_OPT_SENSE] is None:
+                self[OUTER_OPT_SENSE] = MAXIMIZE
+            if self[OUTER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE]:
+                raise Exception('Outer optimization sense must be "' + MINIMIZE + '" or "' + MAXIMIZE + '" (default).')
+        # validate optimality tolerances (fraction of optimal, default 1.0 = exact)
+        for tol_key in [INNER_OPT_TOL, OUTER_OPT_TOL]:
+            if self[tol_key] is not None:
+                if not (0 < self[tol_key] <= 1.0):
+                    raise Exception(tol_key + ' must be in (0, 1]. Use 1.0 for exact optimality, '
+                                    '0.95 for >= 95%% of optimal.')
 
         if not self['reac_ids']:
             self['reac_ids'] = model.reactions.list_attr('id')
@@ -336,6 +351,8 @@ class SDModule(Dict):
                         inner_opt_sense=deepcopy(self[INNER_OPT_SENSE]),
                         outer_objective=deepcopy(self[OUTER_OBJECTIVE]),
                         outer_opt_sense=deepcopy(self[OUTER_OPT_SENSE]),
+                        inner_opt_tol=self[INNER_OPT_TOL],
+                        outer_opt_tol=self[OUTER_OPT_TOL],
                         prod_id=deepcopy(self[PROD_ID]),
                         min_gcp=self[MIN_GCP],
                         skip_checks=True,

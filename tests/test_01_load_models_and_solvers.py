@@ -26,6 +26,12 @@ def model_small_example():
 
 
 @pytest.fixture
+def model_doubleopt():
+    """Load two-organism community model for DOUBLEOPT testing."""
+    return read_sbml_model(dirname(abspath(__file__)) + r"/model_doubleopt.xml")
+
+
+@pytest.fixture
 def model_core():
     """Load example core model. Large enough to test strain design with multiprocessing"""
     return read_sbml_model(dirname(abspath(__file__)) + r"/iMLcore.xml")

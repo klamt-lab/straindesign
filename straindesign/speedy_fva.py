@@ -313,6 +313,8 @@ def speedy_fva(model, **kwargs):
 
     has_constraints = CONSTRAINTS in kwargs and kwargs[CONSTRAINTS]
     if has_constraints:
+        from straindesign.networktools import resolve_gene_constraints
+        kwargs[CONSTRAINTS] = resolve_gene_constraints(model, kwargs[CONSTRAINTS])
         kwargs[CONSTRAINTS] = parse_constraints(kwargs[CONSTRAINTS], orig_reaction_ids)
         if cmp_maps:
             kwargs[CONSTRAINTS] = _map_constraints(
@@ -351,7 +353,7 @@ def speedy_fva(model, **kwargs):
 
     _, _, status = lp.solve()
     if status not in [OPTIMAL, UNBOUNDED]:
-        logging.error('FVA problem not feasible.')
+        logging.info('FVA problem not feasible.')
         return DataFrame(
             {"minimum": [nan] * n_orig, "maximum": [nan] * n_orig},
             index=reaction_ids,

@@ -43,6 +43,15 @@ if module_exists("gurobipy"):
 if module_exists("pyscipopt"):
     avail_solvers.add(SCIP)
 
+# Conditional eager JVM startup — required for stable JPype operation.
+# The JVM must start before NumPy/OpenBLAS spawns worker threads, otherwise
+# JNI calls crash with SIGBUS/SIGSEGV (jpype#808, jpype#934).
+# No-op when jpype1 or Java is not installed (neither is a dependency).
+# See developers_guide.md "efmtool_cmp_interface.py — JPype/JVM Initialization".
+from .efmtool_cmp_interface import _start_jvm as _start_jvm
+_start_jvm()
+del _start_jvm
+
 from .solver_interface import *
 from .indicatorConstraints import *
 from .pool import *

@@ -1,11 +1,12 @@
-# This workflow will reformat all python files with yapf
-
 name: CI-test
 
 on:
-#  push:
-#    branches:
-#      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    # Run quarterly on the 15th of Jan, Apr, Jul, Oct at 06:00 UTC
+    - cron: '0 6 15 1,4,7,10 *'
   workflow_dispatch:
 
 
@@ -30,9 +31,9 @@ jobs:
         - os: macos-latest
           package-manager: 'conda'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Cache Conda packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/conda_pkgs_dir
@@ -41,7 +42,7 @@ jobs:
             ${{ runner.os }}-conda-${{ matrix.python-version }}-
             ${{ runner.os }}-conda-
       - name: Cache pip packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cache/pip
@@ -49,7 +50,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Fix Python PATH on macOS
@@ -63,10 +64,10 @@ jobs:
       - name: Check Python Version
         run: python --version
       - name: Java Setup
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin' # See 'Supported distributions' for available options
-          java-version: '17'
+          java-version: '21'
       - name: Set JAVA_HOME for mac OS
         if: runner.os == 'macOS'
         run: echo "JAVA_HOME=$(/usr/libexec/java_home)" >> "$GITHUB_ENV"
@@ -90,14 +91,17 @@ jobs:
         if: matrix.package-manager == 'pip'
         run: |
           pip install pyscipopt
-      # jpype1 is tested separately in the efmtool_legacy job below
+      - name: Install jpype1 (pip)
+        if: matrix.package-manager == 'pip'
+        run: |
+          pip install jpype1
       - name: Install pytest (pip)
         if: matrix.package-manager == 'pip'
         run: |
           pip install pytest pytest-timeout
       - name: Set up Conda Environment with Micromamba
         if: matrix.package-manager == 'conda'
-        uses: mamba-org/setup-micromamba@v1
+        uses: mamba-org/setup-micromamba@v2
         with:
           environment-name: straindesign
           micromamba-version: latest
@@ -129,59 +133,13 @@ jobs:
         if: matrix.package-manager == 'conda'
         run: |
           micromamba install -c conda-forge pyscipopt scip
-      # jpype1 is tested separately in the efmtool_legacy job below
+      - name: Install jpype1 (conda)
+        if: matrix.package-manager == 'conda'
+        run: |
+          pip install jpype1
       - name: Install pytest (conda)
         if: matrix.package-manager == 'conda'
         run: |
           micromamba install pytest pytest-timeout
       - name: Test with pytest
-        run: |
-          pytest tests -v --log-cli-level=INFO 2>&1 | tee pytest_output.txt || true
-          if grep -q ' FAILED' pytest_output.txt; then
-            echo "Test failures detected."
-            exit 1
-          fi
-
-  # Dedicated efmtool/JPype tests — clean environment with only Gurobi
-  # (no CPLEX to avoid native library conflicts with JVM startup)
-  efmtool_legacy:
-    runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        shell: bash -l {0}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Fix Python PATH on macOS
-        if: runner.os == 'macOS'
-        shell: bash {0}
-        run: |
-          echo 'export PATH="${{ env.pythonLocation }}/bin:$PATH"' >> ~/.bash_profile
-      - name: Java Setup
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-      - name: Set JAVA_HOME for macOS
-        if: runner.os == 'macOS'
-        run: echo "JAVA_HOME=$(/usr/libexec/java_home)" >> "$GITHUB_ENV"
-      - name: Install package and dependencies
-        run: |
-          pip install build
-          python -m build
-          pip install ./dist/*.whl
-          pip install gurobipy jpype1 pytest pytest-timeout
-      - name: Test efmtool compression
-        run: |
-          pytest tests/test_07_compression.py -v --log-cli-level=INFO -k "efmtool_rref or jpype or java or parity or fba_equiv or fva_equiv" 2>&1 | tee pytest_output.txt || true
-          if grep -q ' FAILED' pytest_output.txt; then
-            echo "Test failures detected."
-            exit 1
-          fi
+        run: pytest tests -v --medium --log-cli-level=INFO

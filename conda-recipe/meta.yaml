@@ -11,11 +11,10 @@ source:
 
 requirements:
   build:
-    - setuptools
-    - flake8
-    - wheel
-    - pip
     - python
+    - pip
+    - setuptools >=64
+    - wheel
   run:
     - python
     - scipy
@@ -26,8 +25,7 @@ requirements:
 build:
   noarch: python
   number: 0  # NOTE: increment for new build/set to zero for new version
-  script:
-    - python setup.py install --single-version-externally-managed --record record.txt
+  script: pip install . --no-deps --no-build-isolation
 
 test:
   imports:

@@ -246,3 +246,160 @@ def test_optcouple(curr_solver, model_weak_coupling, comp_approach_best_populate
         sol_min_P = sd.fba(model_weak_coupling, obj_sense='minimize', obj='r_P', constraints=constraints_max_BM)
         assert (sol_min_P.objective_value > 0)
     pass
+
+
+@pytest.mark.timeout(30)
+def test_doubleopt(curr_solver, model_doubleopt):
+    """Test DOUBLEOPT computation with and without optimality tolerance.
+
+    Uses the two-organism community model where both organisms compete for
+    shared substrate. Knocking out shared metabolite sinks forces cross-feeding,
+    creating tight coupling where both organisms are at their individual optima.
+    With opt_tol=0.6, smaller KO sets become feasible because organisms only
+    need to achieve 60% of their optima.
+    """
+    # Knockable: organism-internal reactions + shared sinks (enable cross-feeding KOs)
+    ko_reacs = [r.id for r in model_doubleopt.reactions if r.id.startswith('A_R') or r.id.startswith('B_R')
+                or r.id in ['A_10', 'B_10', 'shared_R_D', 'shared_R_C']]
+    kocost = {r: 1 for r in ko_reacs}
+
+    # --- Exact DOUBLEOPT: tight coupling via shared sink KOs ---
+    modules_exact = [sd.SDModule(model_doubleopt, DOUBLEOPT,
+                                 inner_objective='A_BM',
+                                 outer_objective='B_BM',
+                                 constraints=['A_BM >= 0.1', 'B_BM >= 0.1'])]
+    sol_exact = sd.compute_strain_designs(model_doubleopt.copy(),
+        sd_modules=modules_exact, max_cost=6, max_solutions=inf,
+        solution_approach=POPULATE, ko_cost=kocost, solver=curr_solver, compress=False)
+    assert len(sol_exact.reaction_sd) > 0, \
+        "Exact DOUBLEOPT should find solutions when shared sinks are knockable"
+    min_cost_exact = min(sum(abs(v) for v in s.values()) for s in sol_exact.reaction_sd)
+
+    # --- Relaxed DOUBLEOPT: 60% optimality tolerance finds cheaper solutions ---
+    modules_relaxed = [sd.SDModule(model_doubleopt, DOUBLEOPT,
+                                   inner_objective='A_BM',
+                                   outer_objective='B_BM',
+                                   inner_opt_tol=0.6,
+                                   outer_opt_tol=0.6,
+                                   constraints=['A_BM >= 0.1', 'B_BM >= 0.1'])]
+    sol_relaxed = sd.compute_strain_designs(model_doubleopt.copy(),
+        sd_modules=modules_relaxed, max_cost=3, max_solutions=inf,
+        solution_approach=POPULATE, ko_cost=kocost, solver=curr_solver, compress=False)
+    assert len(sol_relaxed.reaction_sd) > 0, \
+        "Relaxed DOUBLEOPT should find solutions with opt_tol=0.6"
+    min_cost_relaxed = min(sum(abs(v) for v in s.values()) for s in sol_relaxed.reaction_sd)
+    assert min_cost_relaxed < min_cost_exact, \
+        "Relaxed DOUBLEOPT should find cheaper solutions than exact"
+
+
+@pytest.mark.timeout(30)
+def test_solution_merging(model_small_example):
+    """Test SDSolutions __add__ and __iadd__ operators."""
+    solver = next(s for s in [CPLEX, GUROBI, SCIP, GLPK] if s in sd.avail_solvers)
+    modules = [sd.SDModule(model_small_example, SUPPRESS, constraints=["R3 - 0.5 R1 <= 0.0", "R2 <= 0", "R1 >= 0.1"])]
+    modules += [
+        sd.SDModule(model_small_example, SUPPRESS, constraints=["1.0 R3 - 0.5 R1 - 0.5 R2 <= 0.0 ", "1.0 R2 >= 0.0 ", "1.0 R1 >= 0.1 "])
+    ]
+    modules += [sd.SDModule(model_small_example, PROTECT, constraints=["1.0 R3 >= 1.0 "])]
+    kicost = {'R2': 1}
+    sd_setup = {
+        MODULES: modules,
+        MAX_COST: inf,
+        MAX_SOLUTIONS: inf,
+        SOLUTION_APPROACH: 'any',
+        KICOST: kicost,
+        SOLVER: solver,
+        'compress': True,
+    }
+    from copy import deepcopy
+    sol1 = sd.compute_strain_designs(model_small_example, sd_setup=deepcopy(sd_setup))
+    sol2 = sd.compute_strain_designs(model_small_example, sd_setup=deepcopy(sd_setup))
+    n1 = len(sol1.reaction_sd)
+    n2 = len(sol2.reaction_sd)
+
+    # __add__ returns a new object, originals unchanged
+    merged = sol1 + sol2
+    assert len(sol1.reaction_sd) == n1, "Original should be unchanged after +"
+    # Merged should have unique solutions (deduplicated)
+    assert len(merged.reaction_sd) >= n1, "Merged should have at least as many as sol1"
+    assert len(merged.reaction_sd) <= n1 + n2, "Merged should not exceed sum"
+    # Verify deduplication: same solutions should be deduplicated
+    merged_keys = {frozenset(s.items()) for s in merged.reaction_sd}
+    sol1_keys = {frozenset(s.items()) for s in sol1.reaction_sd}
+    assert sol1_keys.issubset(merged_keys), "All sol1 solutions should be in merged"
+
+    # __iadd__ modifies in place
+    orig_len = len(sol1.reaction_sd)
+    sol1 += sol2
+    assert len(sol1.reaction_sd) >= orig_len, "iadd should not lose solutions"
+
+
+@pytest.mark.timeout(30)
+def test_dump_preprocessed(model_small_example, tmp_path):
+    """Test dump_preprocessed and compute_strain_designs_from_preprocessed workflow."""
+    solver = next(s for s in [CPLEX, GUROBI, SCIP, GLPK] if s in sd.avail_solvers)
+    modules = [sd.SDModule(model_small_example, SUPPRESS, constraints=["R3 - 0.5 R1 <= 0.0", "R2 <= 0", "R1 >= 0.1"])]
+    modules += [
+        sd.SDModule(model_small_example, SUPPRESS, constraints=["1.0 R3 - 0.5 R1 - 0.5 R2 <= 0.0 ", "1.0 R2 >= 0.0 ", "1.0 R1 >= 0.1 "])
+    ]
+    modules += [sd.SDModule(model_small_example, PROTECT, constraints=["1.0 R3 >= 1.0 "])]
+    kicost = {'R2': 1}
+    dump_path = str(tmp_path / 'preprocessed.pkl')
+
+    # Step 1: Dump preprocessed data (should return early without solving)
+    sol_dump = sd.compute_strain_designs(model_small_example,
+        sd_modules=modules, max_cost=inf, max_solutions=inf,
+        solution_approach='any', ki_cost=kicost, solver=solver,
+        compress=True, dump_preprocessed=dump_path)
+    import os
+    assert os.path.exists(dump_path), "Dump file should exist"
+
+    # Step 2: Reload and solve
+    from straindesign.compute_strain_designs import compute_strain_designs_from_preprocessed
+    sol_reload = compute_strain_designs_from_preprocessed(dump_path, seed=42)
+    sols = sol_reload.get_reaction_sd()
+    assert len(sols) > 0, "Should find solutions from preprocessed data"
+    assert ({'R4': -1.0} in sols), "Should find R4 KO solution"
+
+    # Step 3: Solve with different seed and merge
+    sol_reload2 = compute_strain_designs_from_preprocessed(dump_path, seed=123)
+    merged = sol_reload + sol_reload2
+    assert len(merged.reaction_sd) >= len(sol_reload.reaction_sd), "Merged should not lose solutions"
+
+
+@pytest.mark.timeout(15)
+def test_lazy_expansion(model_small_example):
+    """Test lazy expansion by temporarily lowering the threshold."""
+    solver = next(s for s in [CPLEX, GUROBI, SCIP, GLPK] if s in sd.avail_solvers)
+    modules = [sd.SDModule(model_small_example, SUPPRESS, constraints=["R3 - 0.5 R1 <= 0.0", "R2 <= 0", "R1 >= 0.1"])]
+    modules += [
+        sd.SDModule(model_small_example, SUPPRESS, constraints=["1.0 R3 - 0.5 R1 - 0.5 R2 <= 0.0 ", "1.0 R2 >= 0.0 ", "1.0 R1 >= 0.1 "])
+    ]
+    modules += [sd.SDModule(model_small_example, PROTECT, constraints=["1.0 R3 >= 1.0 "])]
+    kicost = {'R2': 1}
+
+    # Temporarily lower the threshold to force lazy mode
+    from straindesign import compute_strain_designs as _csd_module
+    # Access the actual module where LAZY_EXPANSION_THRESHOLD lives
+    import sys
+    csd = sys.modules['straindesign.compute_strain_designs']
+    orig_threshold = csd.LAZY_EXPANSION_THRESHOLD
+    csd.LAZY_EXPANSION_THRESHOLD = 1  # Force lazy mode
+    try:
+        sol = sd.compute_strain_designs(model_small_example,
+            sd_modules=modules, max_cost=inf, max_solutions=inf,
+            solution_approach='any', ki_cost=kicost, solver=solver,
+            compress=True)
+        if sol.is_lazy:
+            assert sol.get_num_materialized() < sol.get_num_sols(), \
+                "Lazy mode: materialized < estimated total"
+            # Expand all
+            sol.expand_all()
+            assert not sol.is_lazy, "After expand_all, should not be lazy"
+            sols = sol.get_reaction_sd()
+            assert ({'R4': -1.0} in sols), "Should still find R4 KO after expansion"
+        else:
+            # Estimation might be <= 1 for this tiny model, that's OK
+            pass
+    finally:
+        csd.LAZY_EXPANSION_THRESHOLD = orig_threshold

@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "straindesign"
+version = "1.18"
+description = "Computational strain design package for the COBRApy framework"
+readme = {text = "Computational strain design package for the COBRApy framework, offering standard and advanced tools for the analysis and redesign of biological networks", content-type = "text/plain"}
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [
+    {name = "Philipp Schneider", email = "zgddtgt@gmail.com"},
+]
+keywords = ["metabolism", "constraint-based", "mixed-integer", "strain design"]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "cobra",
+    "scipy",
+    "matplotlib",
+    "psutil",
+]
+
+[project.optional-dependencies]
+java = ["jpype1"]
+
+[project.urls]
+Homepage = "https://github.com/klamt-lab/straindesign"
+Documentation = "https://straindesign.readthedocs.io/en/latest/index.html"
+Source = "https://github.com/klamt-lab/straindesign/"
+"Bug Reports" = "https://github.com/klamt-lab/straindesign/issues"
+
+[tool.setuptools.packages.find]
+include = ["straindesign*"]
+
+[tool.setuptools.package-data]
+straindesign = ["efmtool.jar"]

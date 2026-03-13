@@ -540,7 +540,7 @@ Construction:
 
 **Function:** `link_z` in `SDProblem` (called at end of `__init__`).
 
-This is the step that physically wires the binary variables `z` into the MILP. It proceeds in 6 steps:
+This is the step that physically wires the binary variables `z` into the MILP. It proceeds in 5 steps:
 
 **Step 1 — Split knockable equalities into pairs of inequalities:**
 An equality `A_eq[j] x = b` that is controlled by z is split into `A_ineq x ≤ b` and `−A_ineq x ≤ −b`. Both inequalities are individually linked to z, so when z is activated, both are activated together (enforcing zero).
@@ -557,16 +557,13 @@ The "most-relaxed LP" removes all knockable constraints (allowing all knockouts)
 
 Parallelized via `SDPool` when there are > 1000 constraints. Each worker (`worker_init`/`worker_compute`) holds a private LP object.
 
-**Step 4 — Link z via big-M for bounded constraints:**
+**Step 4 — Link z via big-M for bounded constraints (finite M):**
 For constraints where a finite `M_i` was found:
 - z=1 knocks out `A[i] x ≤ b`: add coefficient `−M_i` in column z_i of row i:
   `A[i] x − M_i * z ≤ b` → when `z=1`: `A[i] x ≤ b + M_i` (always satisfied if `M_i` tight enough).
 - z=0 knocks out: `A[i] x + (M_i − b) * z ≤ M_i`.
 
-**Step 5 — Lump duplicate inequality pairs into equalities:**
-Pairs of inequalities `a x ≤ b` and `−a x ≤ −b` linked to the same z can be merged back into equality indicator constraints. This reduces MILP size.
-
-**Step 6 — Create indicator constraints for remaining knockables:**
+**Step 5 — Create indicator constraints for remaining knockables:**
 Constraints where `M_i = ∞` (unbounded LP subspace) cannot use big-M. These become **indicator constraints** passed to the solver backend:
 ```
 z_i = indicval  →  A[i] x ≤ b[i]   (sense 'L')
@@ -578,6 +575,7 @@ z_i = indicval  →  A[i] x  = b[i]  (sense 'E')
 The quality of big-M values is critical:
 - Too small → valid solutions may be cut off (incorrect results).
 - Too large → numerical instability, especially for GLPK.
+- M = ∞ → the constraint must use an indicator constraint (solver-dependent, slower).
 
 StrainDesign computes per-constraint tight bounds via LP. The LP maximizes `A[i] x` subject to the static (non-knockable) constraints, giving the tightest valid `M_i` for each knockable constraint.
 
@@ -941,6 +939,56 @@ try: import swiglpk; avail_solvers.add('glpk')
 ```
 Exports: all public classes, functions, and the `avail_solvers` set.
 
+Also calls `_start_jvm()` from `efmtool_cmp_interface.py` — see next section.
+
+### `efmtool_cmp_interface.py` — JPype/JVM Initialization
+
+**JPype and Java are optional dependencies.** StrainDesign works without them; the
+default compression backend is `sparse_rref` (pure Python). The efmtool Java backend
+(`compression_backend='efmtool_rref'`) requires `jpype1` and a JVM.
+
+#### Conditional eager JVM startup
+
+`__init__.py` calls `_start_jvm()` at package import time. This function:
+
+1. Checks if `jpype1` is installed (via `find_spec`). If not → immediate return, no-op.
+2. Adds `efmtool.jar` to the classpath.
+3. Starts the JVM with `jpype.startJVM("--enable-native-access=ALL-UNNAMED")`.
+4. Loads all Java classes via `import jpype.imports` + Python import statements.
+5. Registers `atexit` handler for clean JVM shutdown.
+
+If any step fails (no Java installed, jar missing, etc.), the function returns silently.
+Users who never use `efmtool_rref` are unaffected. When `_init_java()` is later called
+(on first efmtool use), it checks `_JAVA_INITIALIZED` and falls back to `JClass()` loading.
+
+#### Why eager, not lazy?
+
+This design is critical for stability. In v1.14, `from .efmtool import *` in `__init__.py`
+started the JVM at import time. When we switched to lazy initialization (JVM started on
+first efmtool use), JPype began crashing with SIGBUS/SIGSEGV on Linux and macOS CI
+runners when processing larger matrices (iMLcore, 586 reactions).
+
+Root causes identified:
+- **JVM + OpenBLAS pthread conflict** ([jpype#808](https://github.com/jpype-project/jpype/issues/808)):
+  The JVM modifies pthread stack allocation. If started after NumPy/OpenBLAS has already
+  spawned worker threads, subsequent JNI calls can trigger SIGSEGV.
+- **GC finalization race** ([jpype#934](https://github.com/jpype-project/jpype/issues/934)):
+  Python's garbage collector can attempt to finalize JPype proxy objects during a JNI
+  call, causing Bus error. Mitigated with `gc.disable()`/`gc.enable()` around heavy
+  Java calls in `basic_columns_rat_java` and `compress_model_java`.
+- **`import jpype.imports` vs `JClass()`**: The Python import-style class loading
+  (`import ch.javasoft...`) sets up JNI references differently from `JClass()`. The
+  import style (used in v1.14) is more stable on CI runners.
+
+#### CI considerations
+
+Java 21 (Temurin) is used on all CI platforms. The `--enable-native-access=ALL-UNNAMED`
+flag suppresses Java 17+ warnings about JPype's `System.load()` calls. Despite all
+mitigations, JPype JNI crashes remain non-deterministic at ~1-in-20 frequency on some
+Linux runners ([jpype#934](https://github.com/jpype-project/jpype/issues/934)). The
+iMLcore efmtool parity tests are marked `--large` (skipped on CI) since the e_coli_core
+tests exercise the same code path on a smaller, more reliable matrix size.
+
 ---
 
 ## 11. Known Issues, Urgent Actions & Future Work
@@ -1014,14 +1062,208 @@ A key idea: the primal flux space has a right nullspace (internal cycles). The F
 **Variable splitting:**
 Reversible reactions split into forward/reverse can sometimes improve MILP performance (tighter LP relaxation). This is a pre-processing step that should be optional and tested for impact on different model types.
 
-**Tighter big-M bounds via duality:**
-Currently, per-constraint big-M values are computed by solving one LP per knockable constraint. This is parallelized but still expensive for large models. An alternative: use dual variable magnitudes from the full LP relaxation to derive component-wise M bounds analytically, without solving per-constraint LPs.
+**On the mathematical basis of big-M values (investigated, not pursued):**
+
+This section documents a thorough investigation into computing theoretically optimal
+big-M values for the Farkas dual MILP. The investigation confirmed the mathematical
+foundations but revealed that the problem is inherently as hard as MCS enumeration
+itself. No implementation was made; this section exists to prevent re-derivation.
+
+*Where M comes from — the primal view:*
+
+In the Farkas dual formulation (section 5.3), each knockable constraint `i` is linked
+to a binary z_i via either big-M (`A[i]x - M_i*z_i ≤ b[i]`) or an indicator constraint
+(`z_i = 0 → A[i]x ≤ b[i]`). The big-M value M_i must be large enough that when z_i = 1,
+the constraint `A[i]x ≤ b[i] + M_i` is never binding — i.e., M_i ≥ max{A[i]x - b[i]}
+over all feasible x in every MCS that knocks out constraint i.
+
+For SUPPRESS modules, the Farkas dual constraints encode the *primal* flux space
+through duality. Each knockable dual constraint corresponds to a primal reaction. The
+M value for reaction j's dual constraint is determined by the *primal* flux behavior:
+
+> **M_j = 1 / min|v_j|** taken over all Elementary Flux Vectors (EFVs) in which
+> reaction j participates.
+
+Here, an EFV is a support-minimal feasible flux distribution satisfying the target
+constraint. MCS are the minimal hitting sets of EFV supports. For reaction j to appear
+in any MCS of cardinality > 1, there must exist an EFV where j carries flux — and the
+*smallest* such flux across all EFVs determines the tightest valid M.
+
+*Why single-KO M is trivial:*
+
+For reactions that are individually essential (size-1 MCS candidates), M_j = 1/FVA_min(|v_j|).
+This is a single LP: minimize |v_j| subject to `Sv = 0`, bounds, and the target
+constraint. This is already computed during preprocessing FVA and is the basis for
+the current M-bounding in step 3 of `link_z`.
+
+*Why multi-KO M is hard:*
+
+For reactions that only appear in MCS of size ≥ 2, M_j depends on the *combinatorial
+structure* of which other reactions are simultaneously knocked out. The minimum |v_j|
+is not taken over the full flux space (where j can always carry large flux via
+alternative pathways) but over the restricted space where a specific set of other
+reactions are forced to zero — and j must be essential in that restricted space.
+
+Formally, computing the optimal M_j requires solving:
+
+```
+M_j = max over all MCS K containing j of:
+        1 / min{ |v_j| : Sv = 0, lb ≤ v ≤ ub, v_target ≥ t,
+                          v_i = 0 for i in K\{j} }
+```
+
+This is a max-min over an exponential number of MCS. Even computing the inner
+minimization for a *single* known MCS K is just an LP, but enumerating which K to
+consider requires MCS enumeration — the very problem M values are meant to help solve.
+
+*Combined primal/Farkas MILP — formulation and results:*
+
+We attempted to bypass MCS enumeration by embedding the combinatorial search in a
+single MILP. The formulation combines primal feasibility with a Farkas certificate:
+
+- **Primal:** `S*v = 0`, `lb_i*(1-k_i) ≤ v_i ≤ ub_i*(1-k_i)` (big-M knockout),
+  `v_target ≥ target_lb`. Binary k_i = 1 knocks out reaction i.
+- **Essential participation:** Sign binary forces `v_j ≥ δ` or `v_j ≤ -δ`.
+- **Farkas certificate:** Same k_i binaries control dual constraints via indicators.
+  When k_i = 0 (active): `S[:,i]'u - r_i + s_i = δ_{i=target}`.
+  When k_i = 1 (knocked): `r_i = s_i = 0`.
+  Farkas sum: `Σ(ub_i*s_i - lb_i*r_i) ≤ target_lb - ε`.
+- **Objective:** minimize |v_j| = t, giving M_j = 1/t.
+
+The Farkas certificate proves that removing j from the active set (while keeping the
+knocked reactions knocked) makes the system infeasible — i.e., j is essential in the
+knockout context defined by the k_i values. The optimizer simultaneously searches for
+the knockout set and the flux distribution where j's participation is minimized.
+
+*Practical obstacle — primal leakage:*
+
+The big-M knockout constraints `v_i ≤ ub_i*(1-k_i)` allow leakage when k_i is
+within solver tolerance of 1 but not exactly 1. With Gurobi's default IntFeasTol = 10⁻⁵,
+a variable with k_i = 0.9999963 (accepted as integer 1) gives leakage
+v_i ≤ ub_i × 3.7×10⁻⁶. With default bounds ±1000, this is 0.0037 per reaction.
+Across 15+ knocked reactions, the cumulative leakage invalidates the primal solution
+entirely — the model appears feasible when it should be infeasible.
+
+This was diagnosed by inspecting k/v values at full precision (`tests/check_k_precision.py`):
+PIt2r showed k = 0.9999963, v = 0.003679, meaning the "knocked" reaction carried
+measurable flux that kept the system alive.
+
+*Mitigation — FVA-tight bounds + solver tolerances:*
+
+Two measures reduce leakage to negligible levels:
+1. FVA-derived bounds (replace ±1000 with actual flux ranges, typically O(1)–O(10))
+2. Tight solver tolerances (IntFeasTol = 10⁻⁹, FeasibilityTol = 10⁻⁹, NumericFocus = 3)
+
+With both, per-reaction leakage drops to O(bound × 10⁻⁹) ≈ 10⁻⁸.
+
+*Validation on E. coli core (95 reactions, 353 MCS up to size 3):*
+
+Ground truth M values were computed independently: enumerate all MCS via indicator-based
+MILP (no big-M), then for each MCS, solve one LP per knocked reaction to find the
+minimum |v_j| in the Farkas certificate. M_gt[j] = max over all MCS containing j.
+(See `tests/ground_truth_M.py`.)
+
+With tight tolerances and FVA bounds, the combined MILP matched ground truth exactly
+for 6 of 15 tested reactions, spanning 4 orders of magnitude:
+
+| Reaction   | M_gt        | M_milp      | Ratio  | #KO | Time  |
+|------------|-------------|-------------|--------|-----|-------|
+| TALA       | 413,793     | 413,793     | 1.0000 | 15  | ~120s |
+| TKT1       | 413,793     | 413,818     | 1.0001 | 16  | ~120s |
+| NADH16     | 68,966      | 68,966      | 1.0000 | 6   | ~35s  |
+| EX_etoh_e  | 68,966      | 68,966      | 1.0000 | 23  | ~120s |
+| ETOHt2r    | 68,966      | 68,966      | 1.0000 | 9   | ~120s |
+| ATPM       | 0.12        | 0.12        | 1.0000 | 36  | 0.8s  |
+
+Reactions with intermediate M values (PFL: 329, NADTRHD: 0.91) did not converge within
+120s, returning inflated values. The combinatorial search space is too large for the
+solver to explore efficiently.
+
+*Why we did not pursue this further:*
+
+The investigation confirmed that the formulation is mathematically correct — it produces
+exact M values when the solver converges. However, it also confirmed the fundamental
+insight: **computing the optimal M_j for multi-reaction MCS is a combinatorial problem
+of the same complexity as MCS enumeration itself.** There is no shortcut:
+
+1. For size-1 MCS: M = 1/FVA_min — already computed cheaply via LP.
+2. For size-k MCS (k ≥ 2): the optimal M depends on which *other* reactions are
+   simultaneously knocked out, requiring exploration of the space of knockout
+   combinations. This is exactly what the MCS MILP does.
+3. The "FVA over the full Farkas polyhedron" approach (computing bounds with all
+   constraints active) gives a *lower bound* on M — it tells you the range of dual
+   variables when no constraints are relaxed. But in an actual MCS, some constraints
+   ARE relaxed (z = 1), and the remaining dual variables may need larger values to
+   construct a valid Farkas certificate. The FVA approach is a natural progression
+   from the single-KO case but does not capture the combinatorial interaction that
+   determines the true M for multi-reaction MCS.
+
+In summary: the relationship M_j = 1/min|v_j| over EFVs containing j is exact but
+not efficiently computable. Any finite M chosen without enumerating MCS risks being
+too small (cutting off valid MCS) or too large (degrading solver performance).
+Indicator constraints avoid the M problem entirely at the cost of solver performance
+(lazy enforcement, weaker LP relaxation). This is the fundamental trade-off; there
+is no free lunch.
+
+*Investigation scripts were removed after documenting findings. The formulations
+above can be reconstructed from the mathematical descriptions if needed.*
+
+**Reaction scaling for better-conditioned M values:**
+Trace metabolites (e.g., MoYB at 7×10⁻⁷ mmol/gDW/h) create small inhomogeneous bounds in the primal, which after dualization produce small coefficients in the Farkas objective, forcing dual variables to be very large to satisfy `b^T u ≤ -1`. This leads to M values spanning many orders of magnitude (irreducible condition number ∝ κ(S)), harming LP relaxation quality.
+
+Column scaling (per reaction) addresses this: multiply flux variable `v_j` by a power-of-10 factor `α_j` so that inhomogeneous bounds move into a reasonable range (e.g., [0.1, 10]):
+- Stoichiometry: `S[:, j] /= α_j` (coefficients shrink)
+- Bounds: `lb_j *= α_j`, `ub_j *= α_j` (bounds grow)
+- Mass balance: `(S[:,j]/α_j) × (α_j × v_j) = S[:,j] × v_j` (unchanged)
+
+Row scaling (per metabolite) rebalances after column scaling: multiply metabolite row `i` by `β_i` (power of 10) to bring the max coefficient back to O(1). This does not change the solution space (just scales the mass balance equation).
+
+Implementation would go between `build_primal_from_cbm` and dualization in `addModule`. The scaling factors must be tracked for unscaling continuous solution values in non-MCS problem types (OptKnock, etc.). For MCS, only binary z-variables are returned, so unscaling is not needed.
+
+The FVA bounds from `bound_blocked_or_irrevers_fva` (already computed in preprocessing) provide the tight flux ranges needed to determine `α_j`. A per-module FVA considering module constraints could provide even tighter ranges.
+
+**Size-1 MCS via FVA on SUPPRESS modules:**
+The current preprocessing (line 346–356 in `compute_strain_designs.py`) runs FVA on PROTECT (and OPTKNOCK etc.) modules to find essential reactions — reactions that must carry flux in the protected region — and marks them non-knockable. SUPPRESS modules are explicitly skipped (`if m[MODULE_TYPE] != SUPPRESS`).
+
+The idea: also run FVA on SUPPRESS modules (without inner objective) to identify reactions essential for the target (undesired) region. Combining the two FVAs yields size-1 MCS cheaply and further reduces the knockable reaction set:
+
+*Step 1 — FVA on PROTECT (already implemented):*
+Reactions where `min(|flux|) > 0` under PROTECT constraints are essential for the protected region. These are already marked non-knockable.
+
+*Step 2 — FVA on SUPPRESS (new):*
+Reactions where `min(|flux|) > 0` under SUPPRESS constraints are essential for the target region. Knocking out any single one of these makes the target infeasible — each is a size-1 MCS candidate.
+
+*Step 3 — Cross-check:*
+Size-1 candidates from step 2 that are NOT in the essential set from step 1 are true size-1 MCS: they disrupt the target without being required for the protected region. Add them to the output.
+
+*Step 4 — Mark non-knockable:*
+All reactions identified in steps 1 and 2 can be removed from the knockable set for the main MILP:
+- Step 1 essentials: knocking them out violates protection (already handled).
+- Step 2 essentials not in step 1: they are size-1 MCS, already found. Since any larger MCS containing a size-1 MCS is not minimal, these reactions cannot participate in any new MCS. Safe to exclude.
+- Step 2 essentials also in step 1: essential for both regions, obviously non-knockable.
+
+*Benefits:*
+- Size-1 MCS are found for free (just FVA, no MILP). This is the cheapest possible way to discover them.
+- Fewer knockable reactions in the main MILP → fewer z-variables → smaller B&B tree.
+- Reactions with tiny flux bounds (e.g., trace metabolite carriers at 1e-7) that are essential in the SUPPRESS region get excluded early, improving the conditioning of the main MILP's M-value computation.
+- The model may simplify further (fewer knockables may enable additional compression passes or remove degenerate constraints), though the extent of this benefit is unclear.
+
+*Caveats:*
+- Only finds size-1 MCS. Size ≥ 2 MCS still require the full MILP.
+- The inner objective (if present in the SUPPRESS module) is ignored for this FVA. This is correct for standard MCS but may miss reactions that are only essential under the bilevel structure.
+- Adds O(2n) LP solves per SUPPRESS module (one FVA). For compressed models this is fast.
 
 **MILP warm-starting:**
 When BEST generates multiple solutions iteratively, each call starts cold. Warm-starting from the previous solution's LP relaxation (available in CPLEX/Gurobi) could speed up subsequent solves significantly.
 
 **Improving RobustKnock numerics:**
 The three-level dual construction in ROBUSTKNOCK creates very large matrices with potential for numerical blow-up. Applying scaling (row/column normalization) to the LP before and after dualization could help. Alternatively, use iterative refinement at the inner LP level.
+
+**SOS1/SOS2 constraints for bilevel formulations:**
+Gurobi, CPLEX, and SCIP support SOS1 (Special Ordered Sets type 1) and SOS2 constraints natively. These could be useful for connecting variables of primal and KKT parts of multi-level optimization problems, encoding complementarity conditions (primal-dual coupling) more efficiently, or as an alternative to big-M for disjunctive constraints in bilevel formulations. SOS1 constraints enforce that at most one variable in a set is nonzero, which is exactly the complementarity condition in KKT-based reformulations.
+
+**Sparse matrix format conversions:**
+The computation pipeline contains many sparse matrix format conversions (`tocsr`, `tocsc`, `todok`, `tocoo`) that may not all be necessary. A profiling pass could identify redundant conversions. Key areas: `SDProblem.__init__` performs multiple `tocsc`/`tocsr` conversions during `link_z`; `addModule` builds matrices in one format then converts for block assembly; `compression.py` converts between formats during RREF and coupled-reaction detection. Eliminating unnecessary conversions could reduce preprocessing time, especially for large models.
 
 **Integration of regulatory networks beyond simple T/F interventions:**
 The current regulatory intervention model (active/inactive) is binary. Future work could integrate thermodynamic constraints or kinetic feasibility checks.
