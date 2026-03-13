@@ -319,8 +319,15 @@ def test_mcs_e_coli_core(compression_backend):
 
 
 @pytest.mark.timeout(300)
+@pytest.mark.large
 def test_imlcore_compression_parity(jpype_available):
-    """Both compression backends compress iMLcore to the same number of reactions."""
+    """Both compression backends compress iMLcore to the same number of reactions.
+
+    Marked --large: JPype's JNI bridge crashes (SIGBUS/SIGSEGV) on GitHub Actions
+    runners when processing iMLcore-sized matrices through the Java RREF.
+    The e_coli_core parity tests above cover the same code path on a smaller matrix.
+    Run locally with: pytest --large -k test_imlcore_compression_parity
+    """
     model_py = read_sbml_model(dirname(abspath(__file__)) + r"/iMLcore.xml")
     nt.compress_model(model_py, compression_backend='sparse_rref')
     model_java = read_sbml_model(dirname(abspath(__file__)) + r"/iMLcore.xml")
@@ -330,8 +337,14 @@ def test_imlcore_compression_parity(jpype_available):
 
 
 @pytest.mark.timeout(600)
+@pytest.mark.large
 def test_mcs_imlcore_parity(jpype_available):
-    """MCS on iMLcore returns the same solutions with both compression backends."""
+    """MCS on iMLcore returns the same solutions with both compression backends.
+
+    Marked --large: JPype's JNI bridge crashes on CI runners with iMLcore-sized
+    matrices (see test_imlcore_compression_parity docstring).
+    Run locally with: pytest --large -k test_mcs_imlcore_parity
+    """
     from straindesign.names import SUPPRESS, POPULATE, GLPK
     strong_solvers = sd.avail_solvers - {GLPK}
     if not strong_solvers:

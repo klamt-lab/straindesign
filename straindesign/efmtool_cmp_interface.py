@@ -91,16 +91,25 @@ def _search_for_jvm():
 
 
 def _start_jvm():
-    """Start the JVM if jpype is available and a JVM is not already running.
+    """Start the JVM and load Java classes, matching the v1.14 eager init pattern.
 
-    Called eagerly at package import time (from __init__.py) so that the JVM
-    is initialised before NumPy/OpenBLAS spawns worker threads.  Starting the
-    JVM *after* heavy OpenBLAS use causes SIGSEGV on Linux/macOS due to
-    pthread stack modifications (https://github.com/jpype-project/jpype/issues/808).
+    Called eagerly at package import time (from __init__.py) when jpype and Java
+    are available.  This replicates the v1.14 behaviour where ``import straindesign``
+    immediately started the JVM and loaded all efmtool Java classes via
+    ``import jpype.imports``.  That approach is the only one known to be stable
+    on Linux/macOS CI runners; deferred JVM startup or JClass-based loading
+    causes SIGBUS/SIGSEGV on larger matrices (iMLcore+).
 
-    This only starts the JVM — Java class loading is still deferred to
-    ``_init_java()`` which is called on first use of the efmtool backend.
+    No-op when jpype or Java is not installed.
     """
+    global _JAVA_INITIALIZED
+    global DefaultBigIntegerRationalMatrix, Gauss, CompressionMethod
+    global StoichMatrixCompressor, BigFraction, BigInteger
+    global subset_compression, jTrue, jSystem
+
+    if _JAVA_INITIALIZED:
+        return
+
     if not _check_jpype_available():
         return  # jpype not installed — nothing to do
 
@@ -113,55 +122,76 @@ def _start_jvm():
     if os.path.exists(efmtool_jar):
         jpype.addClassPath(efmtool_jar)
 
-    if jpype.isJVMStarted():
-        return
+    if not jpype.isJVMStarted():
+        # Look up JVM at different locations
+        if not os.environ.get("JAVA_HOME"):
+            candidate = _search_for_jvm()
+            if candidate:
+                os.environ["JAVA_HOME"] = candidate
 
-    # Look up JVM at different locations
-    if not os.environ.get("JAVA_HOME"):
-        candidate = _search_for_jvm()
-        if candidate:
-            os.environ["JAVA_HOME"] = candidate
-
-    try:
-        # Suppress faulthandler during JVM startup to prevent ugly
-        # "Windows fatal exception: access violation" messages.
-        # On Windows, jpype.startJVM() can trigger an access violation
-        # that is caught by Python's structured exception handler, but
-        # faulthandler prints a stack trace before the exception is raised.
-        import faulthandler as _fh
-        _fh_was_enabled = _fh.is_enabled()
-        if _fh_was_enabled:
-            _fh.disable()
         try:
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                # --enable-native-access: allow JPype's System.load() calls
-                #   without warnings on Java 17+ and prevent blocking on 24+.
-                jpype.startJVM("--enable-native-access=ALL-UNNAMED")
-        finally:
+            # Suppress faulthandler during JVM startup to prevent ugly
+            # "Windows fatal exception: access violation" messages.
+            import faulthandler as _fh
+            _fh_was_enabled = _fh.is_enabled()
             if _fh_was_enabled:
-                _fh.enable()
-        # Register explicit JVM shutdown to avoid SIGSEGV during Python
-        # exit (known JPype race condition in _JTerminate, see
-        # https://github.com/jpype-project/jpype/issues/842).
-        import atexit
-        def _shutdown_jvm():
+                _fh.disable()
             try:
-                import jpype as _jp
-                if _jp.isJVMStarted():
-                    _jp.shutdownJVM()
-            except Exception:
-                pass
-        atexit.register(_shutdown_jvm)
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    # --enable-native-access: allow JPype's System.load() calls
+                    #   without warnings on Java 17+ and prevent blocking on 24+.
+                    jpype.startJVM("--enable-native-access=ALL-UNNAMED")
+            finally:
+                if _fh_was_enabled:
+                    _fh.enable()
+            # Register explicit JVM shutdown to avoid SIGSEGV during Python
+            # exit (known JPype race condition in _JTerminate, see
+            # https://github.com/jpype-project/jpype/issues/842).
+            import atexit
+            def _shutdown_jvm():
+                try:
+                    import jpype as _jp
+                    if _jp.isJVMStarted():
+                        _jp.shutdownJVM()
+                except Exception:
+                    pass
+            atexit.register(_shutdown_jvm)
+        except Exception:
+            return  # JVM startup failed — will raise a clear error in _init_java()
+
+    # Load Java classes via import (v1.14 pattern) — this activates JPype's
+    # import hook which sets up JNI references differently from JClass().
+    try:
+        import jpype.imports  # noqa: F401 — activates the import hook
+
+        import ch.javasoft.smx.impl.DefaultBigIntegerRationalMatrix as _DBIRM
+        import ch.javasoft.smx.ops.Gauss as _Gauss
+        import ch.javasoft.metabolic.compress.CompressionMethod as _CM
+        import ch.javasoft.metabolic.compress.StoichMatrixCompressor as _SMC
+        import ch.javasoft.math.BigFraction as _BF
+        import java.math.BigInteger as _BI
+
+        DefaultBigIntegerRationalMatrix = _DBIRM
+        Gauss = _Gauss
+        CompressionMethod = _CM
+        StoichMatrixCompressor = _SMC
+        BigFraction = _BF
+        BigInteger = _BI
+
+        subset_compression = CompressionMethod[:](
+            [CompressionMethod.CoupledZero, CompressionMethod.CoupledCombine,
+             CompressionMethod.CoupledContradicting])
+        jTrue = jpype.JBoolean(True)
+        jSystem = jpype.JClass("java.lang.System")
+
+        _JAVA_INITIALIZED = True
     except Exception:
-        pass  # JVM startup failed — will raise a clear error in _init_java()
+        pass  # class loading failed — _init_java() will retry or raise
 
 
 def _init_java():
-    """Load Java classes for efmtool compression.
-
-    Called lazily on first use of compression_backend='efmtool_rref'.
-    The JVM itself is already running (started eagerly by _start_jvm).
-    """
+    """Ensure Java classes are loaded.  Usually a no-op (classes loaded eagerly
+    by _start_jvm).  Falls back to JClass loading if eager init was skipped."""
     global _JAVA_INITIALIZED
     global DefaultBigIntegerRationalMatrix, Gauss, CompressionMethod
     global StoichMatrixCompressor, BigFraction, BigInteger
@@ -182,9 +212,12 @@ def _init_java():
 
     import jpype
 
-    # Ensure JVM is running (in case _start_jvm was not called or failed silently)
-    if not jpype.isJVMStarted():
-        _start_jvm()
+    # Try eager init first (may have been skipped if _start_jvm wasn't called)
+    _start_jvm()
+    if _JAVA_INITIALIZED:
+        return
+
+    # Fallback: start JVM and load classes via JClass
     if not jpype.isJVMStarted():
         extra_info = ""
         if not os.environ.get("JAVA_HOME"):
@@ -193,15 +226,12 @@ def _init_java():
             "Failed to start JVM. Please ensure that Java (OpenJDK) is installed." + extra_info +
             " If using conda, install openjdk from conda-forge and set JAVA_HOME to the OpenJDK installation path.")
 
-    # Add efmtool.jar to classpath (in case _start_jvm didn't find it)
     efmtool_jar = os.path.join(os.path.dirname(__file__), 'efmtool.jar')
     if not os.path.exists(efmtool_jar):
         raise FileNotFoundError(f"efmtool.jar not found at {efmtool_jar}. "
                                 "Legacy Java compression requires the efmtool.jar file.")
     jpype.addClassPath(efmtool_jar)
 
-    # Load Java classes via JClass (not `import` statements) to avoid
-    # jpype.imports.find_spec which can segfault on Windows.
     try:
         DefaultBigIntegerRationalMatrix = jpype.JClass('ch.javasoft.smx.impl.DefaultBigIntegerRationalMatrix')
         Gauss = jpype.JClass('ch.javasoft.smx.ops.Gauss')
