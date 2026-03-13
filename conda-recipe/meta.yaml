@@ -25,8 +25,7 @@ requirements:
 build:
   noarch: python
   number: 0  # NOTE: increment for new build/set to zero for new version
-  script:
-    - pip install . --no-deps --no-build-isolation
+  script: pip install . --no-deps --no-build-isolation
 
 test:
   imports:
