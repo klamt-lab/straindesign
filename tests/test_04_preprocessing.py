@@ -312,6 +312,7 @@ class TestModelGprCompression:
             f"GPR mismatch. Got: {result_sympy}, expected: {expected}"
 
 
+@pytest.mark.java
 class TestEfmtoolBackendGpr:
     """Test GPR propagation with efmtool_rref backend (if Java available)."""
 

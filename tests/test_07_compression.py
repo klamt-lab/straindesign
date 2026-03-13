@@ -150,6 +150,7 @@ def jpype_available():
     return jpype
 
 
+@pytest.mark.java
 def test_compression_parity_reaction_count(jpype_available):
     """Both compression backends compress e_coli_core to the same number of reactions."""
     model_py = load_model("e_coli_core")
@@ -160,6 +161,7 @@ def test_compression_parity_reaction_count(jpype_available):
         model_java.reactions), (f"Reaction count mismatch: sparse_rref={len(model_py.reactions)}, efmtool_rref={len(model_java.reactions)}")
 
 
+@pytest.mark.java
 def test_fba_equivalence(jpype_available):
     """Both compression backends produce compressed models with the same optimal FBA value (straindesign FBA)."""
     model_py = load_model("e_coli_core")
@@ -211,6 +213,7 @@ def test_cobra_optimize_after_compression():
         f"Expanded objective mismatch: original={val_orig}, expanded={val_expanded}")
 
 
+@pytest.mark.java
 def test_fva_equivalence(jpype_available):
     """Both compression backends produce flux spaces with no true FVA mismatches.
 
@@ -286,7 +289,7 @@ def test_fva_expansion():
 
 @pytest.mark.parametrize("compression_backend", [
     "sparse_rref",
-    "efmtool_rref",
+    pytest.param("efmtool_rref", marks=pytest.mark.java),
 ])
 def test_mcs_e_coli_core(compression_backend):
     """MCS computation on e_coli_core returns the expected 455 solutions.

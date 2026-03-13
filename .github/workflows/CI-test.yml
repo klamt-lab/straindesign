@@ -93,7 +93,11 @@ jobs:
       - name: Install jpype1 (pip)
         if: matrix.package-manager == 'pip'
         run: |
-          pip install jpype1
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            pip install jpype1
+          else
+            pip install jpype1==1.5.0
+          fi
       - name: Install pytest (pip)
         if: matrix.package-manager == 'pip'
         run: |
@@ -135,7 +139,11 @@ jobs:
       - name: Install jpype1 (conda)
         if: matrix.package-manager == 'conda'
         run: |
-          pip install jpype1
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            pip install jpype1
+          else
+            pip install jpype1==1.5.0
+          fi
       - name: Install pytest (conda)
         if: matrix.package-manager == 'conda'
         run: |
