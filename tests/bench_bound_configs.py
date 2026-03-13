@@ -360,6 +360,7 @@ def main():
     parser.add_argument('--create-dump', choices=['imlcore', 'iml1515'],
                         help='Create a preprocessed dump instead of running experiments')
     parser.add_argument('--seeds', type=int, default=3, help='Number of seeds (default: 3)')
+    parser.add_argument('--seed-start', type=int, default=42, help='First seed value (default: 42)')
     parser.add_argument('--solver', default='gurobi', help='Solver (default: gurobi)')
     parser.add_argument('--configs', help='Comma-separated config pairs (e.g. PA-FA,PB-FA)')
     parser.add_argument('--output', help='Output JSON path')
@@ -386,7 +387,7 @@ def main():
     else:
         configs = DEFAULT_CONFIGS
 
-    seeds = list(range(42, 42 + args.seeds))
+    seeds = list(range(args.seed_start, args.seed_start + args.seeds))
 
     logging.info(f"Dump: {args.dump_path}")
     logging.info(f"Configs: {configs}")
