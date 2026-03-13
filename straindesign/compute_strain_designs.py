@@ -156,8 +156,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
-        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'compression_backend', 'debug_dump_path',
-        'dump_preprocessed'
+        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'compression_backend', 'dump_preprocessed'
     }
     logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
@@ -510,11 +509,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     else:
         solution_approach = BEST
 
-    # dump_preprocessed (replaces debug_dump_path)
     dump_preprocessed = kwargs.pop('dump_preprocessed', None)
-    debug_dump_path = kwargs.pop('debug_dump_path', None)
-    if dump_preprocessed is None:
-        dump_preprocessed = debug_dump_path  # backward compat
 
     if dump_preprocessed:
         import os, pickle as _pickle
