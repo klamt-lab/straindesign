@@ -314,6 +314,7 @@ def basic_columns_rat_java(mx, tolerance=0):
         Array of indices of basic columns
     """
     _init_java()
+    import gc
     import jpype
 
     if isinstance(mx, np.ndarray):
@@ -321,7 +322,14 @@ def basic_columns_rat_java(mx, tolerance=0):
 
     row_map = jpype.JInt[mx.getRowCount()]
     col_map = jpype.JInt[:](range(mx.getColumnCount()))
-    rank = Gauss.getRationalInstance().rowEchelon(mx, False, row_map, col_map)
+    # Disable GC during the Java call — Python's garbage collector can
+    # attempt to finalize JPype proxy objects mid-computation, causing
+    # Bus error / SIGSEGV on macOS and Linux.
+    gc.disable()
+    try:
+        rank = Gauss.getRationalInstance().rowEchelon(mx, False, row_map, col_map)
+    finally:
+        gc.enable()
 
     return col_map[0:rank]
 
@@ -373,11 +381,18 @@ def compress_model_java(model, suppressed_reactions=None):
             n, d = sympyRat2jBigIntegerPair(v)
             stoich_mat.setValueAt(model.metabolites.index(k.id), ai, BigFraction(n, d))
 
-    # Compress active reactions only
+    # Compress active reactions only.
+    # Disable GC during heavy Java calls — Python's garbage collector can
+    # finalize JPype proxy objects mid-computation, causing Bus error / SIGSEGV.
+    import gc
     smc = StoichMatrixCompressor(subset_compression)
     reacNames = jpype.JString[:]([old_reac_ids[active_to_model[ai]] for ai in range(num_active)])
-    comprec = smc.compress(stoich_mat, reversible, jpype.JString[num_met], reacNames, None)
-    subset_matrix = jpypeArrayOfArrays2numpy_mat(comprec.post.getDoubleRows())
+    gc.disable()
+    try:
+        comprec = smc.compress(stoich_mat, reversible, jpype.JString[num_met], reacNames, None)
+        subset_matrix = jpypeArrayOfArrays2numpy_mat(comprec.post.getDoubleRows())
+    finally:
+        gc.enable()
 
     # subset_matrix shape: (num_active, num_compressed)
     del_model = np.zeros(num_reac, dtype=bool)
