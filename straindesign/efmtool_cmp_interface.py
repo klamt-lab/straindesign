@@ -128,6 +128,16 @@ def _init_java():
     jpype.addClassPath(efmtool_jar)
 
     if not jpype.isJVMStarted():
+        # Force NumPy/OpenBLAS initialization before JVM startup.
+        # The JVM modifies pthread stack allocation, which can cause SIGSEGV
+        # in OpenBLAS multithreaded operations if NumPy is not yet initialized.
+        # See https://github.com/jpype-project/jpype/issues/808
+        try:
+            import numpy as _np
+            _np.linalg.inv(_np.eye(2))
+        except Exception:
+            pass
+
         # Look up JVM at different locations
         if not os.environ.get("JAVA_HOME"):
             candidate = _search_for_jvm()
@@ -146,11 +156,12 @@ def _init_java():
                 _fh.disable()
             try:
                 with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                    # Reduce thread stack size from the macOS ARM64 default (2048 KB)
-                    # to avoid OS-level SIGKILL from virtual memory exhaustion on
-                    # larger workloads (e.g. iMLcore RREF). See:
-                    # https://github.com/adoptium/adoptium-support/issues/951
-                    jpype.startJVM("-Xss512k")
+                    # -Xss4m: JPype+OpenBLAS interaction requires larger
+                    #   thread stacks to avoid SIGSEGV (jpype#808).
+                    # --enable-native-access: allow JPype's System.load() calls
+                    #   without warnings on Java 17+ and prevent blocking on 24+.
+                    jpype.startJVM("-Xss4m",
+                                  "--enable-native-access=ALL-UNNAMED")
             finally:
                 if _fh_was_enabled:
                     _fh.enable()
