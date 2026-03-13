@@ -317,7 +317,7 @@ def fva_legacy(model, **kwargs) -> DataFrame:
     lp = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb, ub=ub, solver=solver)
     _, _, status = lp.solve()
     if status not in [OPTIMAL, UNBOUNDED]:
-        logging.error('FVA problem not feasible.')
+        logging.info('FVA problem not feasible.')
         return DataFrame(
             {"minimum": [nan] * numr, "maximum": [nan] * numr},
             index=reaction_ids,

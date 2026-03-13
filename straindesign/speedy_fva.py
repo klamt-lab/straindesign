@@ -353,7 +353,7 @@ def speedy_fva(model, **kwargs):
 
     _, _, status = lp.solve()
     if status not in [OPTIMAL, UNBOUNDED]:
-        logging.error('FVA problem not feasible.')
+        logging.info('FVA problem not feasible.')
         return DataFrame(
             {"minimum": [nan] * n_orig, "maximum": [nan] * n_orig},
             index=reaction_ids,
