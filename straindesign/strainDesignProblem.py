@@ -28,6 +28,7 @@ knockouts in dual problems. Most of the time, the sparse datatype is used to sto
 edit matrices for improved speed and memory."""
 
 from math import isinf
+import time
 import numpy as np
 from scipy import sparse
 from cobra.util import create_stoichiometric_matrix
@@ -642,15 +643,35 @@ class SDProblem:
                 z_map_constr_eq_p = sparse.hstack((z_map_constr_eq_p, z_map_constr_eq_dl, sparse.csc_matrix((self.num_z, 1))))
 
         # 3. Prepare module as undesired, desired or other
+        # Log primal variable classification before dualization
+        lb_arr = np.array(lb_p)
+        ub_arr = np.array(ub_p)
+        n_geq0 = int(np.sum(np.greater_equal(lb_arr, 0) & np.greater(ub_arr, 0)))
+        n_eR = int(np.sum(np.greater(0, lb_arr) & np.greater(ub_arr, 0)))
+        n_leq0 = int(np.sum(np.greater(0, lb_arr) & np.greater_equal(0, ub_arr)))
+        n_lb_inh = int(np.sum((lb_arr != 0) & ~np.isinf(lb_arr)))
+        n_ub_inh = int(np.sum((ub_arr != 0) & ~np.isinf(ub_arr)))
+        logging.info('  Module %s primal: %d vars (%d geq0, %d eR, %d leq0), '
+                      '%d inhom. lb, %d inhom. ub' %
+                      (sd_module[MODULE_TYPE], len(lb_p), n_geq0, n_eR, n_leq0, n_lb_inh, n_ub_inh))
+
         if sd_module[MODULE_TYPE] == PROTECT:
             A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = reassign_lb_ub_from_ineq(
                 A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
             z_map_vars_i = z_map_vars_p
             c_i = [0 for _ in range(A_ineq_i.shape[1])]
+            logging.info('  PROTECT dual: %d ineq rows, %d eq rows, %d vars, '
+                          '%d knockable constraints, %d knockable vars' %
+                          (A_ineq_i.shape[0], A_eq_i.shape[0], A_ineq_i.shape[1],
+                           z_map_constr_ineq_i.nnz + z_map_constr_eq_i.nnz, z_map_vars_i.nnz))
         elif sd_module[MODULE_TYPE] == SUPPRESS:
             A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i, z_map_vars_i = farkas_dualize(
                 A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
             c_i = [0 for _ in range(A_ineq_i.shape[1])]
+            logging.info('  Farkas dual: %d ineq rows, %d eq rows, %d vars, '
+                          '%d knockable constraints, %d knockable vars' %
+                          (A_ineq_i.shape[0], A_eq_i.shape[0], A_ineq_i.shape[1],
+                           z_map_constr_ineq_i.nnz + z_map_constr_eq_i.nnz, z_map_vars_i.nnz))
         elif sd_module[MODULE_TYPE] == OPTKNOCK:
             A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = reassign_lb_ub_from_ineq(
                 A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
@@ -677,13 +698,13 @@ class SDProblem:
 
     def link_z(self):
         """Connect binary intervention variables to variables and constraints of the strain design problem
-        
+
         Function that uses the maps between intervention indicators z and variables and constraints
-        of the linear strain design (in)equality system (self.z_map_constr_ineq, self.z_map_constr_eq and 
+        of the linear strain design (in)equality system (self.z_map_constr_ineq, self.z_map_constr_eq and
         self.z_map_vars) to set up the strain design MILP.
-        
+
         MILP construction uses the following steps:
-        
+
         (1) Translate equality-KOs/KIs to two inequality-KOs/KIs
         (2) Translate variable-KOs/KIs to inequality-KIs/KOs
         (3) Try to bound the problem with LPs
@@ -692,8 +713,10 @@ class SDProblem:
         If necessary, the solver interface will translate them to big-M constraints.
         (6) Remove redundant equalities from static problem
         """
+        t_link_z = time.time()
 
         # 1. Split knockable equality constraints into foward and reverse direction
+        t_step = time.time()
         knockable_constr_eq = self.z_map_constr_eq.nonzero()[1]  # first array: z, second array: eq constr
         eq_constr_A = sparse.vstack((self.A_eq[knockable_constr_eq, :], -self.A_eq[knockable_constr_eq, :]))
         eq_constr_b = [self.b_eq[i] for i in knockable_constr_eq] + [-self.b_eq[i] for i in knockable_constr_eq]
@@ -707,8 +730,11 @@ class SDProblem:
         self.A_eq = self.A_eq[[False if i in knockable_constr_eq else True for i in range(0, n_rows_eq)]]
         self.b_eq = [self.b_eq[i] for i in range(0, len(self.b_eq)) if i not in knockable_constr_eq]
         self.z_map_constr_eq = self.z_map_constr_eq[:, [False if i in knockable_constr_eq else True for i in range(0, n_rows_eq)]]
+        logging.info('  link_z step 1 (eq->ineq): %d knockable equalities (%.3fs)' %
+                      (len(knockable_constr_eq), time.time() - t_step))
 
         # 2. Translate all variable knockouts to inequality knockouts
+        t_step = time.time()
         numvars = self.A_ineq.shape[1]
         knockable_vars = self.z_map_vars.nonzero()  # first array: z, second array: x
         knockable_vars_geq0 = [i for i in knockable_vars[1] if self.ub[i] > 0]
@@ -727,9 +753,13 @@ class SDProblem:
         self.A_ineq = sparse.vstack((self.A_ineq, bnd_constr_A)).tocsr()
         self.b_ineq += bnd_constr_b
         self.z_map_constr_ineq = sparse.hstack((self.z_map_constr_ineq, z_lb_ub)).tocsc()
+        logging.info('  link_z step 2 (var KOs->ineq): %d knockable vars (%d geq0, %d leq0) (%.3fs)' %
+                      (len(knockable_vars[1]), len(knockable_vars_geq0), len(knockable_vars_leq0),
+                       time.time() - t_step))
 
         # 3. Use LP to identify M-values for knockable constraints
         #    For this purpose, first construct a most relaxed LP-model (use all possible constraint-KOs, no possible var-KOs)
+        t_step = time.time()
         knockable_constr_ineq = np.sort(self.z_map_constr_ineq.nonzero()[1])
 
         cont_vars = [False if i in self.idx_z else True for i in range(0, numvars)]
@@ -739,38 +769,71 @@ class SDProblem:
         M_b_eq = self.b_eq.copy()
         M_lb = [self.lb[i] for i in np.nonzero(cont_vars)[0]]
         M_ub = [self.ub[i] for i in np.nonzero(cont_vars)[0]]
-        # M_A contains a list of all knockable constraints. We need to maximize their value (M_A(i)*x) to get a good M
-        # M_A(i)*x - z*M <= b
-        # M*x <= b+z*M
-        #     or
-        # M_A(i)*x + z*M <= b + M
-        # b is the right hand side value
-        M_A = self.A_ineq[[True if i in knockable_constr_ineq else False for i in range(0, self.A_ineq.shape[0])], :][:, cont_vars]
-        M_A = list(M_A.toarray())
+        # M_A contains all knockable constraints (sparse). We maximize M_A(i)*x to get M.
+        # M_A(i)*x - z*M <= b   or   M_A(i)*x + z*M <= b + M
+        M_A_sparse = self.A_ineq[[True if i in knockable_constr_ineq else False for i in range(0, self.A_ineq.shape[0])], :][:, cont_vars]
         M_b = [self.b_ineq[i] for i in range(0, self.A_ineq.shape[0]) if i in knockable_constr_ineq]
 
-        processes = Configuration().processes
-        num_Ms = len(M_A)
-        processes = min(processes, num_Ms)
-
+        num_Ms = M_A_sparse.shape[0]
         max_Ax = [np.nan] * num_Ms
 
-        # Dummy to check if optimization runs
-        # worker_init(M_A,M_A_ineq,M_b_ineq,M_A_eq,M_b_eq,M_lb,M_ub,list(solvers.keys())[0])
-        # worker_compute(1)
+        # 3a. Short-circuit trivial BoundM constraints before solving LPs
+        #     - Zero rows: max(0*x) = 0
+        #     - Single-variable rows: max(a_j * x_j) computable from bounds
+        M_A_sparse_csr = M_A_sparse.tocsr()
+        lp_rows = []  # rows that still need LP
+        n_zero = 0
+        n_single = 0
+        for i in range(num_Ms):
+            row = M_A_sparse_csr.getrow(i)
+            nnz = row.nnz
+            if nnz == 0:
+                max_Ax[i] = 0.0
+                n_zero += 1
+            elif nnz == 1:
+                col_idx = row.indices[0]
+                coeff = row.data[0]
+                if coeff > 0:
+                    max_Ax[i] = coeff * M_ub[col_idx] if not isinf(M_ub[col_idx]) else np.inf
+                else:
+                    max_Ax[i] = coeff * M_lb[col_idx] if not isinf(M_lb[col_idx]) else np.inf
+                n_single += 1
+            else:
+                lp_rows.append(i)
 
-        logging.info('  Bounding MILP.')
-        if processes > 1 and num_Ms > 1000:
-            with SDPool(processes,
-                        initializer=worker_init,
-                        initargs=(M_A, M_A_ineq, M_b_ineq, M_A_eq, M_b_eq, M_lb, M_ub, getattr(self, SOLVER), getattr(self, SEED))) as pool:
-                chunk_size = num_Ms // processes
-                for i, value in pool.imap_unordered(worker_compute, range(num_Ms), chunksize=chunk_size):
-                    max_Ax[i] = value
+        n_lp = len(lp_rows)
+        logging.info('  Bounding MILP: %d constraints (%d zero, %d single-var, %d need LP).' %
+                      (num_Ms, n_zero, n_single, n_lp))
+
+        # 3b. Solve LPs for remaining rows (keep M_A sparse, extract rows lazily)
+        if n_lp > 0:
+            # Build objective list for LP rows only (dense, as worker_compute expects it)
+            M_A_lp = [M_A_sparse_csr.getrow(i).toarray().ravel() for i in lp_rows]
+
+            processes = Configuration().processes
+            processes = min(processes, n_lp)
+
+            if processes > 1 and n_lp > 1000:
+                with SDPool(processes,
+                            initializer=worker_init,
+                            initargs=(M_A_lp, M_A_ineq, M_b_ineq, M_A_eq, M_b_eq, M_lb, M_ub, getattr(self, SOLVER), getattr(self, SEED))) as pool:
+                    chunk_size = n_lp // processes
+                    for local_i, value in pool.imap_unordered(worker_compute, range(n_lp), chunksize=chunk_size):
+                        max_Ax[lp_rows[local_i]] = value
+            else:
+                worker_init(M_A_lp, M_A_ineq, M_b_ineq, M_A_eq, M_b_eq, M_lb, M_ub, getattr(self, SOLVER), getattr(self, SEED))
+                for local_i in range(n_lp):
+                    _, max_Ax[lp_rows[local_i]] = worker_compute(local_i)
+
+        # M-value statistics
+        finite_Ms = [v for v in max_Ax if not isinf(v) and not np.isnan(v)]
+        inf_Ms = sum(1 for v in max_Ax if isinf(v))
+        if finite_Ms:
+            logging.info('  BoundM stats: %d finite (min=%.4g, median=%.4g, max=%.4g), %d inf (%.3fs).' %
+                          (len(finite_Ms), min(finite_Ms), np.median(finite_Ms), max(finite_Ms),
+                           inf_Ms, time.time() - t_step))
         else:
-            worker_init(M_A, M_A_ineq, M_b_ineq, M_A_eq, M_b_eq, M_lb, M_ub, getattr(self, SOLVER), getattr(self, SEED))
-            for i in range(num_Ms):
-                _, max_Ax[i] = worker_compute(i)
+            logging.info('  BoundM stats: 0 finite, %d inf (%.3fs).' % (inf_Ms, time.time() - t_step))
 
         # round Ms up to 5 digits
         Ms = [np.ceil(M * 1e5) / 1e5 if not isinf(M) else self.M for M in max_Ax]
@@ -782,6 +845,7 @@ class SDProblem:
         ]
 
         # 4. Link constraints to z-variables for available upper bounds
+        t_step = time.time()
         self.z_map_constr_ineq = self.z_map_constr_ineq.tocsc()
         self.A_ineq = self.A_ineq.todok()
         # iterate through knockable constraints
@@ -797,11 +861,15 @@ class SDProblem:
                     self.A_ineq[row, z_i] = Ms[row] - self.b_ineq[row]
                     self.b_ineq[row] = Ms[row]
         self.z_map_constr_ineq = self.z_map_constr_ineq.tocsc()
+        logging.info('  link_z step 4 (z-linking): %.3fs' % (time.time() - t_step))
 
         # 5. Translate back remaining inequalities to equations if applicable and link via indicator constraints
+        t_step = time.time()
         knockable_constr_ineq = tuple(knockable_constr_ineq)
         knockable_constr_ineq_ic = [i for i in range(self.A_ineq.shape[0]) if isinf(Ms[i])]
         self.A_ineq = self.A_ineq.tocsr()
+        logging.info('  link_z step 5 (indicators): %d indicator constraints (%.3fs)' %
+                      (len(knockable_constr_ineq_ic), time.time() - t_step))
 
         # approach to find inequalities that can be lumped:
         # - construct a matrix from A_ineq, b_ineq, z_ineq for knockable constraints
@@ -872,6 +940,7 @@ class SDProblem:
         keep_eq = [False if i in knockable_constr_eq_ic else True for i in range(self.A_eq.shape[0])]
         self.A_eq = self.A_eq[keep_eq, :]
         self.b_eq = [self.b_eq[i] for i in range(len(keep_eq)) if keep_eq[i]]
+        logging.info('  link_z total: %.3fs' % (time.time() - t_link_z))
 
 
 class ContMILP:

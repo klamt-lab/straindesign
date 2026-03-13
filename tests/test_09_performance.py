@@ -436,6 +436,156 @@ def test_iml1515_mcs_393(solver):
 
 
 # ===========================================================================
+# Large suite (--large): iML1515 + 14BDO — SUPPRESS + PROTECT
+# ===========================================================================
+
+def _add_14bdo_pathway(model):
+    """Add heterologous 1,4-butanediol pathway to a model (in-place).
+
+    Adds 9 reactions and 7 metabolites (some may already exist in the model).
+    Returns the modified model.
+    """
+    from cobra import Reaction, Metabolite
+
+    # Metabolites (only add if not already present)
+    met_ids = {
+        'sucsal_c': ('Succinic semialdehyde', 'c'),
+        '4hb_c': ('4-Hydroxybutanoate', 'c'),
+        '4hbcoa_c': ('4-Hydroxybutyryl-CoA', 'c'),
+        '4hbal_c': ('4-Hydroxybutanal', 'c'),
+        '14bdo_c': ('1,4-Butanediol', 'c'),
+        '14bdo_p': ('1,4-Butanediol', 'p'),
+        '14bdo_e': ('1,4-Butanediol', 'e'),
+    }
+    existing = {m.id for m in model.metabolites}
+    for mid, (name, comp) in met_ids.items():
+        if mid not in existing:
+            model.add_metabolites([Metabolite(mid, name=name, compartment=comp)])
+
+    def _met(mid):
+        return model.metabolites.get_by_id(mid)
+
+    # Reactions
+    rxns = []
+
+    r = Reaction('SSCOARx'); r.name = 'Succinyl-CoA reductase'
+    r.add_metabolites({_met('h_c'): -1, _met('nadph_c'): -1, _met('succoa_c'): -1,
+                       _met('coa_c'): 1, _met('nadp_c'): 1, _met('sucsal_c'): 1})
+    r.bounds = (0, 1000); r.gene_reaction_rule = 'gsscoar'; rxns.append(r)
+
+    r = Reaction('AKGDC'); r.name = 'Alpha-ketoglutarate decarboxylase'
+    r.add_metabolites({_met('akg_c'): -1, _met('h_c'): -1,
+                       _met('co2_c'): 1, _met('sucsal_c'): 1})
+    r.bounds = (0, 1000); r.gene_reaction_rule = 'gakgdc'; rxns.append(r)
+
+    r = Reaction('4HBD'); r.name = '4-Hydroxybutyrate dehydrogenase'
+    r.add_metabolites({_met('h_c'): -1, _met('nadh_c'): -1, _met('sucsal_c'): -1,
+                       _met('4hb_c'): 1, _met('nad_c'): 1})
+    r.bounds = (0, 1000); rxns.append(r)
+
+    r = Reaction('4HBCT'); r.name = '4-Hydroxybutyrate CoA-transferase'
+    r.add_metabolites({_met('4hb_c'): -1, _met('accoa_c'): -1,
+                       _met('4hbcoa_c'): 1, _met('ac_c'): 1})
+    r.bounds = (0, 1000); rxns.append(r)
+
+    r = Reaction('4HBDH'); r.name = '4-Hydroxybutyryl-CoA dehydrogenase'
+    r.add_metabolites({_met('4hbcoa_c'): -1, _met('h_c'): -1, _met('nadh_c'): -1,
+                       _met('4hbal_c'): 1, _met('coa_c'): 1, _met('nad_c'): 1})
+    r.bounds = (0, 1000); rxns.append(r)
+
+    r = Reaction('4HBDx'); r.name = '4-Hydroxybutanal reductase'
+    r.add_metabolites({_met('4hbal_c'): -1, _met('h_c'): -1, _met('nadh_c'): -1,
+                       _met('14bdo_c'): 1, _met('nad_c'): 1})
+    r.bounds = (0, 1000); rxns.append(r)
+
+    r = Reaction('14BDOtpp'); r.name = '1,4-Butanediol transport (c->p)'
+    r.add_metabolites({_met('14bdo_c'): -1, _met('14bdo_p'): 1})
+    r.bounds = (0, 1000); rxns.append(r)
+
+    r = Reaction('14BDOtex'); r.name = '1,4-Butanediol transport (p->e)'
+    r.add_metabolites({_met('14bdo_p'): -1, _met('14bdo_e'): 1})
+    r.bounds = (-1000, 1000); rxns.append(r)
+
+    r = Reaction('EX_14bdo_e'); r.name = '1,4-Butanediol exchange'
+    r.add_metabolites({_met('14bdo_e'): -1})
+    r.bounds = (0, 1000); rxns.append(r)
+
+    model.add_reactions(rxns)
+
+    # Restrict exchanges: shut all, then open fermentation products
+    for rx in model.reactions:
+        if all(s < 0 for s in rx.metabolites.values()) and rx.id != 'EX_14bdo_e':
+            rx.upper_bound = 0.0
+    # Shut CO2 uptake
+    model.reactions.get_by_id('EX_co2_e').lower_bound = 0.0
+    # Open main fermentation product and utility exchanges
+    open_exchanges = [
+        'EX_14bdo_e', 'EX_ac_e', 'EX_co2_e', 'EX_etoh_e', 'EX_for_e',
+        'EX_h2_e', 'EX_h2o2_e', 'EX_h2o_e', 'EX_h_e', 'EX_lac__D_e',
+        'EX_meoh_e', 'EX_o2_e', 'EX_succ_e', 'EX_tungs_e',
+        'DM_4crsol_c', 'DM_5drib_c', 'DM_aacald_c', 'DM_amob_c',
+        'DM_mththf_c', 'DM_oxam_c',
+    ]
+    for rid in open_exchanges:
+        try:
+            model.reactions.get_by_id(rid).upper_bound = 1000.0
+        except KeyError:
+            pass
+    return model
+
+
+@pytest.mark.large
+@pytest.mark.parametrize("solver", [GUROBI])
+@pytest.mark.timeout(1200)
+def test_iml1515_14bdo_mcs(solver, tmp_path):
+    """MCS on iML1515 + 14BDO: SUPPRESS + PROTECT with gene KOs/KIs.
+
+    Primary benchmark for preprocessing + MILP performance experiments.
+    Exercises both constraint types in BoundM (Type A from PROTECT, Type B from SUPPRESS).
+    """
+    try:
+        m = load_model("iML1515")
+    except Exception:
+        pytest.skip("iML1515 not available in this COBRApy installation")
+
+    _add_14bdo_pathway(m)
+
+    # Cost configuration: gene KOs + pathway KIs + reaction KO
+    ko_cost = {r.id: 1.0 for r in m.reactions
+               if r.genes and m.genes.get_by_id('s0001') not in r.genes}
+    ko_cost['EX_o2_e'] = 1.0
+    ko_cost.pop('AKGDC', None)
+    ko_cost.pop('SSCOARx', None)
+    ki_cost = {'AKGDC': 1.0, 'SSCOARx': 1.0}
+
+    module_suppress = sd.SDModule(m, SUPPRESS,
+        constraints='EX_14bdo_e + 0.25 EX_glc__D_e <= 0')
+    module_protect = sd.SDModule(m, PROTECT,
+        constraints='BIOMASS_Ec_iML1515_core_75p37M >= 0.1')
+
+    dump_path = str(tmp_path / 'iml1515_14bdo_preprocessed.pkl')
+
+    t0 = time.perf_counter()
+    sol = sd.compute_strain_designs(
+        m,
+        sd_modules=[module_suppress, module_protect],
+        solution_approach=ANY,
+        max_cost=40,
+        max_solutions=1,
+        gene_kos=True,
+        ko_cost=ko_cost,
+        ki_cost=ki_cost,
+        solver=solver,
+        dump_preprocessed=dump_path,
+    )
+    elapsed = time.perf_counter() - t0
+    record("iml1515_14bdo", solver, "iML1515+14BDO", elapsed,
+           len(sol.reaction_sd), sol.status)
+    assert len(sol.reaction_sd) >= 1, (
+        f"[{solver}] Expected ≥1 MCS for iML1515+14BDO, got {len(sol.reaction_sd)}")
+
+
+# ===========================================================================
 # Session teardown: write JSON + print comparison table
 # ===========================================================================
 

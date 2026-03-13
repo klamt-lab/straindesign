@@ -26,6 +26,7 @@ import ast
 import hashlib
 import io
 import logging
+import math
 import numpy as np
 from contextlib import contextmanager, redirect_stdout, redirect_stderr
 from functools import wraps
@@ -1531,14 +1532,26 @@ def bound_blocked_or_irrevers_fva(model, **kwargs):
         tol = 1e-10  # use tolerance for tightening problem bounds
     else:
         tol = 0.0
+    n_lb_to_inf = 0
+    n_ub_to_inf = 0
+    n_tightened_zero = 0
+    n_stayed_finite = 0
     for (reac_id, limits) in flux_limits.iterrows():
         r = model.reactions.get_by_id(reac_id)
         # modify _lower_bound and _upper_bound to make changes permanent
         if r.lower_bound < 0.0 and limits.minimum - tol > r.lower_bound:
             r._lower_bound = -np.inf
+            n_lb_to_inf += 1
         if limits.minimum >= tol:
             r._lower_bound = max([0.0, r._lower_bound])
+            n_tightened_zero += 1
         if r.upper_bound > 0.0 and limits.maximum + tol < r.upper_bound:
             r._upper_bound = np.inf
+            n_ub_to_inf += 1
         if limits.maximum <= -tol:
             r._upper_bound = min([0.0, r._upper_bound])
+            n_tightened_zero += 1
+    n_stayed_finite = sum(1 for r in model.reactions
+                          if not math.isinf(float(r.lower_bound)) or not math.isinf(float(r.upper_bound)))
+    logging.info('  FVA bounds: %d lb->inf, %d ub->inf, %d tightened to 0, %d stayed finite' %
+                  (n_lb_to_inf, n_ub_to_inf, n_tightened_zero, n_stayed_finite))

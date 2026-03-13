@@ -279,6 +279,9 @@ def speedy_fva(model, **kwargs):
     threads : int or None, optional (default None)
         Number of parallel workers for Phase 2 dispatch.  None = auto
         (Configuration().processes if n >= 1000, else 1).
+    reaction_list : list of str, optional (default None)
+        Only compute FVA for these reaction IDs.  Non-listed reactions get
+        NaN in the returned DataFrame.  None = compute for all reactions.
     verbose : bool, optional (default False)
 
     Returns
@@ -288,6 +291,7 @@ def speedy_fva(model, **kwargs):
     compress = kwargs.pop('compress', None)
     precheck = kwargs.pop('precheck', None)
     threads = kwargs.pop('threads', None)
+    reaction_list = kwargs.pop('reaction_list', None)
     orig_reaction_ids = model.reactions.list_attr("id")
     n_original = len(orig_reaction_ids)
     cmp_maps = []
@@ -371,6 +375,16 @@ def speedy_fva(model, **kwargs):
     res_min[fixed] = True
     incumbent_max[fixed] = ub[fixed]
     incumbent_min[fixed] = lb[fixed]
+
+    # Scope FVA to reaction_list: mark non-listed reactions as resolved with NaN
+    if reaction_list is not None:
+        scope_set = set(reaction_list)
+        for idx, rid in enumerate(reaction_ids):
+            if rid not in scope_set:
+                res_max[idx] = True
+                res_min[idx] = True
+                incumbent_max[idx] = nan
+                incumbent_min[idx] = nan
 
     # Stats
     lps_solved = 0

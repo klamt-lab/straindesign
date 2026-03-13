@@ -35,6 +35,23 @@ from straindesign.networktools import   remove_ext_mets, bound_blocked_or_irreve
                                         estimate_expansion_size, with_suppressed_lp, _silent_io
 
 
+def _collect_no_par_compress_reacs(sd_modules):
+    """Collect reaction IDs referenced in SD modules that must not be parallel-compressed."""
+    reacs = set()
+    for m in sd_modules:
+        for p in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+            if p in m and m[p] is not None:
+                param = m[p]
+                if p == CONSTRAINTS:
+                    for c in param:
+                        for k in c[0].keys():
+                            reacs.add(k)
+                if p in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+                    for k in param.keys():
+                        reacs.add(k)
+    return reacs
+
+
 @with_suppressed_lp
 def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """Computes strain designs for a user-defined strain design problem
@@ -313,19 +330,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         uncmp_reg_cost.update(_immediate_reg)
     # --- COMPRESS #1: on model WITHOUT gene pseudoreactions ---
     if kwargs['compress'] is True or kwargs['compress'] is None:
-        # Exclude reactions named in strain design modules from parallel compression
-        no_par_compress_reacs = set()
-        for m in sd_modules:
-            for p in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
-                if p in m and m[p] is not None:
-                    param = m[p]
-                    if p == CONSTRAINTS:
-                        for c in param:
-                            for k in c[0].keys():
-                                no_par_compress_reacs.add(k)
-                    if p in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
-                        for k in param.keys():
-                            no_par_compress_reacs.add(k)
+        no_par_compress_reacs = _collect_no_par_compress_reacs(sd_modules)
         compression_backend = kwargs.get('compression_backend', 'sparse_rref')
         logging.info('Compressing Network (' + str(len(cmp_model.reactions)) + ' reactions).')
         t0 = time.time()
@@ -408,19 +413,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     if kwargs['compress'] is True or kwargs['compress'] is None:
         logging.info('Compressing after GPR extension (' + str(len(cmp_model.reactions)) + ' reactions).')
         t0 = time.time()
-        # Rebuild no_par_compress_reacs from updated sd_modules
-        no_par_compress_reacs = set()
-        for m in sd_modules:
-            for p in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
-                if p in m and m[p] is not None:
-                    param = m[p]
-                    if p == CONSTRAINTS:
-                        for c in param:
-                            for k in c[0].keys():
-                                no_par_compress_reacs.add(k)
-                    if p in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
-                        for k in param.keys():
-                            no_par_compress_reacs.add(k)
+        no_par_compress_reacs = _collect_no_par_compress_reacs(sd_modules)
         cmp_mapReac_2 = compress_model(cmp_model, no_par_compress_reacs,
                                         compression_backend=compression_backend)
         sd_modules = compress_modules(sd_modules, cmp_mapReac_2)
@@ -436,8 +429,11 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     essential_reacs = set()
     suppress_essential = set()
     cmp_size1_mcs = []
+    # Scope FVA to knockable reactions only (essentiality of non-knockable reactions is irrelevant)
+    knockable_ids = list(set(cmp_ko_cost.keys()) | set(cmp_ki_cost.keys()))
     for m in sd_modules:
-        flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS], compress=False)
+        flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS],
+                          compress=False, reaction_list=knockable_ids)
         essentials_in_module = set()
         for (reac_id, limits) in flux_limits.iterrows():
             if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0:
