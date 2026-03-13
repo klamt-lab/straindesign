@@ -141,9 +141,4 @@ jobs:
         run: |
           micromamba install pytest pytest-timeout
       - name: Test with pytest
-        run: |
-          pytest tests -v --medium --log-cli-level=INFO 2>&1 | tee pytest_output.txt || true
-          if grep -q ' FAILED' pytest_output.txt; then
-            echo "Test failures detected."
-            exit 1
-          fi
+        run: pytest tests -v --medium --log-cli-level=INFO
