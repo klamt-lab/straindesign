@@ -112,21 +112,18 @@ def apply_primal_config(model, config, bound_info):
             pass  # Current behavior (already applied by preprocessing)
 
         elif config == 'P-B':
-            # FVA-tighten redundant bounds
-            if not info['lb_functional'] and not math.isinf(info['lb']):
+            # FVA-tighten: set all non-functional bounds to FVA limits
+            if not info['lb_functional']:
                 r._lower_bound = info['fva_min']
-            if not info['ub_functional'] and not math.isinf(info['ub']):
+            if not info['ub_functional']:
                 r._upper_bound = info['fva_max']
 
         elif config == 'P-C':
-            # Remove redundant bounds (make homogeneous where possible)
+            # Homogeneous: non-functional bounds -> ±inf (preserve irreversibility)
             if not info['lb_functional']:
-                if r.lower_bound < 0:
-                    r._lower_bound = -np.inf
-                # lb=0 is already homogeneous, keep it
+                r._lower_bound = -np.inf if info['fva_min'] < 0 else 0.0
             if not info['ub_functional']:
-                if r.upper_bound > 0:
-                    r._upper_bound = np.inf
+                r._upper_bound = np.inf if info['fva_max'] > 0 else 0.0
 
 
 def apply_farkas_config(model, config, bound_info, knockable_ids=None):
@@ -143,34 +140,33 @@ def apply_farkas_config(model, config, bound_info, knockable_ids=None):
             pass  # Current behavior
 
         elif config == 'F-B':
-            # FVA-tighten all bounds
-            if not info['lb_functional'] and not math.isinf(info['lb']):
+            # FVA-tighten: set all non-functional bounds to FVA limits
+            if not info['lb_functional']:
                 r._lower_bound = info['fva_min']
-            if not info['ub_functional'] and not math.isinf(info['ub']):
+            if not info['ub_functional']:
                 r._upper_bound = info['fva_max']
 
         elif config == 'F-C':
-            # Homogeneous redundant: non-zero finite redundant -> ±inf
-            # Preserve variable classification (sign of lb/ub)
-            if not info['lb_functional'] and r.lower_bound < 0 and not math.isinf(float(r.lower_bound)):
-                r._lower_bound = -np.inf
-            if not info['ub_functional'] and r.upper_bound > 0 and not math.isinf(float(r.upper_bound)):
-                r._upper_bound = np.inf
+            # Homogeneous redundant: non-zero finite -> ±inf (preserve variable classification)
+            if not info['lb_functional'] and not math.isinf(info['fva_min']):
+                r._lower_bound = -np.inf if info['fva_min'] < 0 else 0.0
+            if not info['ub_functional'] and not math.isinf(info['fva_max']):
+                r._upper_bound = np.inf if info['fva_max'] > 0 else 0.0
 
         elif config == 'F-D':
-            # Knockable-only: keep bounds for knockable, remove redundant non-knockable
+            # Knockable-only: keep bounds for knockable, remove non-functional non-knockable
             if r.id not in knockable_ids:
-                if not info['lb_functional'] and r.lower_bound < 0 and not math.isinf(float(r.lower_bound)):
-                    r._lower_bound = -np.inf
-                if not info['ub_functional'] and r.upper_bound > 0 and not math.isinf(float(r.upper_bound)):
-                    r._upper_bound = np.inf
+                if not info['lb_functional']:
+                    r._lower_bound = -np.inf if info['fva_min'] < 0 else 0.0
+                if not info['ub_functional']:
+                    r._upper_bound = np.inf if info['fva_max'] > 0 else 0.0
 
         elif config == 'F-E':
             # Knockable FVA: FVA limits for knockable, remove redundant non-knockable
             if r.id in knockable_ids:
-                if not info['lb_functional'] and not math.isinf(info['lb']):
+                if not info['lb_functional']:
                     r._lower_bound = info['fva_min']
-                if not info['ub_functional'] and not math.isinf(info['ub']):
+                if not info['ub_functional']:
                     r._upper_bound = info['fva_max']
             else:
                 if not info['lb_functional'] and r.lower_bound < 0 and not math.isinf(float(r.lower_bound)):
@@ -251,26 +247,33 @@ def run_experiment(dump_path, p_config, f_config, seed=42, solver='gurobi'):
     cmp_model = d['cmp_model']
     sd_modules = d['sd_modules']
     kwargs_milp = d['kwargs_milp']
+    pre_fva_bounds = d.get('pre_fva_bounds')
 
     # Identify knockable reactions
     ko_cost = kwargs_milp.get(KOCOST, {})
     ki_cost_dict = kwargs_milp.get(KICOST, {})
     knockable_ids = set(ko_cost.keys()) | set(ki_cost_dict.keys())
 
-    # Run FVA on compressed model to classify bounds
-    # We need constraints from each module to properly classify
-    # For simplicity, run unconstrained FVA (conservative — may classify
-    # some functional bounds as redundant, but that's safe)
-    logging.info(f"  Classifying bounds on compressed model ({len(cmp_model.reactions)} rxns)...")
     from straindesign.networktools import suppress_lp_context
+
+    # Restore pre-FVA bounds so configs start from the same baseline
+    if pre_fva_bounds:
+        logging.info("  Restoring pre-FVA bounds...")
+        with suppress_lp_context(cmp_model):
+            for r in cmp_model.reactions:
+                if r.id in pre_fva_bounds:
+                    r._lower_bound, r._upper_bound = pre_fva_bounds[r.id]
+
+    # Run FVA on compressed model to classify bounds
+    logging.info(f"  Classifying bounds on compressed model ({len(cmp_model.reactions)} rxns)...")
     with suppress_lp_context(cmp_model):
         bound_info = classify_bounds(cmp_model, solver=solver)
 
     # Count baseline statistics
     n_lb_finite = sum(1 for r in cmp_model.reactions if not math.isinf(float(r.lower_bound)) and r.lower_bound != 0)
     n_ub_finite = sum(1 for r in cmp_model.reactions if not math.isinf(float(r.upper_bound)) and r.upper_bound != 0)
-    n_lb_redundant = sum(1 for info in bound_info.values() if not info['lb_functional'] and not math.isinf(info['lb']) and info['lb'] != 0)
-    n_ub_redundant = sum(1 for info in bound_info.values() if not info['ub_functional'] and not math.isinf(info['ub']) and info['ub'] != 0)
+    n_lb_nonfunctional = sum(1 for info in bound_info.values() if not info['lb_functional'])
+    n_ub_nonfunctional = sum(1 for info in bound_info.values() if not info['ub_functional'])
 
     # Apply bound configurations to a copy of the model
     with suppress_lp_context(cmp_model):
@@ -311,8 +314,8 @@ def run_experiment(dump_path, p_config, f_config, seed=42, solver='gurobi'):
         'n_knockable': len(knockable_ids),
         'n_lb_finite': n_lb_finite,
         'n_ub_finite': n_ub_finite,
-        'n_lb_redundant': n_lb_redundant,
-        'n_ub_redundant': n_ub_redundant,
+        'n_lb_nonfunctional': n_lb_nonfunctional,
+        'n_ub_nonfunctional': n_ub_nonfunctional,
     }
     return result
 

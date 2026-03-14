@@ -347,6 +347,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         cmp_ko_cost = uncmp_ko_cost
         cmp_ki_cost = uncmp_ki_cost
     # --- FVAs on (possibly compressed) model ---
+    # Save pre-FVA bounds for dump_preprocessed (bound config experiments)
+    pre_fva_bounds = {r.id: (r.lower_bound, r.upper_bound) for r in cmp_model.reactions}
     logging.info('  FVA to identify blocked reactions and irreversibilities.')
     t0 = time.time()
     bound_blocked_or_irrevers_fva(cmp_model, solver=kwargs[SOLVER], compress=False)
@@ -532,6 +534,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                 'orig_gki_cost': locals().get('orig_gki_cost'),
                 'max_cost': kwargs[MAX_COST],
                 'cmp_size1_mcs': cmp_size1_mcs,
+                'pre_fva_bounds': pre_fva_bounds,
             }, f)
         logging.info('Preprocessed data saved to ' + dump_path)
         logging.info('  Resume with:')
