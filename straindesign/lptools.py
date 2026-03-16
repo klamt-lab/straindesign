@@ -39,6 +39,7 @@ from matplotlib import use as set_matplotlib_backend
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import logging
 
+from straindesign.networktools import map_constraints_to_compressed, resolve_gene_constraints
 from straindesign.parse_constr import linexpr2mat, linexprdict2str
 
 
@@ -1347,6 +1348,18 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
             variable contains information about which datapoints need to be connected in triangles to
             render a closed surface. The last variable contains the matplotlib object.
     """
+    
+    cmp_model = kwargs.pop('cmp_model', None)
+    cmp_map = kwargs.pop('cmp_map', None)
+
+    if cmp_model is not None and cmp_map is not None:
+        # Resolve gene constraints on the original model first
+        if constraints:
+            constraints = resolve_gene_constraints(model, constraints)
+            constraints = map_constraints_to_compressed(constraints, cmp_map)
+        # Check axes exist in compressed model
+        model = cmp_model
+      
     reaction_ids = model.reactions.list_attr("id")
 
     if CONSTRAINTS in kwargs:

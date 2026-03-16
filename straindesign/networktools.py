@@ -511,6 +511,62 @@ def gene_kos_to_constraints(model, gene_kos):
 
     return [[{r: 1}, '=', 0] for r in sorted(knocked_out_reactions)]
 
+def map_constraints_to_compressed(constraints, cmp_map):
+    """Map full-model reaction constraints to compressed model space.
+ 
+    For each constraint referencing a full-model reaction ID, find the
+    compressed reaction that contains it.  If a compressed group member
+    is set to 0, the entire compressed reaction is set to 0 (since
+    coupled/parallel members share a single flux variable).
+ 
+    Args:
+        constraints: list of constraint strings (e.g. ["RXN_ID = 0"])
+        cmp_map: compression map (list of step dicts with "reac_map_exp")
+ 
+    Returns:
+        list: constraints with reaction IDs replaced by compressed IDs.
+              Non-mapped constraints are passed through unchanged.
+    """
+    # Build reverse lookup: orig_id -> compressed_id (at each step)
+    # We need the final compressed ID, so walk forward through steps
+    # tracking current ID for each original reaction.
+    # Simpler: build full reverse map from final compressed -> all originals
+    reverse = {}  # orig_id -> final_compressed_id
+    for step in cmp_map:
+        for cmp_id, orig_map in step["reac_map_exp"].items():
+            for orig_id in orig_map:
+                # orig_id might itself be a compressed ID from a previous step
+                # Check if it's already in reverse (meaning it was a compressed ID
+                # that mapped to even earlier originals)
+                if orig_id in reverse:
+                    # This orig_id was a compressed ID; update all its children
+                    # to point to the new cmp_id
+                    for k, v in list(reverse.items()):
+                        if v == orig_id:
+                            reverse[k] = cmp_id
+                reverse[orig_id] = cmp_id
+
+    mapped = []
+    for c in constraints:
+        if not isinstance(c, str):
+            mapped.append(c)
+            continue
+        # Parse "RXNID = 0" style constraints
+        parts = c.replace("=", " = ").split()
+        if len(parts) >= 3 and parts[0] in reverse:
+            parts[0] = reverse[parts[0]]
+            mapped.append(" ".join(parts))
+        else:
+            mapped.append(c)
+
+    # Deduplicate (multiple originals may map to same compressed)
+    seen = set()
+    deduped = []
+    for c in mapped:
+        if c not in seen:
+            seen.add(c)
+            deduped.append(c)
+    return deduped
 
 def resolve_gene_constraints(model, constraints):
     """Scan constraints for gene IDs/names and replace with reaction constraints.
