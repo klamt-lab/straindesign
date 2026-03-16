@@ -511,62 +511,63 @@ def gene_kos_to_constraints(model, gene_kos):
 
     return [[{r: 1}, '=', 0] for r in sorted(knocked_out_reactions)]
 
-def map_constraints_to_compressed(constraints, cmp_map):
-    """Map full-model reaction constraints to compressed model space.
- 
-    For each constraint referencing a full-model reaction ID, find the
-    compressed reaction that contains it.  If a compressed group member
-    is set to 0, the entire compressed reaction is set to 0 (since
-    coupled/parallel members share a single flux variable).
- 
+def _build_cmp_reverse_map(cmp_map):
+    """Build reverse lookup: original reaction ID -> final compressed ID.
+
+    Walks forward through compression steps, updating the mapping as
+    intermediate compressed IDs get further compressed.
+
     Args:
-        constraints: list of constraint strings (e.g. ["RXN_ID = 0"])
         cmp_map: compression map (list of step dicts with "reac_map_exp")
- 
+
     Returns:
-        list: constraints with reaction IDs replaced by compressed IDs.
-              Non-mapped constraints are passed through unchanged.
+        dict: {original_reaction_id: final_compressed_reaction_id}
     """
-    # Build reverse lookup: orig_id -> compressed_id (at each step)
-    # We need the final compressed ID, so walk forward through steps
-    # tracking current ID for each original reaction.
-    # Simpler: build full reverse map from final compressed -> all originals
-    reverse = {}  # orig_id -> final_compressed_id
+    reverse = {}
     for step in cmp_map:
         for cmp_id, orig_map in step["reac_map_exp"].items():
             for orig_id in orig_map:
-                # orig_id might itself be a compressed ID from a previous step
-                # Check if it's already in reverse (meaning it was a compressed ID
-                # that mapped to even earlier originals)
                 if orig_id in reverse:
-                    # This orig_id was a compressed ID; update all its children
-                    # to point to the new cmp_id
                     for k, v in list(reverse.items()):
                         if v == orig_id:
                             reverse[k] = cmp_id
                 reverse[orig_id] = cmp_id
+    return reverse
 
-    mapped = []
-    for c in constraints:
-        if not isinstance(c, str):
-            mapped.append(c)
-            continue
-        # Parse "RXNID = 0" style constraints
-        parts = c.replace("=", " = ").split()
-        if len(parts) >= 3 and parts[0] in reverse:
-            parts[0] = reverse[parts[0]]
-            mapped.append(" ".join(parts))
-        else:
-            mapped.append(c)
 
-    # Deduplicate (multiple originals may map to same compressed)
-    seen = set()
-    deduped = []
-    for c in mapped:
-        if c not in seen:
-            seen.add(c)
-            deduped.append(c)
-    return deduped
+def compress_constraints(constraints, cmp_mapReac):
+    """Map constraints from original model space to compressed model space.
+
+    Uses the same coefficient-scaling logic as :func:`compress_modules`:
+    when original reactions are lumped (coupled or parallel), constraint
+    coefficients are multiplied by the coupling/split factor and summed
+    into the compressed reaction.
+
+    Constraints must be in list format ``[{rxn_id: coeff, ...}, sign, rhs]``
+    as returned by :func:`resolve_gene_constraints` or ``parse_constraints``.
+
+    Args:
+        constraints (list): Constraints in list format.
+        cmp_mapReac (list of dict): Compression map from ``compress_model``
+            or ``SDSolutions.compression_map``.
+
+    Returns:
+        list: Constraints with reaction IDs mapped to compressed space.
+    """
+    constraints = [list(c) for c in constraints]  # shallow copy
+    for cmp in cmp_mapReac:
+        reac_map_exp = cmp["reac_map_exp"]
+        for new_reac, old_reac_val in reac_map_exp.items():
+            if len(old_reac_val) <= 1:
+                continue
+            for c in constraints:
+                coeff_dict = c[0]
+                lumped = [k for k in coeff_dict if k in old_reac_val]
+                if lumped:
+                    coeff_dict[new_reac] = sum(
+                        coeff_dict.pop(k) * old_reac_val[k] for k in lumped
+                    )
+    return constraints
 
 def resolve_gene_constraints(model, constraints):
     """Scan constraints for gene IDs/names and replace with reaction constraints.

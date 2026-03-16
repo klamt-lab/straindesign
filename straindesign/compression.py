@@ -1844,7 +1844,10 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
 
     stoichmat_T = create_stoichiometric_matrix(model, 'lil').transpose()
     factor = [d[0] if d else 1.0 for d in stoichmat_T.data]
-    A = sparse.diags(factor) @ stoichmat_T
+    # Divide by first nonzero coefficient to normalize stoichiometry.
+    # This detects parallel reactions even when stoichiometry is scaled
+    # (e.g. -1 A -> 2 B and -3 A -> 6 B both normalize to [1, -2]).
+    A = sparse.diags([1.0 / f for f in factor]) @ stoichmat_T
 
     lb = [float(r.lower_bound) for r in model.reactions]
     ub = [float(r.upper_bound) for r in model.reactions]
@@ -1913,13 +1916,25 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
         for rxn, combined_gpr in group_gpr:
             rxn.gene_reaction_rule = combined_gpr
 
-    # Build compression map
+    # Build compression map with flux-split fractions.
+    # For parallel reactions, the compressed flux is the total through all
+    # members.  Each member's fraction is proportional to |first_coeff|
+    # (its stoichiometric scale relative to the representative).
     rational_map = {}
     subT = np.zeros((old_num_reac, len(model.reactions)))
     for i in range(subT.shape[1]):
-        for j in subset_list[i]:
+        group = subset_list[i]
+        for j in group:
             subT[j, i] = 1
-        rational_map[model.reactions[i].id] = {old_reac_ids[j]: Rational(1) for j in subset_list[i]}
+        if len(group) == 1:
+            rational_map[model.reactions[i].id] = {old_reac_ids[group[0]]: Fraction(1)}
+        else:
+            scales = [abs(factor[j]) for j in group]
+            total = sum(Fraction(s).limit_denominator(1000) for s in scales)
+            rational_map[model.reactions[i].id] = {
+                old_reac_ids[j]: Fraction(abs(factor[j])).limit_denominator(1000) / total
+                for j in group
+            }
 
     return rational_map
 

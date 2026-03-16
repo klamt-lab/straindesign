@@ -563,6 +563,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         sd_solutions = SDSolutions(orig_model, sd, OPTIMAL if sd else INFEASIBLE, setup)
         sd_solutions.compressed_sd = compressed_sd
         sd_solutions.compression_map = cmp_mapReac
+        sd_solutions.compressed_model = cmp_model
         sd_solutions.group_map = group_map
         logging.info('Returned %d size-1 MCS. MILP solve skipped (dump_preprocessed mode).' % len(sd))
         return sd_solutions
@@ -652,6 +653,7 @@ def _decompress_solutions(cmp_sd_solution, cmp_mapReac, cmp_size1_mcs,
         sd_solutions = SDSolutions(orig_model, sd, status, setup, _lazy_init=lazy_meta)
         sd_solutions.compressed_sd = compressed_sd
         sd_solutions.compression_map = cmp_mapReac
+        sd_solutions.compressed_model = cmp_model
         sd_solutions.group_map = group_map
         return sd_solutions
 
@@ -689,6 +691,7 @@ def _decompress_solutions(cmp_sd_solution, cmp_mapReac, cmp_size1_mcs,
     sd_solutions = SDSolutions(orig_model, sd, cmp_sd_solution.status, setup)
     sd_solutions.compressed_sd = compressed_sd
     sd_solutions.compression_map = cmp_mapReac
+    sd_solutions.compressed_model = cmp_model
     sd_solutions.group_map = group_map
     return sd_solutions
 

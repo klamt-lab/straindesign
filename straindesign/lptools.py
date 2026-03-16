@@ -603,6 +603,13 @@ def fba(model, **kwargs) -> Solution:
 
     x = [v if abs(v) >= 1e-11 else 0.0 for v in x]  # cut off for very small absolute values
     fluxes = {reaction_ids[i]: x[i] for i in range(len(x))}
+
+    # Expand compressed fluxes if cmp_map is provided
+    cmp_map = kwargs.get('cmp_map', None)
+    orig_reaction_ids = kwargs.get('orig_reaction_ids', None)
+    if cmp_map is not None and orig_reaction_ids is not None:
+        fluxes = expand_fluxes(fluxes, cmp_map, orig_reaction_ids)
+
     sol = Solution(objective_value=-opt_cx, status=status, fluxes=fluxes)
     return sol
 
@@ -833,29 +840,25 @@ def expand_fluxes(fluxes_cmp, cmp_map, orig_reaction_ids):
     """Expand a compressed flux vector to the full (uncompressed) model.
 
     Reverses the compression steps recorded in *cmp_map* to recover
-    fluxes for every reaction in the original model.
+    fluxes for every reaction in the original model.  Each original
+    reaction's flux is ``v_orig = factor * v_compressed``.
 
-    * **Coupled reactions** are expanded deterministically using the
-      stored coupling factor: ``v_orig = factor * v_compressed``.
-    * **Parallel reactions** (stoichiometrically identical, factor = 1.0)
-      each receive the full compressed flux.  The actual split is
-      arbitrary; callers may post-process if a specific split is needed.
-    * **Removed reactions** (not present in any compression step) are
-      set to zero.
+    * **Coupled reactions**: factor is the stoichiometric coupling
+      coefficient (deterministic, exact).
+    * **Parallel reactions**: factor is ``1/n`` (or proportional to
+      stoichiometric scale), splitting the total compressed flux evenly.
+    * **Removed reactions** (not in any compression step): set to zero.
 
     Args:
         fluxes_cmp (dict):
-            Flux dictionary from FBA on the compressed model
-            (reaction_id → flux value).
+            Flux dictionary from FBA/pFBA on the compressed model.
 
         cmp_map (list of dict):
             Compression map as stored in
-            ``SDSolutions.compression_map`` – a list of compression-step
-            dictionaries, each containing at least ``"reac_map_exp"``.
+            ``SDSolutions.compression_map``.
 
         orig_reaction_ids (iterable of str):
-            Reaction IDs of the original (uncompressed) model, used to
-            fill in zeros for reactions that were removed entirely.
+            Reaction IDs of the original (uncompressed) model.
 
     Returns:
         dict: Flux dictionary keyed by original reaction IDs.
@@ -1351,12 +1354,23 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
     cmp_model = kwargs.pop('cmp_model', None)
     cmp_map = kwargs.pop('cmp_map', None)
 
+    _orig_axes = None  # store original axis names for labelling
     if cmp_model is not None and cmp_map is not None:
-        from straindesign.networktools import resolve_gene_constraints, map_constraints_to_compressed
-        # Resolve gene constraints on the original model first
+        from straindesign.networktools import (resolve_gene_constraints,
+            compress_constraints, _build_cmp_reverse_map)
+        # Resolve gene constraints on the original model, then compress
         if CONSTRAINTS in kwargs and kwargs[CONSTRAINTS]:
             kwargs[CONSTRAINTS] = resolve_gene_constraints(model, kwargs[CONSTRAINTS])
-            kwargs[CONSTRAINTS] = map_constraints_to_compressed(kwargs[CONSTRAINTS], cmp_map)
+            kwargs[CONSTRAINTS] = compress_constraints(kwargs[CONSTRAINTS], cmp_map)
+        # Map axes to compressed reaction IDs, keep originals for labels
+        _orig_axes = [a if isinstance(a, str) else list(a) for a in axes]
+        reverse = _build_cmp_reverse_map(cmp_map)
+        cmp_reaction_ids = set(r.id for r in cmp_model.reactions)
+        for i, ax in enumerate(axes):
+            if isinstance(ax, str) and ax not in cmp_reaction_ids and ax in reverse:
+                axes[i] = reverse[ax]
+            elif isinstance(ax, list):
+                axes[i] = [reverse.get(a, a) if isinstance(a, str) else a for a in ax]
         # Switch to compressed model
         model = cmp_model
       
@@ -1429,6 +1443,14 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
         if ax_limits[i][0] == ax_limits[i][1]:
             pad = max(0.5, abs(ax_limits[i][0]) * 0.1)
             ax_limits[i] = [ax_limits[i][0] - pad, ax_limits[i][1] + pad]
+
+    # Override axis labels with original (uncompressed) reaction names
+    if _orig_axes is not None:
+        for i, oa in enumerate(_orig_axes):
+            if isinstance(oa, str):
+                ax_name[i] = oa
+            elif isinstance(oa, list) and len(oa) == 1:
+                ax_name[i] = oa[0]
 
     # Detect degeneracy
     degen, degen_axes = _detect_degeneracy(val_limits, num_axes)
