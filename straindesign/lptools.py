@@ -829,6 +829,47 @@ def yopt(model, **kwargs) -> Solution:
     else:
         status = INFEASIBLE
 
+def expand_fluxes(fluxes_cmp, cmp_map, orig_reaction_ids):
+    """Expand a compressed flux vector to the full (uncompressed) model.
+
+    Reverses the compression steps recorded in *cmp_map* to recover
+    fluxes for every reaction in the original model.
+
+    * **Coupled reactions** are expanded deterministically using the
+      stored coupling factor: ``v_orig = factor * v_compressed``.
+    * **Parallel reactions** (stoichiometrically identical, factor = 1.0)
+      each receive the full compressed flux.  The actual split is
+      arbitrary; callers may post-process if a specific split is needed.
+    * **Removed reactions** (not present in any compression step) are
+      set to zero.
+
+    Args:
+        fluxes_cmp (dict):
+            Flux dictionary from FBA on the compressed model
+            (reaction_id → flux value).
+
+        cmp_map (list of dict):
+            Compression map as stored in
+            ``SDSolutions.compression_map`` – a list of compression-step
+            dictionaries, each containing at least ``"reac_map_exp"``.
+
+        orig_reaction_ids (iterable of str):
+            Reaction IDs of the original (uncompressed) model, used to
+            fill in zeros for reactions that were removed entirely.
+
+    Returns:
+        dict: Flux dictionary keyed by original reaction IDs.
+    """
+    fluxes = dict(fluxes_cmp)
+    for step in reversed(cmp_map):
+        for cmp_id, orig_map in step["reac_map_exp"].items():
+            v_cmp = fluxes.pop(cmp_id, 0.0)
+            for orig_id, factor in orig_map.items():
+                fluxes[orig_id] = factor * v_cmp
+    for rid in orig_reaction_ids:
+        if rid not in fluxes:
+            fluxes[rid] = 0.0
+    return fluxes
 
 def _make_fix_constraint(axes, ax_idx, ax_type, value):
     """Create an equality constraint fixing axis ax_idx to value."""
