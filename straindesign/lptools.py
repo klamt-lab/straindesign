@@ -39,7 +39,6 @@ from matplotlib import use as set_matplotlib_backend
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import logging
 
-from straindesign.networktools import map_constraints_to_compressed, resolve_gene_constraints
 from straindesign.parse_constr import linexpr2mat, linexprdict2str
 
 
