@@ -1354,10 +1354,10 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
 
     if cmp_model is not None and cmp_map is not None:
         # Resolve gene constraints on the original model first
-        if constraints:
-            constraints = resolve_gene_constraints(model, constraints)
-            constraints = map_constraints_to_compressed(constraints, cmp_map)
-        # Check axes exist in compressed model
+        if CONSTRAINTS in kwargs and kwargs[CONSTRAINTS]:
+            kwargs[CONSTRAINTS] = resolve_gene_constraints(model, kwargs[CONSTRAINTS])
+            kwargs[CONSTRAINTS] = map_constraints_to_compressed(kwargs[CONSTRAINTS], cmp_map)
+        # Switch to compressed model
         model = cmp_model
       
     reaction_ids = model.reactions.list_attr("id")
