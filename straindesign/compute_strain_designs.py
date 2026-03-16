@@ -347,12 +347,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         cmp_ko_cost = uncmp_ko_cost
         cmp_ki_cost = uncmp_ki_cost
     # --- FVAs on (possibly compressed) model ---
-    # Save pre-FVA bounds for dump_preprocessed (bound config experiments)
-    pre_fva_bounds = {r.id: (r.lower_bound, r.upper_bound) for r in cmp_model.reactions}
-    logging.info('  FVA to identify blocked reactions and irreversibilities.')
-    t0 = time.time()
-    bound_blocked_or_irrevers_fva(cmp_model, solver=kwargs[SOLVER], compress=False)
-    logging.info('  FVA done (%.1fs).' % (time.time() - t0))
     logging.info('  FVA(s) to identify essential reactions.')
     essential_reacs = set()
     for m in sd_modules:
@@ -425,6 +419,15 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         logging.info('  Compressed to ' + str(len(cmp_model.reactions)) + ' reactions (%.1fs).' % (time.time() - t0))
     else:
         cmp_mapReac = []
+
+    # --- FVA to set irreversibility and remove non-binding bounds ---
+    # Runs after compress #2 so ALL reactions (including GPR-added) are processed.
+    logging.info('  FVA to identify blocked reactions and irreversibilities.')
+    t0 = time.time()
+    # Save pre-FVA bounds for dump_preprocessed (bound config experiments)
+    pre_fva_bounds = {r.id: (r.lower_bound, r.upper_bound) for r in cmp_model.reactions}
+    bound_blocked_or_irrevers_fva(cmp_model, solver=kwargs[SOLVER], compress=False)
+    logging.info('  FVA done (%.1fs).' % (time.time() - t0))
 
     # FVA to identify essential reactions and size-1 MCS before building MILP
     logging.info('  FVA(s) in compressed model to identify essential reactions.')
