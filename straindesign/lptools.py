@@ -1352,6 +1352,7 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
     cmp_map = kwargs.pop('cmp_map', None)
 
     if cmp_model is not None and cmp_map is not None:
+        from straindesign.networktools import resolve_gene_constraints, map_constraints_to_compressed
         # Resolve gene constraints on the original model first
         if CONSTRAINTS in kwargs and kwargs[CONSTRAINTS]:
             kwargs[CONSTRAINTS] = resolve_gene_constraints(model, kwargs[CONSTRAINTS])
