@@ -646,8 +646,8 @@ def slim_fba(model, cmp_model, cmp_map, **kwargs) -> Solution:
         solver: Solver name (optional).
 
     Returns:
-        cobra.core.Solution with objective_value in original scale and
-        fluxes dict containing the objective reactions in original IDs.
+        float: Optimal objective value in original-model scale,
+        or nan if infeasible.
     """
     from straindesign.networktools import resolve_gene_constraints, compress_constraints
 
@@ -723,28 +723,13 @@ def slim_fba(model, cmp_model, cmp_map, **kwargs) -> Solution:
 
     fba_prob = MILP_LP(c=c, A_ineq=A_ineq, b_ineq=b_ineq,
                        A_eq=A_eq, b_eq=b_eq, lb=lb, ub=ub, solver=solver)
-    x, opt_cx, status = fba_prob.solve()
-    if obj_sense == 'minimize':
-        opt_cx = -opt_cx
+    opt_cx = fba_prob.slim_solve()
 
-    if status not in [OPTIMAL, UNBOUNDED]:
-        status = INFEASIBLE
+    if isnan(opt_cx):
+        return nan
 
-    # --- Build result in original-model scale ---
-    # Objective value is already in original scale (c was scaled by cum_factor)
-    fluxes = {}
-    if x is not None:
-        cmp_flux = {cmp_reaction_ids[i]: x[i] for i in range(len(x))}
-        for orig_id, (cmp_id, cum_factor) in obj_factors.items():
-            # v_orig = v_cmp * cum_factor, but we want the original reaction's
-            # contribution, so divide by cum_factor... actually:
-            # v_cmp is the compressed flux. v_orig = v_cmp / cum_factor
-            # Wait: v_cmp = v_orig * cum_factor (compression scales UP)
-            # So v_orig = v_cmp / cum_factor
-            fluxes[orig_id] = cmp_flux.get(cmp_id, 0.0) * cum_factor
-
-    sol = Solution(objective_value=-opt_cx, status=status, fluxes=fluxes)
-    return sol
+    # Objective value is in original scale (c was scaled by cum_factor)
+    return -opt_cx if obj_sense == 'maximize' else opt_cx
 
 
 def yopt(model, **kwargs) -> Solution:
