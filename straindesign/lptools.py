@@ -614,6 +614,139 @@ def fba(model, **kwargs) -> Solution:
     return sol
 
 
+def slim_fba(model, cmp_model, cmp_map, **kwargs) -> Solution:
+    """Fast FBA on a compressed model with transparent mapping.
+
+    Resolves gene/reaction constraints and objective from *model* (the
+    original, uncompressed model), maps them to *cmp_model* via *cmp_map*,
+    solves using ``slim_solve`` (objective value only), then returns a
+    Solution with the objective in original-model units and fluxes for
+    the requested objective reactions only.
+
+    This avoids the O(n) full-vector expansion — only the objective
+    reactions are traced through the compression map.
+
+    Example::
+
+        sol = slim_fba(com, com_cmp, cmp_map,
+                       obj={b1: 1, b2: 1},
+                       constraints=gene_constraints)
+        # sol.objective_value is in original-model scale
+        # sol.fluxes has entries for b1, b2 in original scale
+
+    Args:
+        model: Original (uncompressed) cobra.Model — used to resolve
+            gene names and parse constraint/objective IDs.
+        cmp_model: Compressed cobra.Model to solve on.
+        cmp_map: Compression map (list of step dicts).
+        obj: Objective as str or dict of {rxn_id: coeff} in original IDs.
+        obj_sense: 'maximize' (default) or 'minimize'.
+        constraints: Constraints referencing original-model reaction or
+            gene IDs.
+        solver: Solver name (optional).
+
+    Returns:
+        cobra.core.Solution with objective_value in original scale and
+        fluxes dict containing the objective reactions in original IDs.
+    """
+    from straindesign.networktools import resolve_gene_constraints, compress_constraints
+
+    orig_reaction_ids = model.reactions.list_attr("id")
+    cmp_reaction_ids = cmp_model.reactions.list_attr("id")
+
+    # --- Resolve and compress constraints ---
+    if CONSTRAINTS in kwargs and kwargs[CONSTRAINTS]:
+        kwargs[CONSTRAINTS] = resolve_gene_constraints(model, kwargs[CONSTRAINTS])
+        kwargs[CONSTRAINTS] = compress_constraints(kwargs[CONSTRAINTS], cmp_map)
+        kwargs[CONSTRAINTS] = parse_constraints(kwargs[CONSTRAINTS], cmp_reaction_ids)
+        A_ineq, b_ineq, A_eq, b_eq = lineqlist2mat(kwargs[CONSTRAINTS], cmp_reaction_ids)
+    else:
+        kwargs[CONSTRAINTS] = []
+
+    # --- Map objective to compressed space ---
+    # Build factor map: orig_id -> (cmp_id, cumulative_factor)
+    # Only for reactions appearing in the objective (cheap).
+    if 'obj' in kwargs and kwargs['obj'] is not None:
+        obj = kwargs['obj']
+        if isinstance(obj, str):
+            obj = linexpr2dict(obj, orig_reaction_ids)
+    else:
+        obj = {r.id: r.objective_coefficient for r in model.reactions
+               if r.objective_coefficient != 0}
+
+    # Trace each objective reaction through compression
+    obj_cmp = {}
+    obj_factors = {}  # orig_id -> cumulative_factor (for back-scaling)
+    for orig_id, coeff in obj.items():
+        cur_id = orig_id
+        cum_factor = 1.0
+        for step in cmp_map:
+            for cmp_id, orig_map in step["reac_map_exp"].items():
+                if cur_id in orig_map:
+                    cum_factor *= float(orig_map[cur_id])
+                    cur_id = cmp_id
+                    break
+        # In compressed space: coeff * cum_factor gives the scaled coefficient
+        obj_cmp[cur_id] = obj_cmp.get(cur_id, 0.0) + coeff * cum_factor
+        obj_factors[orig_id] = (cur_id, cum_factor)
+
+    c = linexprdict2mat(obj_cmp, cmp_reaction_ids).toarray()[0].tolist()
+
+    # --- Handle obj_sense ---
+    if ('obj_sense' not in kwargs and model.objective_direction == 'max') or \
+       ('obj_sense' in kwargs and kwargs['obj_sense'] not in ['min', 'minimize']):
+        obj_sense = 'maximize'
+        c = [-i for i in c]
+    else:
+        obj_sense = 'minimize'
+
+    # --- Solver ---
+    if SOLVER not in kwargs:
+        kwargs[SOLVER] = None
+    solver = select_solver(kwargs[SOLVER], cmp_model)
+
+    # --- Build and solve LP ---
+    A_eq_base = create_stoichiometric_matrix(cmp_model)
+    A_eq_base = sparse.csr_matrix(A_eq_base)
+    b_eq_base = [0.0] * len(cmp_model.metabolites)
+    if 'A_eq' in locals():
+        A_eq = sparse.vstack((A_eq_base, A_eq))
+        b_eq = b_eq_base + b_eq
+    else:
+        A_eq = A_eq_base
+        b_eq = b_eq_base
+    if 'A_ineq' not in locals():
+        A_ineq = sparse.csr_matrix((0, len(cmp_model.reactions)))
+        b_ineq = []
+    lb = [float(v.lower_bound) for v in cmp_model.reactions]
+    ub = [float(v.upper_bound) for v in cmp_model.reactions]
+
+    fba_prob = MILP_LP(c=c, A_ineq=A_ineq, b_ineq=b_ineq,
+                       A_eq=A_eq, b_eq=b_eq, lb=lb, ub=ub, solver=solver)
+    x, opt_cx, status = fba_prob.solve()
+    if obj_sense == 'minimize':
+        opt_cx = -opt_cx
+
+    if status not in [OPTIMAL, UNBOUNDED]:
+        status = INFEASIBLE
+
+    # --- Build result in original-model scale ---
+    # Objective value is already in original scale (c was scaled by cum_factor)
+    fluxes = {}
+    if x is not None:
+        cmp_flux = {cmp_reaction_ids[i]: x[i] for i in range(len(x))}
+        for orig_id, (cmp_id, cum_factor) in obj_factors.items():
+            # v_orig = v_cmp * cum_factor, but we want the original reaction's
+            # contribution, so divide by cum_factor... actually:
+            # v_cmp is the compressed flux. v_orig = v_cmp / cum_factor
+            # Wait: v_cmp = v_orig * cum_factor (compression scales UP)
+            # So v_orig = v_cmp / cum_factor
+            fluxes[orig_id] = cmp_flux.get(cmp_id, 0.0) * cum_factor
+
+    sol = Solution(objective_value=-opt_cx, status=status, fluxes=fluxes)
+    return sol
+
+
 def yopt(model, **kwargs) -> Solution:
     """Yield optmization (YOpt)
     
