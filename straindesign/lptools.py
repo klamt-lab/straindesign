@@ -1365,23 +1365,21 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
         # Map axes to compressed IDs; store coupling factors for post-scaling
         _orig_axes = [a if isinstance(a, str) else list(a) for a in axes]
         reverse = _build_cmp_reverse_map(cmp_map)
-        # Build factor lookup: orig_id -> cumulative coupling factor
-        _ax_scale = [1.0] * len(axes)
-        _factor_map = {}  # orig_id -> (cmp_id, cumulative_factor)
-        for step in cmp_map:
-            for cmp_id, orig_map in step["reac_map_exp"].items():
-                for orig_id, fac in orig_map.items():
-                    if orig_id in _factor_map:
-                        for k, (c, f) in list(_factor_map.items()):
-                            if c == orig_id:
-                                _factor_map[k] = (cmp_id, f * fac)
-                    _factor_map[orig_id] = (cmp_id, fac)
         cmp_reaction_ids = set(r.id for r in cmp_model.reactions)
+        # Map axes and compute cumulative coupling factors for scaling
+        _ax_scale = [1.0] * len(axes)
         for i, ax in enumerate(axes):
             if isinstance(ax, str) and ax not in cmp_reaction_ids and ax in reverse:
-                if ax in _factor_map:
-                    _, fac = _factor_map[ax]
-                    _ax_scale[i] = float(fac)
+                # Trace this reaction through compression steps to get cumulative factor
+                cur_id = ax
+                cum_factor = 1.0
+                for step in cmp_map:
+                    for cmp_id, orig_map in step["reac_map_exp"].items():
+                        if cur_id in orig_map:
+                            cum_factor *= float(orig_map[cur_id])
+                            cur_id = cmp_id
+                            break
+                _ax_scale[i] = cum_factor
                 axes[i] = reverse[ax]
             elif isinstance(ax, list):
                 axes[i] = [reverse.get(a, a) if isinstance(a, str) else a for a in ax]

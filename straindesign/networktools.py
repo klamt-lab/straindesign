@@ -524,14 +524,21 @@ def _build_cmp_reverse_map(cmp_map):
         dict: {original_reaction_id: final_compressed_reaction_id}
     """
     reverse = {}
+    # Also track which original IDs point to each intermediate ID,
+    # so we can update them efficiently when that ID gets re-compressed.
+    children = {}  # intermediate_id -> set of original IDs that map to it
     for step in cmp_map:
         for cmp_id, orig_map in step["reac_map_exp"].items():
+            new_children = set()
             for orig_id in orig_map:
-                if orig_id in reverse:
-                    for k, v in list(reverse.items()):
-                        if v == orig_id:
-                            reverse[k] = cmp_id
+                if orig_id in children:
+                    # orig_id was itself a compressed ID; redirect its children
+                    for child in children.pop(orig_id):
+                        reverse[child] = cmp_id
+                        new_children.add(child)
                 reverse[orig_id] = cmp_id
+                new_children.add(orig_id)
+            children[cmp_id] = new_children
     return reverse
 
 
