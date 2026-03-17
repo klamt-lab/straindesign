@@ -1362,12 +1362,26 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
         if CONSTRAINTS in kwargs and kwargs[CONSTRAINTS]:
             kwargs[CONSTRAINTS] = resolve_gene_constraints(model, kwargs[CONSTRAINTS])
             kwargs[CONSTRAINTS] = compress_constraints(kwargs[CONSTRAINTS], cmp_map)
-        # Map axes to compressed reaction IDs, keep originals for labels
+        # Map axes to compressed IDs; store coupling factors for post-scaling
         _orig_axes = [a if isinstance(a, str) else list(a) for a in axes]
         reverse = _build_cmp_reverse_map(cmp_map)
+        # Build factor lookup: orig_id -> cumulative coupling factor
+        _ax_scale = [1.0] * len(axes)
+        _factor_map = {}  # orig_id -> (cmp_id, cumulative_factor)
+        for step in cmp_map:
+            for cmp_id, orig_map in step["reac_map_exp"].items():
+                for orig_id, fac in orig_map.items():
+                    if orig_id in _factor_map:
+                        for k, (c, f) in list(_factor_map.items()):
+                            if c == orig_id:
+                                _factor_map[k] = (cmp_id, f * fac)
+                    _factor_map[orig_id] = (cmp_id, fac)
         cmp_reaction_ids = set(r.id for r in cmp_model.reactions)
         for i, ax in enumerate(axes):
             if isinstance(ax, str) and ax not in cmp_reaction_ids and ax in reverse:
+                if ax in _factor_map:
+                    _, fac = _factor_map[ax]
+                    _ax_scale[i] = float(fac)
                 axes[i] = reverse[ax]
             elif isinstance(ax, list):
                 axes[i] = [reverse.get(a, a) if isinstance(a, str) else a for a in ax]
@@ -1457,6 +1471,16 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
 
     if num_axes == 2:
         # === 2D dispatch ===
+        # Scale limits from compressed to original model units
+        if _orig_axes is not None:
+            sx = _ax_scale[0] if abs(_ax_scale[0] - 1.0) > 1e-12 else 1.0
+            sy = _ax_scale[1] if abs(_ax_scale[1] - 1.0) > 1e-12 else 1.0
+            if sx != 1.0 or sy != 1.0:
+                val_limits[0] = (val_limits[0][0] * sx, val_limits[0][1] * sx)
+                val_limits[1] = (val_limits[1][0] * sy, val_limits[1][1] * sy)
+                ax_limits[0] = [ax_limits[0][0] * sx, ax_limits[0][1] * sx]
+                ax_limits[1] = [ax_limits[1][0] * sy, ax_limits[1][1] * sy]
+
         if degen == 'point':
             plot1 = plt.plot([val_limits[0][0]], [val_limits[1][0]], 'o')[0]
             plot1.axes.set_xlabel(ax_name[0])
@@ -1517,6 +1541,17 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
 
         if not vertices:
             raise Exception('Could not trace any boundary. Problem may be infeasible.')
+
+        # Scale from compressed to original model units
+        if _orig_axes is not None:
+            sx = _ax_scale[0] if abs(_ax_scale[0] - 1.0) > 1e-12 else 1.0
+            sy = _ax_scale[1] if abs(_ax_scale[1] - 1.0) > 1e-12 else 1.0
+            if sx != 1.0 or sy != 1.0:
+                vertices = [[v[0] * sx, v[1] * sy] for v in vertices]
+                val_limits[0] = (val_limits[0][0] * sx, val_limits[0][1] * sx)
+                val_limits[1] = (val_limits[1][0] * sy, val_limits[1][1] * sy)
+                ax_limits[0] = [ax_limits[0][0] * sx, ax_limits[0][1] * sx]
+                ax_limits[1] = [ax_limits[1][0] * sy, ax_limits[1][1] * sy]
 
         # Check for collinear degeneracy (polygon traced to a line or point)
         unique_verts = []
