@@ -589,7 +589,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         cmp_sd_solution, cmp_mapReac, cmp_size1_mcs,
         kwargs[MAX_COST], uncmp_ko_cost, uncmp_ki_cost, uncmp_reg_cost,
         orig_model, setup, kwargs['gene_kos'],
-        locals().get('orig_gko_cost'), locals().get('orig_gki_cost'))
+        locals().get('orig_gko_cost'), locals().get('orig_gki_cost'),
+        cmp_model=cmp_model)
     logging.info(str(sd_solutions.get_num_materialized()) + ' solutions found'
                  + (' (lazy, estimated %d total).' % sd_solutions.get_num_sols()
                     if sd_solutions.is_lazy else '.'))
@@ -616,7 +617,8 @@ LAZY_EXPANSION_THRESHOLD = 100_000
 
 def _decompress_solutions(cmp_sd_solution, cmp_mapReac, cmp_size1_mcs,
                           max_cost, uncmp_ko_cost, uncmp_ki_cost, uncmp_reg_cost,
-                          orig_model, setup, gene_kos, orig_gko_cost, orig_gki_cost):
+                          orig_model, setup, gene_kos, orig_gko_cost, orig_gki_cost,
+                          cmp_model=None):
     """Decompress MILP solutions, using lazy expansion if estimated count exceeds threshold."""
     logging.info('  Decompressing.')
 
@@ -820,7 +822,8 @@ def compute_strain_designs_from_preprocessed(dump, seed=None, solver=None,
     sd_solutions = _decompress_solutions(
         cmp_sd_solution, cmp_mapReac, cmp_size1_mcs,
         max_cost, uncmp_ko_cost, uncmp_ki_cost, uncmp_reg_cost,
-        orig_model, setup, gene_kos, orig_gko_cost, orig_gki_cost)
+        orig_model, setup, gene_kos, orig_gko_cost, orig_gki_cost,
+        cmp_model=cmp_model)
     logging.info(str(sd_solutions.get_num_materialized()) + ' solutions found'
                  + (' (lazy, estimated %d total).' % sd_solutions.get_num_sols()
                     if sd_solutions.is_lazy else '.'))
