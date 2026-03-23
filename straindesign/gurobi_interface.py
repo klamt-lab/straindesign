@@ -96,7 +96,11 @@ class Gurobi_MILP_LP(gp.Model):
     """
 
     def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None, seed=None, milp_threads=None):
-        super().__init__()
+        # Create a quiet environment to suppress license messages on model creation
+        env = gp.Env(empty=True)
+        env.setParam('OutputFlag', 0)
+        env.start()
+        super().__init__(env=env)
         try:
             numvars = A_ineq.shape[1]
         except:
