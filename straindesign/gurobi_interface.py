@@ -28,6 +28,18 @@ import logging
 
 gstatus = grb.Status
 
+# Shared quiet environment — avoids creating a new license session per model
+_quiet_env = None
+
+def _get_quiet_env():
+    """Return a shared Gurobi environment with OutputFlag=0."""
+    global _quiet_env
+    if _quiet_env is None:
+        _quiet_env = gp.Env(empty=True)
+        _quiet_env.setParam('OutputFlag', 0)
+        _quiet_env.start()
+    return _quiet_env
+
 
 class Gurobi_MILP_LP(gp.Model):
     """Gurobi interface for MILP and LP
@@ -96,11 +108,7 @@ class Gurobi_MILP_LP(gp.Model):
     """
 
     def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None, seed=None, milp_threads=None):
-        # Create a quiet environment to suppress license messages on model creation
-        env = gp.Env(empty=True)
-        env.setParam('OutputFlag', 0)
-        env.start()
-        super().__init__(env=env)
+        super().__init__(env=_get_quiet_env())
         try:
             numvars = A_ineq.shape[1]
         except:
