@@ -211,7 +211,7 @@ class SCIP_MILP(pso.Model):
             if status in ['optimal']:  # solution
                 min_cx = self.getObjVal()
                 status = OPTIMAL
-            elif status == 'timelimit' and self.getSols() == []:  # timeout without solution
+            elif status in ['timelimit', 'userinterrupt'] and self.getSols() == []:  # timeout/interrupt without solution
                 x = [nan] * len(self.vars)
                 min_cx = nan
                 status = TIME_LIMIT
@@ -221,7 +221,7 @@ class SCIP_MILP(pso.Model):
                 min_cx = nan
                 status = INFEASIBLE
                 return x, min_cx, status
-            elif status == 'timelimit' and not self.getSols() == []:  # timeout with solution
+            elif status in ['timelimit', 'userinterrupt'] and not self.getSols() == []:  # timeout/interrupt with solution
                 min_cx = self.getObjVal()
                 status = TIME_LIMIT_W_SOL
             elif status in ['inforunbd', 'unbounded']:  # solution unbounded
@@ -267,7 +267,7 @@ class SCIP_MILP(pso.Model):
                 opt = self.getObjVal()
             elif status == 'infeasible':
                 opt = nan
-            elif status in ['timelimit', 'unknown']:  # salvage incumbent objective if one exists
+            elif status in ['timelimit', 'unknown', 'userinterrupt']:  # salvage incumbent objective if one exists
                 opt = self.getObjVal() if self.getSols() else nan
             elif status in ['inforunbd', 'unbounded']:
                 opt = -inf
