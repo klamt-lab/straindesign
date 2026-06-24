@@ -326,12 +326,33 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                     if p in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                         for k in param.keys():
                             no_par_compress_reacs.add(k)
+        # Keep reactions controlled by a gene that carries a REGULATORY intervention intact
+        # through COMPRESS#1 (exempt from merging). Otherwise, if a gene controls several
+        # reactions that get merged before GPR integration, the merged reaction is hooked to
+        # the gene with the wrong (collapsed) stoichiometry, so a gene-regulatory bound
+        # (g <= X / g >= X) is mis-scaled vs the uncompressed model. They are merged correctly
+        # in COMPRESS#2 once the g_gene metabolite exists. Gene KOs (=0) and gene KIs
+        # (unbounded when added) are unaffected, so only regulatory genes need protecting.
+        no_coupled_compress_reacs = set()
+        if _deferred_reg:
+            import re as _re
+            _gene_by_id = {g.id: g for g in cmp_model.genes}
+            _gene_by_name = {g.name: g for g in cmp_model.genes if g.name}
+            for _constr in _deferred_reg:
+                for _tok in _re.findall(r'[A-Za-z_][\w]*', _constr):
+                    _g = _gene_by_id.get(_tok) or _gene_by_name.get(_tok)
+                    if _g is not None:
+                        no_coupled_compress_reacs.update(r.id for r in _g.reactions)
+            # also exempt them from parallel merging so their names stay stable across the
+            # compression passes (keeps the coupled-exemption matching them by name)
+            no_par_compress_reacs.update(no_coupled_compress_reacs)
         compression_backend = kwargs.get('compression_backend', 'sparse_rref')
         logging.info('Compressing Network (' + str(len(cmp_model.reactions)) + ' reactions).')
         t0 = time.time()
         cmp_mapReac_1 = compress_model(cmp_model, no_par_compress_reacs,
                                         compression_backend=compression_backend,
-                                        propagate_gpr=True)
+                                        propagate_gpr=True,
+                                        no_coupled_compress_reacs=no_coupled_compress_reacs)
         sd_modules = compress_modules(sd_modules, cmp_mapReac_1)
         # Compress reaction + regulatory costs only (gene costs not yet added)
         cmp_ko_cost, cmp_ki_cost, cmp_mapReac_1 = compress_ki_ko_cost(
