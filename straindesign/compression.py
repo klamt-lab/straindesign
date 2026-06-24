@@ -777,7 +777,7 @@ class _WorkRecord:
         self.stats = CompressionStatistics()
         self.stats.inc_compression_iteration()
 
-    def remove_reactions(self, suppressed: Optional[Set[str]]) -> bool:
+    def remove_reactions(self, suppressed: Set[str]) -> bool:
         """Remove reactions by name - uses batch removal."""
         if not suppressed:
             return False
@@ -927,16 +927,22 @@ class StoichMatrixCompressor:
                  stoich: RationalMatrix,
                  meta_names: List[str],
                  reac_names: List[str],
-                 suppressed: Optional[Set[str]] = None,
-                 bounds: Optional[List[Tuple[float, float]]] = None) -> CompressionRecord:
+                 suppressed: Set[str] = set(),
+                 bounds: Optional[List[Tuple[float, float]]] = None,
+                 protected: Set[str] = set()) -> CompressionRecord:
         """Compress network, return transformation matrices.
 
         Single-pass approach: each iteration computes the nullspace once,
         then removes zero-flux reactions AND merges coupled groups from
         the same kernel.  Re-iterates only when contradicting groups were
         removed (which may expose new couplings).
+
+        `protected` is an optional set of reaction names that must NOT be merged
+        into coupled groups (kept intact). The rest of their coupled group still
+        merges. Unlike `suppressed`, protected reactions are NOT removed.
         """
         work = _WorkRecord(stoich, meta_names, reac_names, bounds)
+        work.protected_names = set(protected)
 
         do_nullspace = CompressionMethod.NULLSPACE in self._methods
         do_recursive = CompressionMethod.RECURSIVE in self._methods
@@ -986,12 +992,17 @@ class StoichMatrixCompressor:
                 work.stats.inc_zero_flux_reactions()
         return zero_flux
 
-    def _find_coupled_groups(self, kernel_pattern, kernel_values, num_reacs):
+    def _find_coupled_groups(self, kernel_pattern, kernel_values, num_reacs, protected_indices=set()):
         """Find groups of coupled reactions from kernel sparsity pattern.
 
         Args:
             kernel_pattern: CSR matrix with 1s at non-zero positions (for indptr/indices)
             kernel_values: {row: {col: Fraction}} for actual values
+            protected_indices: optional set of reaction indices that must NOT be merged
+                into any coupled group (kept as their own reactions). The rest of a
+                coupled group is still merged. Used e.g. to keep gene-controlled
+                reactions intact through compression before GPR extension so that the
+                gene multiplicity is preserved (regulatory/knock-in correctness).
 
         Returns (groups, ratios) where:
         - groups: list of lists, each containing indices of coupled reactions
@@ -1019,7 +1030,7 @@ class StoichMatrixCompressor:
                 continue
 
             for i, reac_a in enumerate(potential):
-                if ratios[reac_a] is not None:
+                if ratios[reac_a] is not None or reac_a in protected_indices:
                     continue
                 group = None
 
@@ -1028,7 +1039,7 @@ class StoichMatrixCompressor:
 
                 for j in range(i + 1, len(potential)):
                     reac_b = potential[j]
-                    if ratios[reac_b] is not None:
+                    if ratios[reac_b] is not None or reac_b in protected_indices:
                         continue
 
                     # Get values for reaction b
@@ -1090,8 +1101,11 @@ class StoichMatrixCompressor:
                     zero_flux.add(reac)
                     work.stats.inc_zero_flux_reactions()
 
-        # Find and merge coupled groups
-        groups, ratios = self._find_coupled_groups(kernel_pattern, kernel_values, work.size.reacs)
+        # Find and merge coupled groups (skipping protected reactions, which must
+        # stay intact through compression — mapped from names to current indices)
+        prot_names = getattr(work, 'protected_names', set())
+        protected_idx = {i for i, n in enumerate(work.reac_names) if n in prot_names} if prot_names else set()
+        groups, ratios = self._find_coupled_groups(kernel_pattern, kernel_values, work.size.reacs, protected_idx)
 
         reactions_to_remove = set(zero_flux)
         contradicting_removed = False
@@ -1280,7 +1294,8 @@ def remove_conservation_relations(model) -> None:
 def compress_cobra_model(model,
                          methods: Optional[List[Union[str, CompressionMethod]]] = None,
                          in_place: bool = True,
-                         suppressed_reactions: Optional[Set[str]] = None) -> CompressionResult:
+                         suppressed_reactions: Set[str] = set(),
+                         protected_reactions: Set[str] = set()) -> CompressionResult:
     """
     Compress a COBRA model using nullspace-based coupling detection.
 
@@ -1322,7 +1337,7 @@ def compress_cobra_model(model,
     # Run compression
     compressor = StoichMatrixCompressor(*compression_methods)
     bounds = [(float(r.lower_bound), float(r.upper_bound)) for r in model.reactions]
-    compression_record = compressor.compress(stoich_matrix, metabolite_names, reaction_names, suppressed_reactions, bounds)
+    compression_record = compressor.compress(stoich_matrix, metabolite_names, reaction_names, suppressed_reactions, bounds, protected_reactions)
 
     # Apply to model (uses direct manipulation, bypasses solver)
     reaction_map = _apply_compression_to_model(model, compression_record, reaction_names)
@@ -1666,7 +1681,8 @@ def _combine_gpr_or(gpr_bodies):
 # =============================================================================
 
 
-def compress_model(model, no_par_compress_reacs=set(), compression_backend='sparse_rref', propagate_gpr=False):
+def compress_model(model, no_par_compress_reacs=set(), compression_backend='sparse_rref', propagate_gpr=False,
+                   no_coupled_compress_reacs=set()):
     """Compress a metabolic model using multiple techniques.
 
     Performs blocked reaction removal, conservation relation removal, and
@@ -1676,6 +1692,11 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
     Args:
         model: COBRA model to compress in-place
         no_par_compress_reacs: Reactions exempt from parallel compression
+        no_coupled_compress_reacs: Reactions exempt from coupled compression. The rest of
+            their coupled group still merges. Used to keep gene-controlled reactions
+            un-merged through COMPRESS#1 so that gene multiplicity is preserved exactly once
+            GPR rules are integrated (correct gene-regulatory semantics under compression).
+            To also exempt them from parallel merging, include them in no_par_compress_reacs.
         compression_backend: Compression backend to use:
             - 'sparse_rref' (default): Pure Python sparse integer RREF.
               No external dependencies beyond NumPy/SciPy.
@@ -1691,6 +1712,7 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
         list of dict: Compression maps for reversing each compression step
     """
     from straindesign.networktools import suppress_lp_context, _is_lp_suppressed
+    no_coupled_compress_reacs = set(no_coupled_compress_reacs)
     with suppress_lp_context(model):
         cmp_mapReac = []
         use_java = (compression_backend == 'efmtool_rref')
@@ -1730,7 +1752,8 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
             numr_pre = len(model.reactions)
             LOG.info(f'  Compression {run}: Lumping coupled reactions.')
             reac_map_exp = compress_model_coupled(model, compression_backend,
-                                                  propagate_gpr=propagate_gpr)
+                                                  propagate_gpr=propagate_gpr,
+                                                  protected_reactions=no_coupled_compress_reacs)
             for new_reac, old_reac_val in reac_map_exp.items():
                 old_reacs = [r for r in no_par_compress_reacs if r in old_reac_val]
                 if old_reacs:
@@ -1759,7 +1782,7 @@ def _remove_conservation_relations_java(model) -> None:
 
 
 def compress_model_coupled(model, compression_backend='sparse_rref', propagate_gpr=False,
-                           suppressed_reactions=None):
+                           suppressed_reactions=set(), protected_reactions=set()):
     """Compress by lumping stoichiometrically coupled (dependent) reactions.
 
     Identifies groups of reactions whose flux vectors are proportional in every
@@ -1777,6 +1800,11 @@ def compress_model_coupled(model, compression_backend='sparse_rref', propagate_g
             design constraints from being deleted by the Java compressor's
             CoupledContradicting logic. Ignored for the Python backend (which
             handles contradicting groups correctly via bounds intersection).
+        protected_reactions: Set of reaction IDs to exempt from coupled merging
+            (kept as their own reactions; the rest of their coupled group still
+            merges). Python (sparse_rref) backend only. Used to keep gene-controlled
+            reactions intact through compression before GPR integration so that the
+            gene multiplicity is preserved (correct gene-regulatory semantics).
 
     Returns:
         dict: Mapping {compressed_id: {orig_id: factor, ...}}
@@ -1800,7 +1828,8 @@ def compress_model_coupled(model, compression_backend='sparse_rref', propagate_g
         for r in model.reactions:
             r.gene_reaction_rule = ''
 
-        result = compress_cobra_model(model, methods=CompressionMethod.standard(), in_place=True)
+        result = compress_cobra_model(model, methods=CompressionMethod.standard(), in_place=True,
+                                      protected_reactions=protected_reactions)
         reaction_map = result.reaction_map
         # Python compressor handles contradicting groups internally via bounds
         # intersection in _handle_coupled_combine (removes zero-flux groups and

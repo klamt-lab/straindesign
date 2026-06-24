@@ -205,6 +205,13 @@ class Cplex_MILP_LP(Cplex):
                 min_cx = -inf
                 status = UNBOUNDED
                 return x, min_cx, status
+            elif status in [5, 6]:  # optimal/best with unscaled infeasibilities (numerical trouble)
+                # Ill-conditioned MILPs (e.g. large MCS/Farkas problems) can return a usable
+                # solution flagged with numerical caveats. Accept it with a warning instead of crashing.
+                logging.warning('CPLEX returned a solution with unscaled infeasibilities (numerical '
+                                'difficulties); using it (not guaranteed exact). Consider tightening bounds.')
+                min_cx = self.solution.get_objective_value()
+                status = TIME_LIMIT_W_SOL
             else:
                 logging.exception(status)
                 logging.exception(self.solution.get_status_string())
@@ -239,6 +246,8 @@ class Cplex_MILP_LP(Cplex):
                 opt = -inf
             elif status in [3, 103, 108]:  # infeasible (LP: 3, MIP: 103/108)
                 opt = nan
+            elif status in [5, 6]:  # optimal/best with unscaled infeasibilities (numerical)
+                opt = self.solution.get_objective_value()
             else:
                 logging.exception(status)
                 logging.exception(self.solution.get_status_string())
