@@ -216,6 +216,30 @@ class Gurobi_MILP_LP(gp.Model):
                 min_cx = -inf
                 status = UNBOUNDED
                 return x, min_cx, status
+        elif status == gstatus.NUMERIC:
+            # Numerical trouble (e.g. ill-conditioned large MCS/Farkas MILPs). Retry once
+            # with maximum numerical focus, then fall back to the best incumbent (if any)
+            # or report no usable solution instead of crashing.
+            prev_nf = self.params.NumericFocus
+            self.params.NumericFocus = 3
+            self.optimize()
+            self.params.NumericFocus = prev_nf
+            status = self.Status
+            if status in [gstatus.OPTIMAL, gstatus.SOLUTION_LIMIT, gstatus.SUBOPTIMAL, gstatus.USER_OBJ_LIMIT]:
+                min_cx = self.ObjVal
+                status = OPTIMAL
+            elif self.SolCount > 0:
+                logging.warning('Gurobi reported numerical difficulties; using best incumbent solution '
+                                '(not guaranteed optimal).')
+                min_cx = self.ObjVal
+                status = TIME_LIMIT_W_SOL
+            else:
+                logging.warning('Gurobi reported numerical difficulties and found no usable solution; '
+                                'treating as no solution.')
+                x = [nan] * self.NumVars
+                min_cx = nan
+                status = TIME_LIMIT
+                return x, min_cx, status
         else:
             raise Exception('Status code ' + str(status) + " not yet handeld.")
         x = self.getSolution()
@@ -241,6 +265,9 @@ class Gurobi_MILP_LP(gp.Model):
             opt = -inf
         elif status in [gstatus.INFEASIBLE, gstatus.TIME_LIMIT]:
             opt = nan
+        elif status == gstatus.NUMERIC:
+            # Numerical trouble: return best incumbent value if available, else nan
+            opt = self.ObjVal if self.SolCount > 0 else nan
         else:
             raise Exception('Status code ' + str(status) + " not yet handeld.")
         return opt
