@@ -1476,9 +1476,16 @@ def filter_sd_maxcost(sd, max_cost, kocost, kicost):
         (SDSolutions):
         Strain design solutions complying with the intervention costs limit
     """
-    # eliminate mcs that are too expensive
+    # eliminate mcs that are too expensive.
+    # Each intervention key is uniquely a knock-out OR knock-in candidate (enforced by
+    # the gko/gki and ko/ki non-overlap check in compute_strain_designs), so look the cost
+    # up by dict membership rather than by the sign of the design value. This is robust to
+    # gene interventions whose decompressed value does not carry the expected sign (which
+    # otherwise routed a knock-out into the knock-in cost dict and raised a KeyError).
+    # Value 0 means "not applied" (e.g. an unused knock-in candidate) and costs nothing.
     if max_cost:
-        costs = [np.sum([kocost[k] if v < 0 else (kicost[k] if v > 0 else 0) for k, v in m.items()]) for m in sd]
+        costs = [np.sum([(kocost[k] if k in kocost else kicost.get(k, 0)) if v != 0 else 0
+                         for k, v in m.items()]) for m in sd]
         sd = [sd[i] for i in range(len(sd)) if costs[i] <= max_cost + 1e-8]
         # sort strain designs by intervention costs
         [s.update({'**cost**': c}) for s, c in zip(sd, costs)]
