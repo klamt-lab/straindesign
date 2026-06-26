@@ -275,6 +275,12 @@ class MILP_LP(object):
 
     def set_time_limit(self, t):
         """Set the computation time limit (in seconds)"""
+        # Floor at 1 ms before dispatching to any backend. The remaining-time passed by the
+        # strain-design loop is computed as endtime - time.time() right after a > 0 guard, so a
+        # tiny scheduling delay can make it zero or slightly negative; a 1 ms floor keeps the
+        # limit valid (Gurobi rejects negative TimeLimit) and, crucially, avoids GLPK treating
+        # tm_lim == 0 as "no limit". inf passes through unchanged for the backends' own clamps.
+        t = max(t, 1e-3)
         self.tlim = t
         self.backend.set_time_limit(t)
 
