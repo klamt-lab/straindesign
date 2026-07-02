@@ -440,6 +440,11 @@ class SDSolutions(object):
                     s.update({v['str']: False})
 
         # GPR translation + costs/bounds
+        if 'model' not in meta:
+            raise RuntimeError(
+                'This SDSolutions was loaded from a lazily-saved file and has no '
+                'model attached; call attach_model(model) before expanding '
+                'compressed groups.')
         model = meta['model']
         if self.is_gene_sd:
             reaction_sd_exp, gene_sd_exp = self._translate_genes_to_reactions(expanded, model)
@@ -509,22 +514,53 @@ class SDSolutions(object):
         """Number of currently materialized solutions in reaction_sd."""
         return len(self.reaction_sd)
 
-    def save(self, filename):
-        """Save strain design solutions to a file."""
-        if self._lazy:
+    def save(self, filename, expand=False):
+        """Save strain design solutions to a file.
+
+        By default (``expand=False``) the solutions are pickled in their current
+        (possibly lazy / compressed) state *without* forcing a full expansion of
+        all compressed groups. Fully expanding can materialise an enormous number
+        of decompressed designs and, on large problems, makes ``save`` hang or run
+        out of memory even though the search itself already finished (issue #47).
+        The compressed representation and compression maps are retained so that
+        expansion can resume after :meth:`load`; only the live model reference
+        (which is not picklable) is stripped -- call :meth:`attach_model` after
+        loading to expand further.
+
+        Pass ``expand=True`` to fully expand before saving (legacy behaviour).
+        """
+        if expand and self._lazy:
             self.expand_all()
-        # Don't persist model reference from expansion metadata
+        # Keep compressed_sd / compression maps so lazy expansion can resume
+        # after load; only strip the live model reference from the metadata.
         meta_backup = self._expansion_meta
-        self._expansion_meta = {}
+        self._expansion_meta = {k: v for k, v in meta_backup.items()
+                                if k != 'model'}
         try:
             with open(filename, 'wb') as f:
                 pickle.dump(self, f)
         finally:
             self._expansion_meta = meta_backup
 
+    def attach_model(self, model):
+        """Re-attach a cobra model after :meth:`load` so a lazily-saved result
+        can be expanded further (:meth:`expand_group` / :meth:`expand_all`).
+
+        Returns ``self`` for chaining. No-op for non-lazy (fully expanded)
+        results, which need no model to serve their solutions.
+        """
+        if self._lazy:
+            self._expansion_meta['model'] = model
+        return self
+
     @classmethod
     def load(cls, filename):
-        """Load strain design solutions from a file."""
+        """Load strain design solutions from a file.
+
+        Lazily-saved results are restored in lazy mode: their already-materialised
+        solutions are available immediately, but expanding further compressed
+        groups requires re-attaching a model via :meth:`attach_model`.
+        """
         with open(filename, 'rb') as f:
             cls = pickle.load(f)
         return cls
