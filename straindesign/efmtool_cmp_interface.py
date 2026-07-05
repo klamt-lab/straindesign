@@ -364,7 +364,7 @@ def basic_columns_rat_java(mx, tolerance=0):
     return col_map[0:rank]
 
 
-def compress_model_java(model, suppressed_reactions=None):
+def compress_model_java(model, suppressed_reactions=set()):
     """Legacy Java compression using jpype (requires jpype and sympy).
 
     Args:

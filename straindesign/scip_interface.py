@@ -229,8 +229,15 @@ class SCIP_MILP(pso.Model):
                 min_cx = -inf
                 status = UNBOUNDED
                 return x, min_cx, status
-            elif status == 'unknown':
-                raise Exception('Status code ' + str(status) + " not yet handeld.")
+            elif status == 'unknown':  # numerically stalled/interrupted: salvage an incumbent if one exists
+                if self.getSols():
+                    min_cx = self.getObjVal()
+                    status = TIME_LIMIT_W_SOL
+                else:
+                    x = [nan] * len(self.vars)
+                    min_cx = nan
+                    status = TIME_LIMIT
+                    return x, min_cx, status
             else:
                 raise Exception('Status code ' + str(status) + " not yet handeld.")
             x = self.getSolution()
@@ -258,8 +265,10 @@ class SCIP_MILP(pso.Model):
             status = self.getStatus()
             if status == 'optimal':  # solution
                 opt = self.getObjVal()
-            elif status in ['infeasible', 'timelimit']:
+            elif status == 'infeasible':
                 opt = nan
+            elif status in ['timelimit', 'unknown']:  # salvage incumbent objective if one exists
+                opt = self.getObjVal() if self.getSols() else nan
             elif status in ['inforunbd', 'unbounded']:
                 opt = -inf
             else:
