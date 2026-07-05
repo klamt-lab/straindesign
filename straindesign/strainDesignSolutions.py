@@ -76,6 +76,18 @@ class SDSolutions(object):
         self._lazy = _lazy_init is not None
         self._expanded_groups = set()
         self._expansion_meta = _lazy_init if _lazy_init else {}
+        # Live model used for on-demand (lazy) expansion. It carries a solver
+        # interface and is NEVER pickled (see __getstate__); a portable,
+        # solver-less snapshot is embedded on save() instead.
+        self._model = model
+        self._embedded_model_dict = None
+        # The compressed (GPR-extended, exact-rational) model the MILP was solved
+        # on. Set post-construction by compute_strain_designs. Never pickled live;
+        # a portable snapshot is embedded on save() so both the full and the
+        # (much smaller) compressed model are reobtainable on demand -- analysing
+        # solutions in the compressed model is far faster than in the full one.
+        self._cmp_model = None
+        self._embedded_cmp_model_dict = None
 
         if GKOCOST in sd_setup or GKICOST in sd_setup:
             logging.info('  Preparing (reaction-)phenotype prediction of gene intervention strategies.')
@@ -92,6 +104,33 @@ class SDSolutions(object):
 
         if self._lazy:
             self._estimated_total = _lazy_init.get('estimated_total', len(self.reaction_sd))
+
+    def __getstate__(self):
+        # Never pickle the live cobra model: it carries an (un-picklable) solver
+        # interface and would tie the pickle to specific cobra/optlang/solver
+        # versions. The portable snapshot in `_embedded_model_dict` (a plain
+        # cobra dict, set by save(embed_model=True)) is pickled instead.
+        state = self.__dict__.copy()
+        state['_model'] = None
+        state['_cmp_model'] = None
+        meta = state.get('_expansion_meta')
+        if meta:
+            meta = dict(meta)
+            meta.pop('model', None)
+            state['_expansion_meta'] = meta
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        # Back-compatibility for objects pickled before these fields existed.
+        if not hasattr(self, '_model'):
+            self._model = None
+        if not hasattr(self, '_embedded_model_dict'):
+            self._embedded_model_dict = None
+        if not hasattr(self, '_cmp_model'):
+            self._cmp_model = None
+        if not hasattr(self, '_embedded_cmp_model_dict'):
+            self._embedded_cmp_model_dict = None
 
     @staticmethod
     def _translate_genes_to_reactions(sd_list, model):
@@ -440,12 +479,14 @@ class SDSolutions(object):
                     s.update({v['str']: False})
 
         # GPR translation + costs/bounds
-        if 'model' not in meta:
+        if self._model is None:
             raise RuntimeError(
-                'This SDSolutions was loaded from a lazily-saved file and has no '
-                'model attached; call attach_model(model) before expanding '
-                'compressed groups.')
-        model = meta['model']
+                'This SDSolutions was loaded without a model, so compressed '
+                'groups cannot be expanded. Reload with '
+                'SDSolutions.load(file, model=True) to rebuild the embedded '
+                'model, or call attach_model(model) with the original model '
+                'that was passed to compute_strain_designs.')
+        model = self._model
         if self.is_gene_sd:
             reaction_sd_exp, gene_sd_exp = self._translate_genes_to_reactions(expanded, model)
             cost_sd = [s.copy() for s in gene_sd_exp]
@@ -514,56 +555,141 @@ class SDSolutions(object):
         """Number of currently materialized solutions in reaction_sd."""
         return len(self.reaction_sd)
 
-    def save(self, filename, expand=False):
-        """Save strain design solutions to a file.
+    def save(self, filename, embed_model=True):
+        """Save strain design solutions to a file (pickle).
 
-        By default (``expand=False``) the solutions are pickled in their current
-        (possibly lazy / compressed) state *without* forcing a full expansion of
-        all compressed groups. Fully expanding can materialise an enormous number
-        of decompressed designs and, on large problems, makes ``save`` hang or run
-        out of memory even though the search itself already finished (issue #47).
-        The compressed representation and compression maps are retained so that
-        expansion can resume after :meth:`load`; only the live model reference
-        (which is not picklable) is stripped -- call :meth:`attach_model` after
-        loading to expand further.
+        The saved file is designed to be a self-contained, portable and
+        reproducible record of a strain-design computation. Alongside the
+        solutions it retains the compressed solution set, the compression map
+        between compressed and full model, and ``sd_setup`` (enough to rerun the
+        exact same computation), and -- with ``embed_model=True`` (default) -- a
+        portable snapshot of the *full original model* with the exact edits used.
+        This makes it a convenient vessel for publishing, exchanging and
+        reproducing results, or rerunning them on a different machine.
 
-        Pass ``expand=True`` to fully expand before saving (legacy behaviour).
+        Lazy/compressed results are saved *as is*, WITHOUT forcing a full
+        expansion of every compressed group -- full expansion can materialise an
+        enormous number of decompressed designs and, on large problems, makes
+        saving hang or run out of memory even though the search itself already
+        finished (issue #47). To persist fully-expanded solutions instead, call
+        :meth:`expand_all` (or :meth:`expand_group`) first: expansion materialises
+        the solutions in-place, and ``save`` then simply pickles them.
+
+        Parameters
+        ----------
+        filename : str
+            Output path.
+        embed_model : bool, default True
+            If True, embed portable, solver-less snapshots of BOTH the full model
+            AND the compressed (GPR-extended) model the MILP was solved on, so the
+            file is fully self-contained and either model can be restored on load
+            (see :meth:`load`) without ambiguity, on any machine and across
+            cobra/optlang/solver versions. Snapshots use StrainDesign's
+            rational-safe ``networktools.model_to_dict``, so the compressed
+            model's exact rational bounds/coefficients survive losslessly (no
+            float rounding). Set False to save a leaner file when the reader
+            already has the models.
+
+        Notes
+        -----
+        The live cobra models (which hold un-picklable solver interfaces) are
+        never pickled; only the embedded dict snapshots are. See :meth:`load`,
+        :meth:`attach_model`, :meth:`get_model` and :meth:`get_compressed_model`
+        for restoring/accessing models afterwards.
         """
-        if expand and self._lazy:
-            self.expand_all()
-        # Keep compressed_sd / compression maps so lazy expansion can resume
-        # after load; only strip the live model reference from the metadata.
-        meta_backup = self._expansion_meta
-        self._expansion_meta = {k: v for k, v in meta_backup.items()
-                                if k != 'model'}
+        # Decide what gets embedded in THIS file without leaving a stale snapshot
+        # on the live object (so a later embed_model=False save is truly lean).
+        m_bak, c_bak = self._embedded_model_dict, self._embedded_cmp_model_dict
+        if embed_model:
+            from straindesign.networktools import model_to_dict
+            if self._model is not None and self._embedded_model_dict is None:
+                self._embedded_model_dict = model_to_dict(self._model)
+            if self._cmp_model is not None and self._embedded_cmp_model_dict is None:
+                self._embedded_cmp_model_dict = model_to_dict(self._cmp_model)
+        else:
+            self._embedded_model_dict = self._embedded_cmp_model_dict = None
+        # __getstate__ strips the live models + solvers; the embedded snapshots
+        # and the compressed_sd / compression_map / sd_setup are pickled with self.
         try:
             with open(filename, 'wb') as f:
                 pickle.dump(self, f)
         finally:
-            self._expansion_meta = meta_backup
+            self._embedded_model_dict, self._embedded_cmp_model_dict = m_bak, c_bak
 
     def attach_model(self, model):
-        """Re-attach a cobra model after :meth:`load` so a lazily-saved result
-        can be expanded further (:meth:`expand_group` / :meth:`expand_all`).
-
-        Returns ``self`` for chaining. No-op for non-lazy (fully expanded)
-        results, which need no model to serve their solutions.
+        """Attach the full cobra model so a lazily-loaded result can be expanded
+        (:meth:`expand_group` / :meth:`expand_all`). Pass the original model that
+        was given to ``compute_strain_designs``. Returns ``self`` for chaining.
         """
-        if self._lazy:
-            self._expansion_meta['model'] = model
+        self._model = model
         return self
 
+    def get_model(self):
+        """Return the full cobra model (or ``None`` if not attached/restored).
+        Restore an embedded one with ``load(..., model=True)`` or attach your own
+        with :meth:`attach_model`."""
+        return self._model
+
+    def get_compressed_model(self):
+        """Return the compressed (GPR-extended) cobra model the MILP was solved
+        on, or ``None`` if not restored. It is much smaller than the full model,
+        so validating/analysing the compressed solutions (``compressed_sd``) in it
+        is fast. Restore it with ``load(..., cmp_model=True)`` (rebuilt from the
+        embedded rational snapshot) or supply your own via ``load(..., cmp_model=
+        my_model)``. Its solver backend is built lazily on first optimize.
+        """
+        return self._cmp_model
+
     @classmethod
-    def load(cls, filename):
+    def load(cls, filename, model=None, cmp_model=None):
         """Load strain design solutions from a file.
 
-        Lazily-saved results are restored in lazy mode: their already-materialised
-        solutions are available immediately, but expanding further compressed
-        groups requires re-attaching a model via :meth:`attach_model`.
+        The already-materialised solutions, :meth:`get_representative_sd`,
+        ``compressed_sd`` and ``compression_map`` are always available immediately
+        and cheaply. The (possibly large) embedded models are rebuilt only if you
+        ask for them, independently for the full and the compressed model.
+
+        Parameters
+        ----------
+        model, cmp_model : None | True | cobra.Model, default None
+            Controls the full model and the compressed model respectively:
+
+            * ``None`` (default) -- do not attach that model.
+            * ``True`` -- rebuild and attach the embedded snapshot (via
+              StrainDesign's rational-safe ``networktools.model_from_dict``; its
+              solver backend is built lazily on first optimize). If nothing was
+              embedded, the model stays ``None``.
+            * a ``cobra.Model`` -- attach this exact model (e.g. one you still
+              have in memory). You pass the model OBJECT, not a name.
+
+            The (re)built/attached models are written ONTO the returned object and
+            retrieved with :meth:`get_model` / :meth:`get_compressed_model` -- you
+            do not pass a variable to be filled. The full model is needed to expand
+            compressed groups (:meth:`expand_all`); the compressed model is the
+            fast vehicle for analysing ``compressed_sd``.
+
+        Examples
+        --------
+        >>> sols = SDSolutions.load('res.sd')                       # no models
+        >>> sols = SDSolutions.load('res.sd', model=True)           # full only
+        >>> sols = SDSolutions.load('res.sd', cmp_model=True)       # compressed only
+        >>> sols = SDSolutions.load('res.sd', model=True, cmp_model=True)  # both
+        >>> sols = SDSolutions.load('res.sd', model=my_model)       # attach my own
         """
+        from straindesign.networktools import model_from_dict
         with open(filename, 'rb') as f:
-            cls = pickle.load(f)
-        return cls
+            obj = pickle.load(f)
+
+        def _resolve(arg, embedded):
+            if arg is True:                       # rebuild the embedded snapshot
+                return model_from_dict(embedded) if embedded is not None else None
+            if arg is None or arg is False:       # attach nothing
+                return None
+            return arg                            # an explicit cobra model
+
+        obj._model = _resolve(model, getattr(obj, '_embedded_model_dict', None))
+        obj._cmp_model = _resolve(cmp_model, getattr(obj, '_embedded_cmp_model_dict', None))
+        return obj
 
     def _check_merge_compatible(self, other):
         """Raises ValueError if SDSolutions objects cannot be merged."""
