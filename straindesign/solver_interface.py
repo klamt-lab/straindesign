@@ -192,13 +192,6 @@ class MILP_LP(object):
                                           self.indic_constr, self.seed, self.milp_threads)
         elif self.solver == SCIP:
             from straindesign.scip_interface import SCIP_MILP, SCIP_LP
-            # SCIP is the only backend that splits LP (SoPlex) and MILP into two classes; the
-            # SoPlex LP class cannot enumerate (no populate / set_ineq_constraint / exclusion
-            # cuts). Route to it ONLY for genuine LP subproblems (FVA/FBA/dualization), which
-            # never carry indicator constraints. A strain-design/enumeration problem always
-            # passes an indic_constr container (possibly empty, e.g. when compression leaves
-            # zero knockable reactions -> num_z == 0 -> all-continuous vtype); such a problem
-            # must use SCIP_MILP, or resetTargetableZ()/populate() would hit SCIP_LP and crash.
             self.isLP = all(v == 'C' for v in self.vtype) and self.indic_constr is None
             if self.isLP:
                 self.backend = SCIP_LP(self.c, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq, self.lb, self.ub)
