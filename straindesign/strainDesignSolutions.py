@@ -157,10 +157,7 @@ class SDSolutions(object):
         gene_itv = set(v for v in interventions if v in model.genes.list_attr('name') + model.genes.list_attr('id'))
         regl_itv = set(v for v in interventions if v not in reac_itv and v not in gene_itv)
         # Reuse cobra's already-parsed boolean GPR (reaction.gpr, a GPR AST) and its
-        # .eval(knockouts). The previous home-grown parser split rules on ' or '/' and ' and
-        # assumed disjunctive normal form; it silently mis-evaluated non-DNF rules such as
-        # 'g1 and (g2 or g3)' (now that SD supports non-DNF models). GPR.eval is correct for
-        # arbitrary boolean structure and needs no re-parsing.
+        # .eval(knockouts), which is correct for arbitrary boolean structure and needs no re-parsing.
         rxn_gpr = {r.id: r.gpr for g in model.genes for r in g.reactions}
 
         # translate every cut set to reaction intervention sets
@@ -174,8 +171,7 @@ class SDSolutions(object):
             gene_ko = set(k for k, v in s.items() if v < 0 and (k in gene_itv))
             gene_ki = set(k for k, v in s.items() if v > 0 and (k in gene_itv))
             gene_no_ki = set(k for k, v in s.items() if v == 0 and (k in gene_itv))
-            # cobra GPR.eval treats listed genes as knocked out and all others as present, which
-            # matches the previous "unlisted gene = unknown/default" handling for these decisions.
+            # cobra GPR.eval treats listed genes as knocked out and all others as present.
             # Map the three phenotype questions onto knockout sets:
             #   is_possible       (KOs + un-made KIs off, made KIs on)   -> gene_ko | gene_no_ki
             #   is_possible_wo_ki (also undo the knock-ins)              -> gene_ko | gene_ki | gene_no_ki
@@ -183,10 +179,6 @@ class SDSolutions(object):
             ko_off = gene_ko | gene_no_ki
             all_off = ko_off | gene_ki
             noki_off = set(gene_no_ki)
-            # Only reactions associated with an intervened gene can change state: a reaction whose
-            # genes are all untouched stays active in every eval below and is never added. So query
-            # cobra's gene->reaction associations for just the intervened genes instead of scanning
-            # every gene-associated reaction for every cut set.
             candidate_reacs = set()
             for g in gene_ko | gene_ki | gene_no_ki:
                 if model.genes.has_id(g):
