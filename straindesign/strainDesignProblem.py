@@ -814,15 +814,21 @@ class SDProblem:
                                           sparse.diags(first_entry_A_ineq_sign) * self.b_ineq).transpose(), \
                                       self.z_map_constr_ineq.transpose())) \
             .tocsr()
-        # find rows that are identical
-        ident_rows = []  # stores duplicate rows as Tuple (i,j,k): first row, second row, positive or negative duplicate
-        for i, a1 in enumerate(Ab_find_dupl[range(Ab_find_dupl.shape[0] - 1)]):
-            if i in knockable_constr_ineq_ic:  # only compare knockable ineqs
-                for j, a2 in enumerate(Ab_find_dupl):
-                    if j in knockable_constr_ineq_ic and j > i:  # only compare knockable ineqs
-                        if a1.nnz == a2.nnz:
-                            if all(a1.indices == a2.indices) & all(a1.data == a2.data):
-                                ident_rows += [(i, j, first_entry_A_ineq_sign[i] * first_entry_A_ineq_sign[j])]
+        # find identical (lumpable) rows by grouping on an exact (indices, data) key: rows in the
+        # same bucket are duplicates. knockable_constr_ineq_ic is ascending and each bucket fills in
+        # that order, so emitting (i, j>i) pairs bucket-by-bucket lists ident_rows in ascending (i,j).
+        ident_rows = []  # duplicate rows as Tuple (i,j,k): first row, second row, positive or negative duplicate
+        row_key = {}
+        dupl_groups = {}
+        for i in knockable_constr_ineq_ic:
+            row = Ab_find_dupl.getrow(i)
+            key = (row.indices.tobytes(), row.data.tobytes())
+            row_key[i] = key
+            dupl_groups.setdefault(key, []).append(i)
+        for i in knockable_constr_ineq_ic:  # ascending
+            for j in dupl_groups[row_key[i]]:  # ascending, same canonicalized row
+                if j > i:
+                    ident_rows += [(i, j, first_entry_A_ineq_sign[i] * first_entry_A_ineq_sign[j])]
         # replace two ineqs by one eq
         self.z_map_constr_ineq = self.z_map_constr_ineq.tocsc()
         A_eq = sparse.csr_matrix((0, self.A_ineq.shape[1]))
