@@ -1279,16 +1279,19 @@ def prevent_boundary_knockouts(A_ineq, b_ineq, lb, ub, z_map_constr_ineq, z_map_
     if z_map_vars is None:
         z_map_vars = sparse.csc_matrix((numz, numr))
 
+    # columns that carry any nonzero z-mapping (i.e. knockable reactions)
+    col_has_z = np.asarray((z_map_vars != 0).sum(axis=0)).ravel() > 0
+
     new_A_rows = []
     new_b = []
     new_z_cols = 0
     for i in range(0, numr):
-        if any(z_map_vars[:, i]) and lb[i] > 0:
+        if col_has_z[i] and lb[i] > 0:
             new_A_rows.append(sparse.csr_matrix(([-1], ([0], [i])), shape=(1, numr)))
             new_b.append(-lb[i])
             new_z_cols += 1
             lb[i] = 0.0
-        if any(z_map_vars[:, i]) and ub[i] < 0:
+        if col_has_z[i] and ub[i] < 0:
             new_A_rows.append(sparse.csr_matrix(([1], ([0], [i])), shape=(1, numr)))
             new_b.append(ub[i])
             new_z_cols += 1
