@@ -19,11 +19,10 @@
 #
 """Container for strain design solutions (SDSolutions)"""
 
-from numpy import all, any, nan, isnan, sign
+from numpy import nan, sign
 from typing import List, Dict, Tuple, Union, Set, FrozenSet
 from straindesign.parse_constr import *
 from straindesign.names import *
-import re
 import json
 import pickle
 import logging
@@ -157,17 +156,12 @@ class SDSolutions(object):
         reac_itv = set(v for v in interventions if model.reactions.has_id(v))
         gene_itv = set(v for v in interventions if v in model.genes.list_attr('name') + model.genes.list_attr('id'))
         regl_itv = set(v for v in interventions if v not in reac_itv and v not in gene_itv)
-        affected_reacs = set()
-        [[affected_reacs.add(r.id) for r in g.reactions] for g in model.genes]
-        gpr = {}
-        for r in affected_reacs:
-            gpr_i = model.reactions.get_by_id(r).gene_reaction_rule
-            cj_terms = gpr_i.split(' or ')
-            for i, c in enumerate(cj_terms):
-                cj_terms[i] = c.split(' and ')
-                for j, g in enumerate(cj_terms[i]):
-                    cj_terms[i][j] = re.sub(r'^(\s|-|\+|\()*|(\s|-|\+|\))*$', '', g)
-            gpr.update({r: cj_terms})
+        # Reuse cobra's already-parsed boolean GPR (reaction.gpr, a GPR AST) and its
+        # .eval(knockouts). The previous home-grown parser split rules on ' or '/' and ' and
+        # assumed disjunctive normal form; it silently mis-evaluated non-DNF rules such as
+        # 'g1 and (g2 or g3)' (now that SD supports non-DNF models). GPR.eval is correct for
+        # arbitrary boolean structure and needs no re-parsing.
+        rxn_gpr = {r.id: r.gpr for g in model.genes for r in g.reactions}
 
         # translate every cut set to reaction intervention sets
         reaction_sd = [{} for _ in range(len(working_sd))]
@@ -177,27 +171,36 @@ class SDSolutions(object):
             reac_no_ki = set(k for k, v in s.items() if v == 0 and (k in reac_itv))
             reg_itv = set(k for k, v in s.items() if v and (k in regl_itv))
             reg_no_itv = set(k for k, v in s.items() if not v and (k in regl_itv))
-            gene_ko = {k: False for k, v in s.items() if v < 0 and (k in gene_itv)}
-            gene_ki = {k: True for k, v in s.items() if v > 0 and (k in gene_itv)}
-            gene_no_ki = {k: False for k, v in s.items() if v == 0 and (k in gene_itv)}
-            gene_ki_inv = {k: False for k in gene_ki.keys()}
-            for r in affected_reacs:
-                # is_possible = gpr[r].subs({**gene_ko,**gene_ki,**gene_no_ki})
-                is_possible = gpr_eval(gpr[r], {**gene_ko, **gene_ki, **gene_no_ki})
-                if is_possible != False:  # reaction is only feasible because of KIs
-                    # is_possible_wo_ki = gpr[r].subs({**gene_ko,**gene_ki_inv,**gene_no_ki})
-                    is_possible_wo_ki = gpr_eval(gpr[r], {**gene_ko, **gene_ki_inv, **gene_no_ki})
-                    if is_possible_wo_ki == False:
+            gene_ko = set(k for k, v in s.items() if v < 0 and (k in gene_itv))
+            gene_ki = set(k for k, v in s.items() if v > 0 and (k in gene_itv))
+            gene_no_ki = set(k for k, v in s.items() if v == 0 and (k in gene_itv))
+            # cobra GPR.eval treats listed genes as knocked out and all others as present, which
+            # matches the previous "unlisted gene = unknown/default" handling for these decisions.
+            # Map the three phenotype questions onto knockout sets:
+            #   is_possible       (KOs + un-made KIs off, made KIs on)   -> gene_ko | gene_no_ki
+            #   is_possible_wo_ki (also undo the knock-ins)              -> gene_ko | gene_ki | gene_no_ki
+            #   is_possible_wo_ko (undo the knock-outs, KIs stay on)     -> gene_no_ki
+            ko_off = gene_ko | gene_no_ki
+            all_off = ko_off | gene_ki
+            noki_off = set(gene_no_ki)
+            # Only reactions associated with an intervened gene can change state: a reaction whose
+            # genes are all untouched stays active in every eval below and is never added. So query
+            # cobra's gene->reaction associations for just the intervened genes instead of scanning
+            # every gene-associated reaction for every cut set.
+            candidate_reacs = set()
+            for g in gene_ko | gene_ki | gene_no_ki:
+                if model.genes.has_id(g):
+                    candidate_reacs.update(r.id for r in model.genes.get_by_id(g).reactions)
+            for r in candidate_reacs:
+                gpr_r = rxn_gpr[r]
+                if gpr_r.eval(ko_off):             # reaction still possible under the interventions
+                    if not gpr_r.eval(all_off):    # ... only because of a knock-in
                         reac_ki.add(r)
-                elif is_possible == False:
-                    # is_possible_wo_ko = gpr[r].subs({**gene_ki,**gene_no_ki})
-                    is_possible_wo_ko = gpr_eval(gpr[r], {**gene_ki, **gene_no_ki})
-                    if is_possible_wo_ko != False:
+                else:                              # reaction dead under the interventions
+                    if gpr_r.eval(noki_off):       # ... the knock-out is what killed it
                         reac_ko.add(r)
-                    else:
+                    else:                          # ... dead regardless (e.g. an un-made knock-in)
                         reac_no_ki.add(r)
-                else:  # reaction is not (sufficiently) affected by interventions
-                    pass
             reaction_sd[i].update({k: -1.0 for k in reac_ko})
             reaction_sd[i].update({k: 1.0 for k in reac_ki})
             reaction_sd[i].update({k: 0.0 for k in reac_no_ki})
@@ -778,25 +781,3 @@ def strip_non_ki(sd):
 def get_subset(sd, i):
     """SDSolutions internal function: getting a subset of solutions"""
     return [s for j, s in enumerate(sd) if j in i]
-
-
-def gpr_eval(cj_terms, interv):
-    """SDSolutions internal function: evaluate a GPR term"""
-    gpr_ev = [0.0 for _ in range(len(cj_terms))]
-    for i, c in enumerate(cj_terms):
-        cj_term = [interv[k] if k in interv else nan for k in c]
-        if any([v == False for v in cj_term]):
-            gpr_ev[i] = False
-        elif any(isnan(cj_term)):
-            gpr_ev[i] = nan
-        elif all(cj_term):
-            gpr_ev[i] = True
-
-    if any([v == True for v in gpr_ev]):
-        return True
-    elif all([v == False for v in gpr_ev]):
-        return False
-    elif any(isnan(gpr_ev)):
-        return nan
-    else:
-        raise Exception('Shoud not happen')
