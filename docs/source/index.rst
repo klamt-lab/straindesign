@@ -9,7 +9,7 @@
 ====================================================================================
 StrainDesign
 ====================================================================================
-.. |logo| image:: https://github.com/klamt-lab/straindesign/blob/host_gifs/docs/logo.svg
+.. |logo| image:: https://raw.githubusercontent.com/klamt-lab/straindesign/host_gifs/docs/logo.svg
   :target: https://straindesign.readthedocs.io/en/latest/
   :width: 50
   :alt: Icon

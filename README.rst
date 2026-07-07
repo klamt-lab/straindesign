@@ -62,11 +62,11 @@ Guides and examples are provided as `Jupyter notebooks at docs/source/examples <
   :width: 200px
   :alt: Network interventions
    
-.. |pic2| image:: https://github.com/klamt-lab/straindesign/blob/host_gifs/docs/network.svg
+.. |pic2| image:: https://raw.githubusercontent.com/klamt-lab/straindesign/host_gifs/docs/network.svg
   :width: 200px
   :alt: Network interventions
   
-.. |pic3| image:: https://github.com/klamt-lab/straindesign/blob/host_gifs/docs/plot.gif
+.. |pic3| image:: https://raw.githubusercontent.com/klamt-lab/straindesign/host_gifs/docs/plot.gif
   :width: 200px
   :alt: Plot animation
 
