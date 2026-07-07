@@ -452,8 +452,8 @@ def gene_kos_to_constraints(model, gene_kos):
         -1.0 = knockout (KO), +1.0 = knock-in (KI), 0.0 = non-added KI.
 
         When passing gene constraints to ``fba()`` or ``fva()``, both
-        ``gene = 0`` and ``gene = -1`` are treated as knockouts, and
-        ``gene = 1`` is ignored (the gene is active).  This means SD
+        ``gene = 0.0`` and ``gene = -1.0`` are treated as knockouts, and
+        ``gene = 1.0`` is ignored (the gene is active).  This means SD
         solution values can be used directly as constraints.
 
         The returned *reaction* constraints use the linear constraint
