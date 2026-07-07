@@ -585,6 +585,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         sd_solutions.compressed_sd = compressed_sd
         sd_solutions.compression_map = cmp_mapReac
         sd_solutions.group_map = group_map
+        sd_solutions._cmp_model = cmp_model
         logging.info('Returned %d size-1 MCS. MILP solve skipped (dump_preprocessed mode).' % len(sd))
         return sd_solutions
 
@@ -610,6 +611,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         kwargs[MAX_COST], uncmp_ko_cost, uncmp_ki_cost, uncmp_reg_cost,
         orig_model, setup, kwargs['gene_kos'],
         locals().get('orig_gko_cost'), locals().get('orig_gki_cost'))
+    sd_solutions._cmp_model = cmp_model
     logging.info(str(sd_solutions.get_num_materialized()) + ' solutions found'
                  + (' (lazy, estimated %d total).' % sd_solutions.get_num_sols()
                     if sd_solutions.is_lazy else '.'))
@@ -839,6 +841,7 @@ def compute_strain_designs_from_preprocessed(dump, seed=None, solver=None,
         cmp_sd_solution, cmp_mapReac, cmp_size1_mcs,
         max_cost, uncmp_ko_cost, uncmp_ki_cost, uncmp_reg_cost,
         orig_model, setup, gene_kos, orig_gko_cost, orig_gki_cost)
+    sd_solutions._cmp_model = cmp_model
     logging.info(str(sd_solutions.get_num_materialized()) + ' solutions found'
                  + (' (lazy, estimated %d total).' % sd_solutions.get_num_sols()
                     if sd_solutions.is_lazy else '.'))
