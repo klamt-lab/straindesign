@@ -192,7 +192,7 @@ class MILP_LP(object):
                                           self.indic_constr, self.seed, self.milp_threads)
         elif self.solver == SCIP:
             from straindesign.scip_interface import SCIP_MILP, SCIP_LP
-            self.isLP = all(v == 'C' for v in self.vtype)
+            self.isLP = all(v == 'C' for v in self.vtype) and self.indic_constr is None
             if self.isLP:
                 self.backend = SCIP_LP(self.c, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq, self.lb, self.ub)
                 return
