@@ -449,11 +449,11 @@ def gene_kos_to_constraints(model, gene_kos):
 
     Note on the SD solution grammar:
         SDSolutions uses the following convention for intervention values:
-        -1 = knockout (KO), +1 = knock-in (KI), 0 = non-added KI.
+        -1.0 = knockout (KO), +1.0 = knock-in (KI), 0.0 = non-added KI.
 
         When passing gene constraints to ``fba()`` or ``fva()``, both
-        ``gene = 0`` and ``gene = -1`` are treated as knockouts, and
-        ``gene = 1`` is ignored (the gene is active).  This means SD
+        ``gene = 0.0`` and ``gene = -1.0`` are treated as knockouts, and
+        ``gene = 1.0`` is ignored (the gene is active).  This means SD
         solution values can be used directly as constraints.
 
         The returned *reaction* constraints use the linear constraint
@@ -1540,9 +1540,13 @@ def filter_sd_maxcost(sd, max_cost, kocost, kicost):
         (SDSolutions):
         Strain design solutions complying with the intervention costs limit
     """
-    # eliminate mcs that are too expensive
+    # eliminate intervention strategies that are too expensive. In result dicts,
+    # introduced KIs and KOs carry values of +1.0 and -1.0 respectively
+    # non-made KIs are marked by 0.0 and non-made KOs don't appear.
+    # We count costs of interventions made, which are marked by v != 0.
     if max_cost:
-        costs = [np.sum([kocost[k] if v < 0 else (kicost[k] if v > 0 else 0) for k, v in m.items()]) for m in sd]
+        costs = [np.sum([(kocost[k] if k in kocost else kicost.get(k, 0)) if v != 0 else 0
+                         for k, v in m.items()]) for m in sd]
         sd = [sd[i] for i in range(len(sd)) if costs[i] <= max_cost + 1e-8]
         # sort strain designs by intervention costs
         [s.update({'**cost**': c}) for s, c in zip(sd, costs)]
