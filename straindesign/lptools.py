@@ -614,7 +614,7 @@ def fba(model, **kwargs) -> Solution:
     return sol
 
 
-def slim_fba(model, cmp_model, cmp_map, **kwargs) -> float:
+def slim_fba_via_cmp(model, cmp_model, cmp_map, **kwargs) -> float:
     """Fast FBA on a compressed model with transparent mapping.
 
     Resolves gene/reaction constraints and objective from *model* (the
@@ -627,7 +627,7 @@ def slim_fba(model, cmp_model, cmp_map, **kwargs) -> float:
 
     Example::
 
-        opt = slim_fba(com, com_cmp, cmp_map,
+        opt = slim_fba_via_cmp(com, com_cmp, cmp_map,
                        obj={b1: 1, b2: 1},
                        constraints=gene_constraints)
         # opt is the objective value in original-model scale
