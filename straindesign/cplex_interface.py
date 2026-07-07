@@ -161,6 +161,7 @@ class Cplex_MILP_LP(Cplex):
             self.parameters.mip.pool.absgap.set(0.0)
             self.parameters.mip.pool.relgap.set(0.0)
             self.parameters.mip.pool.intensity.set(4)
+            # intensity=2 was tried there as a lighter alternative to 4
             # no integrality tolerance
             self.parameters.mip.tolerances.integrality.set(0.0)
 
@@ -270,8 +271,10 @@ class Cplex_MILP_LP(Cplex):
         try:
             if isinf(n):
                 self.parameters.mip.pool.capacity.set(self.parameters.mip.pool.capacity.max())
+                self.parameters.mip.limits.populate.set(self.parameters.mip.limits.populate.max())
             else:
-                self.parameters.mip.pool.capacity.set(n)
+                self.parameters.mip.pool.capacity.set(int(n))
+                self.parameters.mip.limits.populate.set(int(n))
             self.populate_solution_pool()  # call parent solve function (that was overwritten in this class)
             status = self.solution.get_status()
             if status in [101, 102, 115, 128, 129, 130]:  # solution integer optimal
