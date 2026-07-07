@@ -268,10 +268,16 @@ class Cplex_MILP_LP(Cplex):
             solution_vectors, optimal_value, optimization_status
         """
         try:
+            # PopulateLim = max solutions returned per populate call (CPLEX default 20); set it to
+            # the requested pool size so a cardinality comes back in fewer re-solves. Pool relgap/
+            # intensity are configured in __init__; intensity=2 was tried there as a lighter
+            # alternative to the default 4 -- noted here as something we may revisit.
             if isinf(n):
                 self.parameters.mip.pool.capacity.set(self.parameters.mip.pool.capacity.max())
+                self.parameters.mip.limits.populate.set(self.parameters.mip.limits.populate.max())
             else:
-                self.parameters.mip.pool.capacity.set(n)
+                self.parameters.mip.pool.capacity.set(int(n))
+                self.parameters.mip.limits.populate.set(int(n))
             self.populate_solution_pool()  # call parent solve function (that was overwritten in this class)
             status = self.solution.get_status()
             if status in [101, 102, 115, 128, 129, 130]:  # solution integer optimal
