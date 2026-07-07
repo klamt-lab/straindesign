@@ -1873,35 +1873,44 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
 
     stoichmat_T = create_stoichiometric_matrix(model, 'lil').transpose()
     factor = [d[0] if d else 1.0 for d in stoichmat_T.data]
-    A = sparse.diags(factor) @ stoichmat_T
 
     lb = [float(r.lower_bound) for r in model.reactions]
     ub = [float(r.upper_bound) for r in model.reactions]
+    fwd = [1 if (isinf(u) and f > 0 or isinf(l) and f < 0) else 0 for f, l, u in zip(factor, lb, ub)]
+    rev = [1 if (isinf(l) and f > 0 or isinf(u) and f < 0) else 0 for f, l, u in zip(factor, lb, ub)]
+    inh = [i + 1 if not ((isinf(ub[i]) or ub[i] == 0) and (isinf(lb[i]) or lb[i] == 0)) else 0
+           for i in range(len(model.reactions))]
 
-    fwd = sparse.lil_matrix([1. if (isinf(u) and f > 0 or isinf(l) and f < 0) else 0. for f, l, u in zip(factor, lb, ub)]).transpose()
-    rev = sparse.lil_matrix([1. if (isinf(l) and f > 0 or isinf(u) and f < 0) else 0. for f, l, u in zip(factor, lb, ub)]).transpose()
-    inh = sparse.lil_matrix([
-        i + 1 if not ((isinf(ub[i]) or ub[i] == 0) and (isinf(lb[i]) or lb[i] == 0)) else 0 for i in range(len(model.reactions))
-    ]).transpose()
-    A = sparse.hstack((A, fwd, rev, inh), 'csr')
+    # Canonical scale-invariant key per reaction: normalize the stoichiometry row by its first
+    # nonzero coefficient in exact rational arithmetic, so reactions parallel up to any rational
+    # scale factor share a key (e.g. -1 A -> 2 B and -3 A -> 6 B both give ((A, 1), (B, -2))). The
+    # reversibility (fwd/rev) and inhomogeneous-bound (inh) flags are part of the key so only
+    # reactions with matching bound structure are lumped.
+    def _parallel_key(i):
+        cols, vals = stoichmat_T.rows[i], stoichmat_T.data[i]
+        if not vals:
+            return ((), fwd[i], rev[i], inh[i])
+        f0 = float_to_rational(vals[0])
+        stoich = tuple((int(c), float_to_rational(v) / f0) for c, v in zip(cols, vals))
+        return (stoich, fwd[i], rev[i], inh[i])
 
-    # Find parallel reactions via hash comparison
+    # Find parallel reactions by exact key comparison (hash pre-filter, then full compare)
     subset_list = []
     prev_found = set()
     protected = [r.id in protected_rxns for r in model.reactions]
-    hashes = [hash((tuple(A[i].indices), tuple(A[i].data))) for i in range(A.shape[0])]
+    keys = [_parallel_key(i) for i in range(len(model.reactions))]
+    key_hashes = [hash(k) for k in keys]
 
-    for i in range(A.shape[0]):
+    for i in range(len(model.reactions)):
         if i in prev_found:
             continue
         if protected[i]:
             subset_list.append([i])
             continue
         subset_i = [i]
-        for j in range(i + 1, A.shape[0]):
-            if (not protected[j] and j not in prev_found and hashes[i] == hashes[j]
-                    and np.array_equal(A[i].indices, A[j].indices)
-                    and np.array_equal(A[i].data, A[j].data)):
+        for j in range(i + 1, len(model.reactions)):
+            if (not protected[j] and j not in prev_found
+                    and key_hashes[i] == key_hashes[j] and keys[i] == keys[j]):
                 subset_i.append(j)
                 prev_found.add(j)
         subset_list.append(subset_i)
@@ -1942,13 +1951,25 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
         for rxn, combined_gpr in group_gpr:
             rxn.gene_reaction_rule = combined_gpr
 
-    # Build compression map
+    # Build compression map with flux-split fractions.
+    # For parallel reactions, the compressed flux is the total through all
+    # members.  Each member's fraction is proportional to |first_coeff|
+    # (its stoichiometric scale relative to the representative).
     rational_map = {}
     subT = np.zeros((old_num_reac, len(model.reactions)))
     for i in range(subT.shape[1]):
-        for j in subset_list[i]:
+        group = subset_list[i]
+        for j in group:
             subT[j, i] = 1
-        rational_map[model.reactions[i].id] = {old_reac_ids[j]: Rational(1) for j in subset_list[i]}
+        if len(group) == 1:
+            rational_map[model.reactions[i].id] = {old_reac_ids[group[0]]: Fraction(1)}
+        else:
+            scales = [abs(factor[j]) for j in group]
+            total = sum(Fraction(s).limit_denominator(1000) for s in scales)
+            rational_map[model.reactions[i].id] = {
+                old_reac_ids[j]: Fraction(abs(factor[j])).limit_denominator(1000) / total
+                for j in group
+            }
 
     return rational_map
 
