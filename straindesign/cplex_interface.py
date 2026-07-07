@@ -161,6 +161,7 @@ class Cplex_MILP_LP(Cplex):
             self.parameters.mip.pool.absgap.set(0.0)
             self.parameters.mip.pool.relgap.set(0.0)
             self.parameters.mip.pool.intensity.set(4)
+            # intensity=2 was tried there as a lighter alternative to 4
             # no integrality tolerance
             self.parameters.mip.tolerances.integrality.set(0.0)
 
@@ -268,10 +269,6 @@ class Cplex_MILP_LP(Cplex):
             solution_vectors, optimal_value, optimization_status
         """
         try:
-            # PopulateLim = max solutions returned per populate call (CPLEX default 20); set it to
-            # the requested pool size so a cardinality comes back in fewer re-solves. Pool relgap/
-            # intensity are configured in __init__; intensity=2 was tried there as a lighter
-            # alternative to the default 4 -- noted here as something we may revisit.
             if isinf(n):
                 self.parameters.mip.pool.capacity.set(self.parameters.mip.pool.capacity.max())
                 self.parameters.mip.limits.populate.set(self.parameters.mip.limits.populate.max())
