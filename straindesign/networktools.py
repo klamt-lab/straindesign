@@ -1542,3 +1542,160 @@ def bound_blocked_or_irrevers_fva(model, **kwargs):
             r._upper_bound = np.inf
         if limits.maximum <= -tol:
             r._upper_bound = min([0.0, r._upper_bound])
+
+
+# ── Portable, rational-safe model (de)serialisation ──────────────────────────
+# StrainDesign's compressed models carry EXACT rational (Fraction) reaction
+# bounds and stoichiometric coefficients. cobra.io.model_to_dict cannot
+# serialise them (its np.isnan guard raises on Fraction) and cobra.io.
+# model_from_dict would coerce bounds to float. The functions below are drop-in
+# replacements that serialise Fractions (and +/-inf, nan) losslessly -- a
+# rational is written as its exact 'num/den' string and is NEVER routed through
+# float, so no rounding is introduced -- while staying schema-compatible with
+# cobra's dicts for ordinary float models. model_from_dict rebuilds a fully
+# working cobra model (its solver backend is created lazily on first optimize).
+from collections import OrderedDict as _OrderedDict
+from operator import attrgetter as _attrgetter
+from fractions import Fraction as _Fraction
+import math as _math
+from cobra.io.dict import (_metabolite_to_dict, _metabolite_from_dict,
+                           _gene_to_dict, gene_from_dict, _fix_type, _update_optional,
+                           _OPTIONAL_REACTION_ATTRIBUTES, _ORDERED_OPTIONAL_REACTION_KEYS,
+                           _OPTIONAL_MODEL_ATTRIBUTES, _ORDERED_OPTIONAL_MODEL_KEYS)
+from cobra.util.solver import set_objective as _set_objective
+
+_INF_TOKENS = {'inf': _math.inf, 'infinity': _math.inf, '+inf': _math.inf,
+               '-inf': -_math.inf, '-infinity': -_math.inf}
+
+
+def _num_to_json(v):
+    """Serialise a numeric scalar losslessly: Fraction / sympy-Rational -> exact
+    'num/den' string; +/-inf and nan -> token string; int / finite float
+    unchanged. A rational is never converted to float."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, _Fraction):
+        return str(v)                                    # exact: '1/3', '10', '-1/2'
+    num, den = getattr(v, 'numerator', None), getattr(v, 'denominator', None)
+    if num is not None and den is not None and not isinstance(v, int):
+        return '%d/%d' % (int(num), int(den))            # sympy Rational etc.
+    v = _fix_type(v)                                     # numpy -> native python
+    if isinstance(v, float) and (_math.isinf(v) or _math.isnan(v)):
+        return str(v)                                    # 'inf', '-inf', 'nan'
+    return v
+
+
+def _num_from_json(v):
+    """Inverse of _num_to_json: strings decode to +/-inf, nan, or an EXACT
+    Fraction; numbers are returned unchanged."""
+    if isinstance(v, str):
+        low = v.strip().lower()
+        if low in _INF_TOKENS:
+            return _INF_TOKENS[low]
+        if low == 'nan':
+            return _math.nan
+        return _Fraction(v)                              # 'num/den' or integer string
+    return v
+
+
+def _reaction_to_json(reaction, obj_coeff=0):
+    # NB: read only solver-independent attributes. reaction.objective_coefficient
+    # would query the model's solver variables, which fails for the compressed
+    # model (its LP is suppressed/out-of-sync); the coefficient is passed in.
+    new = _OrderedDict()
+    new['id'] = reaction.id
+    new['name'] = reaction.name
+    new['metabolites'] = _OrderedDict(
+        (str(met), _num_to_json(reaction.metabolites[met]))
+        for met in sorted(reaction.metabolites, key=_attrgetter('id')))
+    new['lower_bound'] = _num_to_json(reaction.lower_bound)
+    new['upper_bound'] = _num_to_json(reaction.upper_bound)
+    new['gene_reaction_rule'] = reaction.gene_reaction_rule
+    if obj_coeff != 0:
+        new['objective_coefficient'] = _num_to_json(obj_coeff)
+    if reaction.subsystem:
+        new['subsystem'] = reaction.subsystem
+    if reaction.notes:
+        new['notes'] = reaction.notes
+    if reaction.annotation:
+        new['annotation'] = reaction.annotation
+    return new
+
+
+def _reaction_from_json(reaction, model):
+    new_reaction = Reaction()
+    for k, v in reaction.items():
+        if k in {'objective_coefficient', 'reversibility', 'reaction'}:
+            continue
+        elif k == 'metabolites':
+            new_reaction.add_metabolites(_OrderedDict(
+                (model.metabolites.get_by_id(str(met)), _num_from_json(coeff))
+                for met, coeff in v.items()))
+        elif k in {'lower_bound', 'upper_bound'}:
+            setattr(new_reaction, k, _num_from_json(v))
+        else:
+            setattr(new_reaction, k, v)
+    return new_reaction
+
+
+def model_to_dict(model, sort=False):
+    """Rational-safe replacement for ``cobra.io.model_to_dict``.
+
+    Produces the same dict schema as cobrapy, but serialises exact rational
+    (Fraction) reaction bounds and stoichiometric coefficients losslessly (as
+    ``'num/den'`` strings) so that StrainDesign's compressed models -- which use
+    exact rational arithmetic -- can be stored and restored without rounding.
+    For ordinary float models the output is identical to cobra's.
+    """
+    try:  # objective may be unavailable if the model's LP is suppressed
+        from cobra.util.solver import linear_reaction_coefficients
+        obj_coeffs = linear_reaction_coefficients(model)
+    except Exception:
+        obj_coeffs = {}
+    obj = _OrderedDict()
+    obj['metabolites'] = list(map(_metabolite_to_dict, model.metabolites))
+    obj['reactions'] = [_reaction_to_json(r, obj_coeffs.get(r, 0)) for r in model.reactions]
+    obj['genes'] = list(map(_gene_to_dict, model.genes))
+    obj['id'] = model.id
+    _update_optional(model, obj, _OPTIONAL_MODEL_ATTRIBUTES, _ORDERED_OPTIONAL_MODEL_KEYS)
+    try:  # cobra's model_to_dict drops the objective SENSE; keep it for fidelity
+        obj['objective_direction'] = model.objective.direction
+    except Exception:
+        pass
+    if sort:
+        from operator import itemgetter
+        gid = itemgetter('id')
+        obj['metabolites'].sort(key=gid)
+        obj['reactions'].sort(key=gid)
+        obj['genes'].sort(key=gid)
+    return obj
+
+
+def model_from_dict(obj):
+    """Rational-safe replacement for ``cobra.io.model_from_dict``.
+
+    Rebuilds a fully working cobra ``Model`` (its solver backend is created
+    lazily on the first optimization), restoring the exact rational bounds and
+    coefficients written by :func:`model_to_dict` without ever routing them
+    through float. Ordinary cobra dicts are read as well.
+    """
+    if 'reactions' not in obj:
+        raise ValueError("Object has no 'reactions' attribute. Cannot load.")
+    model = Model()
+    model.add_metabolites([_metabolite_from_dict(m) for m in obj['metabolites']])
+    model.genes.extend([gene_from_dict(g) for g in obj['genes']])
+    model.add_reactions([_reaction_from_json(r, model) for r in obj['reactions']])
+    objective_reactions = [r for r in obj['reactions']
+                           if _num_from_json(r.get('objective_coefficient', 0)) != 0]
+    coefficients = {model.reactions.get_by_id(r['id']): _num_from_json(r['objective_coefficient'])
+                    for r in objective_reactions}
+    _set_objective(model, coefficients)
+    for k, v in obj.items():
+        if k in {'id', 'name', 'notes', 'compartments', 'annotation'}:
+            setattr(model, k, v)
+    if obj.get('objective_direction'):
+        try:
+            model.objective.direction = obj['objective_direction']
+        except Exception:
+            pass
+    return model
