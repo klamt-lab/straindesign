@@ -449,7 +449,7 @@ def gene_kos_to_constraints(model, gene_kos):
 
     Note on the SD solution grammar:
         SDSolutions uses the following convention for intervention values:
-        -1 = knockout (KO), +1 = knock-in (KI), 0 = non-added KI.
+        -1.0 = knockout (KO), +1.0 = knock-in (KI), 0.0 = non-added KI.
 
         When passing gene constraints to ``fba()`` or ``fva()``, both
         ``gene = 0`` and ``gene = -1`` are treated as knockouts, and
@@ -1477,7 +1477,7 @@ def filter_sd_maxcost(sd, max_cost, kocost, kicost):
         Strain design solutions complying with the intervention costs limit
     """
     # eliminate intervention strategies that are too expensive. In result dicts,
-    # introduced KIs and KOs carry values of +1 and -1 respectively
+    # introduced KIs and KOs carry values of +1.0 and -1.0 respectively
     # non-made KIs are marked by 0.0 and non-made KOs don't appear.
     # We count costs of interventions made, which are marked by v != 0.
     if max_cost:
