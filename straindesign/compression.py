@@ -113,7 +113,6 @@ class RationalMatrix:
         self._den_sparse: Optional[csr_matrix] = None  # Denominators
         self._csc_cache: Optional[csc_matrix] = None
         self._batch_mode = False
-        self._batch_mode = False
         # Big-integer fallback: scipy.sparse only holds <=64-bit ints, so exact results whose
         # coefficients exceed int64 (e.g. yeast-GEM's nullspace) are stored here as {row:{col:Fraction}}
         # and _num_sparse/_den_sparse stay None. See is_bigint() / to_coo_exact().
