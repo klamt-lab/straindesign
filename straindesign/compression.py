@@ -24,6 +24,7 @@ from functools import reduce
 from math import gcd, lcm, isinf
 from typing import Dict, Iterator, List, Optional, Set, Tuple, Union, Any
 
+from collections import namedtuple
 from fractions import Fraction
 from scipy import sparse
 from scipy.sparse import csr_matrix, csc_matrix
@@ -89,6 +90,19 @@ def _lcm_list(numbers: List[int]) -> int:
 # =============================================================================
 
 
+_INT64_MAX = (1 << 63) - 1
+
+
+def _fits_int64(values) -> bool:
+    """True if every value is within the signed-int64 range (scipy's largest integer dtype)."""
+    return all(-_INT64_MAX <= int(v) <= _INT64_MAX for v in values)
+
+
+# Big-integer-safe sparse export (scipy sparse cannot hold >int64). Every basis entry equals
+# data[k] / denom exactly, at position (rows[k], cols[k]); data are arbitrary-precision Python ints.
+ExactCOO = namedtuple("ExactCOO", ["rows", "cols", "data", "shape", "denom"])
+
+
 class RationalMatrix:
     """Sparse rational matrix using dual int sparse storage (numerators + denominators)."""
 
@@ -99,6 +113,11 @@ class RationalMatrix:
         self._den_sparse: Optional[csr_matrix] = None  # Denominators
         self._csc_cache: Optional[csc_matrix] = None
         self._batch_mode = False
+        self._batch_mode = False
+        # Big-integer fallback: scipy.sparse only holds <=64-bit ints, so exact results whose
+        # coefficients exceed int64 (e.g. yeast-GEM's nullspace) are stored here as {row:{col:Fraction}}
+        # and _num_sparse/_den_sparse stay None. See is_bigint() / to_coo_exact().
+        self._dict_frac: Optional[Dict[int, Dict[int, Fraction]]] = None
 
     def _invalidate_cache(self):
         if not self._batch_mode:
@@ -186,10 +205,24 @@ class RationalMatrix:
     @classmethod
     def _build_from_sparse_data(cls, row_indices: List[int], col_indices: List[int], numerators: List[int], denominators: List[int],
                                 num_rows: int, num_cols: int) -> 'RationalMatrix':
-        """Build RationalMatrix from sparse coordinate data."""
-        num_sparse = csr_matrix((numerators, (row_indices, col_indices)), shape=(num_rows, num_cols), dtype=np.int64)
-        den_sparse = csr_matrix((denominators, (row_indices, col_indices)), shape=(num_rows, num_cols), dtype=np.int64)
-        return cls._from_sparse(num_sparse, den_sparse)
+        """Build RationalMatrix from sparse coordinate data.
+
+        These numerators/denominators are exact nullspace values (subdeterminants) that can exceed
+        int64 on large/dense networks (e.g. yeast-GEM). scipy.sparse cannot hold >64-bit integers,
+        so in that case we fall back to a dict-of-Fractions store; otherwise use the fast int64 CSR.
+        """
+        if _fits_int64(numerators) and _fits_int64(denominators):
+            num_sparse = csr_matrix((numerators, (row_indices, col_indices)), shape=(num_rows, num_cols), dtype=np.int64)
+            den_sparse = csr_matrix((denominators, (row_indices, col_indices)), shape=(num_rows, num_cols), dtype=np.int64)
+            return cls._from_sparse(num_sparse, den_sparse)
+        # Big-integer mode: store exact Fractions in a dict-of-dicts (scipy-free).
+        result = cls(num_rows, num_cols)
+        dic: Dict[int, Dict[int, Fraction]] = {}
+        for r, c, n, d in zip(row_indices, col_indices, numerators, denominators):
+            if n != 0:
+                dic.setdefault(int(r), {})[int(c)] = Fraction(int(n), int(d))
+        result._dict_frac = dic
+        return result
 
     # -------------------------------------------------------------------------
     # Size queries
@@ -351,35 +384,76 @@ class RationalMatrix:
 
         Returns numerator matrix scaled by LCM of denominators, plus the LCM.
         """
-        # Compute LCM of all denominators
+        if self.is_bigint():
+            raise OverflowError(
+                "coefficients exceed int64 and cannot be stored in a scipy sparse matrix; "
+                "use to_coo_exact() / to_sparse_pattern(), or the public sparse_nullspace() helper "
+                "which returns an ExactCOO in that case.")
+        # Empty matrix (e.g. a 0-dimensional nullspace)
+        if self._den_sparse is None:
+            return csr_matrix((self._rows, self._cols), dtype=np.int64), 1
         dens = self._den_sparse.data
         if len(dens) == 0:
             return csr_matrix((self._rows, self._cols), dtype=np.int64), 1
 
         common_denom = _lcm_list([int(d) for d in dens if d != 0])
-
-        # Scale numerators
         coo_num = self._num_sparse.tocoo()
         coo_den = self._den_sparse.tocoo()
-
-        scaled_data = []
-        for num, den in zip(coo_num.data, coo_den.data):
-            if num != 0:
-                scaled_data.append(int(num) * (common_denom // int(den)))
-            else:
-                scaled_data.append(0)
-
+        scaled_data = [int(num) * (common_denom // int(den)) if num != 0 else 0
+                       for num, den in zip(coo_num.data, coo_den.data)]
         scaled = csr_matrix((scaled_data, (coo_num.row, coo_num.col)), shape=(self._rows, self._cols), dtype=np.int64)
         return scaled, common_denom
+
+    def is_bigint(self) -> bool:
+        """True if this matrix is stored in big-integer mode (coefficients exceed int64, so it is
+        kept as a dict of exact Fractions rather than scipy int64 sparse)."""
+        return self._dict_frac is not None
+
+    def to_coo_exact(self) -> 'ExactCOO':
+        """Big-integer-safe exact sparse export, valid in both storage modes.
+
+        Returns ExactCOO(rows, cols, data, shape, denom) where entry (rows[k], cols[k]) equals
+        data[k] / denom exactly. data are arbitrary-precision Python ints (no int64 ceiling).
+        """
+        rows: List[int] = []
+        cols: List[int] = []
+        fracs: List[Fraction] = []
+        if self._dict_frac is not None:
+            for r, cd in self._dict_frac.items():
+                for c, f in cd.items():
+                    rows.append(int(r)); cols.append(int(c)); fracs.append(f)
+        elif self._num_sparse is not None:
+            coo_num = self._num_sparse.tocoo()
+            coo_den = self._den_sparse.tocoo()
+            for r, c, n, d in zip(coo_num.row, coo_num.col, coo_num.data, coo_den.data):
+                if n != 0:
+                    rows.append(int(r)); cols.append(int(c)); fracs.append(Fraction(int(n), int(d)))
+        denom = _lcm_list([f.denominator for f in fracs]) if fracs else 1
+        data = [int(f.numerator) * (denom // f.denominator) for f in fracs]
+        return ExactCOO(rows, cols, data, (self._rows, self._cols), denom)
 
     def to_sparse_pattern(self) -> Tuple[csr_matrix, Dict[int, Dict[int, Fraction]]]:
         """Return sparsity pattern as CSR and row-wise Fraction data.
 
-        For pattern analysis (coupled reaction detection) without integer overflow.
+        For pattern analysis (coupled reaction detection) without integer overflow. Works in both the
+        int64 and big-integer (dict-of-Fractions) storage modes.
         Returns:
             pattern: CSR matrix with 1s at non-zero positions (for indptr/indices)
             row_data: {row: {col: Fraction}} for actual values
         """
+        if self._dict_frac is not None:
+            ai, aj = [], []
+            row_data: Dict[int, Dict[int, Fraction]] = {}
+            for r, cd in self._dict_frac.items():
+                rd = {}
+                for c, f in cd.items():
+                    if f != 0:
+                        ai.append(int(r)); aj.append(int(c)); rd[int(c)] = f
+                if rd:
+                    row_data[int(r)] = rd
+            pattern = csr_matrix(([1] * len(ai), (ai, aj)), shape=(self._rows, self._cols), dtype=np.int8)
+            return pattern, row_data
+
         # Build pattern matrix (just 1s for structure)
         coo_num = self._num_sparse.tocoo()
         pattern_data = [1] * len(coo_num.data)
@@ -471,99 +545,153 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
         sorted_row_keys = sorted(data.keys(), key=lambda r: len(data[r]))
         data = {new_r: data[old_r] for new_r, old_r in enumerate(sorted_row_keys)}
 
-    # Gaussian elimination with partial pivoting (all indices in sorted column space)
-    pivot_cols_sorted = []
-    pivot_row = 0
+    # Active (not-yet-pivoted) rows, and a column -> {rows containing it} index over the active rows.
+    # After the echelon change made elimination cheap, the Markowitz pivot search dominates (~89% on
+    # iML1515). The index turns the search from "scan every active row, test membership" (~99.9% of
+    # tests miss) into "visit only the rows that actually contain the pivot column". Its maintenance
+    # cost is proportional to the (now small) elimination fill, so it is a net win here — whereas
+    # pre-echelon, when elimination dominated, it was a wash.
+    active = set(data.keys())
+    col_rows: Dict[int, set] = {}
+    for r, rd in data.items():
+        for c in rd:
+            s = col_rows.get(c)
+            if s is None:
+                col_rows[c] = {r}
+            else:
+                s.add(r)
 
-    for pivot_col in range(cols):
-        if pivot_row >= rows:
-            break
+    def _eliminate(prd, pivot_val, pivot_col, targets, index):
+        """Fraction-free elimination of ``pivot_col`` from each (row_key, entry) in ``targets`` using
+        pivot row ``prd``. Mutates ``data`` (updates/deletes each target row). If ``index`` is True,
+        keeps ``active``/``col_rows`` in sync (forward phase); back-substitution passes False since the
+        index is no longer needed once the forward phase is done.
 
-        # Find pivot: sparsest row first (Markowitz), then smallest abs value
-        best_row, best_val = -1, 0
-        best_nnz, best_abs = float('inf'), float('inf')
-        for r, row_data in data.items():
-            if r < pivot_row:
-                continue
-            if pivot_col in row_data:
-                v = row_data[pivot_col]
-                rnnz = len(row_data)
-                if rnnz < best_nnz or (rnnz == best_nnz and abs(v) < best_abs):
-                    best_row, best_val = r, v
-                    best_nnz, best_abs = rnnz, abs(v)
-
-        if best_row < 0:
-            continue
-
-        # Swap rows if needed
-        if best_row != pivot_row:
-            if pivot_row in data:
-                if best_row in data:
-                    data[pivot_row], data[best_row] = data[best_row], data[pivot_row]
-                else:
-                    data[best_row] = data.pop(pivot_row)
-            elif best_row in data:
-                data[pivot_row] = data.pop(best_row)
-
-        pivot_row_data = data.get(pivot_row)
-        if pivot_row_data is None:
-            continue
-        pivot_val = pivot_row_data.get(pivot_col, 0)
-        if pivot_val == 0:
-            continue
-
-        pivot_cols_sorted.append(pivot_col)
-
-        # Collect rows to eliminate (snapshot keys before modification)
-        elim_targets = [(r, row_data[pivot_col]) for r, row_data in data.items() if r != pivot_row and pivot_col in row_data]
-
-        # Eliminate pivot column from all other rows
-        for elim_row, elim_val in elim_targets:
+        new[c] = elim[c]*pv_scaled - ev_scaled*pivot[c], with pv_scaled/ev_scaled pre-divided by
+        gcd(pivot_val, elim_val) to keep the products small, then the whole row reduced by its content
+        GCD. The content reduction keeps coefficient growth polynomial — without it, cross-
+        multiplication grows exponentially.
+        """
+        for elim_row, elim_val in targets:
             elim_row_data = data[elim_row]
-
-            # Pre-scale by GCD to minimize coefficient growth.
-            # math.gcd handles negatives and returns a positive value (Python 3.5+).
+            old_cols = set(elim_row_data) if index else None
             g = gcd(pivot_val, elim_val)
             pv_scaled = pivot_val // g
             ev_scaled = elim_val // g
-
-            # new[c] = elim[c] * pv_scaled - ev_scaled * pivot[c]
-            new_row = {}
-            for c, p_val in pivot_row_data.items():
-                new_val = elim_row_data.get(c, 0) * pv_scaled - ev_scaled * p_val
+            # Scale the whole elim row by pv_scaled in one comprehension (every product is nonzero),
+            # then correct the few columns it shares with the (sparse) pivot row.
+            new_row = {c: v * pv_scaled for c, v in elim_row_data.items()}
+            for c, p_val in prd.items():
+                new_val = new_row.get(c, 0) - ev_scaled * p_val
                 if new_val != 0:
                     new_row[c] = new_val
-            for c, e_val in elim_row_data.items():
-                if c not in pivot_row_data:
-                    new_val = e_val * pv_scaled
-                    if new_val != 0:
-                        new_row[c] = new_val
-
-            # Update row and reduce by GCD.
-            # gcd(*values) uses one C-level call instead of len(row) Python calls.
+                elif c in new_row:
+                    del new_row[c]
             if new_row:
                 data[elim_row] = new_row
                 row_gcd = gcd(*new_row.values())
                 if row_gcd > 1:
                     for c in new_row:
                         new_row[c] //= row_gcd
+                if index:
+                    new_cols = new_row.keys()
+                    for c in new_cols - old_cols:
+                        s = col_rows.get(c)
+                        if s is None:
+                            col_rows[c] = {elim_row}
+                        else:
+                            s.add(elim_row)
+                    for c in old_cols - new_cols:
+                        col_rows[c].discard(elim_row)
             else:
                 del data[elim_row]
+                if index:
+                    active.discard(elim_row)
+                    for c in old_cols:
+                        col_rows[c].discard(elim_row)
 
-        pivot_row += 1
+    # ---- Phase 1: forward elimination to row-echelon form ----
+    # Eliminate each pivot only from rows BELOW its pivot row, so already-processed pivot rows stay
+    # sparse. Full Gauss-Jordan (eliminating upward too) re-reduces those filled rows with every later
+    # pivot — ~99% of the total work on iML1515. The reduced form is recovered in phase 2. Rows are not
+    # renumbered/swapped to pivot positions; instead pivot_keys[i] records the data-key of pivot i.
+    pivot_cols_sorted = []
+    pivot_keys = []
+    for pivot_col in range(cols):
+        if len(pivot_keys) >= rows:
+            break
 
-    # Final GCD reduction of all rows
-    for row_data in data.values():
+        holders = col_rows.get(pivot_col)
+        if not holders:
+            continue
+
+        # Markowitz among the rows that actually contain this column: sparsest, then smallest abs.
+        best_row, best_val = -1, 0
+        best_nnz, best_abs = float('inf'), float('inf')
+        for r in holders:
+            row_data = data[r]
+            v = row_data[pivot_col]
+            rnnz = len(row_data)
+            if rnnz < best_nnz or (rnnz == best_nnz and abs(v) < best_abs):
+                best_row, best_val = r, v
+                best_nnz, best_abs = rnnz, abs(v)
+
+        pivot_row_data = data[best_row]
+        pivot_cols_sorted.append(pivot_col)
+        pivot_keys.append(best_row)
+
+        # Retire the pivot row from the active index (remove it from every column's holder set).
+        active.discard(best_row)
+        for c in pivot_row_data:
+            col_rows[c].discard(best_row)
+
+        # Eliminate the pivot column from the remaining active rows that contain it (= col_rows now).
+        targets = [(r, data[r][pivot_col]) for r in list(col_rows.get(pivot_col, ()))]
+        _eliminate(pivot_row_data, best_val, pivot_col, targets, True)
+
+    # ---- Phase 2: back-substitution to reduced row-echelon form ----
+    # Process pivots last-to-first, clearing each pivot column from the pivot rows ABOVE it. In this
+    # order each pivot row's later-pivot-column entries are already cleared, so back-substitution only
+    # introduces free-column fill — far less than Gauss-Jordan (iML1515: ~0.8M ops vs ~9.4M).
+    #
+    # `pivcol_holders[c]` = pivot indices j whose row contains pivot column c (built once over the
+    # still-sparse post-forward pivot rows). It replaces an O(rank^2) "which rows above contain pcol"
+    # scan. Crucially, back-substitution only ever *removes* pivot-column entries (it adds free-column
+    # fill, and the pivot row being applied has had its own later-pivot columns already cleared), so
+    # the index needs no additions during phase 2 — only the discards after each step.
+    rank = len(pivot_cols_sorted)
+    pivot_col_set = set(pivot_cols_sorted)
+    pivcol_holders: Dict[int, set] = {}
+    for j, key in enumerate(pivot_keys):
+        for c in data[key]:
+            if c in pivot_col_set:
+                pivcol_holders.setdefault(c, set()).add(j)
+    for i in range(rank - 1, -1, -1):
+        pcol = pivot_cols_sorted[i]
+        prd = data[pivot_keys[i]]
+        pval = prd[pcol]
+        above = [j for j in pivcol_holders.get(pcol, ()) if j < i]
+        targets = [(pivot_keys[j], data[pivot_keys[j]][pcol]) for j in above]
+        _eliminate(prd, pval, pcol, targets, False)
+        holders = pivcol_holders.get(pcol)
+        if holders:
+            holders.difference_update(above)   # pcol is now cleared from those rows
+
+    # Final GCD reduction of the pivot rows (insurance; rows are already reduced per step).
+    for key in pivot_keys:
+        row_data = data[key]
         row_gcd = gcd(*row_data.values())
         if row_gcd > 1:
             for c in row_data:
                 row_data[c] //= row_gcd
 
-    # Translate results back to original column space
-    original_data = {r: {col_order[sc]: v for sc, v in rd.items()} for r, rd in data.items()}
+    # Translate results back to original column space, keyed by pivot index (rref_data[i] = pivot i).
+    original_data = {i: {col_order[sc]: v for sc, v in data[key].items()}
+                     for i, key in enumerate(pivot_keys)}
     pivot_cols_original = [col_order[p] for p in pivot_cols_sorted]
 
-    return original_data, len(pivot_cols_original), pivot_cols_original
+    return original_data, rank, pivot_cols_original
+
 
 
 def _nullspace_sparse(matrix: RationalMatrix) -> RationalMatrix:
@@ -652,6 +780,47 @@ def basic_columns(matrix: RationalMatrix) -> List[int]:
 def basic_columns_from_numpy(mx: np.ndarray) -> List[int]:
     """Find basic columns from a numpy array."""
     return basic_columns(RationalMatrix.from_numpy(mx))
+
+
+def sparse_nullspace(matrix):
+    """Exact rational nullspace of a sparse integer/rational matrix, returned as a sparse basis.
+
+    Computes an exact basis of the right nullspace (kernel) ``K`` with ``matrix @ K == 0`` exactly
+    over the rationals -- no floating-point error. The basis is sparse (one column per free
+    variable), the property that makes it useful for network reduction and pathway analysis.
+
+    Parameters
+    ----------
+    matrix : scipy.sparse matrix, numpy.ndarray, or RationalMatrix
+        Input with integer or rational entries. Floats are converted to nearby rationals.
+
+    Returns
+    -------
+    scipy.sparse.csr_matrix
+        Integer nullspace basis (columns are basis vectors), scaled to a common integer
+        denominator; returned when all coefficients fit in signed 64-bit integers.
+    ExactCOO
+        Namedtuple ``(rows, cols, data, shape, denom)`` returned instead when the exact
+        coefficients exceed 64 bits (scipy sparse cannot store them). Entry ``(rows[k], cols[k])``
+        equals ``data[k] / denom`` exactly, with arbitrary-precision Python-int ``data``.
+    """
+    if isinstance(matrix, RationalMatrix):
+        rm = matrix
+    elif sparse.issparse(matrix):
+        A = matrix.tocsr()
+        if np.issubdtype(A.dtype, np.integer):
+            num = csr_matrix((A.data.astype(np.int64), A.indices.copy(), A.indptr.copy()), shape=A.shape)
+            den = csr_matrix((np.ones(A.nnz, dtype=np.int64), A.indices.copy(), A.indptr.copy()), shape=A.shape)
+            rm = RationalMatrix._from_sparse(num, den)
+        else:
+            rm = RationalMatrix.from_numpy(A.toarray())
+    else:
+        rm = RationalMatrix.from_numpy(np.asarray(matrix))
+    K = nullspace(rm)
+    if K.is_bigint():
+        return K.to_coo_exact()
+    csr, _ = K.to_sparse_csr()
+    return csr
 
 
 # =============================================================================

@@ -336,7 +336,7 @@ class SDMILP(SDProblem, MILP_LP):
             self.resetObjective()
             self.fixObjective(self.c_bu, np.inf)
             z, _, opt, status = self.solveZ()
-            if np.isnan(z[0, 0]):
+            if 0 in z.shape or np.isnan(z[0, 0]):  # no (further) solution -> stop cleanly
                 break
             output = self.sd2dict(z)
             if self.is_mcs_computation:

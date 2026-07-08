@@ -64,3 +64,4 @@ from .strainDesignSolutions import *
 from .strainDesignProblem import *
 from .strainDesignMILP import *
 from .compute_strain_designs import *
+from .compression import sparse_nullspace, sparse_nullspace as nullspace, RationalMatrix, ExactCOO
