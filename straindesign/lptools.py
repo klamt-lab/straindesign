@@ -603,8 +603,131 @@ def fba(model, **kwargs) -> Solution:
 
     x = [v if abs(v) >= 1e-11 else 0.0 for v in x]  # cut off for very small absolute values
     fluxes = {reaction_ids[i]: x[i] for i in range(len(x))}
+
+    # Expand compressed fluxes if cmp_map is provided
+    cmp_map = kwargs.get('cmp_map', None)
+    orig_reaction_ids = kwargs.get('orig_reaction_ids', None)
+    if cmp_map is not None and orig_reaction_ids is not None:
+        fluxes = expand_fluxes(fluxes, cmp_map, orig_reaction_ids)
+
     sol = Solution(objective_value=-opt_cx, status=status, fluxes=fluxes)
     return sol
+
+
+def slim_fba_via_cmp(model, cmp_model, cmp_map, **kwargs) -> float:
+    """Fast FBA on a compressed model with transparent mapping.
+
+    Resolves gene/reaction constraints and objective from *model* (the
+    original, uncompressed model), maps them to *cmp_model* via *cmp_map*,
+    solves using ``slim_solve`` and returns the optimal objective value
+    in original-model units.
+
+    This avoids the O(n) full-vector expansion — only the objective
+    reactions are traced through the compression map.
+
+    Example::
+
+        opt = slim_fba_via_cmp(com, com_cmp, cmp_map,
+                       obj={b1: 1, b2: 1},
+                       constraints=gene_constraints)
+        # opt is the objective value in original-model scale
+
+    Args:
+        model: Original (uncompressed) cobra.Model — used to resolve
+            gene names and parse constraint/objective IDs.
+        cmp_model: Compressed cobra.Model to solve on.
+        cmp_map: Compression map (list of step dicts).
+        obj: Objective as str or dict of {rxn_id: coeff} in original IDs.
+        obj_sense: 'maximize' (default) or 'minimize'.
+        constraints: Constraints referencing original-model reaction or
+            gene IDs.
+        solver: Solver name (optional).
+
+    Returns:
+        float: Optimal objective value in original-model scale,
+        or nan if infeasible.
+    """
+    from straindesign.networktools import resolve_gene_constraints, compress_constraints
+
+    orig_reaction_ids = model.reactions.list_attr("id")
+    cmp_reaction_ids = cmp_model.reactions.list_attr("id")
+
+    # --- Resolve and compress constraints ---
+    if CONSTRAINTS in kwargs and kwargs[CONSTRAINTS]:
+        kwargs[CONSTRAINTS] = resolve_gene_constraints(model, kwargs[CONSTRAINTS])
+        kwargs[CONSTRAINTS] = compress_constraints(kwargs[CONSTRAINTS], cmp_map)
+        kwargs[CONSTRAINTS] = parse_constraints(kwargs[CONSTRAINTS], cmp_reaction_ids)
+        A_ineq, b_ineq, A_eq, b_eq = lineqlist2mat(kwargs[CONSTRAINTS], cmp_reaction_ids)
+    else:
+        kwargs[CONSTRAINTS] = []
+
+    # --- Map objective to compressed space ---
+    # Build factor map: orig_id -> (cmp_id, cumulative_factor)
+    # Only for reactions appearing in the objective (cheap).
+    if 'obj' in kwargs and kwargs['obj'] is not None:
+        obj = kwargs['obj']
+        if isinstance(obj, str):
+            obj = linexpr2dict(obj, orig_reaction_ids)
+    else:
+        obj = {r.id: r.objective_coefficient for r in model.reactions
+               if r.objective_coefficient != 0}
+
+    # Trace each objective reaction through compression
+    obj_cmp = {}
+    obj_factors = {}  # orig_id -> cumulative_factor (for back-scaling)
+    for orig_id, coeff in obj.items():
+        cur_id = orig_id
+        cum_factor = 1.0
+        for step in cmp_map:
+            for cmp_id, orig_map in step["reac_map_exp"].items():
+                if cur_id in orig_map:
+                    cum_factor *= float(orig_map[cur_id])
+                    cur_id = cmp_id
+                    break
+        # In compressed space: coeff * cum_factor gives the scaled coefficient
+        obj_cmp[cur_id] = obj_cmp.get(cur_id, 0.0) + coeff * cum_factor
+        obj_factors[orig_id] = (cur_id, cum_factor)
+
+    c = linexprdict2mat(obj_cmp, cmp_reaction_ids).toarray()[0].tolist()
+
+    # --- Handle obj_sense ---
+    if ('obj_sense' not in kwargs and model.objective_direction == 'max') or \
+       ('obj_sense' in kwargs and kwargs['obj_sense'] not in ['min', 'minimize']):
+        obj_sense = 'maximize'
+        c = [-i for i in c]
+    else:
+        obj_sense = 'minimize'
+
+    # --- Solver ---
+    if SOLVER not in kwargs:
+        kwargs[SOLVER] = None
+    solver = select_solver(kwargs[SOLVER], cmp_model)
+
+    # --- Build and solve LP ---
+    A_eq_base = create_stoichiometric_matrix(cmp_model)
+    A_eq_base = sparse.csr_matrix(A_eq_base)
+    b_eq_base = [0.0] * len(cmp_model.metabolites)
+    if 'A_eq' in locals():
+        A_eq = sparse.vstack((A_eq_base, A_eq))
+        b_eq = b_eq_base + b_eq
+    else:
+        A_eq = A_eq_base
+        b_eq = b_eq_base
+    if 'A_ineq' not in locals():
+        A_ineq = sparse.csr_matrix((0, len(cmp_model.reactions)))
+        b_ineq = []
+    lb = [float(v.lower_bound) for v in cmp_model.reactions]
+    ub = [float(v.upper_bound) for v in cmp_model.reactions]
+
+    fba_prob = MILP_LP(c=c, A_ineq=A_ineq, b_ineq=b_ineq,
+                       A_eq=A_eq, b_eq=b_eq, lb=lb, ub=ub, solver=solver)
+    opt_cx = fba_prob.slim_solve()
+
+    if isnan(opt_cx):
+        return nan
+
+    # Objective value is in original scale (c was scaled by cum_factor)
+    return -opt_cx if obj_sense == 'maximize' else opt_cx
 
 
 def yopt(model, **kwargs) -> Solution:
@@ -829,6 +952,43 @@ def yopt(model, **kwargs) -> Solution:
     else:
         status = INFEASIBLE
 
+def expand_fluxes(fluxes_cmp, cmp_map, orig_reaction_ids):
+    """Expand a compressed flux vector to the full (uncompressed) model.
+
+    Reverses the compression steps recorded in *cmp_map* to recover
+    fluxes for every reaction in the original model.  Each original
+    reaction's flux is ``v_orig = factor * v_compressed``.
+
+    * **Coupled reactions**: factor is the stoichiometric coupling
+      coefficient (deterministic, exact).
+    * **Parallel reactions**: factor is ``1/n`` (or proportional to
+      stoichiometric scale), splitting the total compressed flux evenly.
+    * **Removed reactions** (not in any compression step): set to zero.
+
+    Args:
+        fluxes_cmp (dict):
+            Flux dictionary from FBA/pFBA on the compressed model.
+
+        cmp_map (list of dict):
+            Compression map as stored in
+            ``SDSolutions.compression_map``.
+
+        orig_reaction_ids (iterable of str):
+            Reaction IDs of the original (uncompressed) model.
+
+    Returns:
+        dict: Flux dictionary keyed by original reaction IDs.
+    """
+    fluxes = dict(fluxes_cmp)
+    for step in reversed(cmp_map):
+        for cmp_id, orig_map in step["reac_map_exp"].items():
+            v_cmp = fluxes.pop(cmp_id, 0.0)
+            for orig_id, factor in orig_map.items():
+                fluxes[orig_id] = factor * v_cmp
+    for rid in orig_reaction_ids:
+        if rid not in fluxes:
+            fluxes[rid] = 0.0
+    return fluxes
 
 def _make_fix_constraint(axes, ax_idx, ax_type, value):
     """Create an equality constraint fixing axis ax_idx to value."""
@@ -1306,6 +1466,42 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
             variable contains information about which datapoints need to be connected in triangles to
             render a closed surface. The last variable contains the matplotlib object.
     """
+    
+    cmp_model = kwargs.pop('cmp_model', None)
+    cmp_map = kwargs.pop('cmp_map', None)
+
+    _orig_axes = None  # store original axis names for labelling
+    if cmp_model is not None and cmp_map is not None:
+        from straindesign.networktools import (resolve_gene_constraints,
+            compress_constraints, _build_cmp_reverse_map)
+        # Resolve gene constraints on the original model, then compress
+        if CONSTRAINTS in kwargs and kwargs[CONSTRAINTS]:
+            kwargs[CONSTRAINTS] = resolve_gene_constraints(model, kwargs[CONSTRAINTS])
+            kwargs[CONSTRAINTS] = compress_constraints(kwargs[CONSTRAINTS], cmp_map)
+        # Map axes to compressed IDs; store coupling factors for post-scaling
+        _orig_axes = [a if isinstance(a, str) else list(a) for a in axes]
+        reverse = _build_cmp_reverse_map(cmp_map)
+        cmp_reaction_ids = set(r.id for r in cmp_model.reactions)
+        # Map axes and compute cumulative coupling factors for scaling
+        _ax_scale = [1.0] * len(axes)
+        for i, ax in enumerate(axes):
+            if isinstance(ax, str) and ax not in cmp_reaction_ids and ax in reverse:
+                # Trace this reaction through compression steps to get cumulative factor
+                cur_id = ax
+                cum_factor = 1.0
+                for step in cmp_map:
+                    for cmp_id, orig_map in step["reac_map_exp"].items():
+                        if cur_id in orig_map:
+                            cum_factor *= float(orig_map[cur_id])
+                            cur_id = cmp_id
+                            break
+                _ax_scale[i] = cum_factor
+                axes[i] = reverse[ax]
+            elif isinstance(ax, list):
+                axes[i] = [reverse.get(a, a) if isinstance(a, str) else a for a in ax]
+        # Switch to compressed model
+        model = cmp_model
+      
     reaction_ids = model.reactions.list_attr("id")
 
     if CONSTRAINTS in kwargs:
@@ -1376,11 +1572,29 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
             pad = max(0.5, abs(ax_limits[i][0]) * 0.1)
             ax_limits[i] = [ax_limits[i][0] - pad, ax_limits[i][1] + pad]
 
+    # Override axis labels with original (uncompressed) reaction names
+    if _orig_axes is not None:
+        for i, oa in enumerate(_orig_axes):
+            if isinstance(oa, str):
+                ax_name[i] = oa
+            elif isinstance(oa, list) and len(oa) == 1:
+                ax_name[i] = oa[0]
+
     # Detect degeneracy
     degen, degen_axes = _detect_degeneracy(val_limits, num_axes)
 
     if num_axes == 2:
         # === 2D dispatch ===
+        # Scale limits from compressed to original model units
+        if _orig_axes is not None:
+            sx = _ax_scale[0] if abs(_ax_scale[0] - 1.0) > 1e-12 else 1.0
+            sy = _ax_scale[1] if abs(_ax_scale[1] - 1.0) > 1e-12 else 1.0
+            if sx != 1.0 or sy != 1.0:
+                val_limits[0] = (val_limits[0][0] * sx, val_limits[0][1] * sx)
+                val_limits[1] = (val_limits[1][0] * sy, val_limits[1][1] * sy)
+                ax_limits[0] = [ax_limits[0][0] * sx, ax_limits[0][1] * sx]
+                ax_limits[1] = [ax_limits[1][0] * sy, ax_limits[1][1] * sy]
+
         if degen == 'point':
             plot1 = plt.plot([val_limits[0][0]], [val_limits[1][0]], 'o')[0]
             plot1.axes.set_xlabel(ax_name[0])
@@ -1441,6 +1655,17 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
 
         if not vertices:
             raise Exception('Could not trace any boundary. Problem may be infeasible.')
+
+        # Scale from compressed to original model units
+        if _orig_axes is not None:
+            sx = _ax_scale[0] if abs(_ax_scale[0] - 1.0) > 1e-12 else 1.0
+            sy = _ax_scale[1] if abs(_ax_scale[1] - 1.0) > 1e-12 else 1.0
+            if sx != 1.0 or sy != 1.0:
+                vertices = [[v[0] * sx, v[1] * sy] for v in vertices]
+                val_limits[0] = (val_limits[0][0] * sx, val_limits[0][1] * sx)
+                val_limits[1] = (val_limits[1][0] * sy, val_limits[1][1] * sy)
+                ax_limits[0] = [ax_limits[0][0] * sx, ax_limits[0][1] * sx]
+                ax_limits[1] = [ax_limits[1][0] * sy, ax_limits[1][1] * sy]
 
         # Check for collinear degeneracy (polygon traced to a line or point)
         unique_verts = []

@@ -161,6 +161,7 @@ class Cplex_MILP_LP(Cplex):
             self.parameters.mip.pool.absgap.set(0.0)
             self.parameters.mip.pool.relgap.set(0.0)
             self.parameters.mip.pool.intensity.set(4)
+            # intensity=2 was tried there as a lighter alternative to 4
             # no integrality tolerance
             self.parameters.mip.tolerances.integrality.set(0.0)
 
@@ -187,7 +188,7 @@ class Cplex_MILP_LP(Cplex):
             if status in [1, 101, 102, 115, 128, 129, 130]:  # solution integer optimal
                 min_cx = self.solution.get_objective_value()
                 status = OPTIMAL
-            elif status == 108:  # timeout without solution
+            elif status in [108, 114]:  # timeout/abort without solution
                 x = [nan] * self.variables.get_num()
                 min_cx = nan
                 status = TIME_LIMIT
@@ -197,7 +198,7 @@ class Cplex_MILP_LP(Cplex):
                 min_cx = nan
                 status = INFEASIBLE
                 return x, min_cx, status
-            elif status in [11, 107]:  # timeout with solution
+            elif status in [11, 13, 107, 113]:  # timeout/abort with solution
                 min_cx = self.solution.get_objective_value()
                 status = TIME_LIMIT_W_SOL
             elif status in [2, 4, 118, 119]:  # solution unbounded
@@ -240,11 +241,11 @@ class Cplex_MILP_LP(Cplex):
         try:
             super().solve()  # call parent solve function (that was overwritten in this class)
             status = self.solution.get_status()
-            if status in [1, 101, 102, 107, 115, 128, 129, 130]:  # optimal (LP: 1, MIP: 101/102/107/115/128-130)
+            if status in [1, 101, 102, 107, 113, 115, 128, 129, 130]:  # optimal or abort with solution
                 opt = self.solution.get_objective_value()
             elif status in [2, 4, 118, 119]:  # unbounded (LP: 2/4, MIP: 118/119)
                 opt = -inf
-            elif status in [3, 103, 108]:  # infeasible (LP: 3, MIP: 103/108)
+            elif status in [3, 13, 103, 108, 114]:  # infeasible or abort without solution
                 opt = nan
             elif status in [5, 6]:  # optimal/best with unscaled infeasibilities (numerical)
                 opt = self.solution.get_objective_value()
@@ -270,14 +271,16 @@ class Cplex_MILP_LP(Cplex):
         try:
             if isinf(n):
                 self.parameters.mip.pool.capacity.set(self.parameters.mip.pool.capacity.max())
+                self.parameters.mip.limits.populate.set(self.parameters.mip.limits.populate.max())
             else:
-                self.parameters.mip.pool.capacity.set(n)
+                self.parameters.mip.pool.capacity.set(int(n))
+                self.parameters.mip.limits.populate.set(int(n))
             self.populate_solution_pool()  # call parent solve function (that was overwritten in this class)
             status = self.solution.get_status()
             if status in [101, 102, 115, 128, 129, 130]:  # solution integer optimal
                 min_cx = self.solution.get_objective_value()
                 status = OPTIMAL
-            elif status == 108:  # timeout without solution
+            elif status in [108, 114]:  # timeout/abort without solution
                 x = []
                 min_cx = nan
                 status = TIME_LIMIT
@@ -287,7 +290,7 @@ class Cplex_MILP_LP(Cplex):
                 min_cx = nan
                 status = INFEASIBLE
                 return x, min_cx, status
-            elif status == 107:  # timeout with solution
+            elif status in [13, 107, 113]:  # timeout/abort with solution
                 min_cx = self.solution.get_objective_value()
                 status = TIME_LIMIT_W_SOL
             elif status in [118, 119]:  # solution unbounded

@@ -450,11 +450,11 @@ def gene_kos_to_constraints(model, gene_kos):
 
     Note on the SD solution grammar:
         SDSolutions uses the following convention for intervention values:
-        -1 = knockout (KO), +1 = knock-in (KI), 0 = non-added KI.
+        -1.0 = knockout (KO), +1.0 = knock-in (KI), 0.0 = non-added KI.
 
         When passing gene constraints to ``fba()`` or ``fva()``, both
-        ``gene = 0`` and ``gene = -1`` are treated as knockouts, and
-        ``gene = 1`` is ignored (the gene is active).  This means SD
+        ``gene = 0.0`` and ``gene = -1.0`` are treated as knockouts, and
+        ``gene = 1.0`` is ignored (the gene is active).  This means SD
         solution values can be used directly as constraints.
 
         The returned *reaction* constraints use the linear constraint
@@ -512,6 +512,70 @@ def gene_kos_to_constraints(model, gene_kos):
 
     return [[{r: 1}, '=', 0] for r in sorted(knocked_out_reactions)]
 
+def _build_cmp_reverse_map(cmp_map):
+    """Build reverse lookup: original reaction ID -> final compressed ID.
+
+    Walks forward through compression steps, updating the mapping as
+    intermediate compressed IDs get further compressed.
+
+    Args:
+        cmp_map: compression map (list of step dicts with "reac_map_exp")
+
+    Returns:
+        dict: {original_reaction_id: final_compressed_reaction_id}
+    """
+    reverse = {}
+    # Also track which original IDs point to each intermediate ID,
+    # so we can update them efficiently when that ID gets re-compressed.
+    children = {}  # intermediate_id -> set of original IDs that map to it
+    for step in cmp_map:
+        for cmp_id, orig_map in step["reac_map_exp"].items():
+            new_children = set()
+            for orig_id in orig_map:
+                if orig_id in children:
+                    # orig_id was itself a compressed ID; redirect its children
+                    for child in children.pop(orig_id):
+                        reverse[child] = cmp_id
+                        new_children.add(child)
+                reverse[orig_id] = cmp_id
+                new_children.add(orig_id)
+            children[cmp_id] = new_children
+    return reverse
+
+
+def compress_constraints(constraints, cmp_mapReac):
+    """Map constraints from original model space to compressed model space.
+
+    Uses the same coefficient-scaling logic as :func:`compress_modules`:
+    when original reactions are lumped (coupled or parallel), constraint
+    coefficients are multiplied by the coupling/split factor and summed
+    into the compressed reaction.
+
+    Constraints must be in list format ``[{rxn_id: coeff, ...}, sign, rhs]``
+    as returned by :func:`resolve_gene_constraints` or ``parse_constraints``.
+
+    Args:
+        constraints (list): Constraints in list format.
+        cmp_mapReac (list of dict): Compression map from ``compress_model``
+            or ``SDSolutions.compression_map``.
+
+    Returns:
+        list: Constraints with reaction IDs mapped to compressed space.
+    """
+    constraints = [list(c) for c in constraints]  # shallow copy
+    for cmp in cmp_mapReac:
+        reac_map_exp = cmp["reac_map_exp"]
+        for new_reac, old_reac_val in reac_map_exp.items():
+            if len(old_reac_val) <= 1:
+                continue
+            for c in constraints:
+                coeff_dict = c[0]
+                lumped = [k for k in coeff_dict if k in old_reac_val]
+                if lumped:
+                    coeff_dict[new_reac] = sum(
+                        coeff_dict.pop(k) * old_reac_val[k] for k in lumped
+                    )
+    return constraints
 
 def resolve_gene_constraints(model, constraints):
     """Scan constraints for gene IDs/names and replace with reaction constraints.
@@ -1477,9 +1541,13 @@ def filter_sd_maxcost(sd, max_cost, kocost, kicost):
         (SDSolutions):
         Strain design solutions complying with the intervention costs limit
     """
-    # eliminate mcs that are too expensive
+    # eliminate intervention strategies that are too expensive. In result dicts,
+    # introduced KIs and KOs carry values of +1.0 and -1.0 respectively
+    # non-made KIs are marked by 0.0 and non-made KOs don't appear.
+    # We count costs of interventions made, which are marked by v != 0.
     if max_cost:
-        costs = [np.sum([kocost[k] if v < 0 else (kicost[k] if v > 0 else 0) for k, v in m.items()]) for m in sd]
+        costs = [np.sum([(kocost[k] if k in kocost else kicost.get(k, 0)) if v != 0 else 0
+                         for k, v in m.items()]) for m in sd]
         sd = [sd[i] for i in range(len(sd)) if costs[i] <= max_cost + 1e-8]
         # sort strain designs by intervention costs
         [s.update({'**cost**': c}) for s, c in zip(sd, costs)]
