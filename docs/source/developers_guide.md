@@ -738,7 +738,7 @@ Falls back to `compute_optimal` for SCIP and GLPK (which lack native pool suppor
 For a solution with binary vector `z`:
 
 **Case 1 — z is all zeros (wild-type):**
-Add `sum(z_i) ≥ 1` → forces at least one intervention next time. Implemented as `1 ≥ −1` (infeasible if all z = 0).
+Add the all-ones row `sum(z_i) ≤ −1`. Since every `z_i ≥ 0`, this constraint is **unsatisfiable**, so it deliberately renders the MILP infeasible and terminates enumeration. This case only arises when the wild-type already satisfies the design (no intervention is needed / possible), so there is no valid non-empty cut to add. (Some solvers reject empty rows, hence the explicit all-ones coefficient vector; see `add_exclusion_constraints`, `strainDesignMILP.py`.)
 
 **Case 2 — z has exactly one non-zero entry (single intervention):**
 Set `ub[idx] = 0` → permanently disable that intervention.
