@@ -473,7 +473,7 @@ s.t.      v ∈ argmax { inner_objective(v) : v feasible }
 
 This bilevel program is converted to a single-level MILP using **LP duality**:
 
-**LP Duality Theorem:** For a minimization LP `{min c'x : Ax ≤ b, x ≥ 0}`, the dual is `{max b'y : A'y ≤ c, y ≥ 0}`. At optimality, primal and dual objectives are equal: `c'x* = b'y*`.
+**LP Duality Theorem:** For a maximization LP `{max c'x : Ax ≤ b, x ≥ 0}`, the dual is `{min b'y : A'y ≥ c, y ≥ 0}`. At optimality, primal and dual objectives are equal: `c'x* = b'y*`. StrainDesign reads the inner problem as a maximization and `LP_dualize` builds this dual (dual variables + dual-feasibility constraints `A'y ≥ c`).
 
 **`LP_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p, ...)`**
 
