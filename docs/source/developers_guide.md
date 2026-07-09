@@ -479,15 +479,15 @@ behavior*. The entire MILP is the coupling of these two through the `z_map_*` ma
 (ch2)=
 ## 2. The constraint-based foundation
 
-Everything `straindesign` does — compression, FVA-based preprocessing, dualization, the MILP itself — is built on one linear-algebraic object: the set of *steady-state flux distributions* of a metabolic network, carved out of ℝⁿ by a homogeneous equation `S·v = 0` and a box of bounds `lb ≤ v ≤ ub`. This chapter derives that object from first principles, establishes the polyhedral geometry the later chapters lean on (faces, vertices, rays, the recession cone — the machinery that makes a Farkas certificate exist and a dual go unbounded), and shows precisely how FBA and FVA are posed as linear programs in the code. It closes with the *standard form* `(A_ineq, b_ineq, A_eq, b_eq, lb, ub, c)` that is the lingua franca of the whole package, and how a cobra model is poured into it by `build_primal_from_cbm` (`strainDesignProblem.py:971`).
+Everything `straindesign` does — compression, FVA-based preprocessing, dualization, the MILP itself — is built on one linear-algebraic object: the set of *steady-state flux distributions* of a metabolic network, carved out of ℝⁿ by a homogeneous equation $S \cdot v = 0$ and a box of bounds $lb \le v \le ub$. This chapter derives that object from first principles, establishes the polyhedral geometry the later chapters lean on (faces, vertices, rays, the recession cone — the machinery that makes a Farkas certificate exist and a dual go unbounded), and shows precisely how FBA and FVA are posed as linear programs in the code. It closes with the *standard form* `(A_ineq, b_ineq, A_eq, b_eq, lb, ub, c)` that is the lingua franca of the whole package, and how a cobra model is poured into it by `build_primal_from_cbm` (`strainDesignProblem.py:971`).
 
-Notation follows [Ch 1](#ch1): `S ∈ ℝ^{m×n}` is the stoichiometric matrix, `v ∈ ℝⁿ` the flux vector, `m` metabolites, `n` reactions.
+Notation follows [Ch 1](#ch1): $S \in \mathbb{R}^{m \times n}$ is the stoichiometric matrix, $v \in \mathbb{R}^n$ the flux vector, `m` metabolites, `n` reactions.
 
 ### 2.1 Mass balance and the steady-state assumption
 
 #### 2.1.1 From dynamic mass balance to `S·v = 0`
 
-Consider a well-mixed cell (or compartment) of constant volume containing `m` internal metabolites with concentration vector `x(t) ∈ ℝ^m` (units: mmol·gDW⁻¹, per gram dry weight), and `n` reactions with flux (rate) vector `v(t) ∈ ℝⁿ` (units: mmol·gDW⁻¹·h⁻¹). The stoichiometric matrix `S ∈ ℝ^{m×n}` has entry `S_{ij}` = the signed molar stoichiometric coefficient of metabolite `i` in reaction `j`: negative if `i` is consumed, positive if produced, zero if uninvolved. Column `j` of `S` is the net reaction vector of reaction `j`; row `i` lists every reaction touching metabolite `i`.
+Consider a well-mixed cell (or compartment) of constant volume containing `m` internal metabolites with concentration vector $x(t) \in \mathbb{R}^m$ (units: mmol·gDW⁻¹, per gram dry weight), and `n` reactions with flux (rate) vector $v(t) \in \mathbb{R}^n$ (units: mmol·gDW⁻¹·h⁻¹). The stoichiometric matrix $S \in \mathbb{R}^{m \times n}$ has entry `S_{ij}` = the signed molar stoichiometric coefficient of metabolite `i` in reaction `j`: negative if `i` is consumed, positive if produced, zero if uninvolved. Column `j` of `S` is the net reaction vector of reaction `j`; row `i` lists every reaction touching metabolite `i`.
 
 The instantaneous mass balance for each internal metabolite is a bookkeeping identity — rate of change = production − consumption, summed over all reactions weighted by their stoichiometry:
 
@@ -503,9 +503,7 @@ dx/dt = S · v(t).
 
 A dilution/growth term is folded into the biomass reaction and exchange fluxes in genome-scale models, so the bare `S·v` form is the working equation. The **steady-state assumption** is that internal metabolite pools do not accumulate or deplete on the timescale of interest:
 
-```
-dx/dt = 0    ⟹    S · v = 0.                          (SS)
-```
+$$\frac{dx}{dt} = 0 \quad\Longrightarrow\quad S \cdot v = 0. \tag{SS}$$
 
 The biological justification is timescale separation: intracellular metabolite turnover is on the order of seconds to sub-second, while the phenotypes of interest (growth rate, product secretion) play out over hours. Over the slow timescale the fast internal pools are effectively at quasi-steady-state, so their net rate of change is negligible relative to the through-fluxes. Crucially, `(SS)` says nothing about the fluxes being small — it says they are *balanced*: whatever is made is immediately consumed. Metabolites we deliberately allow to accumulate or leave the system (biomass, secreted products, medium components) are handled not by relaxing `(SS)` but by giving them dedicated **exchange/boundary reactions** (Sec 2.3) that act as sources/sinks, so those degrees of freedom re-enter through `v`, never as a nonzero right-hand side.
 
@@ -557,9 +555,7 @@ There is nothing special about "reversible" beyond `lb_j < 0`: direction is *ent
 
 Intersect the kernel with the box:
 
-```
-P = { v ∈ ℝⁿ : S·v = 0,  lb ≤ v ≤ ub }.                (FLUX-POLYHEDRON)
-```
+$$P = \{\, v \in \mathbb{R}^n : S \cdot v = 0,\ lb \le v \le ub \,\}. \tag{FLUX-POLYHEDRON}$$
 
 `P` is the intersection of a linear subspace (`𝒩(S)`, cut out by the equalities `S·v=0`) with a box (finitely many inequalities `v_j ≤ ub_j`, `−v_j ≤ −lb_j`). A finite intersection of closed half-spaces and hyperplanes is by definition a **convex polyhedron**. Two special shapes matter:
 
@@ -591,13 +587,13 @@ Because exchanges are genuine columns with genuine bounds, `(SS)` still holds wi
 
 #### 2.4.1 FBA: one LP
 
-**Flux Balance Analysis** picks, among all steady-state flux distributions, one that maximizes a linear objective `cᵀv` (classically `c` = the biomass reaction indicator, so `cᵀv` = growth rate):
+**Flux Balance Analysis** picks, among all steady-state flux distributions, one that maximizes a linear objective $c^\top v$ (classically `c` = the biomass reaction indicator, so $c^\top v$ = growth rate):
 
-```
-maximize   cᵀ v
-subject to S v = 0
-           lb ≤ v ≤ ub.                                 (FBA)
-```
+$$\begin{aligned}
+\text{maximize} \quad & c^\top v \\
+\text{subject to} \quad & S v = 0 \\
+& lb \le v \le ub.
+\end{aligned} \tag{FBA}$$
 
 This is a linear program over the polytope `P`. Its optimum is attained at a vertex of `P` (Sec 2.5). The optimal *value* is unique; the optimal *v* need not be (the objective face can be higher-dimensional — this degeneracy is exactly why pFBA and FVA exist).
 
@@ -628,11 +624,11 @@ Two robustness wrinkles are handled explicitly and are worth flagging because th
 
 **Flux Variability Analysis** asks, for each reaction `i`, the full range of `v_i` consistent with steady state (optionally after fixing the objective, or under extra constraints):
 
-```
-for each i = 1..n:
-    v_i^min = minimize v_i   s.t.  S v = 0,  lb ≤ v ≤ ub  (+ extra constr.)
-    v_i^max = maximize v_i   s.t.  same feasible set.
-```
+$$\begin{aligned}
+\text{for each } i = 1,\dots,n:\quad
+v_i^{\min} &= \text{minimize } v_i \ \text{ s.t. } S v = 0,\ lb \le v \le ub\ (+\text{ extra constr.})\\
+v_i^{\max} &= \text{maximize } v_i \ \text{ s.t. same feasible set.}
+\end{aligned}$$
 
 That is `2n` LPs sharing one feasible polytope `P`; only the objective vector `e_i` (the `i`-th unit vector) changes between them. FVA is the workhorse of preprocessing: it detects **blocked** reactions (`v_i^min = v_i^max = 0` — the reaction can carry no steady-state flux at all, so it is deleted), **essential** reactions in a PROTECT/desired module (bounds forcing `|v_i| > 0`, hence not knockable — dropped from the knockable set), and reactions whose model bound never binds (relaxed to `±∞` by `bound_blocked_or_irrevers_fva`). The three distinct uses and their rationale are [Ch 5](#ch5)'s subject; here we fix only the LP form and the code's entry point.
 
@@ -692,12 +688,12 @@ For completeness, **strong duality** (used for PROTECT-as-feasibility and for bi
 
 Internally, `straindesign` never manipulates a cobra model directly during MILP assembly. Every constraint system — primal, dual, per-module block — is carried as a tuple in **one standard form**:
 
-```
-A_ineq · x ≤ b_ineq
-A_eq   · x = b_eq
-lb ≤ x ≤ ub
-minimize  cᵀ x
-```
+$$\begin{aligned}
+& A_{\text{ineq}} \cdot x \le b_{\text{ineq}} \\
+& A_{\text{eq}} \cdot x = b_{\text{eq}} \\
+& lb \le x \le ub \\
+& \text{minimize} \quad c^\top x
+\end{aligned}$$
 
 with `A_ineq ∈ ℝ^{p×N}`, `A_eq ∈ ℝ^{q×N}`, `x ∈ ℝ^N`, `lb, ub ∈ (ℝ∪{±∞})^N`, `c ∈ ℝ^N`. This is the signature of `MILP_LP` and the contract every builder honors. It is deliberately minimal and symmetric: separate equality and inequality blocks (so dualization can treat them by their type — equalities → free dual vars, inequalities → sign-restricted dual vars; [Ch 6](#ch6)), an explicit variable box (kept separate from `A_ineq` so bounds and rows are distinguishable, per Sec 2.2.1), and a single objective `c` in minimize sense (Sec 2.4.1).
 
@@ -2443,9 +2439,9 @@ and is owned by [Ch 7](#ch7). Where the dual bookkeeping matrices `z_map_vars`, 
 `z_map_constr_eq` are updated here, we explain *what they now point at* so [Ch 7](#ch7) can wire them, but
 the actual big-M / indicator machinery is deferred there.
 
-Notation follows [Ch 1](#ch1): the metabolic model has stoichiometry `S ∈ ℝ^{m×n}` over `n` (compressed)
-reactions, flux vector `v ∈ ℝ^n`, steady state `Sv = 0`, bounds `lb ≤ v ≤ ub`. A *module* adds
-extra linear constraints `V_ineq v ≤ v_ineq`, `V_eq v = v_eq` describing a flux behaviour.
+Notation follows [Ch 1](#ch1): the metabolic model has stoichiometry $S \in \mathbb{R}^{m\times n}$ over `n` (compressed)
+reactions, flux vector $v \in \mathbb{R}^n$, steady state $Sv = 0$, bounds $lb \le v \le ub$. A *module* adds
+extra linear constraints $V_{\text{ineq}}\, v \le v_{\text{ineq}}$, $V_{\text{eq}}\, v = v_{\text{eq}}$ describing a flux behaviour.
 
 ### 6.1 Why dualize at all
 
@@ -2453,13 +2449,13 @@ A strain-design constraint is a statement about the *solvability* of an inner LP
 statements cannot be written directly as linear constraints on the outer variables.
 
 - **SUPPRESS** demands: *after the knockouts encoded by `z`, the undesired region
-  `{v : Sv=0, V_ineq v ≤ v_ineq, lb ≤ v ≤ ub}` is empty.* "This polyhedron is empty" is not a
+  $\{v : Sv=0,\ V_{\text{ineq}} v \le v_{\text{ineq}},\ lb \le v \le ub\}$ is empty.* "This polyhedron is empty" is not a
   linear constraint on `v` — indeed there is no `v` to constrain. Farkas' lemma converts it into
   "there exists a dual vector `y` satisfying a *feasible* linear system," which *is* linear and can
   live in the outer MILP.
 
 - **OptKnock / inner-objective PROTECT** demands: *the flux `v` is optimal for the inner objective
-  `max c_inner^T v` over the (knocked-out) network.* "Is optimal" is a quantifier over all other
+  $\max c_{\text{inner}}^\top v$ over the (knocked-out) network.* "Is optimal" is a quantifier over all other
   feasible fluxes. LP strong duality collapses it to three linear conditions — primal feasibility,
   dual feasibility, and equality of the two objective values — all linear once the dual variables
   are introduced.
@@ -2477,19 +2473,21 @@ that each `z` still maps cleanly onto the object (a reaction) it knocks out — 
 Every primal the code dualizes is produced by `build_primal_from_cbm`
 (`strainDesignProblem.py:971`) and has the shape
 
-```
-(P)   max  c^T x
-      s.t. A_ineq x ≤ b_ineq        (dual multipliers μ)
-           A_eq   x =  b_eq         (dual multipliers λ)
-           lb ≤ x ≤ ub
-```
+$$
+\begin{aligned}
+(\mathrm{P})\quad \max_{x}\ & c^\top x \\
+\text{s.t.}\quad & A_{\text{ineq}}\,x \le b_{\text{ineq}} \quad (\text{dual multipliers } \mu) \\
+& A_{\text{eq}}\,x = b_{\text{eq}} \quad (\text{dual multipliers } \lambda) \\
+& lb \le x \le ub
+\end{aligned}
+$$
 
 with `x ∈ ℝ^{n}`. For a bare metabolic primal, `A_eq = S` (so `b_eq = 0`, `Sv=0`), `A_ineq` holds
 the module's `V_ineq` rows, and `lb, ub` are the flux bounds (`strainDesignProblem.py:1013-1023`).
 
 The **sense is maximization**. This is important and easy to get wrong: `LP_dualize`'s docstring
 writes the format as `min{c'x}`, but the transform it implements is the dual of the *maximization*
-`max c^T x`. This was verified directly (see §6.2.4): dualizing the metabolic primal with the
+$\max c^\top x$. This was verified directly (see §6.2.4): dualizing the metabolic primal with the
 biomass objective and solving the returned dual reproduces the FBA optimum only under the max
 reading. Throughout `addModule`, a maximize-sense inner objective is stored *negated* precisely so
 that the downstream strong-duality equality comes out as a clean sum-to-zero (§6.4).
@@ -2504,7 +2502,7 @@ x_eR   = { j : lb_j < 0 and ub_j > 0 }     # free (both signs reachable)
 x_leq0 = { j : lb_j < 0 and ub_j ≤ 0 }     # sign-nonpositive
 ```
 
-A reversible reaction (`lb<0<ub`) is *free*; an irreversible forward reaction (`lb=0`) is
+A reversible reaction ($lb<0<ub$) is *free*; an irreversible forward reaction ($lb=0$) is
 *nonnegative*; a strictly-reverse reaction is *nonpositive*. The finite, nonzero magnitudes of the
 bounds are handled separately (see §6.2.3): they are *not* what selects the dual sense.
 
@@ -2512,19 +2510,19 @@ bounds are handled separately (see §6.2.3): they are *not* what selects the dua
 
 For the pair (P) above and its dual (D) (constructed in §6.2.3),
 
-- **Weak duality.** For any primal-feasible `x` and dual-feasible `y = (λ, μ)`,
-  `c^T x ≤ b^T y` where `b = (b_eq, b_ineq)`. The primal max is bounded above by every dual value.
+- **Weak duality.** For any primal-feasible `x` and dual-feasible $y = (\lambda, \mu)$,
+  $c^\top x \le b^\top y$ where $b = (b_{\text{eq}}, b_{\text{ineq}})$. The primal max is bounded above by every dual value.
 - **Strong duality.** If (P) has a finite optimum, so does (D), and the optima coincide:
-  `max c^T x = min b^T y`. This is the theorem the bilevel modules exploit.
+  $\max c^\top x = \min b^\top y$. This is the theorem the bilevel modules exploit.
 - **Complementary slackness.** At optimality, for each inequality either the primal row is tight
-  (`A_ineq[i,:] x = b_ineq[i]`) or its multiplier vanishes (`μ_i = 0`); symmetrically for a
-  sign-constrained primal variable `x_j` and its dual reduced-cost row. The MILP never encodes
-  complementary slackness explicitly — it uses the equivalent strong-duality equality `c^T x = b^T y`
+  ($A_{\text{ineq}}[i,:]\, x = b_{\text{ineq}}[i]$) or its multiplier vanishes ($\mu_i = 0$); symmetrically for a
+  sign-constrained primal variable $x_j$ and its dual reduced-cost row. The MILP never encodes
+  complementary slackness explicitly — it uses the equivalent strong-duality equality $c^\top x = b^\top y$
   (§6.4), which is one linear row instead of a disjunction per constraint and needs no extra binary
   variables. This is the deliberate design choice over a KKT/complementarity encoding.
 
 The value of dualization is exactly the strong-duality clause: *primal feasibility ∧ dual
-feasibility ∧ (`c^T x = b^T y`)* is, by the theorem, equivalent to "`x` is optimal for (P)" — a
+feasibility $\wedge$ ($c^\top x = b^\top y$)* is, by the theorem, equivalent to "`x` is optimal for (P)" — a
 statement with a universal quantifier, now written as flat linear rows.
 
 #### 6.2.3 `LP_dualize` line by line
@@ -2550,14 +2548,14 @@ magnitude are decoupled: sign → dual constraint sense; finite magnitude → an
 variable.
 
 **Step 2 — variable class ⇒ dual constraint sense** (`strainDesignProblem.py:1116-1123`). Writing
-the stacked primal constraint columns as `A[:,j] = (A_eq[:,j] ; A_ineq[:,j])` and the stacked dual
-vector as `y = (λ ; μ)`, the transpose is split by class:
+the stacked primal constraint columns as $A[:,j] = (A_{\text{eq}}[:,j]\, ;\, A_{\text{ineq}}[:,j])$ and the stacked dual
+vector as $y = (\lambda\, ;\, \mu)$, the transpose is split by class:
 
 | primal variable `x_j` | class | dual row built | code |
 |---|---|---|---|
-| free `x_j ∈ ℝ` | `x_eR` | `A_eq[:,j]^T λ + A_ineq[:,j]^T μ = c_j` (equality) | line 1122-1123 |
-| `x_j ≥ 0` | `x_geq0` | `−(A_eq[:,j]^T λ + A_ineq[:,j]^T μ) ≤ c_j`  i.e. reduced-cost row into `A_ineq` | line 1118, 1121 |
-| `x_j ≤ 0` | `x_leq0` | `(A_eq[:,j]^T λ + A_ineq[:,j]^T μ) ≤ −c_j` | line 1120, 1121 |
+| free $x_j \in \mathbb{R}$ | `x_eR` | $A_{\text{eq}}[:,j]^\top \lambda + A_{\text{ineq}}[:,j]^\top \mu = c_j$ (equality) | line 1122-1123 |
+| $x_j \ge 0$ | `x_geq0` | $-(A_{\text{eq}}[:,j]^\top \lambda + A_{\text{ineq}}[:,j]^\top \mu) \le c_j$  i.e. reduced-cost row into `A_ineq` | line 1118, 1121 |
+| $x_j \le 0$ | `x_leq0` | $(A_{\text{eq}}[:,j]^\top \lambda + A_{\text{ineq}}[:,j]^\top \mu) \le -c_j$ | line 1120, 1121 |
 
 The free-variable rows land in the dual's `A_eq` (equality — a free primal variable forces
 stationarity exactly), the sign-constrained rows land in the dual's `A_ineq` (a one-sided
@@ -2634,11 +2632,11 @@ It does *not*, on its own, deliver strong duality as a solved number — and it 
 verified facts pin this down (e_coli_core, biomass objective):
 
 1. Solving the returned dual as a standalone LP gives objective value `0`, not the FBA optimum
-   `0.873922`. The dual feasible set contains `y = 0` (with `c_p` on a nonnegative variable and
-   `b_eq = 0`), so minimizing `b^T y` alone certifies nothing.
+   `0.873922`. The dual feasible set contains $y = 0$ (with `c_p` on a nonnegative variable and
+   $b_{\text{eq}} = 0$), so minimizing $b^\top y$ alone certifies nothing.
 2. Strong duality appears only after the **coupling row** is added (§6.4). Assembling primal ⊕ dual
-   ⊕ the single equality `c_v^T x + c_dual^T y = 0` and then *both* maximizing and minimizing
-   biomass over the joint system returns `max = min = 0.873922` exactly — biomass is pinned to its
+   ⊕ the single equality $c_v^\top x + c_{\text{dual}}^\top y = 0$ and then *both* maximizing and minimizing
+   biomass over the joint system returns $\max = \min = 0.873922$ exactly — biomass is pinned to its
    FBA optimum.
 
 So the correct mental model is: **`LP_dualize` supplies dual feasibility; the caller supplies the
@@ -2653,14 +2651,16 @@ end-to-end, not merely per-row.
 Farkas' lemma is the theorem of the alternative for linear systems. One standard form: exactly one
 of the following holds —
 
-```
-(I)   ∃ x ≥ 0 :  A x = b
-(II)  ∃ y     :  A^T y ≥ 0  and  b^T y < 0
-```
+$$
+\begin{aligned}
+\text{(I)}\quad & \exists\, x \ge 0 : \ A x = b \\
+\text{(II)}\quad & \exists\, y : \ A^\top y \ge 0 \ \text{ and } \ b^\top y < 0
+\end{aligned}
+$$
 
-Geometrically, (I) says `b` lies in the finitely-generated cone `{A x : x ≥ 0}`; (II) says a
-hyperplane through the origin (normal `y`) has the cone on one side (`A^T y ≥ 0`) and `b` strictly on
-the other (`b^T y < 0`) — a *separating* hyperplane. For the mixed `≤ / =`, sign-constrained system
+Geometrically, (I) says `b` lies in the finitely-generated cone $\{A x : x \ge 0\}$; (II) says a
+hyperplane through the origin (normal `y`) has the cone on one side ($A^\top y \ge 0$) and `b` strictly on
+the other ($b^\top y < 0$) — a *separating* hyperplane. For the mixed $\le / =$, sign-constrained system
 the code uses, the corresponding alternative is: the primal region
 
 ```
@@ -2668,7 +2668,7 @@ the code uses, the corresponding alternative is: the primal region
 ```
 
 is **empty** if and only if there exists a dual vector `y` that is *feasible for the homogeneous
-dual* (the dual constraints with objective `c = 0`) and additionally makes `b^T y < 0`. Such a `y`
+dual* (the dual constraints with objective $c = 0$) and additionally makes $b^\top y < 0$. Such a `y`
 is a **Farkas certificate** (a separating / infeasibility certificate).
 
 #### 6.3.2 `farkas_dualize`
@@ -2692,8 +2692,8 @@ region. Its steps:
    b_ineq_f =   b_ineq_d + [ −1 ]         (line 1194)
    ```
 
-   i.e. `c_d^T y ≤ −1`, which is `b^T y ≤ −1`. This is the `b^T y < 0` clause of Farkas' lemma,
-   with the strict inequality replaced by a fixed slack `≤ −1`. A knockable-column of zeros is added
+   i.e. $c_d^\top y \le -1$, which is $b^\top y \le -1$. This is the $b^\top y < 0$ clause of Farkas' lemma,
+   with the strict inequality replaced by a fixed slack $\le -1$. A knockable-column of zeros is added
    to `z_map_constr_ineq` for this new row (`strainDesignProblem.py:1201`) — the normalization row
    is structural and never itself knocked out.
 
@@ -2706,21 +2706,21 @@ can hold, with `z` switching the rows that correspond to knocked reactions (via 
 
 #### 6.3.3 Why the certificate is unbounded by nature, and the normalization row
 
-A Farkas certificate is a **recession ray, not a point.** If `y*` satisfies `A^T y* ≥ 0` and
-`b^T y* < 0`, then for any scalar `α > 0`, `α y*` satisfies `A^T(α y*) ≥ 0` and `b^T(α y*) < 0` as
+A Farkas certificate is a **recession ray, not a point.** If $y^*$ satisfies $A^\top y^* \ge 0$ and
+$b^\top y^* < 0$, then for any scalar $\alpha > 0$, $\alpha y^*$ satisfies $A^\top(\alpha y^*) \ge 0$ and $b^\top(\alpha y^*) < 0$ as
 well — the homogeneous constraints and the strict sign are both scale-invariant. The certificate
 lives on an open ray through the origin; the dual variables are **intrinsically unbounded** (the
 code sets `ub = +∞` and, for the `Sv=0`-derived duals, `lb = −∞`; §6.2.3, line 1124-1125).
 
-The `c_d^T y ≤ −1` normalization does two jobs at once:
+The $c_d^\top y \le -1$ normalization does two jobs at once:
 
-- **Pins the scale.** Without it, `y = 0` is feasible for the homogeneous system (`A^T·0 ≥ 0`), and
-  `0` certifies nothing. Requiring `b^T y ≤ −1` forces `y` strictly off the origin and onto the
-  ray, turning "`∃ y : b^T y < 0`" (an open condition, awkward for a solver) into the closed,
-  numerically stable "`∃ y : b^T y ≤ −1`." Any true certificate can be rescaled to satisfy it, so no
+- **Pins the scale.** Without it, $y = 0$ is feasible for the homogeneous system ($A^\top\cdot 0 \ge 0$), and
+  `0` certifies nothing. Requiring $b^\top y \le -1$ forces `y` strictly off the origin and onto the
+  ray, turning "$\exists y : b^\top y < 0$" (an open condition, awkward for a solver) into the closed,
+  numerically stable "$\exists y : b^\top y \le -1$." Any true certificate can be rescaled to satisfy it, so no
   certificate is lost.
-- **Fixes the orientation.** It selects the half-line with `b^T y < 0`, discarding the trivial
-  `y = 0` and the wrong-sign ray.
+- **Fixes the orientation.** It selects the half-line with $b^\top y < 0$, discarding the trivial
+  $y = 0$ and the wrong-sign ray.
 
 A direct performance consequence follows from the unboundedness: **FVA-style bound tightening cannot
 bound these dual variables.** The preprocessing FVA ([Ch 5](#ch5)) tightens variable ranges by
@@ -2734,23 +2734,23 @@ This is emergent from the cone geometry, not a hard-coded "SUPPRESS ⇒ indicato
 #### 6.3.4 The `b^T y ≠ 0` caveat
 
 The docstring (`strainDesignProblem.py:1151-1158`) flags an unimplemented special case. When the
-undesired region is described purely by equalities `A x = b` with **all variables free**
-(`x ∈ ℝ^n`) and **`b ≠ 0`**, the correct Farkas alternative requires `b^T y ≠ 0` (not `b^T y < 0`):
-an all-equality, all-free system `Ax=b` is infeasible iff there is a `y` in the left null space of
-`A` (`A^T y = 0`) with `b^T y ≠ 0`, and both signs of `b^T y` are valid certificates because the
-equality has no orientation. Forcing `b^T y ≤ −1` only captures the `b^T y < 0` half.
+undesired region is described purely by equalities $A x = b$ with **all variables free**
+($x \in \mathbb{R}^n$) and **$b \neq 0$**, the correct Farkas alternative requires $b^\top y \neq 0$ (not $b^\top y < 0$):
+an all-equality, all-free system $Ax=b$ is infeasible iff there is a `y` in the left null space of
+`A` ($A^\top y = 0$) with $b^\top y \neq 0$, and both signs of $b^\top y$ are valid certificates because the
+equality has no orientation. Forcing $b^\top y \le -1$ only captures the $b^\top y < 0$ half.
 
 The code deliberately keeps the `≤ −1` form and notes the omission is benign in practice:
 
 1. The case is rare. Metabolic primals mix `Sv=0` (equalities) with bound and module *inequalities*,
    so pure all-equality/all-free undesired regions essentially do not arise; and `Sv=0` itself is
    homogeneous (`b_eq = 0`), contributing nothing to `b^T y`.
-2. Where it did matter, splitting each equality `A_i x = b_i` into `A_i x ≤ b_i` and `−A_i x ≤ −b_i`
-   (two `≥0` dual variables) would recover a `b^T y < 0` certificate. The docstring judges the split
+2. Where it did matter, splitting each equality $A_i x = b_i$ into $A_i x \le b_i$ and $-A_i x \le -b_i$
+   (two $\ge 0$ dual variables) would recover a $b^\top y < 0$ certificate. The docstring judges the split
    unnecessary and keeps the single-sided normalization.
 
 For the reader modifying this path: if you ever construct a SUPPRESS module whose region is
-equality-only with a nonzero RHS and free variables, the `≤ −1` normalization can miss certificates
+equality-only with a nonzero RHS and free variables, the $\le -1$ normalization can miss certificates
 of the opposite sign — the split is the fix.
 
 ### 6.4 Strong-duality encoding of bilevel problems
@@ -2761,12 +2761,12 @@ An inner optimizer `max c_inner^T v` over the network is encoded by pairing the 
 with its **dual** and forcing their objectives equal. By strong duality (§6.2.2), for
 primal-feasible `v` and dual-feasible `y`,
 
-```
-c_inner^T v = b^T y     ⟺     v is optimal for the inner LP.
-```
+$$
+c_{\text{inner}}^\top v = b^\top y \quad\Longleftrightarrow\quad v \text{ is optimal for the inner LP.}
+$$
 
-The `≤` direction is weak duality (always true); the `=` case is attained only at the common
-optimum. So adding the single equality row `c_inner^T v − b^T y = 0` on top of primal feasibility
+The $\le$ direction is weak duality (always true); the $=$ case is attained only at the common
+optimum. So adding the single equality row $c_{\text{inner}}^\top v - b^\top y = 0$ on top of primal feasibility
 (`v` in the network) and dual feasibility (`y` in the `LP_dualize` output) is *exactly* the
 statement "`v` maximizes the inner objective."
 
@@ -2775,7 +2775,7 @@ objective is stored negated. Concretely, in the inner-objective branch
 (`strainDesignProblem.py:247-299`):
 
 - `c_in` is the inner objective, negated when the sense is `MAXIMIZE` (the default):
-  `c_in = −c_inner` (`strainDesignProblem.py:250-253`).
+  $c_{\text{in}} = -c_{\text{inner}}$ (`strainDesignProblem.py:250-253`).
 - `build_primal_from_cbm` builds the region primal `_v` with objective `c_v = c_in`
   (`strainDesignProblem.py:255-256`).
 - `LP_dualize` dualizes the *unconstrained* inner primal and returns `c_inner_dual = b` (the primal
@@ -2787,19 +2787,19 @@ objective is stored negated. Concretely, in the inner-objective branch
   A_eq row:  [ c_v | c_inner_dual ] · [v ; y] = 0        (line 293)
   ```
 
-  i.e. `c_v^T v + c_inner_dual^T y = 0`. With `c_v = −c_inner` this reads
-  `c_inner^T v = c_inner_dual^T y = b^T y` — the strong-duality equality. The negation is bookkeeping
+  i.e. $c_v^\top v + c_{\mathrm{inner\_dual}}^\top y = 0$. With $c_v = -c_{\text{inner}}$ this reads
+  $c_{\text{inner}}^\top v = c_{\mathrm{inner\_dual}}^\top y = b^\top y$ — the strong-duality equality. The negation is bookkeeping
   that turns "objectives equal" into a clean sum-to-zero row.
 
 **Verification.** Reproducing this exact assembly on e_coli_core with the biomass inner objective,
-then optimizing biomass in both directions over the joint system, yields `max = min = 0.873922` —
+then optimizing biomass in both directions over the joint system, yields $\max = \min = 0.873922$ —
 biomass is forced onto the inner-optimal face (the FBA value), confirming the sign convention and
 the whole construction end to end. (Contrast: solving the dual alone gives `0`; §6.2.4.)
 
 #### 6.4.2 Exact vs relaxed inner optimality
 
 The inner problem need not be solved *to* the optimum — only *near* it. The module carries
-`INNER_OPT_TOL ∈ (0, 1]` (default `1.0`, exact), handled at `strainDesignProblem.py:264-299`:
+`INNER_OPT_TOL` $\in (0, 1]$ (default `1.0`, exact), handled at `strainDesignProblem.py:264-299`:
 
 - **Exact (`inner_opt_tol = 1.0`, `strainDesignProblem.py:288-299`).** The single equality row of
   §6.4.1: `c_v^T v + c_inner_dual^T y = 0`. The optimizing flux must land on the inner-optimal face.
@@ -2859,7 +2859,7 @@ which final primitive (feasibility vs Farkas) is applied.
 #### 6.5.2 OptKnock — bilevel max-min (`strainDesignProblem.py:300-361`)
 
 OptKnock maximizes an outer objective `c_out` over the *inner-optimal* flux set:
-`max_z max_{v ∈ argmax c_inner^T v} c_out^T v`. Construction:
+$\max_z \max_{v \in \arg\max c_{\text{inner}}^\top v} c_{\text{out}}^\top v$. Construction:
 
 1. Region/inner primals and the inner dual are built as in §6.5.1, coupled by strong duality
    (`strainDesignProblem.py:308-339`), giving a system whose feasible set is exactly the
@@ -2875,7 +2875,7 @@ the maximization *over* that face into flat rows.
 
 #### 6.5.3 RobustKnock — three levels, two nested dualizations (`strainDesignProblem.py:300-361`)
 
-RobustKnock is the *pessimistic* OptKnock: `max_z min_{v ∈ argmax c_inner^T v} c_out^T v` — it
+RobustKnock is the *pessimistic* OptKnock: $\max_z \min_{v \in \arg\max c_{\text{inner}}^\top v} c_{\text{out}}^\top v$ — it
 guards against the worst production the cell might choose among its growth-optimal fluxes. The extra
 `min` over the inner-optimal set is the third level. The code (same branch as OptKnock, distinguished
 by `MODULE_TYPE == ROBUSTKNOCK`) dualizes the inner primal (`strainDesignProblem.py:322-324`), builds
@@ -2897,7 +2897,7 @@ it (`strainDesignProblem.py:546-548`) with its own strong-duality coupling
 (`strainDesignProblem.py:549-561`). The two bilevel systems are block-diagonally joined
 (`strainDesignProblem.py:562-571`), an optional minimum growth-coupling potential is enforced as an
 inequality on the *difference* of the two inner objectives (`strainDesignProblem.py:572-576`), and the
-MILP objective is set to **maximize that difference** `c_p − c_b` (`strainDesignProblem.py:581-582`).
+MILP objective is set to **maximize that difference** $c_p - c_b$ (`strainDesignProblem.py:581-582`).
 Same primitive, instantiated twice and subtracted.
 
 #### 6.5.5 DoubleOpt — two parallel strong-duality links (`strainDesignProblem.py:362-538`)
@@ -3023,24 +3023,24 @@ self.b_ineq = [0.0, max_cost_or_sum, np.inf]
 with `self.cost` the per-reaction intervention weight (KO cost, overwritten by KI cost where a KI is
 defined; lines 145–151, `nan`→`0`). The three rows and their right-hand sides:
 
-- **Row 0, `idx_row_maxcost`** (line 153): `−Σ_j cost_j · z_j ≤ 0`, i.e. `Σ_j cost_j z_j ≥ 0`. With
+- **Row 0, `idx_row_maxcost`** (line 153): $-\sum_j \text{cost}_j \cdot z_j \le 0$, i.e. $\sum_j \text{cost}_j z_j \ge 0$. With
   non-negative costs this is slack at construction, but it is a *live lower bracket* on total
   intervention cost: the enumeration/optimization layer ([Ch 8](#ch8)) raises its RHS to force the solver past
-  cost levels already exhausted, turning it into `Σ cost_j z_j ≥ κ`. Keeping it as a permanent row
+  cost levels already exhausted, turning it into $\sum \text{cost}_j z_j \ge \kappa$. Keeping it as a permanent row
   means that lower bound can be tightened in place without restructuring the matrix.
 
-- **Row 1, `idx_row_mincost`** (line 154): `Σ_j cost_j z_j ≤ b`, the **budget cap**. Its RHS is
-  `self.max_cost` when the user supplied one, else `Σ_j |cost_j|` (line 158) — the latter is a
+- **Row 1, `idx_row_mincost`** (line 154): $\sum_j \text{cost}_j z_j \le b$, the **budget cap**. Its RHS is
+  `self.max_cost` when the user supplied one, else $\sum_j |\text{cost}_j|$ (line 158) — the latter is a
   vacuous cap (no design can cost more than the sum of all weights), present so the row always exists
   and can be tightened later. This is the constraint that makes "minimal" cut sets minimal-*enough*:
   no design exceeding the budget is admitted.
 
-- **Row 2, `idx_row_obj`** (line 155): an all-zero placeholder with RHS `+∞`. For a pure MCS problem
+- **Row 2, `idx_row_obj`** (line 155): an all-zero placeholder with RHS $+\infty$. For a pure MCS problem
   the objective is *minimize intervention cost* and lives in the objective vector `self.c` (lines
   202–205: `c[j] = cost[j]`), so this row stays inert. For **bilevel** problems (OptKnock, OptCouple,
   …) the outer objective is a flux expression, not a cost sum; the row is then overwritten with the
   objective coefficients (lines 210–212) and used by `fixObjective` (`strainDesignMILP.py`:239–241) to
-  pin `c·x ≤ value` during the BEST search. Reserving row 2 up front lets that pin be a single
+  pin $c \cdot x \le \text{value}$ during the BEST search. Reserving row 2 up front lets that pin be a single
   `set_ineq_constraint` call rather than a matrix resize.
 
 The naming (`maxcost` on the `≥ 0` row, `mincost` on the `≤ budget` row) reads backwards against the
@@ -3216,7 +3216,7 @@ knockout gate correctly.
 For every knockable inequality row `a·x ≤ b`, we need a big-M large enough that when the gate relaxes
 it, the row becomes non-binding. The valid/tight-M theory:
 
-**A big-M is *valid* if `M ≥ max{ a·x : x ∈ P_relaxed }`** and **tight** if it equals that max, where
+**A big-M is *valid* if $M \ge \max\{\, a \cdot x : x \in P_{\text{relaxed}} \,\}$** and **tight** if it equals that max, where
 `P_relaxed` is the *most relaxed* polytope any knockout combination can produce. The code builds
 `P_relaxed` by **dropping all knockable inequality rows** and keeping only the non-knockable
 inequalities, all equalities, and the (continuous-variable) box:
@@ -3238,7 +3238,7 @@ Because solving one LP per knockable row is expensive, rows are triaged by spars
 - **`nnz == 0`** (empty row): `max = 0`. (`n_zero`)
 - **`nnz == 1`** (single variable `coeff·v_c`): `max = coeff·ub_c` if `coeff>0` else `coeff·lb_c`,
   read straight off the box; `∞` if that bound is infinite. (`n_single`)
-- **`nnz ≥ 2`**: needs an actual LP, `max a·x = −min(−a·x)` over `P_relaxed`. (`n_lp`)
+- **`nnz ≥ 2`**: needs an actual LP, $\max a \cdot x = -\min(-a \cdot x)$ over `P_relaxed`. (`n_lp`)
 
 logged as `Bounding MILP: N constraints (X zero, Y single-var, Z need LP)` (line 805). Only the `n_lp`
 rows hit the solver, optionally across a worker pool (`worker_compute` maximises `a·x` by minimising
@@ -3267,17 +3267,17 @@ Rows with `isinf(Ms[row])` are **skipped** here and picked up by the indicator p
 sense cases, written out (let `a·x ≤ b` be the row, `M = Ms[row]`):
 
 - **`sense > 0` (KO, active when `z=1`)** — coefficient `b − M` in the z-column gives the row
-  `a·x + (b−M)·z ≤ b`:
-  - `z = 0`: `a·x ≤ b` — **enforced**.
-  - `z = 1`: `a·x ≤ M` — relaxed to the tight maximum, hence **non-binding** (since `M = max a·x`).
+  $a \cdot x + (b - M) \cdot z \le b$:
+  - `z = 0`: $a \cdot x \le b$ — **enforced**.
+  - `z = 1`: $a \cdot x \le M$ — relaxed to the tight maximum, hence **non-binding** (since $M = \max a \cdot x$).
 
   This is exactly tight: at the knocked state the bound equals the reachable maximum, not the looser
   `b + M` a naive formulation would use.
 
 - **`sense < 0` (KI, active when `z=1`, absent when `z=0`)** — coefficient `M − b`, and `b` reset to
-  `M`, giving `a·x + (M−b)·z ≤ M`:
-  - `z = 1`: `a·x ≤ b` — **enforced** (reaction present).
-  - `z = 0`: `a·x ≤ M` — relaxed, **non-binding** (reaction absent).
+  `M`, giving $a \cdot x + (M - b) \cdot z \le M$:
+  - `z = 1`: $a \cdot x \le b$ — **enforced** (reaction present).
+  - `z = 0`: $a \cdot x \le M$ — relaxed, **non-binding** (reaction absent).
 
 Both cases realize the same logic — "constraint holds in the active state, evaporates in the knocked
 state" — with the polarity dictated by the `z_map` sign. The finite-M rows are now permanently part of
@@ -3316,13 +3316,13 @@ with `sense ∈ {'L','E','G'}` (≤, =, ≥). The container is populated in `lin
   comment (lines 938–939) states this mapping directly. This is the exact combinatorial analogue of the
   big-M sense cases in §7.5 step 4.
 
-Semantically, `z = indicval ⇒ A·x <sense> b` and, when `z ≠ indicval`, the constraint is simply *not
+Semantically, $z = \text{indicval} \Rightarrow A \cdot x \;\{\le,=\}\; b$ and, when $z \ne \text{indicval}$, the constraint is simply *not
 present* — there is no slack variable, no large constant, nothing in the LP relaxation. The solver
 enforces the implication by branching/logic.
 
 ### 7.7 Why indicators give a tighter LP relaxation than big-M
 
-Take the KO row from §7.5, `a·x + (b−M)·z ≤ b`, and relax the binary to `z ∈ [0,1]` (what every LP
+Take the KO row from §7.5, $a \cdot x + (b - M) \cdot z \le b$, and relax the binary to $z \in [0,1]$ (what every LP
 node in branch-and-bound actually sees). Rearranged:
 
 ```
@@ -3431,7 +3431,7 @@ So the objective exists in **two representations simultaneously**:
 
 1. As the solver's objective vector `self.c` / `self.c_bu` (the backup copy, `strainDesignProblem.py:215`).
    This is what the branch-and-bound engine *minimizes*.
-2. As inequality **row `idx_row_obj = 2`** of `A_ineq`, of the form `c·x ≤ β`. Initially `β = +∞`, so
+2. As inequality **row `idx_row_obj = 2`** of `A_ineq`, of the form $c \cdot x \le \beta$. Initially $\beta = +\infty$, so
    the row is inert (it constrains nothing).
 
 `fixObjective` (`strainDesignMILP.py:239-241`) is nothing but a rewrite of that row:
@@ -3442,26 +3442,26 @@ def fixObjective(self, c, cx):
 ```
 
 `resetObjective` (`:243-245`) restores the *vector* to `c_bu`; `setMinIntvCostObjective` (`:247-250`)
-clears the vector and installs the intervention-cost objective `Σ cost_i z_i` over targetable `z`;
+clears the vector and installs the intervention-cost objective $\sum cost_i z_i$ over targetable `z`;
 `clear_objective` (`solver_interface.py:385-389`) zeroes the vector.
 
 **Why carry the objective as a row at all?** Because the algorithms below need to *decouple* two uses
 of the same linear form:
 
-- **as an optimization direction** — "minimize `c·x`" — which the solver's objective vector expresses;
-- **as a feasibility cap** — "hold `c·x` at the value we just found and now search *within* that level
+- **as an optimization direction** — "minimize $c \cdot x$" — which the solver's objective vector expresses;
+- **as a feasibility cap** — "hold $c \cdot x$ at the value we just found and now search *within* that level
   set" — which only a constraint row can express.
 
 You cannot express "fix the objective at its optimum and then optimize a *different* objective in the
 resulting face" with a single objective vector. You need the optimum value pinned as a constraint while
 the vector is repurposed. Row 2 is exactly that pin. Concretely, BEST does: solve with vector `= c_bu`
-to get optimum `opt`; then `fixObjective(c_bu, opt)` pins `c_bu·x ≤ opt` (row 2) and
-`setMinIntvCostObjective()` swaps the vector to `Σ cost·z`, so the next solve minimizes intervention
+to get optimum `opt`; then `fixObjective(c_bu, opt)` pins $c_{bu} \cdot x \le opt$ (row 2) and
+`setMinIntvCostObjective()` swaps the vector to $\sum cost \cdot z$, so the next solve minimizes intervention
 count *inside the optimal face*. Same linear form, two jobs, held apart by the vector/row duality.
 
 A subtle consequence: because row 2 is a genuine `≤` inequality, "fixing" the objective at value `v`
-really imposes `c·x ≤ v`, a *half-space*, not an equality. For a minimization that has already reached
-its optimum `v`, the polytope is empty above `v`, so `≤ v` and `= v` coincide on the feasible set — the
+really imposes $c \cdot x \le v$, a *half-space*, not an equality. For a minimization that has already reached
+its optimum `v`, the polytope is empty above `v`, so $\le v$ and $= v$ coincide on the feasible set — the
 inequality is enough and avoids the numerical fragility of an equality row.
 
 ### 8.2 `solveZ` / `solve`: what one solver call returns
@@ -3534,12 +3534,12 @@ while ...:
 `setTargetableZ(z)` (`:256-258`) sets `ub=0` on every candidate `z_i` that the feasibility solve left
 at 0. This **restricts the search to the subspace spanned by the reactions the first design already
 touched** — the support of `z` and its subsets. Inside that tiny subspace the solver now *minimizes*
-`Σ cost_i z_i`: it finds the cheapest sub-design that still satisfies all modules.
+$\sum cost_i z_i$: it finds the cheapest sub-design that still satisfies all modules.
 
 **What subspace minimization achieves.** The expensive part of an MCS MILP is choosing *which* reactions
 to cut out of thousands of candidates — a huge combinatorial space. Once the feasibility solve has
-handed us a concrete superset `K = supp(z)` of reactions that *demonstrably* suffice, the minimization
-only has to decide which subset of `K` (at most `2^{|K|}` choices, and `|K|` is small — a handful to a
+handed us a concrete superset $K = \operatorname{supp}(z)$ of reactions that *demonstrably* suffice, the minimization
+only has to decide which subset of `K` (at most $2^{|K|}$ choices, and $|K|$ is small — a handful to a
 few dozen) is minimal. That is a dramatically smaller MILP: the binary variables outside `K` are pinned
 to 0, so branch-and-bound never explores them. The two-phase structure trades one hard global
 optimization for one cheap feasibility solve plus one small local optimization — and crucially it can
@@ -3619,28 +3619,28 @@ constraints chosen by whether the found design is valid.
 
 #### 8.4.1 The superset-excluding cut — `add_exclusion_constraints` (`:162-181`)
 
-Given a found binary design `z*` with support `K = {i : z*_i = 1}`, `|K| = k`, this routine handles
+Given a found binary design `z*` with support $K = \{i : z^*_i = 1\}$, $|K| = k$, this routine handles
 three cases:
 
-**Case `k ≥ 2` (the classic no-good / integer cut, `:177-181`):**
+**Case $k \ge 2$ (the classic no-good / integer cut, `:177-181`):**
 
 $$\sum_{i \in K} z_i \le k - 1$$
 
-Claim: a binary point `z'` violates this cut (is excluded) **iff `supp(z') ⊇ K`**, i.e. iff `z'` is
-`z*` or any superset of it. Proof: `Σ_{i∈K} z'_i ≤ k-1` fails exactly when `Σ_{i∈K} z'_i = k`, and since
-each `z'_i ∈ {0,1}`, that sum reaches `k` only if `z'_i = 1` for *every* `i ∈ K` — i.e. `K ⊆ supp(z')`.
+Claim: a binary point `z'` violates this cut (is excluded) **iff $\operatorname{supp}(z') \supseteq K$**, i.e. iff `z'` is
+`z*` or any superset of it. Proof: $\sum_{i \in K} z'_i \le k-1$ fails exactly when $\sum_{i \in K} z'_i = k$, and since
+each $z'_i \in \{0,1\}$, that sum reaches `k` only if $z'_i = 1$ for *every* $i \in K$ — i.e. $K \subseteq \operatorname{supp}(z')$.
 Values of `z'` outside `K` are unconstrained by the cut. ∎
 
 **Why exclude supersets, not just `z*`?** Because for MCS, *any superset of a valid cut set is itself a
 valid cut set* — adding more knockouts cannot make a suppressed behavior feasible again (it can only
 remove flux capability). A superset is therefore always **non-minimal** and must never be reported. The
-single cut `Σ_{i∈K} z_i ≤ k-1` removes `z*` *and its entire up-set* in one row, guaranteeing that once a
+single cut $\sum_{i \in K} z_i \le k-1$ removes `z*` *and its entire up-set* in one row, guaranteeing that once a
 minimal design is found, no bloated version of it can ever be returned. This is the mechanical heart of
 the minimality guarantee. (The PROTECT constraints mean a superset is not *automatically* feasible in
 the MILP, but excluding it is still correct and keeps the enumeration to minimal designs; the inner
 subspace minimization is what ensures we found the *minimal* member of that up-set before cutting it.)
 
-**Case `k = 1` (single-reaction cut, `:172-175`):**
+**Case $k = 1$ (single-reaction cut, `:172-175`):**
 
 ```python
 interv_idx = int(z[i].indices[0])
@@ -3655,7 +3655,7 @@ superset containing `i*`* — same up-set semantics as the `k≥2` cut, but impl
 than a row, so it does not grow the constraint matrix. A size-1 MCS means reaction `i*` alone suffices;
 no design containing `i*` can ever be minimal-and-new, so banning `i*` outright is exactly right.
 
-**Case `k = 0` (empty design, `:166-170`):** adds the row `Σ_i z_i ≤ -1`, which is **infeasible** for
+**Case $k = 0$ (empty design, `:166-170`):** adds the row $\sum_i z_i \le -1$, which is **infeasible** for
 any nonnegative `z`. This deliberately makes the MILP infeasible to force clean termination. It is only
 reachable in degenerate setups (the "no interventions needed" case is caught earlier by the `verify_sd`
 of the all-zero design at `:322`/`:429`/`:548`); the guard is defensive — some solvers reject genuinely
@@ -3667,11 +3667,11 @@ Sometimes we must exclude *exactly* `z*` but **not** its supersets:
 
 $$\sum_{i \in K} z_i - \sum_{i \notin K} z_i \le k - 1$$
 
-In code the row is built with coefficient `+1` on `i∈K` and `-1` on `i∉K`, rhs `k-1`. Claim: a binary
-`z'` is excluded **iff `z' = z*` exactly**. Proof: the left side is `Σ_{i∈K} z'_i − Σ_{i∉K} z'_i`. It
-reaches `k` (violating `≤ k-1`) only when `Σ_{i∈K} z'_i = k` **and** `Σ_{i∉K} z'_i = 0`, i.e.
-`z'_i = 1 ∀ i∈K` and `z'_i = 0 ∀ i∉K` — the single point `z' = z*`. Any superset (which turns on some
-`i∉K`, subtracting from the sum) survives; any subset (which turns off some `i∈K`) survives. ∎
+In code the row is built with coefficient `+1` on $i \in K$ and `-1` on $i \notin K$, rhs `k-1`. Claim: a binary
+`z'` is excluded **iff $z' = z^*$ exactly**. Proof: the left side is $\sum_{i \in K} z'_i - \sum_{i \notin K} z'_i$. It
+reaches `k` (violating $\le k-1$) only when $\sum_{i \in K} z'_i = k$ **and** $\sum_{i \notin K} z'_i = 0$, i.e.
+$z'_i = 1\ \forall i \in K$ and $z'_i = 0\ \forall i \notin K$ — the single point $z' = z^*$. Any superset (which turns on some
+$i \notin K$, subtracting from the sum) survives; any subset (which turns off some $i \in K$) survives. ∎
 
 **Why would we ever want to keep supersets?** When the found `z*` is **invalid** — the MILP produced a
 `z` that its relaxation accepted but which `verify_sd` (§8.5) rejects. An invalid pattern's supersets
