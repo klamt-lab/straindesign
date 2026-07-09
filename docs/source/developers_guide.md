@@ -314,12 +314,9 @@ The function returns a `reac_map` dict mapping original reactions to the new art
 
 #### Step 3 — GPR solution translation (`SDSolutions.__init__`)
 
-After computation, the artificial reactions in solutions are translated back to gene-level interventions using `gpr_eval`. This evaluates each solution's intervention set against the DNF GPR rules to determine which reactions are truly knocked out (or added).
+After computation, gene-level interventions are translated to the reactions they disable in `SDSolutions._translate_genes_to_reactions` (`strainDesignSolutions.py`), using cobra's already-parsed GPR AST rather than a hand-rolled evaluator. For each reaction it calls `reaction.gpr.eval(knockouts)` — cobra's boolean evaluator over the GPR tree — treating the solution's knocked-out genes as absent and all other genes as present; a reaction is knocked out iff its GPR evaluates to `False`.
 
-`gpr_eval(cj_terms, interv)`:
-- `cj_terms`: the GPR rule as a list of "conjunctive clauses" (AND-groups within OR expression).
-- `interv`: current gene intervention state.
-- Returns `True/False/nan` (active/inactive/undetermined).
+This replaced the earlier home-grown DNF `gpr_eval` (removed in PR #51). Using cobra's `GPR.eval` is correct for arbitrary boolean GPR structure and needs no re-parsing. (The related tri-state AST evaluator used during preprocessing to build gene-KO constraints is `evaluate_gpr_ast` in `networktools.py`.)
 
 ### 4.5 Compression Pass 2 (after GPR extension)
 
@@ -374,7 +371,7 @@ This is used by:
 
 The compression backend is chosen by the `compression_backend` parameter:
 - `'sparse_rref'` (default): Pure Python, uses `RationalMatrix` for exact arithmetic. No Java dependency.
-- `'efmtool_rref'` (legacy): Uses the bundled `efmtool.jar` via JPype for RREF. Requires `pip install straindesign[java]`. Available via `compress_model_efmtool`.
+- `'efmtool_rref'` (legacy): Uses the bundled `efmtool.jar` via JPype for RREF. Requires `pip install straindesign[java]`. Selected by passing `compression_backend='efmtool_rref'` (routed through `compress_model` / `compress_model_coupled`; there is no separate `compress_model_efmtool` entry point).
 
 ### 4.7 Regulatory Interventions
 
@@ -786,11 +783,11 @@ After expansion, the cost of a solution in original space may differ from compre
 
 ### 8.2 GPR Translation
 
-**SDSolutions** translates gene interventions to reaction phenotypes using `gpr_eval`.
+**SDSolutions** translates gene interventions to reaction phenotypes in `_translate_genes_to_reactions` using cobra's parsed GPR AST.
 
 For each gene-level solution `gene_sd`:
 1. Collect all affected reactions from the model's GPR rules.
-2. Evaluate each reaction's GPR with the gene states using `gpr_eval`.
+2. Evaluate each reaction's GPR with the gene states using cobra's `reaction.gpr.eval(knockouts)`.
 3. Reactions whose GPR evaluates to `False` (given knockouts) are collected as reaction knockouts.
 4. Reactions requiring knocked-in genes that are `True` (given additions) are collected as reaction additions.
 
@@ -1380,7 +1377,7 @@ pytest tests -v --log-cli-level=INFO --junit-xml=test-results.xml
 2. MILP construction — after changes to `link_z`, `build_primal_from_cbm`, or dualization functions: run with a small toy model and verify solutions against known correct answers.
 3. Compression — changes to `compression.py` or `networktools.py` must verify that `expand_sd` correctly reconstructs original-space solutions.
 4. Solver backends — changes to any `*_interface.py` file require testing with the specific solver installed.
-5. GPR translation — changes to `networktools.extend_model_gpr` or `SDSolutions.gpr_eval` must be tested with models that have AND/OR GPR logic (e.g., iJO1366 for *E. coli*).
+5. GPR translation — changes to `networktools.extend_model_gpr` or `SDSolutions._translate_genes_to_reactions` must be tested with models that have AND/OR GPR logic (e.g., iJO1366 for *E. coli*).
 
 **Adding new tests:**
 - Use a small toy model (3-5 reactions) for unit tests of MILP construction.
@@ -1466,5 +1463,5 @@ compute_strain_designs(model, **kwargs)
     ├── filter_sd_maxcost(sd, max_cost, ...)
     ├── postprocess_reg_sd(sd, ...)
     └── SDSolutions(model, sd, status, sd_setup)
-            └── [if gene_kos] translate gene_sd → reaction_sd via gpr_eval
+            └── [if gene_kos] translate gene_sd → reaction_sd via cobra GPR.eval
 ```
