@@ -740,11 +740,13 @@ class SDProblem:
         M_lb = [self.lb[i] for i in np.nonzero(cont_vars)[0]]
         M_ub = [self.ub[i] for i in np.nonzero(cont_vars)[0]]
         # M_A contains a list of all knockable constraints. We need to maximize their value (M_A(i)*x) to get a good M
-        # M_A(i)*x - z*M <= b
-        # M*x <= b+z*M
-        #     or
-        # M_A(i)*x + z*M <= b + M
-        # b is the right hand side value
+        # Big-M knockout of a constraint a_ineq*x <= b, with M = max(a_ineq*x) over the relaxed
+        # polytope (b is the right-hand-side value). The z-coefficient carries the b offset so the
+        # knocked-out state relaxes to the TIGHT bound a_ineq*x <= M (not b+M):
+        #   sense > 0 (z=1 knocks out): z-coeff = (b - M)  ->  a_ineq*x + (b-M)*z <= b
+        #       z=0: a_ineq*x <= b (active);   z=1: a_ineq*x <= M (relaxed)
+        #   sense < 0 (z=0 knocks out): z-coeff = (M - b), RHS := M  ->  a_ineq*x + (M-b)*z <= M
+        #       z=1: a_ineq*x <= b (active);   z=0: a_ineq*x <= M (relaxed)
         M_A = self.A_ineq[[True if i in knockable_constr_ineq else False for i in range(0, self.A_ineq.shape[0])], :][:, cont_vars]
         M_A = list(M_A.toarray())
         M_b = [self.b_ineq[i] for i in range(0, self.A_ineq.shape[0]) if i in knockable_constr_ineq]
