@@ -114,11 +114,14 @@ class MILP_LP(object):
         for key in allowed_keys:
             if key not in kwargs.keys():
                 setattr(self, key, None)
-        # Select solver (either by choice or automatically cplex > gurobi > glpk)
+        # Select solver (either by choice or automatically by priority cplex > gurobi > scip > glpk)
         if getattr(self, SOLVER) is None:
-            if len(avail_solvers) > 0:
-                setattr(self, SOLVER, list(avail_solvers)[0])
-            else:
+            # avail_solvers is an unordered set, so pick by an explicit deterministic priority
+            for _solver in [CPLEX, GUROBI, SCIP, GLPK]:
+                if _solver in avail_solvers:
+                    setattr(self, SOLVER, _solver)
+                    break
+            if getattr(self, SOLVER) is None:
                 raise Exception('No solver available. Please ensure that one of the following '\
                     'solvers is avaialable in your Python environment: CPLEX, Gurobi, SCIP, GLPK')
         elif getattr(self, SOLVER) not in avail_solvers:
