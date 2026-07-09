@@ -42,6 +42,20 @@ from straindesign.compression import (
 )
 
 
+# Minimum number of *unresolved* objectives remaining AFTER the Phase-1 scan
+# (n_remaining) for parallel Phase-2 dispatch to be worthwhile.  This is tied to
+# the bounds left to determine after the zero-sweep, not the raw model size: the
+# sequential path re-solves each remaining objective with a dual-simplex WARM
+# START (near-free re-optimization), while parallel workers each solve cold and
+# oversubscribe cores on a shared host -- measured a ~5x NET LOSS on the
+# genome-scale GPR-extended FVA (iML1515, n_remaining ~1300).  The true crossover
+# is really core-availability-bound (parallel only wins with more genuinely free
+# cores than the warm-start speedup ratio), which a single count cannot capture,
+# so this floor is set well above ordinary genome-scale workloads: we only pay
+# the parallel gamble when the residual workload is very large.  Tunable.
+_PARALLEL_PHASE2_MIN = 4000
+
+
 # ---------------------------------------------------------------------------
 # Compression helpers
 # ---------------------------------------------------------------------------
@@ -302,7 +316,9 @@ def speedy_fva(model, **kwargs):
     if precheck is None:
         precheck = True
     if threads is None:
-        threads = Configuration().processes if n_original >= 1000 else 1
+        # Worker cap only; whether Phase 2 actually goes parallel is decided
+        # below from n_remaining (post-scan) against _PARALLEL_PHASE2_MIN.
+        threads = Configuration().processes
     threads = max(1, int(threads))
 
     t_phase = {}
@@ -540,7 +556,7 @@ def speedy_fva(model, **kwargs):
     n_remaining = 2 * n_orig - n_done
     phase2_entry_count = n_remaining  # for stats
 
-    if n_remaining >= 1000 and threads > 1:
+    if n_remaining >= _PARALLEL_PHASE2_MIN and threads > 1:
         # Parallel dispatch via SDPool
         # Build list of unresolved objective indices (even=max, odd=min)
         unresolved = []
