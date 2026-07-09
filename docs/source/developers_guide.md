@@ -1307,7 +1307,7 @@ The `sd_setup` dict format is designed for CNApy interoperability. Ensuring full
 
 The following design choices have a measurable impact on MILP enumeration
 performance. They are listed roughly by impact, based on benchmarking with
-e_coli_core (95 rxns, 353 MCS) and iML1515 (1920 compressed rxns, 393 MCS).
+e_coli_core (95 rxns, 353 MCS) and iML1515 (1923 compressed rxns, 393 gene-MCS).
 
 **Unbounded reactions save constraints and variables.**
 Reactions with infinite bounds (`-inf` / `inf`) do not generate big-M or
@@ -1321,12 +1321,13 @@ The SD formulation creates one binary z per reaction, but only knockable
 reactions (non-zero cost, non-essential) actually need one. Non-knockable
 z-variables have ub=0 and are fixed to zero; with solver presolve disabled
 they become dead weight. `_trim_z_variables` removes them before the solver
-sees the problem. On iML1515: 462 → 205 binaries after trimming.
+sees the problem. On iML1515 (gene-MCS): 1923 → 525 binaries after trimming (1398 non-knockable removed).
 
 **Aggressive compression.**
 Two-pass network compression (before and after GPR extension) reduces the
-stoichiometric matrix substantially. On iML1515: 2712 → 1920 reactions,
-1728 → 974 metabolites. Every removed reaction is one fewer z-variable,
+stoichiometric matrix substantially. On iML1515 (gene-MCS pipeline): 2712 → 1923
+reactions (two passes: 2712 → 1237 before GPR extension, then 3256 → 1923 after),
+1877 → 976 metabolites. Every removed reaction is one fewer z-variable,
 one fewer column in all constraint matrices, and fewer indicator constraints.
 
 **GPR propagation through compression.**
