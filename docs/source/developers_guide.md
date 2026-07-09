@@ -3616,7 +3616,7 @@ three cases:
 
 **Case `k ≥ 2` (the classic no-good / integer cut, `:177-181`):**
 
-`Σ_{i ∈ K} z_i  ≤  k − 1`
+$$\sum_{i \in K} z_i \le k - 1$$
 
 Claim: a binary point `z'` violates this cut (is excluded) **iff `supp(z') ⊇ K`**, i.e. iff `z'` is
 `z*` or any superset of it. Proof: `Σ_{i∈K} z'_i ≤ k-1` fails exactly when `Σ_{i∈K} z'_i = k`, and since
@@ -3657,7 +3657,7 @@ empty constraint rows, so a `-1` rhs is used rather than an empty row.
 
 Sometimes we must exclude *exactly* `z*` but **not** its supersets:
 
-`Σ_{i ∈ K} z_i  −  Σ_{i ∉ K} z_i  ≤  k − 1`
+$$\sum_{i \in K} z_i - \sum_{i \notin K} z_i \le k - 1$$
 
 In code the row is built with coefficient `+1` on `i∈K` and `-1` on `i∉K`, rhs `k-1`. Claim: a binary
 `z'` is excluded **iff `z' = z*` exactly**. Proof: the left side is `Σ_{i∈K} z'_i − Σ_{i∉K} z'_i`. It

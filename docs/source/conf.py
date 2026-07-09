@@ -39,6 +39,12 @@ extensions = [
     "myst_parser",
 ]
 
+# MyST (Markdown) options — the developer guide is the only .md page and is math-heavy.
+# dollarmath/amsmath enable $...$ / $$...$$ LaTeX (rendered by the already-present MathJax);
+# heading anchors let in-page cross-references (e.g. [Chapter 6](#6-dualization...)) resolve.
+myst_enable_extensions = ["dollarmath", "amsmath"]
+myst_heading_anchors = 3
+
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ["_templates"]
 
