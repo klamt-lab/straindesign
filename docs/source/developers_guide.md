@@ -1004,13 +1004,6 @@ This could cause silent incorrect results for SUPPRESS modules with equality con
 **⚠ Big-M for GLPK with large flux ranges:**
 GLPK uses `M = cobra_bound_threshold = 1000` by default. For models with non-standard bounds (e.g., ATPM = 8.39, but oxygen intake up to 10,000), this can produce incorrect strain designs. Models should always have `remove_dummy_bounds` applied, but verifying this is enforced is important.
 
-**⚠ `add_exclusion_constraints_ineq` has a bug:**
-```python
-A_ineq = [1.0 if z[j, i] else -1.0 for i in self.idx_z]
-A_ineq.resize((1, self.A_ineq.shape[1]))  # ← list.resize doesn't exist
-```
-`list.resize` is a NumPy array method, not a list method. This would raise an `AttributeError` at runtime. This method is not used in the current main computation paths (OptKnock uses `add_exclusion_constraints`), but should be fixed. The fix: convert to `np.array` before calling `.resize`.
-
 **⚠ Legacy name double-assignment in `names.py`:**
 ```python
 PROTECT = 'mcs_lin'
