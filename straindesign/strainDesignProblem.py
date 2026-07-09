@@ -148,7 +148,12 @@ class SDProblem:
         self.z_non_targetable = [np.isnan(x) for x in self.cost]
         for i in [i for i, x in enumerate(self.cost) if np.isnan(x)]:
             self.cost[i] = 0.0
-        # Prepare top 3 lines of MILP (sum of weighted interventions below (0) and above (1) threshold) and objective function (2)
+        # Top 3 fixed rows of A_ineq (with the b_ineq values assembled just below):
+        #   row 0 (idx_row_maxcost):  -cost . z <= 0        -> total intervention cost >= 0
+        #   row 1 (idx_row_mincost):   cost . z <= max_cost -> total intervention cost <= max_cost (budget cap)
+        #   row 2 (idx_row_obj):       objective placeholder row (set later via fixObjective)
+        # NOTE: the maxcost/mincost names are historical and read counter-intuitively -- row 0 is the
+        # >= 0 lower bracket, row 1 is the <= max_cost upper cap.
         self.idx_row_maxcost = 0
         self.idx_row_mincost = 1
         self.idx_row_obj = 2
