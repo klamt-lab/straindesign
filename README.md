@@ -53,7 +53,7 @@ in the main folder. Through the installation with `-e`, updates from a `git pull
 
 ### Legacy Java backend (optional)
 
-Java is not required for the default compression (`backend='sparse_rref'`). A legacy Java-based EFMTool backend (`backend='efmtool_rref'`) is optionally available via `pip install straindesign[java]`. For setup help see the [Legacy Methods](https://straindesign.readthedocs.io/en/latest/legacy_methods.html) documentation page.
+Java is not required for the default compression (`compression_backend='sparse_rref'`). A legacy Java-based EFMTool backend (`compression_backend='efmtool_rref'`) is optionally available via `pip install straindesign[java]`. For setup help see the [Legacy Methods](https://straindesign.readthedocs.io/en/latest/legacy_methods.html) documentation page.
 
 ## Install additional solvers
 
