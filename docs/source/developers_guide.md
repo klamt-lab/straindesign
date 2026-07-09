@@ -161,7 +161,7 @@ model (all reactions off is trivially steady-state and within bounds). A SUPPRES
 region must therefore be defined so it *excludes* `v = 0`; otherwise "make the region
 infeasible" is impossible (you cannot knock out the do-nothing state) and "keep it feasible" is
 vacuous. The `SDModule` constructor enforces this for modules that carry an inner objective:
-`strainDesignModule.py:316-320` runs an FBA with every reaction pinned to 0 and rejects the
+`strainDesignModule.py` runs an FBA with every reaction pinned to 0 and rejects the
 module if that trivial point satisfies the constraints. This is why a lethality SUPPRESS is
 written `growth ≥ 0.001` and not `growth ≥ 0` — the strict-ish positive threshold pushes the
 target region off the origin.
@@ -198,7 +198,7 @@ the same `Sv=0, lb≤v≤ub, Tv≤t` block, with the `z`-linking arranged so tha
 reaction drops out of that primal system. No dualization is needed for a bare PROTECT.
 
 This primal/dual asymmetry is fossilized in the internal name constants
-(`names.py:120-123`): PROTECT was historically `'mcs_lin'` (a *linear*/primal feasibility
+(`names.py`): PROTECT was historically `'mcs_lin'` (a *linear*/primal feasibility
 block) and SUPPRESS was `'mcs_bilvl'` (a *bilevel*/dualized block), before both were renamed to
 `'protect'` and `'suppress'`. The renaming is cosmetic; the linear-vs-dual split it encoded is
 still exactly how the two module types are assembled.
@@ -209,7 +209,7 @@ behavior while (optionally) sparing desired ones. In this package that is writte
 one SUPPRESS module** (the behavior to eliminate) together with **zero or more PROTECT modules**
 (behaviors to preserve). If there are no PROTECT modules, an MCS just makes the SUPPRESS region
 empty (classic lethality/blocking). The code recognizes this canonical shape explicitly:
-`compute_strain_designs.py:473-474` sets `is_classical_mcs` true precisely when there is one
+`compute_strain_designs.py` sets `is_classical_mcs` true precisely when there is one
 SUPPRESS and every other module is a PROTECT, and only then does it attempt the size-1 MCS
 shortcut (§1.6, [Ch 5](#ch5)). The number of SUPPRESS and PROTECT modules is otherwise unrestricted and
 they can be freely combined; several SUPPRESS modules just mean several regions must all be
@@ -221,8 +221,8 @@ satisfy the constraints". SUPPRESS-with-inner-objective says "flux states that a
 (say) growth and also over-produce a by-product must be impossible"; this couples an
 optimization *inside* the feasibility question and therefore uses the same dualization
 machinery as the bilevel modules below ([Ch 6](#ch6)). An `inner_opt_tol < 1` relaxes "optimal" to
-"within a fraction of optimal" (`strainDesignModule.py:277-282`,
-`strainDesignProblem.py:264-274`).
+"within a fraction of optimal" (`strainDesignModule.py`,
+`strainDesignProblem.py`).
 
 ### 1.4 The bilevel variants (conceptual only)
 
@@ -230,7 +230,7 @@ MCS reasons about whole flux regions. A second family of modules reasons about w
 do *if it optimizes its own objective* — the biologically realistic assumption that a strain
 grows as fast as its network allows. These are **bilevel** problems: an outer design objective
 subject to an inner cellular optimization. `straindesign` supports four, of which at most one
-may appear in a computation (`compute_strain_designs.py:271-276`); they may still be combined
+may appear in a computation (`compute_strain_designs.py`); they may still be combined
 with any number of SUPPRESS/PROTECT modules.
 
 - **OptKnock** — maximize an *outer* objective (e.g. product export) over the flux state that
@@ -264,7 +264,7 @@ to know that these modules exist, that they set the *global objective* of the co
 - **Knock-in (KI)** — *add* a reaction to the network; its cost is incurred by *keeping* it,
   and it is free to omit. KI is handled as an inverted KO: the same `z` machinery with the sense
   flipped. The reaction must already exist in the model with the bounds it would have *after*
-  insertion (`compute_strain_designs.py`/docstring lines 125-129).
+  insertion (`compute_strain_designs.py`/docstring).
 - **Regulatory** — impose (or remove) a linear flux constraint as an intervention, e.g.
   "`EX_o2_e = -1`" to model a forced aeration change. Reaction-based regulatory constraints are
   added during preprocessing via `extend_model_regulatory`; gene-based ones are deferred until
@@ -273,7 +273,7 @@ to know that these modules exist, that they set the *global objective* of the co
 **Costs.** Every candidate intervention carries a positive cost; `max_cost` bounds the total.
 Costs are supplied per-kind: `ko_cost`, `ki_cost` (reactions), `gko_cost`, `gki_cost` (genes),
 `reg_cost` (regulatory). Defaults: with reaction interventions, every reaction is a KO
-candidate at cost 1 (`compute_strain_designs.py:263-264`); with `gene_kos=True`, every gene is a
+candidate at cost 1 (`compute_strain_designs.py`); with `gene_kos=True`, every gene is a
 KO candidate at cost 1 (`:253-257`). Supplying a partial dict *restricts* candidacy to the
 listed items — anything not listed is simply not knockable. Essential reactions/genes (those
 whose removal would break a PROTECT or desired region) have their cost entries dropped during
@@ -281,26 +281,26 @@ preprocessing so they are never proposed (`:381`, `:494`; [Ch 5](#ch5)).
 
 **The binary vector `z`.** After preprocessing, the model has been compressed and GPR-extended;
 `SDProblem.__init__` allocates **one binary variable per (compressed) reaction**: `num_z = numr`
-(`strainDesignProblem.py:144`), `z ∈ {0,1}^{num_z}`. `z_j = 1` means "reaction `j` is
+(`strainDesignProblem.py`), `z ∈ {0,1}^{num_z}`. `z_j = 1` means "reaction `j` is
 intervened" (knocked out, or — for a KI reaction, whose sense is inverted — kept in). The cost
-data is compiled (`strainDesignProblem.py:141-151`) into three aligned per-reaction arrays:
+data is compiled (`strainDesignProblem.py`) into three aligned per-reaction arrays:
 
 - `cost[j]` — the intervention cost of reaction `j` (0 if `j` is not targetable);
 - `z_inverted[j]` — true iff `j` is a KI (a `ki_cost` entry present), meaning `z_j`'s sense is
   flipped so cost is paid for *presence*;
 - `z_non_targetable[j]` — true iff `j` has neither a KO nor KI cost, so `z_j` is fixed to 0
-  (`ub[j] = 1 − z_non_targetable[j]`, `strainDesignProblem.py:163`).
+  (`ub[j] = 1 − z_non_targetable[j]`, `strainDesignProblem.py`).
 
 KIs override KOs when both are given (`:143` blanks the KO cost wherever a KI cost exists). The
 resulting cost vector feeds the two budget rows placed at the very top of the MILP
-(`strainDesignProblem.py:152-160`): a row `Σ cost_j z_j ≤ max_cost` (the `idx_row_mincost`
+(`strainDesignProblem.py`): a row `Σ cost_j z_j ≤ max_cost` (the `idx_row_mincost`
 row, `b_ineq[1] = max_cost`) and a companion `−Σ cost_j z_j ≤ 0` row (`idx_row_maxcost`), plus a
 reserved objective row. The exact meaning of these two rows and their interaction with KI
 inversion is [Ch 7](#ch7); here they matter only as the place where `max_cost` enters.
 
 **What "minimal" means.** For an MCS-only computation (all modules SUPPRESS/PROTECT), the
 *global objective* is to **minimize total intervention cost** `Σ cost_j z_j`
-(`strainDesignProblem.py:202-205` sets `c ← cost` and flags `is_mcs_computation`). "Minimal" has
+(`strainDesignProblem.py` sets `c ← cost` and flags `is_mcs_computation`). "Minimal" has
 two precisions the reader must keep distinct, and they map onto the `solution_approach` kwarg
 (§1.7, [Ch 8](#ch8)):
 
@@ -313,13 +313,13 @@ two precisions the reader must keep distinct, and they map onto the `solution_ap
 If a bilevel module is present, the global objective is *not* cost minimization — it is the
 module's own objective (OptKnock/RobustKnock outer objective, OptCouple's growth-coupling
 potential), and `max_cost` merely bounds how many interventions the design may spend
-(`strainDesignProblem.py:206-212` installs the module objective into the objective row instead).
+(`strainDesignProblem.py` installs the module objective into the objective row instead).
 The `max_cost` bound is the same in both regimes: no design may exceed it, and it is the primary
 lever that keeps the enumeration tractable (the canonical benchmarks all cap it at 2–6).
 
 ### 1.6 The end-to-end pipeline at a glance
 
-`compute_strain_designs(model, **kwargs)` (`compute_strain_designs.py:56`) is the orchestrator.
+`compute_strain_designs(model, **kwargs)` (`compute_strain_designs.py`) is the orchestrator.
 Its stages, in order, with the chapter that details each:
 
 1. **Parse & validate** (`:178-304`) — resolve `sd_setup` vs. explicit kwargs, select the
@@ -365,7 +365,7 @@ Chapters 2–5 cover preprocessing, 6–7 the MILP construction, 8 the solve loo
 ### 1.7 How the package is invoked
 
 The whole computation is one function call. The canonical e_coli_core gene-MCS benchmark
-(`tests/test_09_performance.py:165-173`) is:
+(`tests/test_09_performance.py`) is:
 
 ```python
 import straindesign as sd
@@ -389,7 +389,7 @@ find gene knockout sets that are lethal — and `POPULATE` asks for **all** mini
 (455 of them; CPLEX ≈ 1.2 s). No PROTECT module is present, so nothing is preserved beyond
 model feasibility.
 
-**Constructing an `SDModule`** (`strainDesignModule.py:221`). Signature:
+**Constructing an `SDModule`** (`strainDesignModule.py`). Signature:
 `SDModule(model, module_type, *args, **kwargs)`. `module_type` is one of `'suppress'`,
 `'protect'`, `'optknock'`, `'robustknock'`, `'optcouple'`. The constructor:
 
@@ -427,7 +427,7 @@ A `dummy` object with just an `id` may stand in for the model if `skip_checks=Tr
 | `time_limit` | MILP solver time limit (s) | `inf` |
 
 `M` deserves a note because it silently changes the MILP encoding. With the default `M = None`,
-`SDProblem.__init__` sets `self.M = np.inf` (`strainDesignProblem.py:125-126`), and `link_z`
+`SDProblem.__init__` sets `self.M = np.inf` (`strainDesignProblem.py`), and `link_z`
 attaches each `z` to its continuous rows as a **native indicator constraint** — except GLPK,
 which cannot express indicators and is forced to `M = 1000` (`:120-124`). Because SUPPRESS's
 dualized rows are unbounded (the Farkas ray) while PROTECT's primal rows are finite-flux, the
@@ -479,7 +479,7 @@ behavior*. The entire MILP is the coupling of these two through the `z_map_*` ma
 (ch2)=
 ## 2. The constraint-based foundation
 
-Everything `straindesign` does — compression, FVA-based preprocessing, dualization, the MILP itself — is built on one linear-algebraic object: the set of *steady-state flux distributions* of a metabolic network, carved out of ℝⁿ by a homogeneous equation $S \cdot v = 0$ and a box of bounds $lb \le v \le ub$. This chapter derives that object from first principles, establishes the polyhedral geometry the later chapters lean on (faces, vertices, rays, the recession cone — the machinery that makes a Farkas certificate exist and a dual go unbounded), and shows precisely how FBA and FVA are posed as linear programs in the code. It closes with the *standard form* `(A_ineq, b_ineq, A_eq, b_eq, lb, ub, c)` that is the lingua franca of the whole package, and how a cobra model is poured into it by `build_primal_from_cbm` (`strainDesignProblem.py:971`).
+Everything `straindesign` does — compression, FVA-based preprocessing, dualization, the MILP itself — is built on one linear-algebraic object: the set of *steady-state flux distributions* of a metabolic network, carved out of ℝⁿ by a homogeneous equation $S \cdot v = 0$ and a box of bounds $lb \le v \le ub$. This chapter derives that object from first principles, establishes the polyhedral geometry the later chapters lean on (faces, vertices, rays, the recession cone — the machinery that makes a Farkas certificate exist and a dual go unbounded), and shows precisely how FBA and FVA are posed as linear programs in the code. It closes with the *standard form* `(A_ineq, b_ineq, A_eq, b_eq, lb, ub, c)` that is the lingua franca of the whole package, and how a cobra model is poured into it by `build_primal_from_cbm` (`strainDesignProblem.py`).
 
 Notation follows [Ch 1](#ch1): $S \in \mathbb{R}^{m \times n}$ is the stoichiometric matrix, $v \in \mathbb{R}^n$ the flux vector, `m` metabolites, `n` reactions.
 
@@ -549,7 +549,7 @@ The **sign convention** is fixed by how the reaction is written: column `j` of `
 
 There is nothing special about "reversible" beyond `lb_j < 0`: direction is *entirely* an artifact of the sign of the bounds, not a separate attribute the LP sees. This is why compression and GPR integration ([Ch 3](#ch3), [Ch 4](#ch4)) freely **split** a reversible reaction into a forward part (`0 ≤ v_j⁺`) and a reverse part (`0 ≤ v_j⁻`) with `v_j = v_j⁺ − v_j⁻`: it is a lossless re-encoding of the same bound interval into two irreversible columns, needed because a knockout / gene rule must act on a nonnegative flux magnitude.
 
-**A subtle but load-bearing point the code relies on** (recorded in the engagement notes and re-derived in [Ch 7](#ch7)'s `prevent_boundary_knockouts`): an LP *variable bound* `lb_j ≤ v_j` is not the same object as a *constraint row*. A constraint row `−v_j ≤ −lb_j` can be selectively switched off by a binary `z` (that is how a knockout is simulated: multiply the effective bound by `z`), whereas a hard variable bound cannot be overridden by any row you add — the variable box always wins. `prevent_boundary_knockouts` (`strainDesignProblem.py:1322`) therefore migrates the *knockable* side of a bound (a negative lower bound or a positive upper bound on a knockable reaction) out of the box and into `A_ineq` so that `z` can later clamp it; non-knockable bounds stay in the box. The mechanics belong to [Ch 7](#ch7), but the reason lives here: **direction and capacity are encoded in bounds, and only bounds that have become rows can be knocked out.**
+**A subtle but load-bearing point the code relies on** (recorded in the engagement notes and re-derived in [Ch 7](#ch7)'s `prevent_boundary_knockouts`): an LP *variable bound* `lb_j ≤ v_j` is not the same object as a *constraint row*. A constraint row `−v_j ≤ −lb_j` can be selectively switched off by a binary `z` (that is how a knockout is simulated: multiply the effective bound by `z`), whereas a hard variable bound cannot be overridden by any row you add — the variable box always wins. `prevent_boundary_knockouts` (`strainDesignProblem.py`) therefore migrates the *knockable* side of a bound (a positive lower bound or a negative upper bound on a knockable reaction) out of the box and into `A_ineq` so that `z` can later clamp it; non-knockable bounds stay in the box. The mechanics belong to [Ch 7](#ch7), but the reason lives here: **direction and capacity are encoded in bounds, and only bounds that have become rows can be knocked out.**
 
 #### 2.2.2 The steady-state flux set is a polyhedron (cone / polytope)
 
@@ -597,28 +597,28 @@ $$\begin{aligned}
 
 This is a linear program over the polytope `P`. Its optimum is attained at a vertex of `P` (Sec 2.5). The optimal *value* is unique; the optimal *v* need not be (the objective face can be higher-dimensional — this degeneracy is exactly why pFBA and FVA exist).
 
-`straindesign` implements `(FBA)` in `fba` (`lptools.py:438`). The construction is worth tracing because it fixes the sign/standard-form conventions used everywhere:
+`straindesign` implements `(FBA)` in `fba` (`lptools.py`). The construction is worth tracing because it fixes the sign/standard-form conventions used everywhere:
 
-1. **Objective.** `c` comes from `model.reactions[i].objective_coefficient`, or from a user `obj` dict parsed by `linexprdict2mat` (`lptools.py:499-504`).
-2. **Sense flip to a minimizer.** The internal solver interface `MILP_LP` always *minimizes*. So a maximization is turned into a minimization by negating `c` (`lptools.py:506-509`):
+1. **Objective.** `c` comes from `model.reactions[i].objective_coefficient`, or from a user `obj` dict parsed by `linexprdict2mat` (`lptools.py`).
+2. **Sense flip to a minimizer.** The internal solver interface `MILP_LP` always *minimizes*. So a maximization is turned into a minimization by negating `c` (`lptools.py`):
    ```python
    obj_sense = 'maximize'
    c = [-i for i in c]      # min (−cᵀv) ≡ max (cᵀv)
    ```
-   and the reported objective is negated back at the end (`Solution(objective_value=-opt_cx, ...)`, `lptools.py:613`). **Every LP in the package is a minimization internally**; keep this in mind when reading the dual ([Ch 6](#ch6)).
-3. **Equality block = stoichiometry (+ user equalities).** `A_eq` starts as `S` via cobra's `create_stoichiometric_matrix(model)` (`lptools.py:523-524`), with `b_eq = 0` (one zero per metabolite). Any user equality constraints (parsed to matrix form by `lineqlist2mat`) are stacked underneath:
+   and the reported objective is negated back at the end (`Solution(objective_value=-opt_cx, ...)`, `lptools.py`). **Every LP in the package is a minimization internally**; keep this in mind when reading the dual ([Ch 6](#ch6)).
+3. **Equality block = stoichiometry (+ user equalities).** `A_eq` starts as `S` via cobra's `create_stoichiometric_matrix(model)` (`lptools.py`), with `b_eq = 0` (one zero per metabolite). Any user equality constraints (parsed to matrix form by `lineqlist2mat`) are stacked underneath:
    ```python
    A_eq = sparse.vstack((A_eq_base, A_eq));  b_eq = b_eq_base + b_eq
    ```
    So `A_eq·v = b_eq` is literally `[S; V_eq]·v = [0; v_eq]`.
-4. **Inequality block = user inequalities only.** If the user supplied none, `A_ineq` is an empty `0×n` matrix (`lptools.py:532-533`). Reaction directionality and capacity are *not* put into `A_ineq` here; they ride in the variable box:
-5. **Box.** `lb, ub` are read straight off the reactions (`lptools.py:535-536`).
-6. **Solve.** `MILP_LP(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver).solve()`.
+4. **Inequality block = user inequalities only.** If the user supplied none, `A_ineq` is an empty `0×n` matrix (`lptools.py`). Reaction directionality and capacity are *not* put into `A_ineq` here; they ride in the variable box:
+5. **Box.** `lb, ub` are read straight off the reactions (`lptools.py`).
+6. **Solve.** `MILP_LP(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver).solve`.
 
 Two robustness wrinkles are handled explicitly and are worth flagging because they reflect the polyhedral theory of Sec 2.5:
 
-- **Unbounded objective** (`status == UNBOUNDED`, `lptools.py:544`): the objective face is a recession ray — `cᵀv → ∞` along a ray in the recession cone. The code then re-solves for a *finite representative* point by fixing `cᵀv` to a computed value (`add_eq_constraints`), so the caller still gets a usable flux vector rather than "∞".
-- **pFBA** (`pfba` ≥ 1, `lptools.py:554`): after the primary optimum `opt_cx` is found, a secondary LP minimizes total flux `Σ|v_j|` (mode 1) or the *number* of active reactions (mode 2) subject to `cᵀv = opt_cx`. Minimizing `Σ|v_j|` is linearized by the classic reversible split `v_j = v_j⁺ − v_j⁻`, `v_j⁺, v_j⁻ ≥ 0`, minimizing `Σ(v_j⁺ + v_j⁻)` (`lptools.py:587-602`) — the same split motivated in Sec 2.2.1. Mode 2 uses indicator constraints and binaries (`lptools.py:570-583`), a mini-MILP, foreshadowing the main event.
+- **Unbounded objective** (`status == UNBOUNDED`, `lptools.py`): the objective face is a recession ray — `cᵀv → ∞` along a ray in the recession cone. The code then re-solves for a *finite representative* point by fixing `cᵀv` to a computed value (`add_eq_constraints`), so the caller still gets a usable flux vector rather than "∞".
+- **pFBA** (`pfba` ≥ 1, `lptools.py`): after the primary optimum `opt_cx` is found, a secondary LP minimizes total flux `Σ|v_j|` (mode 1) or the *number* of active reactions (mode 2) subject to `cᵀv = opt_cx`. Minimizing `Σ|v_j|` is linearized by the classic reversible split `v_j = v_j⁺ − v_j⁻`, `v_j⁺, v_j⁻ ≥ 0`, minimizing `Σ(v_j⁺ + v_j⁻)` (`lptools.py`) — the same split motivated in Sec 2.2.1. Mode 2 uses indicator constraints and binaries (`lptools.py`), a mini-MILP, foreshadowing the main event.
 
 #### 2.4.2 FVA: 2n LPs
 
@@ -632,17 +632,17 @@ v_i^{\max} &= \text{maximize } v_i \ \text{ s.t. same feasible set.}
 
 That is `2n` LPs sharing one feasible polytope `P`; only the objective vector `e_i` (the `i`-th unit vector) changes between them. FVA is the workhorse of preprocessing: it detects **blocked** reactions (`v_i^min = v_i^max = 0` — the reaction can carry no steady-state flux at all, so it is deleted), **essential** reactions in a PROTECT/desired module (bounds forcing `|v_i| > 0`, hence not knockable — dropped from the knockable set), and reactions whose model bound never binds (relaxed to `±∞` by `bound_blocked_or_irrevers_fva`). The three distinct uses and their rationale are [Ch 5](#ch5)'s subject; here we fix only the LP form and the code's entry point.
 
-In `straindesign` the public `fva` (`lptools.py:245`) is a thin wrapper that delegates to `speedy_fva` (`lptools.py:281-282`):
+In `straindesign` the public `fva` (`lptools.py`) is a thin wrapper that delegates to `speedy_fva` (`lptools.py`):
 ```python
 def fva(model, **kwargs):
     from straindesign.speedy_fva import speedy_fva
     return speedy_fva(model, **kwargs)
 ```
-`speedy_fva` does *not* solve `2n` independent LPs blindly; it uses a two-phase accelerated scheme (global scan LPs with dual-simplex warm-starts resolve ~half the bounds cheaply, then individual LPs for the rest, with optional coupled-reaction compression for large models). The mathematics of that acceleration is [Ch 5](#ch5)'s. The *reference* brute-force implementation — literally `2n` LPs — survives as `fva_legacy` (`lptools.py:285`) and makes the standard form explicit:
+`speedy_fva` does *not* solve `2n` independent LPs blindly; it uses a two-phase accelerated scheme (global scan LPs with dual-simplex warm-starts resolve ~half the bounds cheaply, then individual LPs for the rest, with optional coupled-reaction compression for large models). The mathematics of that acceleration is [Ch 5](#ch5)'s. The *reference* brute-force implementation — literally `2n` LPs — survives as `fva_legacy` (`lptools.py`) and makes the standard form explicit:
 
-- Build `A_eq = [S; V_eq]`, `b_eq = [0…0, v_eq]`, `A_ineq/b_ineq` from user constraints, `lb/ub` from the reactions (`lptools.py:303-315`) — identical assembly to FBA.
-- Instantiate one `MILP_LP` and iterate over `i ∈ {0, …, 2n−1}`. The helper `idx2c(i, prev)` (`lptools.py:107`) maps index `i` to an objective: `col = floor(i/2)` is the reaction, `sig = sign(mod(i,2) − 0.5)` is `−1` for even `i` (**maximize**, since the solver minimizes `−v_col`) and `+1` for odd `i` (**minimize** `v_col`). The warm-start trick is `prev`: consecutive LPs differ in one objective coefficient, so the simplex basis is reused.
-- Results are unpacked with the sign undone: `maximum = −x[even]`, `minimum = x[odd]` (`lptools.py:386-388`), and anything with `|value| < 1e-11` is snapped to `0` to kill solver noise (`lptools.py:384`).
+- Build `A_eq = [S; V_eq]`, `b_eq = [0…0, v_eq]`, `A_ineq/b_ineq` from user constraints, `lb/ub` from the reactions (`lptools.py`) — identical assembly to FBA.
+- Instantiate one `MILP_LP` and iterate over `i ∈ {0, …, 2n−1}`. The helper `idx2c(i, prev)` (`lptools.py`) maps index `i` to an objective: `col = floor(i/2)` is the reaction, `sig = sign(mod(i,2) − 0.5)` is `−1` for even `i` (**maximize**, since the solver minimizes `−v_col`) and `+1` for odd `i` (**minimize** `v_col`). The warm-start trick is `prev`: consecutive LPs differ in one objective coefficient, so the simplex basis is reused.
+- Results are unpacked with the sign undone: `maximum = −x[even]`, `minimum = x[odd]` (`lptools.py`), and anything with `|value| < 1e-11` is snapped to `0` to kill solver noise (`lptools.py`).
 
 The takeaway for a developer: **FVA is `2n` LPs over the same polytope, distinguished only by the objective `±e_i`, and the internal minimize-only convention means "maximize `v_i`" is submitted as "minimize `−v_i`" and negated on return.** Every accelerated variant is an optimization of *how many* of those `2n` LPs you actually solve, not of *what* they compute.
 
@@ -699,7 +699,7 @@ with `A_ineq ∈ ℝ^{p×N}`, `A_eq ∈ ℝ^{q×N}`, `x ∈ ℝ^N`, `lb, ub ∈ 
 
 #### 2.6.1 Mapping a cobra model into the standard form
 
-`build_primal_from_cbm` (`strainDesignProblem.py:971`) is the canonical adapter from a cobra model (plus optional extra constraints `V_ineq·x ≤ v_ineq`, `V_eq·x = v_eq`) into this form. In the *primal* every variable is a reaction flux, so `N = numr = len(model.reactions)`. The construction (`strainDesignProblem.py:1003-1026`):
+`build_primal_from_cbm` (`strainDesignProblem.py`) is the canonical adapter from a cobra model (plus optional extra constraints `V_ineq·x ≤ v_ineq`, `V_eq·x = v_eq`) into this form. In the *primal* every variable is a reaction flux, so `N = numr = len(model.reactions)`. The construction (`strainDesignProblem.py`):
 
 ```python
 numr = len(model.reactions)
@@ -715,13 +715,13 @@ So the equality block is the stoichiometry `S` (the steady-state constraint `S·
 
 #### 2.6.2 The bookkeeping matrices (`z_map_*`)
 
-Beyond the LP itself, `build_primal_from_cbm` returns three **association matrices** that thread reaction identity (and therefore knockout binary `z_j`) through the standard form (`strainDesignProblem.py:1021-1023`):
+Beyond the LP itself, `build_primal_from_cbm` returns three **association matrices** that thread reaction identity (and therefore knockout binary `z_j`) through the standard form (`strainDesignProblem.py`):
 
 - `z_map_vars` — shape `numz × N`, relating intervention binaries to *variables*. In the primal it is the identity (`sparse.identity(numr)`): variable `x_j` *is* reaction `j`, so knocking out reaction `j` acts on variable `j`. An entry `+1` marks "this reaction's knockout removes this variable"; `−1` marks an addition (knock-in).
 - `z_map_constr_ineq` — shape `numz × p`, relating binaries to *inequality rows*. Zero at construction, because in the raw primal no inequality row is tied to a specific reaction knockout (the model's own bounds are still in the box).
 - `z_map_constr_eq` — shape `numz × q`, relating binaries to *equality rows*. Zero for the same reason (the metabolite balances belong to no single reaction's knockout).
 
-These matrices are the mechanism by which dualization ([Ch 6](#ch6)) and z-linking ([Ch 7](#ch7)) know *which* rows and variables a given `z_j` must switch. When `LP_dualize` transposes the system, it also transposes/re-routes these maps so that a reaction still tracks the correct dual object — this is why `LP_dualize` (`strainDesignProblem.py:1028`) takes and returns the `z_map_*` triple, not just the LP.
+These matrices are the mechanism by which dualization ([Ch 6](#ch6)) and z-linking ([Ch 7](#ch7)) know *which* rows and variables a given `z_j` must switch. When `LP_dualize` transposes the system, it also transposes/re-routes these maps so that a reaction still tracks the correct dual object — this is why `LP_dualize` (`strainDesignProblem.py`) takes and returns the `z_map_*` triple, not just the LP.
 
 The last step in the adapter is the bound migration already previewed in Sec 2.2.1:
 
@@ -730,7 +730,7 @@ A_ineq, b_ineq, lb, ub, z_map_constr_ineq = prevent_boundary_knockouts(
         A_ineq, b_ineq, lb.copy(), ub.copy(), z_map_constr_ineq, z_map_vars)
 ```
 
-`prevent_boundary_knockouts` (`strainDesignProblem.py:1322`) moves the knockable side of each nonzero bound (a negative lower bound / positive upper bound on a reaction that carries a nonzero `z`-mapping, `strainDesignProblem.py:1358`) out of the box and into a new `A_ineq` row, updating `z_map_constr_ineq` so the row is tagged with the owning reaction — but leaves non-knockable bounds untouched. The *why* (a hard variable box cannot be relaxed by a binary, only a constraint row can) is Sec 2.2.1; the *how* (which bounds move, and how the resulting big-M/indicator gets attached) is [Ch 7](#ch7). What matters for this chapter is that after `build_primal_from_cbm` returns, the tuple `(A_ineq, b_ineq, A_eq, b_eq, lb, ub, c, z_map_constr_ineq, z_map_constr_eq, z_map_vars)` is a faithful, dualization-ready standard-form encoding of `P` together with the intervention bookkeeping — the single object every subsequent chapter consumes.
+`prevent_boundary_knockouts` (`strainDesignProblem.py`) moves the knockable side of each nonzero bound (a positive lower bound / negative upper bound on a reaction that carries a nonzero `z`-mapping, `strainDesignProblem.py`) out of the box and into a new `A_ineq` row, updating `z_map_constr_ineq` so the row is tagged with the owning reaction — but leaves non-knockable bounds untouched. The *why* (a hard variable box cannot be relaxed by a binary, only a constraint row can) is Sec 2.2.1; the *how* (which bounds move, and how the resulting big-M/indicator gets attached) is [Ch 7](#ch7). What matters for this chapter is that after `build_primal_from_cbm` returns, the tuple `(A_ineq, b_ineq, A_eq, b_eq, lb, ub, c, z_map_constr_ineq, z_map_constr_eq, z_map_vars)` is a faithful, dualization-ready standard-form encoding of `P` together with the intervention bookkeeping — the single object every subsequent chapter consumes.
 
 With `S·v = 0` derived from mass balance, the flux set established as a convex polyhedron `P` (cone when homogeneous, polytope when bounded), FBA/FVA pinned down as LPs over `P` in the exact form the code builds them, and the standard-form tuple that `build_primal_from_cbm` produces, the linear-algebra/LP bedrock is in place. [Ch 3](#ch3) works *inside* `𝒩(S)` to shrink `P` losslessly; [Ch 5](#ch5) exploits FVA over `P`; [Ch 6](#ch6) dualizes the standard form and turns the emptiness/unboundedness facts of Sec 2.5 into Farkas and strong-duality certificates; [Ch 7](#ch7) attaches the `z` binaries via the `z_map_*` matrices assembled here.
 
@@ -739,7 +739,7 @@ With `S·v = 0` derived from mass balance, the flux set established as a convex 
 ## 3. Network compression
 
 Compression is the single most consequential preprocessing stage for strain design. It runs twice in
-the pipeline (`compress_model` at `compression.py:1853`, once before GPR integration and once after —
+the pipeline (`compress_model` at `compression.py`, once before GPR integration and once after —
 see the end-to-end flow in [Ch 1](#ch1) and the GPR boundary in [Ch 4](#ch4)), and everything downstream — the FVA
 passes, the dualization, the MILP, the enumeration loop — operates on the *compressed* network. This
 chapter explains what compression removes, the exact integer/rational linear algebra that makes it
@@ -817,15 +817,15 @@ coefficients (see the 263-bit yeast-GEM case below) are missed. There is no safe
 coefficients that arise mid-elimination span many orders of magnitude. The project constraint is
 therefore absolute: **the nullspace and rank computations are done in exact arithmetic — Python
 arbitrary-precision integers and `fractions.Fraction` — and never in float.** `stoichmat_coeff2rational`
-(`compression.py:1729`) converts every stoichiometric coefficient to an exact `Fraction`/`sympy.Rational`
-before any compression math runs, and `float_to_rational` (`compression.py:46`) is the one controlled
+(`compression.py`) converts every stoichiometric coefficient to an exact `Fraction`/`sympy.Rational`
+before any compression math runs, and `float_to_rational` (`compression.py`) is the one controlled
 place where a stray float coefficient is turned into a bounded-denominator rational (it first tries
 `Fraction(val).limit_denominator(100)` and accepts it only if it round-trips to `max_precision`
 decimals, else falls back to `round(val·10^p)/10^p`). Once inside the engine, no float ever appears.
 
 #### 3.2.2 `RationalMatrix` and exact storage
 
-The exact matrix type is `RationalMatrix` (`compression.py:106`). It stores a sparse rational matrix as
+The exact matrix type is `RationalMatrix` (`compression.py`). It stores a sparse rational matrix as
 **two parallel integer sparse matrices** — a numerator CSR and a denominator CSR — so that entry
 `(i,j)` is `num[i,j] / den[i,j]`. Keeping numerators and denominators as separate scipy `int64` CSR
 matrices lets the common operations (column iteration, row/column deletion, submatrix extraction) stay
@@ -845,7 +845,7 @@ Two features of `RationalMatrix` matter later:
 
 #### 3.2.3 Fraction-free integer RREF: `_rref_integer_sparse`
 
-The core is `_rref_integer_sparse` (`compression.py:484`), which computes a **reduced row-echelon
+The core is `_rref_integer_sparse` (`compression.py`), which computes a **reduced row-echelon
 form over the integers** without ever introducing a denominator. The key idea is that for the purposes
 we need (rank, pivot columns, and reading off a kernel), rows may be scaled by any nonzero integer:
 scaling a row of `S` does not change its null vectors. So instead of dividing (which creates
@@ -873,7 +873,7 @@ everything integer and makes column `c` vanish in the target, because
 **Content reduction (GCD) — why coefficients stay polynomial.** Cross-multiplying integer rows makes
 entries grow. Without control, the bit-length of coefficients grows *exponentially* down the
 elimination. The defence is to divide each freshly-computed row by the GCD of all its entries — its
-"content" — right after forming it (`:592`–`:595`): `row_gcd = gcd(*new_row.values())` then
+"content" — right after forming it (`:592`–`:595`): `row_gcd = gcd(*new_row.values)` then
 `row[c] //= row_gcd`. This is exactly the mechanism (Bareiss / fraction-free Gaussian elimination) that
 bounds intermediate integers to the size of subdeterminants of the original matrix, i.e. keeps the
 bit-length **polynomial** rather than exponential. A final content reduction of the pivot rows runs at
@@ -906,7 +906,7 @@ The routine returns `(rref_data, rank, pivot_columns)` where `rref_data[i]` is p
 
 #### 3.2.4 Reading off the kernel: `_nullspace_sparse`
 
-`_nullspace_sparse` (`compression.py:697`) turns the RREF into an explicit kernel basis. With `rank`
+`_nullspace_sparse` (`compression.py`) turns the RREF into an explicit kernel basis. With `rank`
 pivots and `cols` columns, the free columns are `free_cols = {0..cols−1} \ pivots` and the nullity is
 `|free_cols|`. For each free column `f` the basis vector `k_f` is built by the standard RREF rule:
 
@@ -949,11 +949,11 @@ denominator. `to_sparse_pattern` (`:435`) returns a pure-structure `int8` CSR (1
 `{row: {col: Fraction}}` value map — this is the form coupling detection consumes, and it works
 identically in int64 and big-integer mode, so the whole compression pipeline runs unchanged on
 yeast-GEM. `sparse_nullspace` (`:785`) returns a scipy CSR in the common case and an `ExactCOO` when
-`K.is_bigint()` (`:820`–`:823`).
+`K.is_bigint` (`:820`–`:823`).
 
 ### 3.3 The compression working state and the single-kernel pass
 
-The nullspace-driven compressor is `StoichMatrixCompressor` (`compression.py:1089`), driven through a
+The nullspace-driven compressor is `StoichMatrixCompressor` (`compression.py`), driven through a
 mutable `_WorkRecord` (`:930`). The `_WorkRecord` carries three exact matrices that together record the
 entire transformation and satisfy the invariant recorded on `CompressionRecord` (`:896`):
 
@@ -1027,7 +1027,7 @@ Both tests are exact equalities on rationals — which is precisely why §3.2's 
 
 #### 3.4.2 Detection: `_find_coupled_groups`
 
-`_find_coupled_groups` (`compression.py:1164`) implements exactly that two-stage test. First it buckets
+`_find_coupled_groups` (`compression.py`) implements exactly that two-stage test. First it buckets
 reactions by kernel-row zero pattern: `pattern = tuple(kernel_pattern.indices[start:end])` per reaction,
 grouped into a dict, keeping only buckets of size > 1 (`:1181`–`:1188`). Then, within each candidate
 bucket, it verifies the constant ratio (`:1201`–`:1244`): pick reaction `a`, take the first nonzero
@@ -1093,7 +1093,7 @@ and the `±inf` handling) is exactly the subject of the closed issue #44 caution
 
 ### 3.5 Conservation-relation removal (ROW-rank reduction)
 
-`remove_conservation_relations` (`compression.py:1419`) shrinks `S` by deleting **metabolite rows that
+`remove_conservation_relations` (`compression.py`) shrinks `S` by deleting **metabolite rows that
 are linearly dependent** on the others — the *conservation relations* of the network. A conservation
 relation is a left-null vector `y` with `yᵀS = 0`: a weighted sum of metabolite balances that is
 identically zero (e.g. a moiety like total ATP+ADP, or a redundant compartment balance). If row `i` of
@@ -1120,7 +1120,7 @@ legacy Java oracle, `_remove_conservation_relations_java` at `:1943`, selectable
 
 There are two distinct notions of "carries no flux," removed at two points:
 
-- **Bounds-blocked reactions** — `remove_blocked_reactions` (`compression.py:1699`) deletes reactions
+- **Bounds-blocked reactions** — `remove_blocked_reactions` (`compression.py`) deletes reactions
   whose bounds are exactly `(0, 0)` (`:1701`) with `remove_orphans=True` so metabolites left dangling
   go too. This runs once at the very start of `compress_model` (`:1889`), before any rational
   conversion, as a cheap first cut.
@@ -1136,7 +1136,7 @@ dropped, any metabolite row that has become all-zero (detected in O(m) via CSR `
 
 ### 3.7 The alternating fixpoint
 
-`compress_model` (`compression.py:1853`) orchestrates the three reducers into an **alternating
+`compress_model` (`compression.py`) orchestrates the three reducers into an **alternating
 fixpoint** (`:1894`–`:1937`). The order within each cycle is deliberate:
 
 1. **Parallel merge** (`compress_model_parallel`, §3.8) — cheapest: a hash of the (scale-normalized)
@@ -1167,7 +1167,7 @@ Each productive step appends a record to `cmp_mapReac` — `{"reac_map_exp": rea
 
 ### 3.8 Parallel merge
 
-`compress_model_parallel` (`compression.py:2025`) is the cheap reducer. It lumps **parallel reactions**:
+`compress_model_parallel` (`compression.py`) is the cheap reducer. It lumps **parallel reactions**:
 reactions that are stoichiometric scalar multiples of one another (identical up to a rational scale
 factor) *and* have compatible bound topology, e.g. two isozymic reactions with the same net conversion.
 It never computes a kernel — it groups reactions by an exact hashable key.
@@ -1233,10 +1233,10 @@ The rule follows the flux logic of each merge type:
 
 - **Serial / coupled merges → AND.** A coupled group is an unbranched chain that must run as a unit —
   every member's genes are required for the lumped reaction to carry flux — so their GPRs are combined
-  with **AND**. `_combine_gpr_and` (`compression.py:1802`) is invoked from `compress_model_coupled`
+  with **AND**. `_combine_gpr_and` (`compression.py`) is invoked from `compress_model_coupled`
   (`:2007`–`:2015`) over the saved GPR ASTs of the contributing reactions.
 - **Parallel merges → OR.** Parallel members are alternative routes for the same conversion — *any* of
-  them suffices — so their GPRs are combined with **OR**. `_combine_gpr_or` (`compression.py:1825`) is
+  them suffices — so their GPRs are combined with **OR**. `_combine_gpr_or` (`compression.py`) is
   invoked from `compress_model_parallel` (`:2107`–`:2121`).
 
 Both combiners lift the cobra GPR AST to sympy Boolean expressions (`_gpr_ast_to_sympy`, `:1754`),
@@ -1265,10 +1265,10 @@ produced the step, because cost and constraint propagation treat the two directi
 
 Because compression is iterative, a compressed id in step `t` may itself be an *original* id inside step
 `t+1` — the maps **compose**. Back-expansion therefore walks the list and composes the per-step maps.
-Forward composition to a single flat lookup is `_build_cmp_reverse_map` (`networktools.py:515`), which
+Forward composition to a single flat lookup is `_build_cmp_reverse_map` (`networktools.py`), which
 threads original ids through intermediate compressed ids to a final `{original_id: final_compressed_id}`
 table; full solution decompression walks `cmp_mapReac` **in reverse** (`estimate_expansion_size` reverses
-it at `networktools.py:1430`, and `expand_sd` composes the reverse maps) to turn a compressed
+it at `networktools.py`, and `expand_sd` composes the reverse maps) to turn a compressed
 intervention set back into original-reaction interventions, re-injecting the flux-split/scaling factors
 at each step. The complete decompression semantics — expanding a knockout of a lumped reaction into the
 correct combination of original knockouts, handling parallel-vs-serial multiplicity, size-1 MCS
@@ -1285,43 +1285,43 @@ elementary-flux-mode enumeration and network compression (the compression stage 
 the coupled/zero/contradicting reduction that §3.4/§3.6 now do in Python). It is still shipped and
 still reachable, selected with `compression_backend='efmtool_rref'`, and this section documents how the
 bridge works and *why* it has been demoted to legacy. Reading it also explains the vocabulary the
-Python code inherited: the Python `CompressionMethod` enum (`compression.py:831`), the Python class
-name `StoichMatrixCompressor` (`compression.py:1089`), and the `CoupledZero`/`CoupledCombine`/
+Python code inherited: the Python `CompressionMethod` enum (`compression.py`), the Python class
+name `StoichMatrixCompressor` (`compression.py`), and the `CoupledZero`/`CoupledCombine`/
 `CoupledContradicting` method names are all deliberate echoes of the efmtool Java API they replaced.
 
 #### 3.11.1 What efmtool is and how straindesign reaches it
 
 efmtool is a Java library (namespace `ch.javasoft.*`, packaged as `efmtool.jar` alongside the Python
 sources at `straindesign/efmtool.jar`). straindesign uses only its *compression* half — not its EFM
-enumeration — through the classes loaded in `efmtool_cmp_interface.py:167`–`:179`:
+enumeration — through the classes loaded in `efmtool_cmp_interface.py`–`:179`:
 `ch.javasoft.smx.impl.DefaultBigIntegerRationalMatrix` (an arbitrary-precision rational matrix),
 `ch.javasoft.smx.ops.Gauss` (rational Gaussian elimination), `ch.javasoft.metabolic.compress.
 StoichMatrixCompressor` and `CompressionMethod`, and `ch.javasoft.math.BigFraction` /
-`java.math.BigInteger`. The bridge is **JPype**: `_start_jvm` (`efmtool_cmp_interface.py:93`) starts an
+`java.math.BigInteger`. The bridge is **JPype**: `_start_jvm` (`efmtool_cmp_interface.py`) starts an
 in-process JVM, adds `efmtool.jar` to the classpath, and imports the Java classes via
 `jpype.imports` so they become callable Python objects.
 
 The routing has three layers.
 
-1. **Import time.** `__init__.py:51`–`:53` calls `_start_jvm()` *eagerly* at `import straindesign`.
+1. **Import time.** `__init__.py`–`:53` calls `_start_jvm` *eagerly* at `import straindesign`.
    This is a no-op when jpype1 or a JVM is absent (neither is a package dependency), so a normal install
    never touches Java. When Java *is* present the JVM must be started here — before NumPy/OpenBLAS spins
-   up worker threads — or JNI calls later crash with SIGBUS/SIGSEGV (`__init__.py:46`–`:50`; the code is
+   up worker threads — or JNI calls later crash with SIGBUS/SIGSEGV (`__init__.py`–`:50`; the code is
    littered with such mitigations, see §3.11.4).
 2. **Backend selection.** `compute_strain_designs` reads the kwarg
    `compression_backend = kwargs.get('compression_backend', 'sparse_rref')`
-   (`compute_strain_designs.py:354`) and threads it into both `compress_model` calls
+   (`compute_strain_designs.py`) and threads it into both `compress_model` calls
    (`:357`–`:360`, `:435`). `compress_model` sets `use_java = (compression_backend == 'efmtool_rref')`
-   (`compression.py:1887`).
+   (`compression.py`).
 3. **Dispatch inside the fixpoint.** Crucially, `efmtool_rref` does **not** replace the whole
    compression pipeline — only two of its three reducers. Inside the alternating fixpoint (§3.7,
-   `compression.py:1894`–`:1937`):
+   `compression.py`–`:1937`):
    - **Parallel merge** (step 1, §3.8) is **always** the Python hash-based `compress_model_parallel` —
      efmtool has no equivalent and it is never routed to Java.
    - **Conservation removal** (step 2, §3.5) forks on `use_java` (`:1907`–`:1910`): Java goes through
      `_remove_conservation_relations_java` (`:1943`), Python through `remove_conservation_relations`.
    - **Coupled merge** (step 3, §3.4) forks inside `compress_model_coupled` (`:1985`): Java calls
-     `compress_model_java` (`efmtool_cmp_interface.py:367`), Python calls `compress_cobra_model`.
+     `compress_model_java` (`efmtool_cmp_interface.py`), Python calls `compress_cobra_model`.
 
    So `efmtool_rref` is really a **hybrid**: Python parallel-merge + Java conservation-removal + Java
    coupled-merge, iterated by the same Python fixpoint driver. The two backends differ only in the
@@ -1329,7 +1329,7 @@ The routing has three layers.
 
 #### 3.11.2 Data marshalling: cobra model → Java → cobra model
 
-The coupled step, `compress_model_java` (`efmtool_cmp_interface.py:367`), is where the interesting
+The coupled step, `compress_model_java` (`efmtool_cmp_interface.py`), is where the interesting
 marshalling lives. It mutates the cobra model in place and returns the same
 `{compressed_id: {orig_id: factor}}` reaction map that the Python backend produces, so the rest of the
 pipeline (module remapping, cost compression, decompression in [Ch 9](#ch9)) is backend-agnostic.
@@ -1362,10 +1362,10 @@ subset_matrix = jpypeArrayOfArrays2numpy_mat(comprec.post.getDoubleRows())   # :
 ```
 
 The *structure* of the compression (which original reaction maps into which compressed column, and the
-zero pattern) is read back as a **double-precision** numpy matrix via `getDoubleRows()`. The
+zero pattern) is read back as a **double-precision** numpy matrix via `getDoubleRows`. The
 per-reaction merge then:
 - flags a reaction zero-flux iff its `subset_matrix` row is all-zero (`:432`–`:434`);
-- for each compressed column `j`, gathers members from `subset_matrix[:,j].nonzero()` (`:437`), scales
+- for each compressed column `j`, gathers members from `subset_matrix[:,j].nonzero` (`:437`), scales
   each member's stoichiometry by the **exact** factor `jBigFraction2sympyRat(comprec.post.
   getBigFractionValueAt(ai, j))` (`:445`–`:446`, exact `BigFraction → sympy.Rational`), and **rescales
   its bounds by `/= abs(subset_matrix[ai, j])`** (`:447`–`:450`, i.e. by a **double**);
@@ -1380,18 +1380,18 @@ because a strain-design module references them — are excluded from the active 
 as standalone identity entries (`:480`–`:485`), a workaround for efmtool's `CoupledContradicting` step,
 which will otherwise delete reactions it deems inconsistent (contrast the Python backend, which keeps
 them via the exact bounds-intersection of §3.4.4). Back in `compress_model_coupled` the Java branch
-then sweeps up any leftover `(0,0)` reactions (`compression.py:1990`–`:1994`) and — identically to the
+then sweeps up any leftover `(0,0)` reactions (`compression.py`–`:1994`) and — identically to the
 Python branch — re-attaches the **AND-combined GPR** from the pre-merge snapshot
-(`compression.py:2007`–`:2015`). GPR propagation is therefore the *same* for both backends on the
+(`compression.py`–`:2015`). GPR propagation is therefore the *same* for both backends on the
 coupled step.
 
-**The conservation path.** `_remove_conservation_relations_java` (`compression.py:1943`) builds `S` as
-a LIL matrix, **densifies its transpose** (`stoich_mat.transpose().toarray()`, `:1947`), and hands it
-to `basic_columns_rat_java` (`efmtool_cmp_interface.py:332`). That function wraps the dense array into a
+**The conservation path.** `_remove_conservation_relations_java` (`compression.py`) builds `S` as
+a LIL matrix, **densifies its transpose** (`stoich_mat.transpose.toarray`, `:1947`), and hands it
+to `basic_columns_rat_java` (`efmtool_cmp_interface.py`). That function wraps the dense array into a
 `DefaultBigIntegerRationalMatrix` via `numpy_mat2jpypeArrayOfArrays` — which builds a **`JDouble[rows,
-cols]`** (`:267`) — then runs `Gauss.getRationalInstance().rowEchelon(...)` (`:360`) and returns the
+cols]`** (`:267`) — then runs `Gauss.getRationalInstance.rowEchelon(...)` (`:360`) and returns the
 pivot columns, i.e. the independent metabolite rows; the non-pivot metabolites are dependent
-(conservation relations) and removed (`compression.py:1948`–`:1950`). This is the exact-RREF
+(conservation relations) and removed (`compression.py`–`:1950`). This is the exact-RREF
 independence oracle of §3.5, but computed in Java — and note it marshals the stoichiometry through a
 **dense double** array, both memory-heavy on genome-scale models and lossy for large coefficients.
 
@@ -1401,19 +1401,19 @@ The pure-Python `sparse_rref` engine (§3.2) was written to replace efmtool for 
 each a decisive advantage on a genome-scale correctness/performance workload:
 
 1. **No JVM / JPype dependency.** efmtool needs a JVM, the `efmtool.jar`, `jpype1`, and `sympy` all
-   present and version-compatible (`_init_java`, `efmtool_cmp_interface.py:192`, raises `ImportError`
+   present and version-compatible (`_init_java`, `efmtool_cmp_interface.py`, raises `ImportError`
    for any missing piece). The Python backend needs only NumPy/SciPy, which straindesign already
    depends on. A default that requires a working Java toolchain is a default that fails on many
    installs.
 2. **Native-crash fragility.** The bridge is defensive to a degree that itself signals the risk:
-   eager JVM startup ordered before OpenBLAS threads (§3.11.1); `gc.disable()` wrapped around *every*
-   JNI block (`efmtool_cmp_interface.py:358`–`:363`, `:404`–`:426`) because Python's garbage collector
+   eager JVM startup ordered before OpenBLAS threads (§3.11.1); `gc.disable` wrapped around *every*
+   JNI block (`efmtool_cmp_interface.py`–`:363`, `:404`–`:426`) because Python's garbage collector
    finalizing a JPype proxy mid-call causes Bus error / SIGSEGV; an `atexit` JVM-shutdown hook to dodge
    a JPype teardown race (`:150`–`:158`). None of this can occur in a pure-Python engine.
 3. **Big-integer safety at the interface.** efmtool's Java core is arbitrary-precision (`DefaultBig
    IntegerRationalMatrix`), so the *internal* arithmetic does not overflow. The hazard is at the
    **marshalling boundary**: the compression structure and bound rescaling are read back through
-   `getDoubleRows()` and `abs(subset_matrix[...])` in double precision (§3.11.2), and conservation
+   `getDoubleRows` and `abs(subset_matrix[...])` in double precision (§3.11.2), and conservation
    removal pushes `S` through a dense `JDouble` array. On models whose exact subdeterminants are huge —
    the verified extreme is **yeast-GEM, needing ~263-bit coefficients** (§3.2.5) — a double cannot
    represent those magnitudes, so bound rescaling and pattern detection silently lose precision. The
@@ -1443,10 +1443,10 @@ byte-identical and a few divergences are worth knowing:
 
 - **GPR propagation is identical on the coupled step.** Both backends clear gene rules before merging
   and re-attach the AND-combined GPR from the saved AST snapshot in `compress_model_coupled`
-  (`compression.py:2007`–`:2015`), and the parallel OR-combine is always the Python
+  (`compression.py`–`:2015`), and the parallel OR-combine is always the Python
   `compress_model_parallel` (§3.9). So GPR handling does *not* diverge between backends.
 - **Protected reactions are honored only by the Python backend.** `compress_model` passes gene-
-  controlled reactions as `protected_reactions` (`no_coupled_compress_reacs`, `compression.py:1923`–
+  controlled reactions as `protected_reactions` (`no_coupled_compress_reacs`, `compression.py`–
   `:1925`) so they survive COMPRESS #1 un-merged and gene multiplicity is preserved for GPR
   integration (§3.4.2, [Ch 4](#ch4)). `compress_model_java` **ignores `protected_reactions`** — it reads only
   `suppressed_reactions`, which `compress_model` never populates on this path. On the Java backend those
@@ -1459,11 +1459,11 @@ byte-identical and a few divergences are worth knowing:
   incorrectly" — the cautionary tale of closed issue #44 ([Ch 10](#ch10)). The two backends can thus disagree on
   which reactions a contradicting group costs you.
 - **Direction bookkeeping differs.** The Java path physically flips `ub ≤ 0` reactions (`*= -1`) and
-  negates their recorded stoich (`efmtool_cmp_interface.py:412`–`:415`, `:452`–`:455`); the Python
+  negates their recorded stoich (`efmtool_cmp_interface.py`–`:415`, `:452`–`:455`); the Python
   coupled backend carries sign inside the exact `ratios` (§3.4.3). Same flux space, different maps —
   which is fine because decompression ([Ch 9](#ch9)) consumes whichever map its backend produced.
 - **Bound rescaling precision.** Java rescales merged-reaction bounds by a **double**
-  (`efmtool_cmp_interface.py:447`–`:450`); the Python backend intersects bounds using exact rationals
+  (`efmtool_cmp_interface.py`–`:450`); the Python backend intersects bounds using exact rationals
   (§3.4.4). On well-scaled models this is invisible; on large-coefficient models it is another place the
   Java path can drift.
 
@@ -1487,15 +1487,15 @@ kills the reaction. The relationship between "genes deleted" and "reactions disa
 function, not a simple map.
 
 This chapter explains how `straindesign` makes gene knockouts expressible inside the same flux MILP.
-The central idea — `extend_model_gpr` (`networktools.py:946`) — is to **compile each Boolean GPR rule
+The central idea — `extend_model_gpr` (`networktools.py`) — is to **compile each Boolean GPR rule
 into auxiliary flux structure**: extra pseudo-metabolites and pseudoreactions bolted onto the
 stoichiometric matrix, arranged so that the linear steady-state constraints reproduce exactly the
 Boolean logic. After extension, "gene *g* is knocked out" becomes the purely linear statement "fix the
 flux of pseudoreaction *g* to zero," and the MILP's existing reaction-knockout machinery handles it
 with no separate Boolean-logic layer. We then cover the reversible-reaction split that GPR extension
-forces (`extend_model_gpr` + the `reac_map` remap in `compute_strain_designs.py:397–410`), the
-pre-pruning pass `reduce_gpr` (`networktools.py:664`) that shrinks the work, the delicate ordering of
-the two compression passes around extension (`compute_strain_designs.py:331–440`), and the sha256 name
+forces (`extend_model_gpr` + the `reac_map` remap in `compute_strain_designs.py`), the
+pre-pruning pass `reduce_gpr` (`networktools.py`) that shrinks the work, the delicate ordering of
+the two compression passes around extension (`compute_strain_designs.py`), and the sha256 name
 truncation that only fires for Gurobi/GLPK.
 
 ### 4.1 Why encode gene logic as flux structure at all
@@ -1541,7 +1541,7 @@ the guarded reactions to zero exactly when the Boolean rule says the enzyme is a
 
 ### 4.2 `extend_model_gpr`: turning a rule into pseudo-metabolites and pseudoreactions
 
-`extend_model_gpr(model, use_names=False)` (`networktools.py:946`) walks each reaction's GPR abstract
+`extend_model_gpr(model, use_names=False)` (`networktools.py`) walks each reaction's GPR abstract
 syntax tree (cobra parses the rule string into `reaction.gpr.body`, an `ast.BoolOp`/`ast.Name` tree)
 and materializes it as network structure. The design has one **supply** primitive (a gene) and two
 **combinator** primitives (`and`, `or`), each realized by a small stoichiometric gadget. Every gadget
@@ -1557,7 +1557,7 @@ consumed negatively.
 
 #### The gene gadget (leaf / `ast.Name`)
 
-`create_gene_pseudoreaction(gene_id)` (`networktools.py:1021`) does, for gene `g`:
+`create_gene_pseudoreaction(gene_id)` (`networktools.py`) does, for gene `g`:
 
 - create a pseudo-metabolite `g_{gene_id}` (e.g. `g_b0727`);
 - create a pseudoreaction whose id is the gene id (or gene name if `use_names=True`) with reaction
@@ -1573,7 +1573,7 @@ it. That "no consumption allowed" is precisely how "TRUE becomes FALSE" propagat
 
 #### The `and` gadget (`ast.And`)
 
-`create_and_metabolite(child_metabolites)` (`networktools.py:1054`): given the child pseudo-metabolites
+`create_and_metabolite(child_metabolites)` (`networktools.py`): given the child pseudo-metabolites
 `c₁,…,c_k` of the children of an `and` node, create one pseudo-metabolite `A = c₁_and_…_and_c_k` (the id
 is the sorted children joined by `_and_`) and **one** pseudoreaction
 
@@ -1590,7 +1590,7 @@ the children conjunctively.
 
 #### The `or` gadget (`ast.Or`)
 
-`create_or_metabolite(child_metabolites)` (`networktools.py:1083`): given children `c₁,…,c_k`, create
+`create_or_metabolite(child_metabolites)` (`networktools.py`): given children `c₁,…,c_k`, create
 one pseudo-metabolite `O = c₁_or_…_or_c_k` and **k separate** pseudoreactions, one per child:
 
 ```
@@ -1606,7 +1606,7 @@ every producing reaction is starved and `O` cannot be produced. **`O` is availab
 available — exactly Boolean `or`.** Separate parallel producing reactions is what makes the children
 disjunctive.
 
-The recursion `process_ast_node` (`networktools.py:1114`) applies these three rules bottom-up: a
+The recursion `process_ast_node` (`networktools.py`) applies these three rules bottom-up: a
 `ast.Name` returns its `g_{id}` metabolite; a `ast.BoolOp` recursively resolves its children to their
 pseudo-metabolite ids, then calls the `and`- or `or`-combinator on them; the return value bubbles the
 *top-level* pseudo-metabolite id up to the reaction.
@@ -1614,7 +1614,7 @@ pseudo-metabolite ids, then calls the `and`- or `or`-combinator on them; the ret
 #### Attaching the rule to the guarded reaction
 
 After `process_ast_node(r.gpr.body)` returns the top-level metabolite id `M`, the loop at
-`networktools.py:1157–1163` does:
+`networktools.py` does:
 
 ```python
 r.add_metabolites({model.metabolites.get_by_id(final_metabolite_id): -1.0})
@@ -1630,7 +1630,7 @@ flux is unconstrained by the gadget and behaves as before.
 Reactions with **no** GPR rule are skipped entirely (`if not r.gene_reaction_rule` at the split loop,
 and the AST loop guards on `r.gpr and r.gpr.body`); they get no pseudo-metabolite and are untouched.
 
-There is a string-parsing **fallback** (`networktools.py:1166–1182`) that fires only if AST processing
+There is a string-parsing **fallback** (`networktools.py`) that fires only if AST processing
 raises: it splits the rule on `' or '` / `' and '` textually and rebuilds the same gadgets. It exists
 for malformed or non-standard rule strings cobra's AST cannot parse; the AST path is the norm.
 
@@ -1726,7 +1726,7 @@ reactions whose Boolean rule is now FALSE, forcing `v_r = 0`. That is the intend
 
 Two implementation details protect this invariant. First, the pseudoreactions are created **once** and
 memoized: `created_metabolites` (a set) and the `... not in model.metabolites` guards (e.g.
-`networktools.py:1032, 1065, 1094`) ensure a gene shared by many reactions gets a *single* `g_{id}`
+`networktools.py, 1065, 1094`) ensure a gene shared by many reactions gets a *single* `g_{id}`
 source and metabolite, so all its reactions draw from the same tap — this is what makes a shared gene
 count once and couple all its reactions. Second, the `and`/`or` metabolite ids are built from the
 **sorted** child ids (`"_and_".join(sorted(...))`, `"_or_".join(sorted(...))`), so identical
@@ -1742,13 +1742,13 @@ GPR reaction consumed `M_r` with coefficient `−1` and ran *backwards* (`v_r < 
 logic (the reaction could "power its own enzyme"). Worse, the pseudo-metabolite balance would let a
 reverse flux exist even with all genes deleted.
 
-The fix (`networktools.py:1129–1154`): **split every GPR-associated reversible reaction into a forward
+The fix (`networktools.py`): **split every GPR-associated reversible reaction into a forward
 and a reverse leg, both irreversible.** For a reaction `r` with `lb < 0`:
 
 - build `r_rev = r * -1` (all stoichiometric coefficients negated, so the reverse direction becomes a
   forward-running reaction);
 - if `r` is *bidirectional* (`ub > 0` too), give the reverse leg a distinct id
-  `r.id + '_reverse_' + hex(hash(r))[8:]` (`networktools.py:1141`), clamp `r_rev.lower_bound = max(0,
+  `r.id + '_reverse_' + hex(hash(r))[8:]` (`networktools.py`), clamp `r_rev.lower_bound = max(0,
   …)`, and keep the forward leg `r` with `lower_bound = max(0, lb) = 0`;
 - if `r` is *purely reverse* (`ub ≤ 0`), the forward leg is dropped (`del_reac`), only the reverse leg
   survives.
@@ -1756,7 +1756,7 @@ and a reverse leg, both irreversible.** For a reaction `r` with `lb < 0`:
 Both legs are now `[0, ∞)`-style irreversible, so each has a nonnegative demand for its own copy of the
 GPR pseudo-metabolite, and the §4.3 argument holds for each leg independently. Removed/added reactions
 are committed with `model.remove_reactions(del_reac)` / `model.add_reactions(rev_reac)`
-(`networktools.py:1153–1154`) *before* the AST loop, so both legs get their own consumption edge to the
+(`networktools.py`) *before* the AST loop, so both legs get their own consumption edge to the
 (shared) top pseudo-metabolite `M_r` — i.e. deleting the gene kills *both* directions at once, as it
 must.
 
@@ -1775,7 +1775,7 @@ so a reverse flux of magnitude `f` corresponds to original `v_r = −f`. This is
 only (non-GPR reactions are never split — no need, since they carry no pseudo-metabolite that a reverse
 flux could corrupt).
 
-**Remapping the modules through `reac_map`** (`compute_strain_designs.py:397–410`). Every strain-design
+**Remapping the modules through `reac_map`** (`compute_strain_designs.py`). Every strain-design
 module refers to reactions by id in its `CONSTRAINTS`, `INNER_OBJECTIVE`, `OUTER_OBJECTIVE`, and
 `PROD_ID` fields ([Ch 1](#ch1)). If a referenced reaction was split, those references must be rewritten in the
 new variables, using the *same signed decomposition*. For a constraint's coefficient dict `c[0]`:
@@ -1790,8 +1790,8 @@ for k in list(c[0].keys()):
 i.e. a term `v·(x_k)` becomes `Σ_n (v·w)·(x_n)` over the pieces `n` of `k`, with `w ∈ {+1, −1}`. For a
 split reversible reaction this turns `v·v_r` into `v·v_fwd − v·v_rev`, faithfully preserving the signed
 flux the module intended. Objectives (`INNER_OBJECTIVE`, `OUTER_OBJECTIVE`, `PROD_ID`) are single dicts
-and remapped the same way (`compute_strain_designs.py:406–410`). Because `reac_map` contains an entry
-for *every* reaction (`{r.id: 1.0}` for the untouched ones, `networktools.py:1134–1136, 1149`), the loop
+and remapped the same way (`compute_strain_designs.py`). Because `reac_map` contains an entry
+for *every* reaction (`{r.id: 1.0}` for the untouched ones, `networktools.py, 1149`), the loop
 can blindly remap every key without special-casing which reactions were split.
 
 ### 4.5 `reduce_gpr`: pruning before extension
@@ -1799,43 +1799,43 @@ can blindly remap every key without special-casing which reactions were split.
 Extension cost scales with the number of surviving genes and Boolean operators: each gene adds a
 pseudoreaction + metabolite, each operator a gadget. Many genes can be proven irrelevant *before* any
 of that structure is built, which both shrinks `S` and removes useless binary candidates from the MILP.
-`reduce_gpr(model, essential_reacs, gkis, gkos)` (`networktools.py:664`) does this pruning, returning a
+`reduce_gpr(model, essential_reacs, gkis, gkos)` (`networktools.py`) does this pruning, returning a
 trimmed `gkos` (gene-KO-cost dict); it runs just before `extend_model_gpr`
-(`compute_strain_designs.py:389`). Its steps:
+(`compute_strain_designs.py`). Its steps:
 
-1. **Blocked reactions lose their GPR** (`networktools.py:882–888`). Any reaction with bounds `(0,0)`
+1. **Blocked reactions lose their GPR** (`networktools.py`). Any reaction with bounds `(0,0)`
    is dead anyway; its rule is cleared and genes that end up in no reaction are dropped. No point
    encoding logic for a reaction that can never carry flux.
 
-2. **Protect genes that touch only essential reactions** (`networktools.py:893–895`). A gene whose
+2. **Protect genes that touch only essential reactions** (`networktools.py`). A gene whose
    reaction set is a subset of `essential_reacs` (reactions that *must* stay operational — from the FVA
    over PROTECT/desired modules, [Ch 5](#ch5)) can never be a useful KO: knocking it out could only threaten an
    essential reaction. It is added to `protected_genes`.
 
-3. **Protect genes that are individually essential *to* an essential reaction** (`networktools.py:898–901`).
+3. **Protect genes that are individually essential *to* an essential reaction** (`networktools.py`).
    Using `is_gene_essential_to_reaction_ast`, which evaluates the reaction's GPR AST with that one gene
    set to `False` and checks whether the whole rule collapses to `False`: if deleting the gene alone
    would kill an essential reaction, the gene must be protected. (A gene inside an `or` of an essential
    reaction is *not* caught here — deleting it leaves the reaction alive — so it stays knockable.)
 
-4. **Drop protected genes from the KO-cost dict** (`networktools.py:904`): `[gkos.pop(pg.id) …]` — they
+4. **Drop protected genes from the KO-cost dict** (`networktools.py`): `[gkos.pop(pg.id) …]` — they
    are no longer intervention candidates.
 
-5. **Everything the user did not list as knockable is also protected** (`networktools.py:907`): genes
+5. **Everything the user did not list as knockable is also protected** (`networktools.py`): genes
    whose id *and* name are absent from `gkos` cannot be knocked out, so they are protected too.
 
-6. **Genes with knock-in costs are un-protected** (`networktools.py:910–911`): a gene in `gkis` is a
+6. **Genes with knock-in costs are un-protected** (`networktools.py`): a gene in `gkis` is a
    *target* (it can be added), so it is removed from the protected set even if the above rules caught it.
 
-7. **Simplify each GPR rule with protected genes pinned TRUE** (`networktools.py:915–933`).
+7. **Simplify each GPR rule with protected genes pinned TRUE** (`networktools.py`).
    `simplify_gpr_ast` walks the AST setting every protected gene to `True` and applies Boolean
-   simplification (`apply_gene_protection_to_ast`, `networktools.py:719`): `True and X → X`,
-   `True or X → True`, plus absorption (`A or (A and B) → A`, `networktools.py:765–822`). If the rule
+   simplification (`apply_gene_protection_to_ast`, `networktools.py`): `True and X → X`,
+   `True or X → True`, plus absorption (`A or (A and B) → A`, `networktools.py`). If the rule
    collapses to `True`, the reaction is no longer knockable-by-gene and its rule is cleared (so it gets
    no gadget at all); otherwise the simplified, *smaller* rule replaces the original — fewer operators,
    hence fewer gadgets at extension.
 
-8. **Remove obsolete and protected genes** from the model (`networktools.py:935–937`), so
+8. **Remove obsolete and protected genes** from the model (`networktools.py`), so
    `extend_model_gpr` never sees them.
 
 The net effect: `extend_model_gpr` is handed a model whose GPR rules mention only genes that are (a)
@@ -1845,11 +1845,11 @@ operators before the expensive structure is built.
 
 **The id-vs-name subtlety.** Genes can be referenced by *either* their id or their (human-readable)
 name, and models are inconsistent about which the user supplies in `gkos`/`gkis`. `reduce_gpr` therefore
-checks **both**: the protection rule at `networktools.py:907` protects a gene only if *neither*
-`g.id in gkos` *nor* `g.name in gkos`, and the KI un-protection at `networktools.py:910` collects
+checks **both**: the protection rule at `networktools.py` protects a gene only if *neither*
+`g.id in gkos` *nor* `g.name in gkos`, and the KI un-protection at `networktools.py` collects
 `g.id for g in model.genes if (g.id in gkis) or (g.name in gkis)`. Note the asymmetry that this matching
 introduces downstream: `extend_model_gpr` names each gene pseudoreaction by id *or* name depending on
-the global `has_gene_names` flag (`use_names`, decided at `compute_strain_designs.py:396` and passed in),
+the global `has_gene_names` flag (`use_names`, decided at `compute_strain_designs.py` and passed in),
 so the id-vs-name choice must stay consistent between the cost dicts and the pseudoreaction ids or the
 later cost lookup silently misses (see [Ch 10](#ch10) for the fragility this creates). `reduce_gpr` hedges by
 accepting both spellings; the pseudoreaction naming commits to one.
@@ -1858,10 +1858,10 @@ accepting both spellings; the pseudoreaction naming commits to one.
 
 Network compression ([Ch 3](#ch3)) is run **twice**, straddling GPR extension:
 
-- **COMPRESS #1** (`compute_strain_designs.py:357`) runs on the pre-extension metabolic model with
+- **COMPRESS #1** (`compute_strain_designs.py`) runs on the pre-extension metabolic model with
   `propagate_gpr=True`.
-- **COMPRESS #2** (`compute_strain_designs.py:434`) runs *after* `extend_model_gpr`, with
-  `propagate_gpr` left at its default `False` (`compression.py:1853`).
+- **COMPRESS #2** (`compute_strain_designs.py`) runs *after* `extend_model_gpr`, with
+  `propagate_gpr` left at its default `False` (`compression.py`).
 
 **Why two passes.** The first pass compresses the genuine metabolic network while it is still small and
 GPR-free, so the expensive lossless reductions operate on the original reactions. But it *cannot*
@@ -1873,14 +1873,14 @@ compression too.
 
 **Why `propagate_gpr` differs.** In pass #1 the metabolic reactions still carry Boolean GPR *strings*.
 When two reactions are merged, their rules must be combined correctly — an AND-merge for flux-coupled
-reactions, an OR-merge for parallel ones (`compression.py:1982, 2040`, the `_combine_gpr_and/or` helpers,
+reactions, an OR-merge for parallel ones (`compression.py, 2040`, the `_combine_gpr_and/or` helpers,
 [Ch 3](#ch3)) — so that after extension the merged reaction's rule still reflects both originals. Hence
 `propagate_gpr=True`. In pass #2 the rules have *already been consumed* by `extend_model_gpr` (converted
 to flux structure) and the reactions' `gene_reaction_rule` strings are no longer the source of truth —
 the gadgets are. Propagating GPR strings again would be meaningless and double-count, so pass #2 uses
 `propagate_gpr=False` and merges purely on stoichiometry.
 
-**Why regulatory-gene reactions are exempted from COMPRESS #1** (`compute_strain_designs.py:334–353`).
+**Why regulatory-gene reactions are exempted from COMPRESS #1** (`compute_strain_designs.py`).
 A *gene-based regulatory* intervention (a constraint like `g <= X` or `g >= X` on a gene, as opposed to
 a plain KO `g = 0`) is applied by `extend_model_regulatory` *after* GPR extension, because it needs the
 `g_gene` pseudo-metabolite to exist so the bound can be hung on the gene's pseudoreaction flux. The
@@ -1888,13 +1888,13 @@ problem: if COMPRESS #1 merges several reactions that a regulatory gene controls
 attached to that gene with a **collapsed/rescaled stoichiometry** — parallel/coupled merging multiplies
 reactions by rational scale factors ([Ch 3](#ch3)) — so a later gene-regulatory bound `g <= X` would be applied
 against a *mis-scaled* flux and would not mean the same thing as in the uncompressed model. The code
-comment (`compute_strain_designs.py:335–340`) states this directly: a pre-GPR merge "hooks the gene to
+comment (`compute_strain_designs.py`) states this directly: a pre-GPR merge "hooks the gene to
 the merged reaction with the wrong (collapsed) stoichiometry, so a gene-regulatory bound … is
 mis-scaled." 
 
 The remedy is to **exempt exactly the reactions controlled by a deferred-regulatory gene** from merging
 in pass #1. The block scans each deferred regulatory constraint string for tokens matching a gene id or
-name (`compute_strain_designs.py:344–350`), collects that gene's reactions into
+name (`compute_strain_designs.py`), collects that gene's reactions into
 `no_coupled_compress_reacs`, and passes them to `compress_model` so they are *not* coupled-merged; it
 also adds them to `no_par_compress_reacs` (`:353`) so they are not parallel-merged and their **names stay
 stable** across the two passes (the pass-#1 exemption matches them by name, so a rename would break the
@@ -1912,8 +1912,8 @@ rescaling. (This exemption logic is the fix for closed issue #44's class of boun
 Extension generates pseudo-metabolite and pseudoreaction ids by *concatenating* child ids with `_and_`
 / `_or_` separators. Nested rules over long gene ids can produce names hundreds of characters long.
 **Gurobi and GLPK impose a 255-character limit on variable/constraint names**; CPLEX and SCIP do not.
-The code sets `MAX_NAME_LEN = 230` (`networktools.py:1001`) and, *only when the active solver is in
-`{GUROBI, GLPK}`* (checked at every id-construction site, e.g. `networktools.py:1026, 1043, 1059, 1072,
+The code sets `MAX_NAME_LEN = 230` (`networktools.py`) and, *only when the active solver is in
+`{GUROBI, GLPK}`* (checked at every id-construction site, e.g. `networktools.py, 1043, 1059, 1072,
 1088, 1103, 1144`), truncates:
 
 ```python
@@ -1925,7 +1925,7 @@ def truncate(id):
 i.e. it keeps the first `209` characters and appends `_` + a 20-hex-char sha256 digest of the full id,
 yielding a ≤230-char name. The digest suffix preserves uniqueness (two long ids sharing a 209-char
 prefix still differ in hash) so distinct pseudo-metabolites do not accidentally collide after
-truncation. A `warning_name_too_long` message (`networktools.py:1003`) is logged once per truncated
+truncation. A `warning_name_too_long` message (`networktools.py`) is logged once per truncated
 name, suggesting the user switch to CPLEX or simplify gene names to avoid it.
 
 Two properties matter for a maintainer. First, **truncation is solver-conditional**: the *same model*
@@ -1957,17 +1957,17 @@ The three uses, at a glance:
 | # | Call site (`compute_strain_designs.py`) | Model state | Scope | Question answered | Consumer |
 |---|------------------------------------------|-------------|-------|-------------------|----------|
 | 1 | ~L373–381 | after COMPRESS #1, **pre-GPR** | whole model | Which reactions are *essential* for a PROTECT/desired behaviour? | drop from `ko_cost`; feed `reduce_gpr` |
-| 2 | `bound_blocked_or_irrevers_fva`, ~L450 (→ `networktools.py:1589`) | after GPR extension + COMPRESS #2 | whole model | Which bounds never bind? Which reactions are blocked/irreversible? | rewrite model bounds → shrink/condition the MILP |
+| 2 | `bound_blocked_or_irrevers_fva`, ~L450 (→ `networktools.py`) | after GPR extension + COMPRESS #2 | whole model | Which bounds never bind? Which reactions are blocked/irreversible? | rewrite model bounds → shrink/condition the MILP |
 | 3 | ~L460–491 | after COMPRESS #2 | **knockable only** (`reaction_list`) | Which knockable reactions are essential per module? Which are size-1 cut sets? | drop essentials + size-1 MCS from `ko_cost`; re-inject MCS at decompression |
 
-All three ultimately dispatch to `fva()` in `lptools.py:245`, which is a thin wrapper that
-immediately calls `speedy_fva` (`lptools.py:281–282`). The legacy brute-force implementation
-`fva_legacy` (`lptools.py:285`) is retained only as a debugging fallback.
+All three ultimately dispatch to `fva` in `lptools.py`, which is a thin wrapper that
+immediately calls `speedy_fva` (`lptools.py`). The legacy brute-force implementation
+`fva_legacy` (`lptools.py`) is retained only as a debugging fallback.
 
 ### 5.1 The essentiality test — geometry of `min(abs(range)) > 1e-10 and prod(sign(range)) > 0`
 
 Both FVA #1 and FVA #3 classify a reaction as *essential* (for a given module's constraint
-set) using the identical predicate, at `compute_strain_designs.py:378` and again at `:465`:
+set) using the identical predicate, at `compute_strain_designs.py` and again at `:465`:
 
 ```python
 if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0:  # find essential
@@ -2012,7 +2012,7 @@ module requiring `EX_C ≥ 1`. FVA over `{Sv=0, v≥0, EX_C≥1}` yields `v_R1 �
 ### 5.2 FVA #1 — essential reactions in PROTECT/desired modules (pre-GPR)
 
 FVA #1 runs immediately after COMPRESS #1 and *before* GPR integration
-(`compute_strain_designs.py:371–381`), so it sees a purely metabolic, compressed network with
+(`compute_strain_designs.py`), so it sees a purely metabolic, compressed network with
 no gene pseudoreactions yet (see [Ch 4](#ch4) for the COMPRESS #1/GPR boundary). It iterates only over
 non-SUPPRESS modules:
 
@@ -2029,19 +2029,19 @@ for m in sd_modules:
 **Rationale (why drop from `ko_cost`).** As argued in §5.1, a reaction essential for a
 required (PROTECT/desired) behaviour can *never* be part of any feasible design — its knockout
 would violate a PROTECT constraint that the MILP is required to keep feasible. Every candidate
-design that includes it is infeasible *a priori*. Popping it from `cmp_ko_cost` (line 381)
+design that includes it is infeasible *a priori*. Popping it from `cmp_ko_cost`
 removes its binary variable `z_j` from the intervention set the MILP will branch over: the
 solver never even considers it, and no infeasible node is generated to reject it. This is a
 pure model-size reduction with zero effect on the solution set.
 
 **Second consumer: `reduce_gpr`.** The `essential_reacs` set computed here is passed straight
-into GPR reduction (`compute_strain_designs.py:389`):
+into GPR reduction (`compute_strain_designs.py`):
 
 ```python
 uncmp_gko_cost = reduce_gpr(cmp_model, essential_reacs, uncmp_gki_cost, uncmp_gko_cost)
 ```
 
-`reduce_gpr` (`networktools.py:664`) simplifies the Boolean gene–protein–reaction rules before
+`reduce_gpr` (`networktools.py`) simplifies the Boolean gene–protein–reaction rules before
 they are compiled into flux structure ([Ch 4](#ch4)). Knowing which reactions are essential lets it
 also drop the *genes* that only ever control essential reactions from the knockable gene set:
 if a reaction can never be knocked out, a gene whose only role is to (be required to) enable
@@ -2058,17 +2058,17 @@ pre-GPR metabolic network and typically for a single PROTECT module.
 
 FVA #2 runs *after* GPR extension and COMPRESS #2, so that **all** reactions — including the
 gene pseudoreactions added by `extend_model_gpr` — are processed
-(`compute_strain_designs.py:444–451`):
+(`compute_strain_designs.py`):
 
 ```python
 bound_blocked_or_irrevers_fva(cmp_model, solver=kwargs[SOLVER], compress=False)
 ```
 
-Its body (`networktools.py:1589–1625`) runs one whole-model FVA and then rewrites each
+Its body (`networktools.py`) runs one whole-model FVA and then rewrites each
 reaction's *stored* bounds (`r._lower_bound` / `r._upper_bound` directly, to make the change
 permanent and bypass cobra's optlang synchronisation) according to **four independent
 branches**. With CPLEX/Gurobi the tolerance `tol` is `0.0`; with SCIP/GLPK it is `1e-10`
-(`networktools.py:1599–1602`). Let `[v_min, v_max]` be the FVA interval and `[lb, ub]` the
+(`networktools.py`). Let `[v_min, v_max]` be the FVA interval and `[lb, ub]` the
 current bounds.
 
 ```python
@@ -2104,7 +2104,7 @@ A reaction that is fully **blocked** (`v_min = v_max = 0`) triggers (B) *and* (D
 `ub` are both pinned to 0, freezing it out of every flux state.
 
 **Decoding the real log line.** `bound_blocked_or_irrevers_fva` emits, on iML1515 after GPR
-extension (`networktools.py:1624`):
+extension (`networktools.py`):
 
 ```
 FVA bounds: 4 lb→inf, 1825 ub→inf, 2258 tightened to 0, 2150 stayed finite
@@ -2117,12 +2117,12 @@ FVA bounds: 4 lb→inf, 1825 ub→inf, 2258 tightened to 0, 2150 stayed finite
   and is relaxed to `+∞`. This is the large one — most reactions' nominal upper bound (e.g.
   the default 1000) never binds; the true maximum is limited by network stoichiometry.
 - `2258 tightened to 0` = **the combined count of branches (B) and (D)** — the same counter
-  `n_tightened_zero` is incremented in both (`networktools.py:1615` and `:1621`). It therefore
+  `n_tightened_zero` is incremented in both (`networktools.py` and `:1621`). It therefore
   aggregates "lower bound pinned to 0 (forward-irreversible)" and "upper bound pinned to 0
   (backward-irreversible / blocked)". It is *not* a count of distinct reactions: a single
   reaction that triggers both (B) and (D) — i.e. a blocked reaction — is counted twice, and a
   reaction that triggers (A) then (B) contributes to both `n_lb_to_inf` and `n_tightened_zero`.
-- `2150 stayed finite` is computed independently at `networktools.py:1622–1623` as the number
+- `2150 stayed finite` is computed independently at `networktools.py` as the number
   of reactions with **at least one finite bound after all rewrites**:
   `sum(1 for r in model.reactions if not isinf(r.lower_bound) or not isinf(r.upper_bound))`.
   These are the reactions that were *not* fully relaxed to `(−∞, +∞)`.
@@ -2169,7 +2169,7 @@ made leaner and better-conditioned.
 
 ### 5.4 FVA #3 — knockable-scoped essentials and size-1 MCS extraction
 
-FVA #3 (`compute_strain_designs.py:453–494`) runs on the final, fully GPR-extended and
+FVA #3 (`compute_strain_designs.py`) runs on the final, fully GPR-extended and
 COMPRESS #2-compressed model, but — unlike #1 and #2 — it is **scoped to knockable reactions
 only** via `speedy_fva`'s `reaction_list` kwarg:
 
@@ -2197,7 +2197,7 @@ is **essential for the SUPPRESS behaviour but NOT essential for any PROTECT beha
 all by itself, a valid cut set of size one: deleting it makes SUPPRESS infeasible (essential ⇒
 `v_j = 0` breaks it, §5.1), and — because it is *not* PROTECT-essential — deleting it leaves
 PROTECT feasible. This is computed by a set difference
-(`compute_strain_designs.py:472–491`):
+(`compute_strain_designs.py`):
 
 ```python
 is_classical_mcs = (len([m for m in sd_modules if m[MODULE_TYPE] == SUPPRESS]) == 1 and
@@ -2215,7 +2215,7 @@ if is_classical_mcs and suppress_essential:
 
 **The `is_classical_mcs` guard.** The size-1-MCS shortcut is *only* valid for a classical MCS
 problem: **exactly one SUPPRESS module and every remaining module a PROTECT**
-(`compute_strain_designs.py:473–474`). The guard exists because the "essential-for-SUPPRESS ⇒
+(`compute_strain_designs.py`). The guard exists because the "essential-for-SUPPRESS ⇒
 valid single cut" argument relies on there being a single, well-defined behaviour to suppress
 and only feasibility-preservation (not optimization) requirements to respect. In bilevel
 problems (OptKnock/RobustKnock/OptCouple, which carry inner/outer objectives) or multi-SUPPRESS
@@ -2229,7 +2229,7 @@ any larger design that *contains* *r* is **non-minimal** — it is a superset of
 minimal cut `{r}`. Leaving *r*'s binary `z_r` in the MILP would invite the solver to enumerate
 exactly those non-minimal supersets, wasting branch-and-bound effort and (in POPULATE mode)
 polluting the solution pool with dominated designs that would only be filtered out later. So
-each such *r* is `pop`ped from `cmp_ko_cost` (line 490–491), deleting `z_r` from the MILP. The
+each such *r* is `pop`ped from `cmp_ko_cost`, deleting `z_r` from the MILP. The
 size-1 cuts themselves are stashed in `cmp_size1_mcs` as `[{r: -1}]` entries (the `-1` encodes
 "knock this reaction out") and are **re-injected as standalone solutions at decompression**
 (`_decompress_solutions`, [Ch 9](#ch9)), so they still appear in the final result set — they are simply
@@ -2237,22 +2237,22 @@ solved by inspection instead of by the MILP.
 
 Two guard details worth noting:
 
-- The filter `size1_mcs_knockable = {r for r in size1_mcs if r in cmp_ko_cost}` (line 479)
+- The filter `size1_mcs_knockable = {r for r in size1_mcs if r in cmp_ko_cost}`
   restricts extraction to reactions that are *pure KO candidates*. Reactions carrying a KI or
   regulatory intervention are left in place (comment at `:486–489`), because they may still
   participate in non-KO solutions that the singleton-KO shortcut does not represent.
-- `both_essential = suppress_essential & essential_reacs` (line 484): a reaction essential for
+- `both_essential = suppress_essential & essential_reacs`: a reaction essential for
   BOTH the SUPPRESS and a PROTECT behaviour cannot be knocked out at all (it would break
   PROTECT), and is therefore folded into `essential_reacs` and removed from `ko_cost` by the
-  final sweep at `compute_strain_designs.py:494`.
+  final sweep at `compute_strain_designs.py`.
 
 ### 5.5 The `speedy_fva` acceleration engine
 
-Every FVA above calls `fva()` → `speedy_fva` (`speedy_fva.py:263`). Understanding its algorithm
+Every FVA above calls `fva` → `speedy_fva` (`speedy_fva.py`). Understanding its algorithm
 is essential because it is where the wall-time is spent, and its behaviour depends sharply on
 the `reaction_list` scoping and `compress` flags the three call sites pass.
 
-The naive FVA (`fva_legacy`, `lptools.py:285`) solves **`2n` independent LPs**: for each of the
+The naive FVA (`fva_legacy`, `lptools.py`) solves **`2n` independent LPs**: for each of the
 `n` reactions it sets objective `+e_j` and `−e_j` and solves to get `v_min^j` and `v_max^j`.
 `speedy_fva` produces the identical result but replaces most of those `2n` solves with a small
 number of *global scan LPs* whose single optimal vertex simultaneously resolves the min or max
@@ -2261,17 +2261,17 @@ of many reactions at once. It is a **two-phase** algorithm.
 #### Bookkeeping and the "resolved" mask
 
 `speedy_fva` maintains, for the `n` reactions, boolean masks `res_max`, `res_min` and
-incumbent vectors `incumbent_max`, `incumbent_min` (`speedy_fva.py:367–370`). A reaction's max
+incumbent vectors `incumbent_max`, `incumbent_min` (`speedy_fva.py`). A reaction's max
 (resp. min) is "resolved" when its true `v_max` (resp. `v_min`) is known. Three cheap
 pre-resolutions run before any LP:
 
-- **Fixed reactions** (`|ub − lb| < 10⁻¹²`, line 373–377): `v_min = lb`, `v_max = ub` with no
+- **Fixed reactions** (`|ub − lb| < 10⁻¹²`): `v_min = lb`, `v_max = ub` with no
   LP.
-- **`reaction_list` scoping** (line 380–387): every reaction *not* in the requested list is
+- **`reaction_list` scoping**: every reaction *not* in the requested list is
   marked resolved with `NaN` incumbents. This is how FVA #3's `reaction_list=knockable_ids`
   collapses the problem — non-knockable reactions are simply never scanned or solved, and come
   back as `NaN` in the returned DataFrame.
-- **`v = 0` feasibility shortcut** (line 416–430): if `0` is a feasible flux vector — which
+- **`v = 0` feasibility shortcut**: if `0` is a feasible flux vector — which
   holds when no lower bound is strictly positive, no upper bound strictly negative, and there
   are no extra constraints (`not np.any(lb > tol) and not np.any(ub < -tol) and not
   has_constraints`) — then for every reaction whose `lb = 0`, the minimum is provably `0`
@@ -2283,79 +2283,79 @@ pre-resolutions run before any LP:
 
 **(1b) The `min Σ|x|` scan LP.** The first real LP minimizes the total absolute flux
 `Σ_j |v_j|` subject to `Sv = 0`, the extra constraints, and the bounds (`_build_abssum_lp`,
-`speedy_fva.py:159`). Absolute values are linearized by **variable splitting**: reactions are
+`speedy_fva.py`). Absolute values are linearized by **variable splitting**: reactions are
 classified as forward-only (`lb ≥ 0`, so `|v_j| = v_j`, objective coeff `+1`), backward-only
 (`ub ≤ 0`, so `|v_j| = −v_j`, coeff `−1`), or truly reversible (`lb < 0 < ub`). For each
 reversible reaction the variable is split `v_j = p_j − n_j` with `p_j, n_j ≥ 0` and an
 auxiliary equality row `v_j − p_j + n_j = 0`, and both `p_j` and `n_j` carry objective coeff
-`+1` so the objective equals `p_j + n_j = |v_j|` at optimum (`speedy_fva.py:186–223`).
+`+1` so the objective equals `p_j + n_j = |v_j|` at optimum (`speedy_fva.py`).
 Infinite bounds are clamped to `±BIG (=1000)` purely so the *push* objective is bounded; this
-does not alter feasibility (line 238–251).
+does not alter feasibility.
 
 The optimal vertex of this LP is the flux state with the least total flux. Its virtue is that
 it drives most reactions **to zero**: any reaction sitting exactly at a `lb = 0` or `ub = 0`
 bound at this vertex is resolved by the vectorized *bound scan* `_bound_scan`
-(`speedy_fva.py:395–408`), which marks `res_max`/`res_min` wherever `|x_j − ub_j| < 10⁻⁹` or
+(`speedy_fva.py`), which marks `res_max`/`res_min` wherever `|x_j − ub_j| < 10⁻⁹` or
 `|x_j − lb_j| < 10⁻⁹`. In one LP this resolves the min/max of every reaction that touches a
 zero bound at the min-flux vertex. Simultaneously the vertex's flux values update the
 incumbents (`np.maximum(incumbent_max, x_scan)`, `np.minimum(incumbent_min, x_scan)`,
-line 451–452): even a reaction not *proved* extreme has its known range widened by this
+): even a reaction not *proved* extreme has its known range widened by this
 witness — **co-optimization**, one LP contributing evidence about `n` reactions at once.
 
 **(1c) Iterative push-to-bounds with warm-started dual simplex.** The remaining unresolved
 maxima are attacked collectively: a single objective `c` puts `−1` on *every* reaction whose
-max is still unresolved (`speedy_fva.py:470–478`) and the LP is re-solved — pushing all of
+max is still unresolved (`speedy_fva.py`) and the LP is re-solved — pushing all of
 them toward their upper bounds at once. Whatever lands on its `ub` is resolved by `_bound_scan`;
 incumbents update for the rest. The symmetric objective with `+1` on unresolved-min reactions
-(line 495–502) pushes toward lower bounds. This alternation repeats
-(`while True: ... if resolved_this_round < 5: break`, line 465–529) until a round resolves
+ pushes toward lower bounds. This alternation repeats
+(`while True: ... if resolved_this_round < 5: break`) until a round resolves
 fewer than 5 new bounds — i.e. until the cheap global pushes stop paying off.
 
 The critical performance ingredient is that the scan LP object is **reused** across all these
 re-solves — only the objective vector changes (`scan_lp.set_objective(...)`), never the
 constraint matrix — and the solver is set to **dual simplex** (`set_lp_method(LP_METHOD_DUAL)`,
-line 437). Changing only the objective keeps the previous basis *primal*-feasible but
+). Changing only the objective keeps the previous basis *primal*-feasible but
 dual-infeasible, which is exactly the situation dual simplex resumes from cheaply: each
 re-optimization is a warm-started handful of pivots rather than a cold solve. Dozens of push
 LPs therefore cost a small multiple of one LP.
 
 #### Phase 2 — individual LPs for the residual
 
-Whatever Phase 1 could not resolve (`n_remaining = 2n − n_done`, line 539–540) is finished with
-individual per-objective LPs, dispatched one of two ways (`speedy_fva.py:543–708`):
+Whatever Phase 1 could not resolve (`n_remaining = 2n − n_done`) is finished with
+individual per-objective LPs, dispatched one of two ways (`speedy_fva.py`):
 
-- **Parallel** (`n_remaining ≥ 1000 and threads > 1`, line 543): the unresolved objective
+- **Parallel** (`n_remaining ≥ 1000 and threads > 1`): the unresolved objective
   indices (even = max, odd = min, via `idx2c`) are farmed to an `SDPool` of workers, each
   holding its own persistent LP (`fva_worker_init`/`fva_worker_compute`), with a NaN-retry
   loop for any solve that returns NaN.
-- **Sequential** (`0 < n_remaining < 1000`, or `threads == 1`, line 611): a single warm-started
+- **Sequential** (`0 < n_remaining < 1000`, or `threads == 1`): a single warm-started
   LP is stepped through the residual objectives with `set_objective_idx`, periodically rebuilt
-  every 200 solves to limit warm-start basis degeneration (line 632–633). Each solved vertex is
-  *also* run through `_bound_scan` and the incumbent update (line 705–708), so even in Phase 2
+  every 200 solves to limit warm-start basis degeneration. Each solved vertex is
+  *also* run through `_bound_scan` and the incumbent update, so even in Phase 2
   one LP can opportunistically resolve *other* pending reactions — the same co-optimization
-  trick. A correctness guard (line 667–686) detects when a warm-started optimum is *worse* than
+  trick. A correctness guard detects when a warm-started optimum is *worse* than
   the incumbent (a sign of a degenerate/stale basis) and rebuilds the LP and re-solves from
   scratch for that objective.
 
-`threads` auto-selects to `Configuration().processes` only when the model has `≥ 1000`
-reactions, else `1` (line 304–305). Note the asymmetry that drives §5.6: the parallel path is
+`threads` auto-selects to `Configuration.processes` only when the model has `≥ 1000`
+reactions, else `1`. Note the asymmetry that drives §5.6: the parallel path is
 gated on **`n_remaining ≥ 1000`**, i.e. on how many objectives *survive Phase 1*, not on the
 model size.
 
 #### Internal compression (`compress`) and result expansion
 
-When `compress` is `None`/`True` and the model has `≥ 200` reactions (line 300–301),
+When `compress` is `None`/`True` and the model has `≥ 200` reactions,
 `speedy_fva` first lumps flux-coupled reactions and removes conservation rows
-(`_compress_for_fva`, line 49) — a *single* nullspace pass (no recursive fixpoint), since FVA
+(`_compress_for_fva`) — a *single* nullspace pass (no recursive fixpoint), since FVA
 needs only first-order couplings — runs FVA on the smaller compressed model, then expands the
-results back via `_expand_fva` (line 114), scaling lumped reactions by their coupling factor
-(with a min/max swap when the factor is negative, line 138–140) and filling blocked reactions
+results back via `_expand_fva`, scaling lumped reactions by their coupling factor
+(with a min/max swap when the factor is negative) and filling blocked reactions
 with `0/0`. **All three preprocessing call sites pass `compress=False`**, because the model is
 already compressed by the pipeline's own COMPRESS passes; this is the key fact for §5.6.
 
 #### Contrast with `fva_legacy`
 
-`fva_legacy` (`lptools.py:285`) always solves the full `2n` LPs (parallel over an `SDPool` when
+`fva_legacy` (`lptools.py`) always solves the full `2n` LPs (parallel over an `SDPool` when
 `processes > 1 and numr > 300`, else a serial warm-started loop), with no scan phase, no `v=0`
 shortcut, no co-optimization, and no `reaction_list` scoping. On genome-scale models
 `speedy_fva`'s Phase 1 typically resolves well over half of the `2n` objectives with a handful
@@ -2371,7 +2371,7 @@ the single largest preprocessing slice ([Ch 11](#ch11)). Every structural reason
 the three call sites and in `speedy_fva`'s control flow:
 
 1. **It is whole-model — no `reaction_list`.** FVA #2 (`bound_blocked_or_irrevers_fva`,
-   `networktools.py:1598`) forwards its kwargs to `fva` with *no* `reaction_list`, so
+   `networktools.py`) forwards its kwargs to `fva` with *no* `reaction_list`, so
    `speedy_fva` must resolve **all `2n` objectives** — every bound of every reaction — because
    the bound-relaxation logic in §5.3 needs the true range of *every* reaction, not just
    knockable ones. FVA #1 is also whole-model but runs on the smaller pre-GPR network; FVA #3
@@ -2393,11 +2393,11 @@ the three call sites and in `speedy_fva`'s control flow:
    cushions the LP cost.
 
 4. **Phase 2 likely drops below the parallel threshold.** `speedy_fva` parallelizes Phase 2
-   only when `n_remaining ≥ 1000` (line 543). Phase 1's scan LPs are very effective at resolving
+   only when `n_remaining ≥ 1000`. Phase 1's scan LPs are very effective at resolving
    the many trivially-bounded reactions of a GPR-extended model (huge numbers of forward-only
    reactions with `lb=0`, resolved by the `v=0` shortcut and the `min Σ|x|` scan), so the
    *residual* handed to Phase 2 can fall **below 1000** — at which point Phase 2 runs the
-   **sequential, single-threaded** path (line 611), grinding through the residual individual LPs
+   **sequential, single-threaded** path, grinding through the residual individual LPs
    one at a time. A residual of a few hundred genome-scale LPs solved serially, each on a
    several-thousand-variable model, accounts for the bulk of the 117 s. (Phase 1's own push LPs
    are cheap thanks to dual-simplex warm-starting; the cost concentrates in the serial Phase 2
@@ -2422,19 +2422,19 @@ OptCouple, DoubleOpt) — is expressed through one of two linear-programming dua
 applied to a standard-form linear system. This chapter derives those two operations, states the
 theorems they instantiate, and reads the code that builds them:
 
-- `LP_dualize` (`strainDesignProblem.py:1028`) — the LP dual of a maximization LP, used to
+- `LP_dualize` (`strainDesignProblem.py`) — the LP dual of a maximization LP, used to
   certify *optimality* of an inner problem by strong duality.
-- `farkas_dualize` (`strainDesignProblem.py:1141`) — the Farkas (alternative-system) dual, used
+- `farkas_dualize` (`strainDesignProblem.py`) — the Farkas (alternative-system) dual, used
   to certify *infeasibility* of an undesired flux region.
 
 Both are the same matrix transpose with different bookkeeping, and `farkas_dualize` literally
-calls `LP_dualize` (`strainDesignProblem.py:1188`). Understanding the one construction, and the
+calls `LP_dualize` (`strainDesignProblem.py`). Understanding the one construction, and the
 two theorems it serves, explains the entire block-assembly logic of `addModule`
-(`strainDesignProblem.py:227`).
+(`strainDesignProblem.py`).
 
 This chapter produces the **continuous rows** — dual variables, dual-feasibility constraints,
 strong-duality equalities, and the primal blocks they are paired with. It does *not* attach the
-binary intervention variables `z` to those rows; that is `link_z` (`strainDesignProblem.py:699`)
+binary intervention variables `z` to those rows; that is `link_z` (`strainDesignProblem.py`)
 and is owned by [Ch 7](#ch7). Where the dual bookkeeping matrices `z_map_vars`, `z_map_constr_ineq`,
 `z_map_constr_eq` are updated here, we explain *what they now point at* so [Ch 7](#ch7) can wire them, but
 the actual big-M / indicator machinery is deferred there.
@@ -2471,7 +2471,7 @@ that each `z` still maps cleanly onto the object (a reaction) it knocks out — 
 #### 6.2.1 Primal standard form
 
 Every primal the code dualizes is produced by `build_primal_from_cbm`
-(`strainDesignProblem.py:971`) and has the shape
+(`strainDesignProblem.py`) and has the shape
 
 $$
 \begin{aligned}
@@ -2483,17 +2483,15 @@ $$
 $$
 
 with `x ∈ ℝ^{n}`. For a bare metabolic primal, `A_eq = S` (so `b_eq = 0`, `Sv=0`), `A_ineq` holds
-the module's `V_ineq` rows, and `lb, ub` are the flux bounds (`strainDesignProblem.py:1013-1023`).
+the module's `V_ineq` rows, and `lb, ub` are the flux bounds (`strainDesignProblem.py`).
 
-The **sense is maximization**. This is important and easy to get wrong: `LP_dualize`'s docstring
-writes the format as `min{c'x}`, but the transform it implements is the dual of the *maximization*
-$\max c^\top x$. This was verified directly (see §6.2.4): dualizing the metabolic primal with the
+The **sense is maximization**. The transform it implements is the dual of the *maximization* $\max c^\top x$ — the `LP_dualize` docstring documents this convention. It is easy to get the sense wrong, so it was verified directly (see §6.2.4): dualizing the metabolic primal with the
 biomass objective and solving the returned dual reproduces the FBA optimum only under the max
 reading. Throughout `addModule`, a maximize-sense inner objective is stored *negated* precisely so
 that the downstream strong-duality equality comes out as a clean sum-to-zero (§6.4).
 
 Variables carry a **sign class**, and it is the class — not the numeric bound values — that decides
-the dual constraint sense. The code computes the three classes at `strainDesignProblem.py:1107-1109`
+the dual constraint sense. The code computes the three classes at `strainDesignProblem.py`
 from the *original* bounds, before any bound is rewritten:
 
 ```
@@ -2531,7 +2529,7 @@ statement with a universal quantifier, now written as flat linear rows.
 in the *same* standard container `(A_ineq, b_ineq, A_eq, b_eq, lb, ub, c, z_maps…)`, so that dualized
 systems can themselves be re-dualized (RobustKnock does this — §6.5.3).
 
-**Step 1 — inhomogeneous bounds become inequality rows** (`strainDesignProblem.py:1104-1114`). A
+**Step 1 — inhomogeneous bounds become inequality rows** (`strainDesignProblem.py`). A
 finite nonzero lower/upper bound is not left on the variable; it is appended to `A_ineq_p` as an
 explicit row so it acquires its own dual multiplier:
 
@@ -2547,15 +2545,15 @@ nonnegativity is carried by the *sign class*, not a row). This is why the sign c
 magnitude are decoupled: sign → dual constraint sense; finite magnitude → an extra `≥0` dual
 variable.
 
-**Step 2 — variable class ⇒ dual constraint sense** (`strainDesignProblem.py:1116-1123`). Writing
+**Step 2 — variable class ⇒ dual constraint sense** (`strainDesignProblem.py`). Writing
 the stacked primal constraint columns as $A[:,j] = (A_{\text{eq}}[:,j]\, ;\, A_{\text{ineq}}[:,j])$ and the stacked dual
 vector as $y = (\lambda\, ;\, \mu)$, the transpose is split by class:
 
 | primal variable `x_j` | class | dual row built | code |
 |---|---|---|---|
-| free $x_j \in \mathbb{R}$ | `x_eR` | $A_{\text{eq}}[:,j]^\top \lambda + A_{\text{ineq}}[:,j]^\top \mu = c_j$ (equality) | line 1122-1123 |
-| $x_j \ge 0$ | `x_geq0` | $-(A_{\text{eq}}[:,j]^\top \lambda + A_{\text{ineq}}[:,j]^\top \mu) \le c_j$  i.e. reduced-cost row into `A_ineq` | line 1118, 1121 |
-| $x_j \le 0$ | `x_leq0` | $(A_{\text{eq}}[:,j]^\top \lambda + A_{\text{ineq}}[:,j]^\top \mu) \le -c_j$ | line 1120, 1121 |
+| free $x_j \in \mathbb{R}$ | `x_eR` | $A_{\text{eq}}[:,j]^\top \lambda + A_{\text{ineq}}[:,j]^\top \mu = c_j$ (equality) | |
+| $x_j \ge 0$ | `x_geq0` | $-(A_{\text{eq}}[:,j]^\top \lambda + A_{\text{ineq}}[:,j]^\top \mu) \le c_j$  i.e. reduced-cost row into `A_ineq` | |
+| $x_j \le 0$ | `x_leq0` | $(A_{\text{eq}}[:,j]^\top \lambda + A_{\text{ineq}}[:,j]^\top \mu) \le -c_j$ | |
 
 The free-variable rows land in the dual's `A_eq` (equality — a free primal variable forces
 stationarity exactly), the sign-constrained rows land in the dual's `A_ineq` (a one-sided
@@ -2570,7 +2568,7 @@ primal variable  →  dual constraint
 
 read off the columns of `[A_eq ; A_ineq]`.
 
-**Step 3 — constraint class ⇒ dual variable class** (`strainDesignProblem.py:1124-1125`). The dual
+**Step 3 — constraint class ⇒ dual variable class** (`strainDesignProblem.py`). The dual
 variables are ordered `[λ (one per A_eq row) ; μ (one per A_ineq row)]` with bounds
 
 ```
@@ -2590,12 +2588,12 @@ primal constraint  →  dual variable
       ≤            →       y ≥ 0
 ```
 
-**Step 4 — dual objective** (`strainDesignProblem.py:1126`). `c = b_eq_p + b_ineq_p`: the dual's
+**Step 4 — dual objective** (`strainDesignProblem.py`). `c = b_eq_p + b_ineq_p`: the dual's
 objective coefficients are the primal's right-hand sides, in the same `[λ ; μ]` order. Because
 `b_eq = 0` for the pure `Sv=0` rows, only the module RHS and the finite-bound rows contribute — the
 dual objective is a weighted sum of flux bounds and module thresholds.
 
-**Step 5 — the `z`-map transposition** (`strainDesignProblem.py:1128-1133`). This is the part that
+**Step 5 — the `z`-map transposition** (`strainDesignProblem.py`). This is the part that
 makes dualization *reusable inside a knockout MILP*, and it is the reason these functions carry the
 three bookkeeping matrices everywhere. A knockout removes a *reaction*; in the primal a reaction is
 a *variable*, but after dualization the same knockout must remove the corresponding *dual object*.
@@ -2614,10 +2612,10 @@ Reading it in words: reaction `j`'s flux variable maps, after dualization, onto 
 row* (its dual constraint); a knockable primal constraint maps onto its *dual multiplier*. The
 appended LB/UB bound rows get zero columns in `z_map_vars` — their multipliers are never knocked out
 directly (their knockout is handled through the flux variable they bound). The overlap guard at
-`strainDesignProblem.py:1087-1099` enforces the invariant that no single `z` simultaneously flags a
+`strainDesignProblem.py` enforces the invariant that no single `z` simultaneously flags a
 variable *and* a constraint in the same block, which would make the transpose ambiguous.
 
-**Step 6 — `reassign_lb_ub_from_ineq`** (`strainDesignProblem.py:1134`, defined at
+**Step 6 — `reassign_lb_ub_from_ineq`** (`strainDesignProblem.py`, defined at
 `:1207`). After transposing, many dual `A_ineq` rows are single-entry (a reduced-cost row on a dual
 variable with no metabolic coupling). This helper folds single-variable inequality rows back into
 `lb/ub` on the dual variables, *except* where the row is flagged knockable (`z_map_constr_ineq`
@@ -2673,28 +2671,28 @@ is a **Farkas certificate** (a separating / infeasibility certificate).
 
 #### 6.3.2 `farkas_dualize`
 
-`farkas_dualize` (`strainDesignProblem.py:1141`) builds precisely system (II) for the undesired
+`farkas_dualize` (`strainDesignProblem.py`) builds precisely system (II) for the undesired
 region. Its steps:
 
-1. **Zero objective** (`strainDesignProblem.py:1185`): `c_p = [0,…,0]`. The certificate is about
+1. **Zero objective** (`strainDesignProblem.py`): `c_p = [0,…,0]`. The certificate is about
    *feasibility*, not optimization, so there is no objective. This also removes the entire
    reduced-cost RHS from the dual constraints of §6.2.3 (all right-hand sides `±c_j` become `0`),
    leaving the *homogeneous* dual `A^T y ≥ 0 / = 0`.
 
-2. **Dualize** (`strainDesignProblem.py:1188-1191`): call `LP_dualize` with that zero objective.
+2. **Dualize** (`strainDesignProblem.py`): call `LP_dualize` with that zero objective.
    The returned `(A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, lb_f, ub_f, c_d, …)` is the homogeneous dual;
    crucially `c_d = b_eq_p + b_ineq_p` is the *primal right-hand side vector* `b`.
 
-3. **Normalization row** (`strainDesignProblem.py:1192-1194`): append one inequality
+3. **Normalization row** (`strainDesignProblem.py`): append one inequality
 
    ```
-   A_ineq_f = [ A_ineq_d ; c_d ]          (line 1193)
-   b_ineq_f =   b_ineq_d + [ −1 ]         (line 1194)
+   A_ineq_f = [ A_ineq_d ; c_d ]
+   b_ineq_f =   b_ineq_d + [ −1 ]
    ```
 
    i.e. $c_d^\top y \le -1$, which is $b^\top y \le -1$. This is the $b^\top y < 0$ clause of Farkas' lemma,
    with the strict inequality replaced by a fixed slack $\le -1$. A knockable-column of zeros is added
-   to `z_map_constr_ineq` for this new row (`strainDesignProblem.py:1201`) — the normalization row
+   to `z_map_constr_ineq` for this new row (`strainDesignProblem.py`) — the normalization row
    is structural and never itself knocked out.
 
 The result is a *feasibility* system in `y`: it is solvable exactly when the undesired region is
@@ -2702,7 +2700,7 @@ infeasible. Making the undesired region infeasible *after knockouts* therefore r
 this dual system feasible after the same knockouts — which is a set of ordinary linear rows the MILP
 can hold, with `z` switching the rows that correspond to knocked reactions (via the transposed
 `z_map` from §6.2.3). This is the `SUPPRESS` branch: `addModule` calls `farkas_dualize` at
-`strainDesignProblem.py:668` and sets a zero module objective `c_i` at `:670`.
+`strainDesignProblem.py` and sets a zero module objective `c_i` at `:670`.
 
 #### 6.3.3 Why the certificate is unbounded by nature, and the normalization row
 
@@ -2710,7 +2708,7 @@ A Farkas certificate is a **recession ray, not a point.** If $y^*$ satisfies $A^
 $b^\top y^* < 0$, then for any scalar $\alpha > 0$, $\alpha y^*$ satisfies $A^\top(\alpha y^*) \ge 0$ and $b^\top(\alpha y^*) < 0$ as
 well — the homogeneous constraints and the strict sign are both scale-invariant. The certificate
 lives on an open ray through the origin; the dual variables are **intrinsically unbounded** (the
-code sets `ub = +∞` and, for the `Sv=0`-derived duals, `lb = −∞`; §6.2.3, line 1124-1125).
+code sets `ub = +∞` and, for the `Sv=0`-derived duals, `lb = −∞`; §6.2.3).
 
 The $c_d^\top y \le -1$ normalization does two jobs at once:
 
@@ -2733,7 +2731,7 @@ This is emergent from the cone geometry, not a hard-coded "SUPPRESS ⇒ indicato
 
 #### 6.3.4 The `b^T y ≠ 0` caveat
 
-The docstring (`strainDesignProblem.py:1151-1158`) flags an unimplemented special case. When the
+The docstring (`strainDesignProblem.py`) flags an unimplemented special case. When the
 undesired region is described purely by equalities $A x = b$ with **all variables free**
 ($x \in \mathbb{R}^n$) and **$b \neq 0$**, the correct Farkas alternative requires $b^\top y \neq 0$ (not $b^\top y < 0$):
 an all-equality, all-free system $Ax=b$ is infeasible iff there is a `y` in the left null space of
@@ -2772,19 +2770,19 @@ statement "`v` maximizes the inner objective."
 
 In the code this equality appears as a **sum**, not a difference, because the maximize-sense inner
 objective is stored negated. Concretely, in the inner-objective branch
-(`strainDesignProblem.py:247-299`):
+(`strainDesignProblem.py`):
 
 - `c_in` is the inner objective, negated when the sense is `MAXIMIZE` (the default):
-  $c_{\text{in}} = -c_{\text{inner}}$ (`strainDesignProblem.py:250-253`).
+  $c_{\text{in}} = -c_{\text{inner}}$ (`strainDesignProblem.py`).
 - `build_primal_from_cbm` builds the region primal `_v` with objective `c_v = c_in`
-  (`strainDesignProblem.py:255-256`).
+  (`strainDesignProblem.py`).
 - `LP_dualize` dualizes the *unconstrained* inner primal and returns `c_inner_dual = b` (the primal
-  RHS) as the dual objective (`strainDesignProblem.py:258-262`).
-- The exact-optimality coupling (`strainDesignProblem.py:288-294`) block-diagonalizes the region
+  RHS) as the dual objective (`strainDesignProblem.py`).
+- The exact-optimality coupling (`strainDesignProblem.py`) block-diagonalizes the region
   primal with the dual and appends
 
   ```
-  A_eq row:  [ c_v | c_inner_dual ] · [v ; y] = 0        (line 293)
+  A_eq row:  [ c_v | c_inner_dual ] · [v ; y] = 0
   ```
 
   i.e. $c_v^\top v + c_{\mathrm{inner\_dual}}^\top y = 0$. With $c_v = -c_{\text{inner}}$ this reads
@@ -2799,36 +2797,36 @@ the whole construction end to end. (Contrast: solving the dual alone gives `0`; 
 #### 6.4.2 Exact vs relaxed inner optimality
 
 The inner problem need not be solved *to* the optimum — only *near* it. The module carries
-`INNER_OPT_TOL` $\in (0, 1]$ (default `1.0`, exact), handled at `strainDesignProblem.py:264-299`:
+`INNER_OPT_TOL` $\in (0, 1]$ (default `1.0`, exact), handled at `strainDesignProblem.py`:
 
-- **Exact (`inner_opt_tol = 1.0`, `strainDesignProblem.py:288-299`).** The single equality row of
+- **Exact (`inner_opt_tol = 1.0`, `strainDesignProblem.py`).** The single equality row of
   §6.4.1: `c_v^T v + c_inner_dual^T y = 0`. The optimizing flux must land on the inner-optimal face.
 
-- **Relaxed (`inner_opt_tol < 1.0`, `strainDesignProblem.py:265-287`).** Being within a fraction
+- **Relaxed (`inner_opt_tol < 1.0`, `strainDesignProblem.py`).** Being within a fraction
   `tol` of the optimum is not, by itself, a linear condition — you still need to *know* the optimum.
   The code introduces a second, **reference** copy of the inner primal (variables `x_ref`) whose only
   job is to attain the true optimum and anchor the dual. Two rows are added:
 
   ```
-  equality  (anchor):  c_inner^T x_ref + c_inner_dual^T d = 0     (line 273, dual at optimum)
-  inequality (relax):  c_v^T v + tol · c_inner_dual^T d ≤ 0       (line 271, actual ≥ tol·optimal)
+  equality  (anchor):  c_inner^T x_ref + c_inner_dual^T d = 0     (dual at optimum)
+  inequality (relax):  c_v^T v + tol · c_inner_dual^T d ≤ 0       (actual ≥ tol·optimal)
   ```
 
   The anchor equality pins the dual `d` to the true inner optimum via the reference primal `x_ref`;
   the relaxed inequality then requires the *actual* flux `v`'s inner-objective value to be at least
   `tol` times that optimum. The three blocks — actual primal `_v`, reference primal `_inner`, dual
-  `_dual` — are block-diagonalized at `strainDesignProblem.py:275-283`, and their `z`-maps
+  `_dual` — are block-diagonalized at `strainDesignProblem.py`, and their `z`-maps
   concatenated (the anchor/relax rows get zero knockable columns). This reference-primal pattern
-  recurs verbatim in the relaxed *outer* objective (`strainDesignProblem.py:604-631`) and in
+  recurs verbatim in the relaxed *outer* objective (`strainDesignProblem.py`) and in
   DoubleOpt (§6.5.5).
 
 #### 6.4.3 Optional outer objective on PROTECT/SUPPRESS
 
 A PROTECT or SUPPRESS module may itself carry an *outer* objective to be optimized over the
-inner-optimal set (`strainDesignProblem.py:584-643`). The already-assembled bilevel `_p` (region
+inner-optimal set (`strainDesignProblem.py`). The already-assembled bilevel `_p` (region
 primal ⊕ inner dual) is dualized *again* by `LP_dualize` with the outer objective `c_out`
-(`strainDesignProblem.py:598-601`), and coupled by the same strong-duality equality
-(`strainDesignProblem.py:632-643` exact, `:604-631` relaxed with a reference copy of the whole `_p`).
+(`strainDesignProblem.py`), and coupled by the same strong-duality equality
+(`strainDesignProblem.py` exact, `:604-631` relaxed with a reference copy of the whole `_p`).
 Nesting `LP_dualize` on an already-dual system is possible precisely because it returns its output in
 the same standard container it consumes (§6.2.3) — the transform is closed under composition.
 
@@ -2845,72 +2843,72 @@ Because `LP_dualize` (a) consumes and produces the same container, (b) transpose
 knockouts survive the transform, and (c) can be applied to its own output, the module builders in
 `addModule` are just different *stackings* of the two primitives. The following subsections walk each.
 
-#### 6.5.1 Inner-objective PROTECT / SUPPRESS (`strainDesignProblem.py:247-299`)
+#### 6.5.1 Inner-objective PROTECT / SUPPRESS (`strainDesignProblem.py`)
 
 One strong-duality link. Build region primal `_v` (with the module's desired/undesired constraints),
 dualize the unconstrained inner primal, couple with `c_v^T v + c_inner_dual^T y = 0` (§6.4.1). Then
-dispatch by type (`strainDesignProblem.py:658-674`): **PROTECT** treats the coupled system as a raw
-feasibility block (`reassign_lb_ub_from_ineq`, no MILP objective, `strainDesignProblem.py:658-666`);
+dispatch by type (`strainDesignProblem.py`): **PROTECT** treats the coupled system as a raw
+feasibility block (`reassign_lb_ub_from_ineq`, no MILP objective, `strainDesignProblem.py`);
 **SUPPRESS** wraps the coupled system in `farkas_dualize` to demand its *infeasibility*
-(`strainDesignProblem.py:667-674`). The same bilevel `_p` thus serves both "keep the inner-optimal
+(`strainDesignProblem.py`). The same bilevel `_p` thus serves both "keep the inner-optimal
 production reachable" and "make inner-optimal-with-target-production impossible," differing only in
 which final primitive (feasibility vs Farkas) is applied.
 
-#### 6.5.2 OptKnock — bilevel max-min (`strainDesignProblem.py:300-361`)
+#### 6.5.2 OptKnock — bilevel max-min (`strainDesignProblem.py`)
 
 OptKnock maximizes an outer objective `c_out` over the *inner-optimal* flux set:
 $\max_z \max_{v \in \arg\max c_{\text{inner}}^\top v} c_{\text{out}}^\top v$. Construction:
 
 1. Region/inner primals and the inner dual are built as in §6.5.1, coupled by strong duality
-   (`strainDesignProblem.py:308-339`), giving a system whose feasible set is exactly the
+   (`strainDesignProblem.py`), giving a system whose feasible set is exactly the
    inner-optimal face.
 2. The **whole coupled inner** is then dualized once more with the outer objective `c_out_in_p`
-   (`strainDesignProblem.py:340-342`), and the outer problem `_r` is joined to that second dual by a
-   further strong-duality equality (`strainDesignProblem.py:343-354`). Bounds are reassigned
-   (`strainDesignProblem.py:355-357`) and the outer objective set (`strainDesignProblem.py:358-361`,
+   (`strainDesignProblem.py`), and the outer problem `_r` is joined to that second dual by a
+   further strong-duality equality (`strainDesignProblem.py`). Bounds are reassigned
+   (`strainDesignProblem.py`) and the outer objective set (`strainDesignProblem.py`,
    and the final MILP objective at `:675-685`).
 
 The max-min is thus two `LP_dualize` calls: one to characterize the inner-optimal face, one to turn
 the maximization *over* that face into flat rows.
 
-#### 6.5.3 RobustKnock — three levels, two nested dualizations (`strainDesignProblem.py:300-361`)
+#### 6.5.3 RobustKnock — three levels, two nested dualizations (`strainDesignProblem.py`)
 
 RobustKnock is the *pessimistic* OptKnock: $\max_z \min_{v \in \arg\max c_{\text{inner}}^\top v} c_{\text{out}}^\top v$ — it
 guards against the worst production the cell might choose among its growth-optimal fluxes. The extra
 `min` over the inner-optimal set is the third level. The code (same branch as OptKnock, distinguished
-by `MODULE_TYPE == ROBUSTKNOCK`) dualizes the inner primal (`strainDesignProblem.py:322-324`), builds
-the combined inner (region ⊕ inner-dual coupled, `strainDesignProblem.py:325-339`), then **dualizes
-that combined system with the negated outer objective** (`strainDesignProblem.py:340-342`, the joint
+by `MODULE_TYPE == ROBUSTKNOCK`) dualizes the inner primal (`strainDesignProblem.py`), builds
+the combined inner (region ⊕ inner-dual coupled, `strainDesignProblem.py`), then **dualizes
+that combined system with the negated outer objective** (`strainDesignProblem.py`, the joint
 min-max), and finally connects the outer primal `_r` to the dualized combined inner
-(`strainDesignProblem.py:343-354`). Two nested `LP_dualize` calls convert the three-level
+(`strainDesignProblem.py`). Two nested `LP_dualize` calls convert the three-level
 max-min-max into a single flat system; the inner `min` is expressed by dualizing it into a `max`
 that can share the outer maximization's sense.
 
-#### 6.5.4 OptCouple — growth-coupling distance (`strainDesignProblem.py:539-582`)
+#### 6.5.4 OptCouple — growth-coupling distance (`strainDesignProblem.py`)
 
 OptCouple maximizes the *gap* between the inner (growth) optimum *with* target production and the
 inner optimum *without* it — a design where product synthesis is forced by growth. It builds two
 bilevel systems: the production one (`_p`, inherited from the OptKnock-style block above) and a
 **no-production** one (`_b`), the latter constructed by adding the production reaction fixed to zero
-(`V_eq = prod_eq, v_eq = [0]`, `strainDesignProblem.py:544-545`), building its primal, and dualizing
-it (`strainDesignProblem.py:546-548`) with its own strong-duality coupling
-(`strainDesignProblem.py:549-561`). The two bilevel systems are block-diagonally joined
-(`strainDesignProblem.py:562-571`), an optional minimum growth-coupling potential is enforced as an
-inequality on the *difference* of the two inner objectives (`strainDesignProblem.py:572-576`), and the
-MILP objective is set to **maximize that difference** $c_p - c_b$ (`strainDesignProblem.py:581-582`).
+(`V_eq = prod_eq, v_eq = [0]`, `strainDesignProblem.py`), building its primal, and dualizing
+it (`strainDesignProblem.py`) with its own strong-duality coupling
+(`strainDesignProblem.py`). The two bilevel systems are block-diagonally joined
+(`strainDesignProblem.py`), an optional minimum growth-coupling potential is enforced as an
+inequality on the *difference* of the two inner objectives (`strainDesignProblem.py`), and the
+MILP objective is set to **maximize that difference** $c_p - c_b$ (`strainDesignProblem.py`).
 Same primitive, instantiated twice and subtracted.
 
-#### 6.5.5 DoubleOpt — two parallel strong-duality links (`strainDesignProblem.py:362-538`)
+#### 6.5.5 DoubleOpt — two parallel strong-duality links (`strainDesignProblem.py`)
 
 DoubleOpt enforces two optimality conditions on the *same* primal flux simultaneously (e.g. an inner
 and an outer objective both attained). It builds the region primal `_v`
-(`strainDesignProblem.py:377-378`) and dualizes two independent unconstrained inner primals — one per
-objective `c_in` and `c_in2` (`strainDesignProblem.py:379-388`). Two strong-duality links are then
+(`strainDesignProblem.py`) and dualizes two independent unconstrained inner primals — one per
+objective `c_in` and `c_in2` (`strainDesignProblem.py`). Two strong-duality links are then
 added over a shared column layout `[x_v | (x_ref1) | dual1 | (x_ref2) | dual2]`
-(`strainDesignProblem.py:389-533`), each either exact (one equality row) or relaxed (anchor equality
+(`strainDesignProblem.py`), each either exact (one equality row) or relaxed (anchor equality
 + relaxed inequality with a reference primal, §6.4.2), independently governed by `INNER_OPT_TOL` and
 `OUTER_OPT_TOL`. DoubleOpt dispatches PROTECT-style as a feasibility block
-(`strainDesignProblem.py:534-538`) with no MILP objective, and — note `strainDesignProblem.py:202` —
+(`strainDesignProblem.py`) with no MILP objective, and — note `strainDesignProblem.py` —
 is grouped with PROTECT/SUPPRESS as an "MCS-type" module for objective selection (minimize
 intervention cost). It is literally §6.5.1's link, laid down twice on one primal.
 
@@ -2938,7 +2936,7 @@ constraints, strong-duality equality rows, Farkas normalization rows, and the pr
 paired with — together with the `z_map_vars`, `z_map_constr_ineq`, `z_map_constr_eq` matrices that
 record *which reaction's knockout removes which row or variable* after all the transposition. What is
 **not** done here is attaching the binary intervention variables `z` to those rows. That is
-`link_z` (`strainDesignProblem.py:699`), [Ch 7](#ch7): it reads the `z_map_*` matrices, splits knockable
+`link_z` (`strainDesignProblem.py`), [Ch 7](#ch7): it reads the `z_map_*` matrices, splits knockable
 equalities into directional inequalities, tries to bound each row with an LP to obtain a valid
 big-M, and — where the bounding LP returns `±∞`, as it always does for the scale-free Farkas dual
 rows (§6.3.3) — falls back to native indicator constraints. The emergent split noted throughout this
@@ -2975,12 +2973,12 @@ x = [ z ; y ]        z ∈ {0,1}^{num_z},   y ∈ ℝ^{n_cont}
 
 with the `num_z` binaries occupying the *leading* columns (`self.idx_z = [0..numr-1]`,
 `SDProblem.__init__`:164) and all continuous module variables `y` appended afterward. The final
-`self.vtype = 'B'*num_z + 'C'*(z_map_vars.shape[1]-num_z)` (line 225) simply records that split.
+`self.vtype = 'B'*num_z + 'C'*(z_map_vars.shape[1]-num_z)` simply records that split.
 
 `z_j = 1` means "intervention `j` is applied". For a **knockout** that is removal of reaction `j`; for
-a **knock-in** the meaning is inverted (`z_inverted[j] = True`, set at line 148 from `ki_cost`), and
+a **knock-in** the meaning is inverted (`z_inverted[j] = True`, set from `ki_cost`), and
 the sign machinery of §7.6 flips the coupling so that `z_j = 1` still reads as "the intervention is
-made". One binary per *compressed* reaction: `self.num_z = numr` (line 144, `numr =
+made". One binary per *compressed* reaction: `self.num_z = numr` (`numr =
 len(model.reactions)`), because at this point the model has already been through both compression
 passes and GPR extension ([Ch 3](#ch3), [Ch 4](#ch4)), so a "reaction" may be a lumped subnet or a gene
 pseudoreaction. There is deliberately **no** separate binary per constraint or per variable — a single
@@ -3009,9 +3007,9 @@ write into and with which sense. They are the single source of truth linking the
 
 ### 7.2 `SDProblem.__init__` — the seed rows, `num_z`, and the M switch
 
-Before any module is added, `__init__` (line 95) lays down a 3-row skeleton over the `z` columns only.
+Before any module is added, `__init__` lays down a 3-row skeleton over the `z` columns only.
 
-#### The three fixed seed rows (line 156)
+#### The three fixed seed rows
 
 ```python
 self.A_ineq = sparse.csr_matrix([[-i for i in self.cost],   # row 0: idx_row_maxcost
@@ -3021,25 +3019,25 @@ self.b_ineq = [0.0, max_cost_or_sum, np.inf]
 ```
 
 with `self.cost` the per-reaction intervention weight (KO cost, overwritten by KI cost where a KI is
-defined; lines 145–151, `nan`→`0`). The three rows and their right-hand sides:
+defined;, `nan`→`0`). The three rows and their right-hand sides:
 
-- **Row 0, `idx_row_maxcost`** (line 153): $-\sum_j \text{cost}_j \cdot z_j \le 0$, i.e. $\sum_j \text{cost}_j z_j \ge 0$. With
+- **Row 0, `idx_row_maxcost`**: $-\sum_j \text{cost}_j \cdot z_j \le 0$, i.e. $\sum_j \text{cost}_j z_j \ge 0$. With
   non-negative costs this is slack at construction, but it is a *live lower bracket* on total
   intervention cost: the enumeration/optimization layer ([Ch 8](#ch8)) raises its RHS to force the solver past
   cost levels already exhausted, turning it into $\sum \text{cost}_j z_j \ge \kappa$. Keeping it as a permanent row
   means that lower bound can be tightened in place without restructuring the matrix.
 
-- **Row 1, `idx_row_mincost`** (line 154): $\sum_j \text{cost}_j z_j \le b$, the **budget cap**. Its RHS is
-  `self.max_cost` when the user supplied one, else $\sum_j |\text{cost}_j|$ (line 158) — the latter is a
+- **Row 1, `idx_row_mincost`**: $\sum_j \text{cost}_j z_j \le b$, the **budget cap**. Its RHS is
+  `self.max_cost` when the user supplied one, else $\sum_j |\text{cost}_j|$ — the latter is a
   vacuous cap (no design can cost more than the sum of all weights), present so the row always exists
   and can be tightened later. This is the constraint that makes "minimal" cut sets minimal-*enough*:
   no design exceeding the budget is admitted.
 
-- **Row 2, `idx_row_obj`** (line 155): an all-zero placeholder with RHS $+\infty$. For a pure MCS problem
+- **Row 2, `idx_row_obj`**: an all-zero placeholder with RHS $+\infty$. For a pure MCS problem
   the objective is *minimize intervention cost* and lives in the objective vector `self.c` (lines
   202–205: `c[j] = cost[j]`), so this row stays inert. For **bilevel** problems (OptKnock, OptCouple,
   …) the outer objective is a flux expression, not a cost sum; the row is then overwritten with the
-  objective coefficients (lines 210–212) and used by `fixObjective` (`strainDesignMILP.py`:239–241) to
+  objective coefficients and used by `fixObjective` (`strainDesignMILP.py`:239–241) to
   pin $c \cdot x \le \text{value}$ during the BEST search. Reserving row 2 up front lets that pin be a single
   `set_ineq_constraint` call rather than a matrix resize.
 
@@ -3047,11 +3045,11 @@ The naming (`maxcost` on the `≥ 0` row, `mincost` on the `≤ budget` row) rea
 RHS values and is best treated as an internal label; the *mathematics* is: row 0 lower-brackets and
 row 1 upper-brackets the weighted intervention sum, and row 2 is the swappable objective slot.
 
-The companion `z_map_constr_ineq` is initialised to `(numr × 3)` **zeros** (line 161): the seed rows
+The companion `z_map_constr_ineq` is initialised to `(numr × 3)` **zeros**: the seed rows
 are *not knockable* — they constrain `z`, they are not part of any flux subsystem, so no `z` ever
 "removes" them.
 
-#### `self.M` — the master indicator/big-M switch (lines 118–126)
+#### `self.M` — the master indicator/big-M switch
 
 ```python
 bound_thres = max(|cobra_conf.lower_bound|, |cobra_conf.upper_bound|)
@@ -3067,7 +3065,7 @@ finite bound. Its three regimes:
   **indicator constraints** (§7.7). This is the preferred, numerically clean path.
 - **cobra bound (GLPK).** GLPK has no indicator-constraint API, so `self.M` is forced finite (the
   cobra default bound, typically 1000) and *every* unbounded row becomes a big-M row with that
-  constant. A warning is logged (line 121). This is the escape hatch that lets the open-source solver
+  constant. A warning is logged. This is the escape hatch that lets the open-source solver
   run at all, at the cost of a loose, uniform M.
 - **user override.** Passing `M=<value>` in kwargs pins the fallback explicitly (for a solver that
   supports indicators, this forces big-M everywhere a bound is missing).
@@ -3076,11 +3074,11 @@ So `self.M` decides what happens to the rows the bounding LP *cannot* bound; the
 everything else. The emergent SUPPRESS→indicator / PROTECT→big-M split (§7.8) is a downstream
 consequence of this, not a separate branch.
 
-### 7.3 `addModule` — block-diagonal assembly (line 227)
+### 7.3 `addModule` — block-diagonal assembly
 
 Each module produces its own block `(A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, c_i)` plus its
 own three z-maps `z_map_*_i` (the [Ch 6](#ch6) dual/primal machinery; here we only care about *how* the block
-joins the master). The join (lines 687–697) is:
+joins the master). The join is:
 
 ```python
 self.z_map_constr_ineq = hstack((self.z_map_constr_ineq, z_map_constr_ineq_i))  # 688
@@ -3127,9 +3125,9 @@ feasible.
 which of that module's *new* rows/variables reaction `j` controls, so after the `hstack` the master
 maps know, for every row in the assembled system, which `z` (if any) knocks it and with what polarity.
 
-### 7.4 `prevent_boundary_knockouts` — why nonzero-sign bounds must be moved (line 1322)
+### 7.4 `prevent_boundary_knockouts` — why nonzero-sign bounds must be moved
 
-This runs inside `build_primal_from_cbm` (line 1024), before dualization, on every primal flux
+This runs inside `build_primal_from_cbm`, before dualization, on every primal flux
 system. It repairs a specific incompatibility between the KO encoding and reactions whose flux is
 *forced away from zero*.
 
@@ -3149,7 +3147,7 @@ bound-multiplication view the docstring uses (multiply the bound by `z` to simul
 multiplying a bound that lies strictly on one side of 0 can never *reach* 0, so **the residual bound
 still forces flux**.
 
-#### The transformation (lines 1363–1377)
+#### The transformation
 
 For each knockable column (`col_has_z`, from `z_map_vars`):
 
@@ -3160,27 +3158,25 @@ if ub_j < 0:   add row  +v_j ≤  ub_j      (i.e.  v_j ≤ ub_j),   then set ub_
 
 The obligation is *moved out of the variable box and into an explicit inequality row*, and the box is
 reset so that `0 ∈ [lb_j, ub_j]`. Concretely, `lb_j > 0` becomes box `[0, ub_j]` plus a standalone row
-`v_j ≥ lb_j`. The new rows are appended with **zero z-columns** (line 1377: `hstack([z_map_constr_ineq,
+`v_j ≥ lb_j`. The new rows are appended with **zero z-columns** (: `hstack([z_map_constr_ineq,
 zeros(numz, new_z_cols)])`) — they are **non-knockable**. That is the crucial point: the obligation is
 now a fixed property of the flux system that survives into the dual as an ordinary constraint with an
 unconditioned multiplier, rather than a variable bound that the z-machinery would try (and fail) to
 multiply. The KO machinery can now cleanly collapse the (0-containing) box, and the moved row, carrying
 no `z`, cannot be corrupted by the coupling.
 
-(The docstring's summary says "negative lower / positive upper bounds"; the *code* moves `lb > 0` and
-`ub < 0`. Trust the code: it is the nonzero-sign bounds — the ones that exclude 0 — that break the
-encoding.)
+(It moves the nonzero-sign bounds — `lb > 0` and `ub < 0`, the ones that exclude 0, since those are what break the encoding.)
 
 In practice this fires rarely, because FVA preprocessing ([Ch 5](#ch5)) has already relaxed non-binding bounds
 to `±∞` and pinned irreversible/blocked reactions to 0; the survivors are the genuinely
 obligatory-flux reactions, and this function is what keeps them knockable.
 
-### 7.5 `link_z` — the heart of the chapter (line 699)
+### 7.5 `link_z` — the heart of the chapter
 
 `link_z` transforms the assembled but *unlinked* system — where `z`-columns are still zero in every
 module row — into a fully coupled MILP. Six steps.
 
-#### Step 1: knockable equalities → ± inequality pairs (lines 718–734)
+#### Step 1: knockable equalities → ± inequality pairs
 
 You cannot "relax an equality with a big-M" in one row: `a·x = b` gated off needs both `a·x ≤ b` and
 `a·x ≥ b` to disappear. So each knockable equality (a nonzero column of `z_map_constr_eq`) is split:
@@ -3190,12 +3186,12 @@ a·x = b     →     a·x ≤ b   and   −a·x ≤ −b
 ```
 
 Both new inequalities are gated by the *same* `z` (`z_eq = z_map_constr_eq[:, tuple(idx)*2]`,
-line 723 — the column is duplicated). The originals are deleted from `A_eq` (lines 729–732). When the
+ — the column is duplicated). The originals are deleted from `A_eq`. When the
 gate is *inactive*, the pair re-imposes the equality exactly; when active, both directions relax. (If
 this equality later lands on the indicator path with both directions unbounded, §7.7's lumping step
 fuses the pair *back* into a single `'E'` indicator — the split is undone once it is no longer needed.)
 
-#### Step 2: variable-KOs → inequality rows (lines 736–758)
+#### Step 2: variable-KOs → inequality rows
 
 A knockable *variable* (nonzero column of `z_map_vars`) is translated into an inequality that pins its
 flux to 0 on the relevant side:
@@ -3206,12 +3202,12 @@ if lb_j < 0:   row  −1·v_j ≤ 0     (knock the negative side toward 0)
 ```
 
 A reversible reaction (`lb_j<0<ub_j`) gets *both* rows. The gating column is `z_lb_ub =
-−z_map_vars[:, cols]` (line 751) — **note the negation**. A plain KO reaction has `z_map_vars` entry
+−z_map_vars[:, cols]` — **note the negation**. A plain KO reaction has `z_map_vars` entry
 `+1`; negated to `−1`, which by the polarity convention (§7.6) means "enforce the row when `z=1`" —
 exactly right: applying the KO (`z=1`) must *enforce* `v_j ≤ 0`. So the negation is what makes a
 knockout gate correctly.
 
-#### Step 3: the per-constraint bounding LP (lines 760–846)
+#### Step 3: the per-constraint bounding LP
 
 For every knockable inequality row `a·x ≤ b`, we need a big-M large enough that when the gate relaxes
 it, the row becomes non-binding. The valid/tight-M theory:
@@ -3233,20 +3229,20 @@ Dropping *every* knockable row is what makes `P_relaxed` a superset of every act
 polytope (any real design drops only *some* rows), so `max a·x` over `P_relaxed` upper-bounds `a·x`
 over any knocked subsystem — hence a **valid** M — and taking the exact max makes it **tight**.
 
-Because solving one LP per knockable row is expensive, rows are triaged by sparsity (lines 787–802):
+Because solving one LP per knockable row is expensive, rows are triaged by sparsity:
 
 - **`nnz == 0`** (empty row): `max = 0`. (`n_zero`)
 - **`nnz == 1`** (single variable `coeff·v_c`): `max = coeff·ub_c` if `coeff>0` else `coeff·lb_c`,
   read straight off the box; `∞` if that bound is infinite. (`n_single`)
 - **`nnz ≥ 2`**: needs an actual LP, $\max a \cdot x = -\min(-a \cdot x)$ over `P_relaxed`. (`n_lp`)
 
-logged as `Bounding MILP: N constraints (X zero, Y single-var, Z need LP)` (line 805). Only the `n_lp`
+logged as `Bounding MILP: N constraints (X zero, Y single-var, Z need LP)`. Only the `n_lp`
 rows hit the solver, optionally across a worker pool (`worker_compute` maximises `a·x` by minimising
-`−a·x` and negating, line 1421–1422). Finite results are rounded *up* to 5 digits (`ceil(M·1e5)/1e5`,
-line 839) to stay safely on the valid side; **infinite** results are replaced by `self.M` (line 839) —
+`−a·x` and negating). Finite results are rounded *up* to 5 digits (`ceil(M·1e5)/1e5`,
+) to stay safely on the valid side; **infinite** results are replaced by `self.M` —
 the point where §7.2's switch takes effect.
 
-#### Step 4: the fork at the M value (lines 847–864)
+#### Step 4: the fork at the M value
 
 For each knockable inequality row, `Ms[row]` is now either a finite number or `self.M` (which may be
 `inf`). The loop:
@@ -3283,37 +3279,37 @@ Both cases realize the same logic — "constraint holds in the active state, eva
 state" — with the polarity dictated by the `z_map` sign. The finite-M rows are now permanently part of
 `A_ineq`; only their `z`-column entries changed.
 
-#### Steps 5–6: indicators and cleanup (lines 866–948)
+#### Steps 5–6: indicators and cleanup
 
-Every row still carrying `isinf(Ms[row])` (`knockable_constr_ineq_ic`, line 869) becomes a **native
-indicator constraint**. First, a **lumping** pass (lines 874–925) undoes the step-1 split where it is
-no longer useful: rows are canonicalised by the sign of their first nonzero entry (line 879), grouped
-by an exact `(indices, data)` key (lines 891–899), and pairs found to be identical up to a global sign
+Every row still carrying `isinf(Ms[row])` (`knockable_constr_ineq_ic`) becomes a **native
+indicator constraint**. First, a **lumping** pass undoes the step-1 split where it is
+no longer useful: rows are canonicalised by the sign of their first nonzero entry, grouped
+by an exact `(indices, data)` key, and pairs found to be identical up to a global sign
 flip (`ident_rows` product `−1`) — i.e. an `a·x ≤ b` and an `a·x ≥ b` on the same `z` — are fused into
-a single equality indicator (lines 905–913); exact duplicates (product `+1`) drop one copy. The
-survivors are packaged into an `IndicatorConstraints` object (lines 930–940) and *removed* from the
-static `A_ineq`/`A_eq` (lines 943–948), because an indicator row is enforced by the solver's logic
+a single equality indicator; exact duplicates (product `+1`) drop one copy. The
+survivors are packaged into an `IndicatorConstraints` object and *removed* from the
+static `A_ineq`/`A_eq`, because an indicator row is enforced by the solver's logic
 engine, not by the LP matrix.
 
 ### 7.6 Indicator constraints (`indicatorConstraints.py`)
 
-`IndicatorConstraints(binv, A, b, sense, indicval)` is a thin container (constructor at line 74) for
+`IndicatorConstraints(binv, A, b, sense, indicval)` is a thin container (constructor) for
 rows of the form
 
 ```
 z_{binv[k]} = indicval[k]   ⇒   A[k]·x  <sense[k]>  b[k]
 ```
 
-with `sense ∈ {'L','E','G'}` (≤, =, ≥). The container is populated in `link_z` (lines 930–940):
+with `sense ∈ {'L','E','G'}` (≤, =, ≥). The container is populated in `link_z`:
 
 - **`binv`** — the `z` index gating each row, read from the nonzero of the row's `z_map` column.
 - **`A, b`** — the surviving knockable inequality rows first (`'L'`), then the lumped equality rows
-  (`'E'`): `sense = 'L'*n_ineq + 'E'*n_eq` (line 934).
+  (`'E'`): `sense = 'L'*n_ineq + 'E'*n_eq`.
 - **`indicval`** — *which* value of the binary triggers enforcement, derived from the `z_map` polarity
-  (line 937): `[0 if d == 1 else 1 for d in data]`. So a `z_map` entry of **`+1` (KO) → `indicval = 0`**
+: `[0 if d == 1 else 1 for d in data]`. So a `z_map` entry of **`+1` (KO) → `indicval = 0`**
   (the constraint is enforced while the reaction is *present*, `z=0`, and released on knockout), and
   **`−1` (KI/addition) → `indicval = 1`** (enforced only when the reaction is *added*, `z=1`). The code
-  comment (lines 938–939) states this mapping directly. This is the exact combinatorial analogue of the
+  comment states this mapping directly. This is the exact combinatorial analogue of the
   big-M sense cases in §7.5 step 4.
 
 Semantically, $z = \text{indicval} \Rightarrow A \cdot x \;\{\le,=\}\; b$ and, when $z \ne \text{indicval}$, the constraint is simply *not
@@ -3380,14 +3376,14 @@ After `link_z`, the master problem is:
   lumped equalities that stayed on the big-M path; indicator equalities removed.
 - **`self.indic_constr`** — the `IndicatorConstraints` bundle.
 - **`self.c`** — for a pure MCS problem, `c[j] = cost[j]` on the `z` block, 0 elsewhere (minimize
-  intervention cost, `is_mcs_computation = True`, lines 202–205); for bilevel, `c` on `z` is 0 and the
-  outer objective sits in seed row 2 (lines 206–212). `self.c_bu` backs it up (line 215).
-- **`self.vtype = 'B'*num_z + 'C'*(z_map_vars.shape[1]-num_z)`** (line 225): the binary block is the
+  intervention cost, `is_mcs_computation = True`); for bilevel, `c` on `z` is 0 and the
+  outer objective sits in seed row 2. `self.c_bu` backs it up.
+- **`self.vtype = 'B'*num_z + 'C'*(z_map_vars.shape[1]-num_z)`**: the binary block is the
   leading `num_z` columns — the design variables `z`, which every module's coupling was wired into —
   and everything after is the continuous module variables (fluxes, dual rays) that hang off them
   block-diagonally.
 
-The `ContMILP` snapshot (lines 191–195) stores the continuous projection (all columns except `idx_z`)
+The `ContMILP` snapshot stores the continuous projection (all columns except `idx_z`)
 together with the three z-maps, so that a candidate design `z*` can be validated by substitution
 without re-solving the full MILP (used by `verify_sd`, [Ch 8](#ch8)). At this point the problem is a complete,
 solver-ready MILP: binaries coupled to continuous rows through tight per-constraint big-Ms where
@@ -3415,7 +3411,7 @@ constraint matrix as given and study what happens *at solve time*.
 ### 8.1 The objective is both a vector and a constraint row
 
 Everything in this chapter hinges on one structural decision made at MILP-construction time
-(`strainDesignProblem.py:152-160`): the top three rows of `A_ineq` are reserved, and **row 2 is a copy
+(`strainDesignProblem.py`): the top three rows of `A_ineq` are reserved, and **row 2 is a copy
 of the objective**.
 
 ```python
@@ -3429,12 +3425,12 @@ self.b_ineq = [0.0, max_cost, np.inf]              # row 2 rhs starts at +inf (i
 
 So the objective exists in **two representations simultaneously**:
 
-1. As the solver's objective vector `self.c` / `self.c_bu` (the backup copy, `strainDesignProblem.py:215`).
+1. As the solver's objective vector `self.c` / `self.c_bu` (the backup copy, `strainDesignProblem.py`).
    This is what the branch-and-bound engine *minimizes*.
 2. As inequality **row `idx_row_obj = 2`** of `A_ineq`, of the form $c \cdot x \le \beta$. Initially $\beta = +\infty$, so
    the row is inert (it constrains nothing).
 
-`fixObjective` (`strainDesignMILP.py:239-241`) is nothing but a rewrite of that row:
+`fixObjective` (`strainDesignMILP.py`) is nothing but a rewrite of that row:
 
 ```python
 def fixObjective(self, c, cx):
@@ -3443,7 +3439,7 @@ def fixObjective(self, c, cx):
 
 `resetObjective` (`:243-245`) restores the *vector* to `c_bu`; `setMinIntvCostObjective` (`:247-250`)
 clears the vector and installs the intervention-cost objective $\sum cost_i z_i$ over targetable `z`;
-`clear_objective` (`solver_interface.py:385-389`) zeroes the vector.
+`clear_objective` (`solver_interface.py`) zeroes the vector.
 
 **Why carry the objective as a row at all?** Because the algorithms below need to *decouple* two uses
 of the same linear form:
@@ -3456,7 +3452,7 @@ You cannot express "fix the objective at its optimum and then optimize a *differ
 resulting face" with a single objective vector. You need the optimum value pinned as a constraint while
 the vector is repurposed. Row 2 is exactly that pin. Concretely, BEST does: solve with vector `= c_bu`
 to get optimum `opt`; then `fixObjective(c_bu, opt)` pins $c_{bu} \cdot x \le opt$ (row 2) and
-`setMinIntvCostObjective()` swaps the vector to $\sum cost \cdot z$, so the next solve minimizes intervention
+`setMinIntvCostObjective` swaps the vector to $\sum cost \cdot z$, so the next solve minimizes intervention
 count *inside the optimal face*. Same linear form, two jobs, held apart by the vector/row duality.
 
 A subtle consequence: because row 2 is a genuine `≤` inequality, "fixing" the objective at value `v`
@@ -3466,7 +3462,7 @@ inequality is enough and avoids the numerical fragility of an equality row.
 
 ### 8.2 `solveZ` / `solve`: what one solver call returns
 
-`solveZ` (`strainDesignMILP.py:215-219`) is the workhorse wrapper:
+`solveZ` (`strainDesignMILP.py`) is the workhorse wrapper:
 
 ```python
 def solveZ(self):
@@ -3475,7 +3471,7 @@ def solveZ(self):
     return z, x, opt, status
 ```
 
-`self.solve()` (inherited from `MILP_LP`, `solver_interface.py:211-225`) dispatches to the backend,
+`self.solve` (inherited from `MILP_LP`, `solver_interface.py`) dispatches to the backend,
 then **rounds integer-typed variables** to the nearest integer (`int(round(x[i]))`) for all
 `vtype=='B'/'I'` positions. `solveZ` additionally slices out just the binary block `idx_z`, rounds to 5
 decimals, and returns it as a 1×`n_z` sparse row `z`, alongside the full primal `x`, the objective
@@ -3495,7 +3491,7 @@ verifies it, records it, and adds an exclusion cut so the next iteration must pr
 differ in **how the objective is set before each solve**, and that difference is the whole story of
 ANY vs BEST vs POPULATE.
 
-#### 8.3.1 ANY — `compute` (`strainDesignMILP.py:396-511`): feasibility-first, then subspace minimization
+#### 8.3.1 ANY — `compute` (`strainDesignMILP.py`): feasibility-first, then subspace minimization
 
 The user wants *some* valid design, not necessarily the smallest. Each outer iteration does two solves.
 
@@ -3551,7 +3547,7 @@ Note the design is minimal *within the subspace* — ANY does **not** guarantee 
 cost-minimal (a cheaper design might live in a subspace the feasibility solve never visited). That is
 precisely the guarantee BEST adds.
 
-#### 8.3.2 BEST — `compute_optimal` (`strainDesignMILP.py:289-392`): global optimum, then fix and iterate
+#### 8.3.2 BEST — `compute_optimal` (`strainDesignMILP.py`): global optimum, then fix and iterate
 
 The user wants the **globally cheapest** design(s), in nondecreasing cost order. The first solve is *not*
 a feasibility solve; it is a genuine global optimization (`:335-338`):
@@ -3579,12 +3575,12 @@ the **global** optimum: `fixObjective(c_bu, opt)` pins the optimal production va
 switches to minimizing knockouts, `setTargetableZ(z)` restricts to the found subspace, and the inner
 loop enumerates minimal-intervention designs that all achieve the optimal production value.
 
-#### 8.3.3 POPULATE — `enumerate` (`strainDesignMILP.py:515-613`): native solution pool per cost level
+#### 8.3.3 POPULATE — `enumerate` (`strainDesignMILP.py`): native solution pool per cost level
 
 The user wants **all equally-optimal designs at each cost level** — the exhaustive enumeration used for
 the correctness gates (e_coli_core = 455 MCS, iML1515 393 gene-MCS). The objective setup is the same as
 BEST (optimize, then fix the optimal value), but instead of extracting one solution per solve it calls
-the solver's **native solution pool** via `populateZ` (`:221-237`) → `populate` (`solver_interface.py:241-252`).
+the solver's **native solution pool** via `populateZ` (`:221-237`) → `populate` (`solver_interface.py`).
 
 For pure MCS (`:571`), the cost objective is already installed, so `enumerate` goes straight to
 `populateZ(remaining)`. For bilevel (`:571-580`) it first optimizes the production objective, fixes it,
@@ -3689,12 +3685,12 @@ superset cut + record; invalid → exact cut, no record.
 
 ### 8.5 `verify_sd`: re-checking validity in the true continuous subsystem
 
-`verify_sd` (`strainDesignMILP.py:260-287`) is the referee. Given one or more binary designs, it
+`verify_sd` (`strainDesignMILP.py`) is the referee. Given one or more binary designs, it
 reconstructs — for each — the **continuous LP that the design actually induces** and checks whether the
 strain-design intent is met, independently of the MILP's big-M/indicator machinery.
 
 Mechanically, it uses the stored `cont_MILP` (the continuous-only slice of the MILP,
-`strainDesignProblem.py:193-195`) together with three z→row/variable maps (`z_map_vars`,
+`strainDesignProblem.py`) together with three z→row/variable maps (`z_map_vars`,
 `z_map_constr_ineq`, `z_map_constr_eq`). For a design `sol`:
 
 ```python
@@ -3709,10 +3705,10 @@ valid[i] = not np.isnan(lp.slim_solve())
 
 The `logical_xor(sol[z_i], sense == -1)` handles the **knock-in inversion**: for a normal knockout
 (`sense == +1`) a `z_i = 1` deactivates the linked variable/row; for an addition/knock-in
-(`sense == -1`, the sign flip installed at `strainDesignProblem.py:182-189`) the polarity is reversed.
+(`sense == -1`, the sign flip installed at `strainDesignProblem.py`) the polarity is reversed.
 The result is the set of variables and constraints that *remain live* after the design is applied.
 `verify_sd` then builds the reduced LP over exactly those, and returns validity = "the reduced LP is
-feasible" (`slim_solve()` not NaN).
+feasible" (`slim_solve` not NaN).
 
 **Why re-verify at all, when the MILP already enforces the modules?** Three reasons:
 
@@ -3739,8 +3735,8 @@ tractable. Note it is passed `self.seed`, so even these auxiliary LPs are reprod
 #### 8.6.1 No MIP optimality gap is set — the 1e-4 consequence
 
 Neither backend sets a MIP relative or absolute **optimality** gap. Grep the interfaces:
-`cplex_interface.py:161-166` sets the *pool* gaps (`mip.pool.absgap`, `mip.pool.relgap`) and the
-*integrality* tolerance, but **never** `mip.tolerances.mipgap`; `gurobi_interface.py:162-163` sets
+`cplex_interface.py` sets the *pool* gaps (`mip.pool.absgap`, `mip.pool.relgap`) and the
+*integrality* tolerance, but **never** `mip.tolerances.mipgap`; `gurobi_interface.py` sets
 `PoolGap`/`PoolGapAbs` but **never** `MIPGap`. Both solvers therefore run at their **default relative
 MIP gap of `1e-4`**.
 
@@ -3756,23 +3752,23 @@ of gap). Do not confuse this with the `1e-9` values that *are* set: those are `O
 `FeasibilityTol`/`IntFeasTol` (Gurobi) and `simplex.tolerances.optimality`/`feasibility` +
 `mip.tolerances.integrality` (CPLEX) — LP-level and integrality tolerances, not the MIP optimality gap.
 
-#### 8.6.2 The solution-pool parameters are inert for single `solve()`
+#### 8.6.2 The solution-pool parameters are inert for single `solve`
 
 The CPLEX pool parameters `mip.pool.intensity = 4`, `mip.pool.absgap = 0`, `mip.pool.relgap = 0`
-(`cplex_interface.py:161-163`), and the Gurobi `PoolGap`/`PoolGapAbs = 1e-9` (`:162-163`), only take
+(`cplex_interface.py`), and the Gurobi `PoolGap`/`PoolGapAbs = 1e-9` (`:162-163`), only take
 effect during pool generation (`populate_solution_pool` / `PoolSearchMode = 2`). During an ordinary
-`solve()` — which is all ANY and BEST ever call — the pool stays empty and these settings do nothing.
+`solve` — which is all ANY and BEST ever call — the pool stays empty and these settings do nothing.
 They matter **only for POPULATE**, where `intensity = 4` (CPLEX's most aggressive pool search) and
 zero pool gaps mean "find *every* solution tied at the optimum". These are **verified inert for single
 solve**; they are not a performance bug and predate the current code (2022). Gurobi's `populate`
 additionally flips `PoolSearchMode = 2`, `NumericFocus = 2` on entry and resets them to `0` on exit
-(`gurobi_interface.py:305-309`), so single solves see the defaults.
+(`gurobi_interface.py`), so single solves see the defaults.
 
 #### 8.6.3 Seed → branch-and-bound tree shape → why speed needs a distribution
 
 The `seed` flows from the SD problem to the backend and lands on `randomseed` (CPLEX,
-`cplex_interface.py:158`), `Params.Seed` (Gurobi, `:157`), and `randomization/randomseedshift` (SCIP,
-`scip_interface.py:168`). If the user gives no seed, each backend draws one from `[0, 2^16)` and logs
+`cplex_interface.py`), `Params.Seed` (Gurobi, `:157`), and `randomization/randomseedshift` (SCIP,
+`scip_interface.py`). If the user gives no seed, each backend draws one from `[0, 2^16)` and logs
 it — so *even an unseeded run is reproducible after the fact*, given the logged seed.
 
 The seed perturbs tie-breaking throughout branch-and-bound: which fractional variable to branch on when
@@ -3789,7 +3785,7 @@ The numbers in §8.7 are useful as orders of magnitude but should be reproduced 
 optimization is judged to have helped. This is the single most important benchmarking discipline for
 this code: never tune against one seed.
 
-The `_trim_z_variables` step (`strainDesignMILP.py:107-149`) is a determinism-adjacent optimization
+The `_trim_z_variables` step (`strainDesignMILP.py`) is a determinism-adjacent optimization
 worth noting: it physically removes non-knockable (`ub=0`, `cost=0`) binary columns from the matrices
 before the solver sees them, shrinking the binary count and keeping the B&B tree from carrying dead
 variables. Solutions are expanded back to the original `z`-space afterward (`_expand_z_to_orig`,
@@ -3841,25 +3837,25 @@ preprocessing FVA, not the linking encoding.
 
 Neither SCIP nor GLPK exposes a native optimal-solution pool, so `enumerate`/POPULATE is **emulated** at
 the Python level, and both backends emit a warning steering the user toward `compute_optimal` instead
-(`strainDesignMILP.py:553-562`).
+(`strainDesignMILP.py`).
 
-**SCIP** (`scip_interface.py:282-336`) emulates `populate` by a solve-and-exclude loop: solve to the
+**SCIP** (`scip_interface.py`) emulates `populate` by a solve-and-exclude loop: solve to the
 optimum, add a constraint pinning `c·x ≤ min_cx` (optimality), exclude the found solution with an
 exact-pattern inequality cut (`addExclusionConstraintIneq`), and repeat until infeasible — reconstructing
 the pool one solution at a time. It supports indicator constraints natively (so no big-M is forced), and
 its seed enters via `randomization/randomseedshift`. It is correct but slower than a native pool, hence
 the "consider `compute_optimal`" advice.
 
-**GLPK** (`glpk_interface.py:291-349`) emulates `populate` the same solve-and-exclude way, but with two
+**GLPK** (`glpk_interface.py`) emulates `populate` the same solve-and-exclude way, but with two
 extra handicaps. First, GLPK has **no indicator constraints at all**, so z-linking is done entirely by
-**big-M**, defaulting to the COBRA bound `M = bound_thres` (typically 1000, `strainDesignProblem.py:120-124`).
+**big-M**, defaulting to the COBRA bound `M = bound_thres` (typically 1000, `strainDesignProblem.py`).
 At genome scale this big-M is **too weak**: 1000 is simultaneously large enough to admit numerical slop
 in the Farkas certificate (values that are "zero" only to `1e-3·M`) and small enough to occasionally
 bind a flux it should not, so the relaxation is both loose and numerically fragile. Second, the emulated
 pool is explicitly flagged **"instable"** in code and warnings. The practical upshot: GLPK is fine for
 small models (e_coli_core-scale validation) but not a genome-scale enumeration engine — for iML1515-class
 problems use CPLEX or Gurobi. The emulation cleans up after itself by freeing the auxiliary rows'
-right-hand sides rather than deleting rows (`glpk_interface.py:334-343`), because GLPK row deletion
+right-hand sides rather than deleting rows (`glpk_interface.py`), because GLPK row deletion
 proved unstable.
 
 
@@ -3881,17 +3877,17 @@ display methods hide the internal bookkeeping. This chapter covers the mechanics
 step, and the precise value‑encoding (`-1` / `+1` / `0` / `(nan,nan)`) that the downstream tooling —
 and two open bugs, deferred to [Ch 10](#ch10) — depends on.
 
-The entry point is `_decompress_solutions` (`compute_strain_designs.py:641`), called from the main
-orchestrator at `compute_strain_designs.py:611` after the solve, and again from the
-resume‑from‑pickle path at `compute_strain_designs.py:842`. The two workhorse routines it delegates
-to live in `networktools.py`: `expand_sd` (`networktools.py:1465`) and `filter_sd_maxcost`
-(`networktools.py:1537`).
+The entry point is `_decompress_solutions` (`compute_strain_designs.py`), called from the main
+orchestrator at `compute_strain_designs.py` after the solve, and again from the
+resume‑from‑pickle path at `compute_strain_designs.py`. The two workhorse routines it delegates
+to live in `networktools.py`: `expand_sd` (`networktools.py`) and `filter_sd_maxcost`
+(`networktools.py`).
 
 ### 9.1 Why decompression is needed, and the shape of the compression map
 
 Compression merges reactions in two ways ([Ch 3](#ch3)), and the merge is recorded step by step in a list
 called `cmp_mapReac`. It is assembled by concatenating the two compression rounds' maps at
-`compute_strain_designs.py:439`:
+`compute_strain_designs.py`:
 
 ```python
 cmp_mapReac = cmp_mapReac_1 + cmp_mapReac_2
@@ -3908,10 +3904,10 @@ Each element of `cmp_mapReac` is one *compression step* — a Python dict with t
 | `ki_cost`       | the knock‑in‑cost dict *in the pre‑step reaction space* |
 
 The `reac_map_exp` structure is produced by the compressors (`compress_model_coupled` documents the
-return type as `{compressed_id: {orig_id: factor, …}}` at `compression.py:1979`; the parallel
+return type as `{compressed_id: {orig_id: factor, …}}` at `compression.py`; the parallel
 compressor is analogous), and `parallel` is stamped on when the step is appended to the list
-(`compression.py:1904` for parallel, `compression.py:1935` for coupled). The two cost dicts are
-attached later by `compress_ki_ko_cost` (`networktools.py:1392`): `cmp.update({KOCOST: kocost,
+(`compression.py` for parallel, `compression.py` for coupled). The two cost dicts are
+attached later by `compress_ki_ko_cost` (`networktools.py`): `cmp.update({KOCOST: kocost,
 KICOST: kicost})` records the cost vectors *as they stood entering that step*, before that step's
 lumping rewrites them. This is the crucial invariant that makes reverse expansion self‑describing:
 **step *k* carries exactly the cost dicts keyed by the reaction ids that step *k*'s expansion will
@@ -3919,7 +3915,7 @@ re‑introduce.**
 
 The `factor` in `reac_map_exp` is the stoichiometric scaling that made the merge exact. It is used
 when *constraints and objectives* are pushed into the compressed space (`compress_modules`,
-`networktools.py:1350`: `c[0][new_reac] = Σ c[0][k]·old_reac_val[k]`) and when a compressed *flux
+`networktools.py`: `c[0][new_reac] = Σ c[0][k]·old_reac_val[k]`) and when a compressed *flux
 vector* is mapped back to originals. For **strain‑design expansion** the factor is not needed — a
 knockout of a lumped reaction is a *set* decision (which originals to cut), not a numeric scaling — so
 `expand_sd` iterates only the keys of `r_orig` and ignores the factors.
@@ -3939,7 +3935,7 @@ A compressed solution is a dict `m = { cmp_id : val }` where `val ∈ {-1, +1, 0
 reactions by applying step 1, then step 2, …, then step `L`; so a compressed id in the final space is
 the image of step `L ∘ … ∘ step 1`. To recover originals we apply the inverse steps in the opposite
 order — step `L`⁻¹ first, then step `L−1`⁻¹, …, ending at step 1⁻¹. `expand_sd` does exactly this by
-reversing the list once at the top (`networktools.py:1486`):
+reversing the list once at the top (`networktools.py`):
 
 ```python
 cmp_map = cmp_mapReac[::-1]
@@ -3970,7 +3966,7 @@ Parallel reactions carry flux in fixed proportion because their `S`‑columns ar
 one another; they are, metabolically, redundant routes for the same conversion. To *suppress* the
 group you must remove **every** knockable member — leaving any one open leaves the conversion
 possible. So expansion produces **one** design that knocks out all knockable members
-(`networktools.py:1499‑1504`):
+(`networktools.py‑1504`):
 
 ```python
 if par_reac_cmp:
@@ -3992,7 +3988,7 @@ Coupled (flux‑coupled) reactions must all carry flux together in every steady 
 = 0` for members of the group. Therefore killing **any single** member forces the whole group to
 zero. Cutting the group is not "cut them all"; it is "cut *one*, your choice." Each choice is a
 distinct, minimal strain design, so expansion **branches** — it emits one new design per knockable
-member (`networktools.py:1505‑1510`):
+member (`networktools.py‑1510`):
 
 ```python
 else:  # coupled
@@ -4013,7 +4009,7 @@ one representative) is what lets the user pick the intervention that is easiest 
 Knock‑ins mirror the KOs with parallel/coupled swapped, because "adding capability" is dual to
 "removing it":
 
-- **Parallel KI** (`networktools.py:1512‑1520`): the parallel members are interchangeable routes, so
+- **Parallel KI** (`networktools.py‑1520`): the parallel members are interchangeable routes, so
   adding *any one* suffices. Expansion branches — one design per KI‑able member — and, in each branch,
   explicitly marks the *other* members as **not added** with value `0.0`:
 
@@ -4021,7 +4017,7 @@ Knock‑ins mirror the KOs with parallel/coupled swapped, because "adding capabi
   if par_reac_cmp:
       for d in r_orig:
           if d in ki_cost:
-              new_m = m.copy()
+              new_m = m.copy
               new_m[d] = val
               for f in [e for e in r_orig if (e in ki_cost) and e != d]:
                   new_m[f] = 0.0        # the alternatives, explicitly un-added
@@ -4031,7 +4027,7 @@ Knock‑ins mirror the KOs with parallel/coupled swapped, because "adding capabi
   The `0.0` tags are not cosmetic — they carry the "this KI candidate existed and was deliberately
   left out" information that §9.5 and `strip_non_ki` depend on.
 
-- **Coupled KI** (`networktools.py:1521‑1526`): coupled members only carry flux together, so a
+- **Coupled KI** (`networktools.py‑1526`): coupled members only carry flux together, so a
   functional insertion must add **all** of them; expansion emits **one** design that knocks in every
   KI‑able member.
 
@@ -4039,7 +4035,7 @@ Knock‑ins mirror the KOs with parallel/coupled swapped, because "adding capabi
 
 A compressed id may appear in the design with value `0` — a KI candidate the solver decided *not* to
 use (§9.5). Expansion propagates that "not added" verdict to every member of the group
-(`networktools.py:1527‑1532`):
+(`networktools.py‑1532`):
 
 ```python
 elif val == 0:      # KI that was not introduced
@@ -4065,7 +4061,7 @@ along: `{R1: -1, R3: -1}` and `{R2: -1, R3: -1}`. Final: two original‑model MC
 redundancy demanded it) and each cuts one of the coupled pair (either suffices). This is precisely the
 set of minimal cut sets in the original network that the compressed `{P:-1}` stands for.
 
-`estimate_expansion_size` (`networktools.py:1414`) computes the *count* of this fan‑out without doing
+`estimate_expansion_size` (`networktools.py`) computes the *count* of this fan‑out without doing
 it, by walking the same reversed map and multiplying a `factor`: coupled‑KO and parallel‑KI multiply
 by the number of eligible members (they branch), parallel‑KO and coupled‑KI multiply by 1 (they
 don't). It returns an exact count for single‑step compression and an upper bound otherwise (because
@@ -4074,11 +4070,11 @@ decision in §9.4.
 
 ### 9.3 Size‑1 MCS re‑injection
 
-Recall from [Ch 5](#ch5) that FVA #3 (`compute_strain_designs.py:453‑491`) finds reactions that are
+Recall from [Ch 5](#ch5) that FVA #3 (`compute_strain_designs.py‑491`) finds reactions that are
 **essential for the SUPPRESS behaviour but not for any PROTECT behaviour** — i.e. reactions whose sole
 knockout already makes the undesired flux infeasible while keeping the desired flux feasible. These
 are size‑1 minimal cut sets. They are deliberately **removed from the knockable set before the MILP is
-built** (`cmp_ko_cost.pop(r, None)` at `compute_strain_designs.py:491`) and stored separately:
+built** (`cmp_ko_cost.pop(r, None)` at `compute_strain_designs.py`) and stored separately:
 
 ```python
 cmp_size1_mcs = [{r: -1} for r in size1_mcs_knockable]   # compute_strain_designs.py:481
@@ -4089,9 +4085,9 @@ MILP would let the enumerator report every *superset* that contains a size‑1 M
 non‑minimal. Pulling them out keeps the MILP's minimal‑cut‑set guarantee clean. But they are still
 real solutions, so decompression must add them back. Note this happens only for **classical MCS
 problems** (exactly one SUPPRESS + only PROTECT modules — the `is_classical_mcs` gate at
-`compute_strain_designs.py:472‑475`); bilevel problems (OptKnock etc.) never populate `cmp_size1_mcs`.
+`compute_strain_designs.py‑475`); bilevel problems (OptKnock etc.) never populate `cmp_size1_mcs`.
 
-Re‑injection runs after the MILP designs have been expanded (`compute_strain_designs.py:697‑712`).
+Re‑injection runs after the MILP designs have been expanded (`compute_strain_designs.py‑712`).
 Each stored size‑1 MCS `{r:-1}` is itself a compressed design — `r` is a compressed reaction id — so
 it goes through the *same* `expand_sd` + `filter_sd_maxcost` pipeline (one size‑1 compressed cut can
 still fan out to several originals if `r` is a lumped reaction). It is then de‑duplicated against the
@@ -4116,12 +4112,12 @@ a different route (e.g. via a coupled expansion), and we must not report it twic
 details:
 
 - **Group bookkeeping.** Each compressed design (MILP or size‑1) is a *group*; its expanded members
-  share a `group_map` index (`compute_strain_designs.py:698`, `next_grp = len(compressed_sd)`). This
+  share a `group_map` index (`compute_strain_designs.py`, `next_grp = len(compressed_sd)`). This
   is what powers `get_group` / `get_representative_sd` on the result object — the user can collapse the
   fan‑out back to "one decision per group" for display.
 - **Status promotion.** If the MILP itself found nothing (INFEASIBLE) but size‑1 MCS exist, the status
-  is lifted to OPTIMAL so the result is not reported as "no solution" (`compute_strain_designs.py:711`).
-  The `dump_preprocessed` early‑return path (`compute_strain_designs.py:577‑592`) uses the same
+  is lifted to OPTIMAL so the result is not reported as "no solution" (`compute_strain_designs.py`).
+  The `dump_preprocessed` early‑return path (`compute_strain_designs.py‑592`) uses the same
   expand→filter→postprocess sequence to return size‑1 MCS even when the MILP solve is skipped entirely.
 
 ### 9.4 `filter_sd_maxcost`: why a post‑expansion cost re‑check is mandatory
@@ -4131,15 +4127,15 @@ details:
 can change a design's effective cost, in both directions, so a compressed design that was within budget
 can expand into original‑model designs that are not — and vice versa.
 
-The reason is that `compress_ki_ko_cost` (`networktools.py:1387‑1410`) does not preserve cost
+The reason is that `compress_ki_ko_cost` (`networktools.py‑1410`) does not preserve cost
 additively; it collapses a group's member costs to a single number using rules that are correct for
 the *group* decision but lossy about the *members*:
 
-- **coupled KO cost** = `min` of member KO costs (`networktools.py:1398`) — because cutting the group
+- **coupled KO cost** = `min` of member KO costs (`networktools.py`) — because cutting the group
   costs only as much as cutting its cheapest member (you only need one).
-- **parallel KO cost** = `sum` of member KO costs (`networktools.py:1400`) — because you must cut them
+- **parallel KO cost** = `sum` of member KO costs (`networktools.py`) — because you must cut them
   all.
-- **coupled KI cost** = `sum`; **parallel KI cost** = `min` (`networktools.py:1407,1409`) — the duals.
+- **coupled KI cost** = `sum`; **parallel KI cost** = `min` (`networktools.py,1409`) — the duals.
 
 Now cross this against §9.2's expansion. A **coupled KO** was compressed at cost `min`, but expansion
 branches into one design *per member*, and each branch's true cost is *that member's* KO cost — which
@@ -4151,7 +4147,7 @@ survives — the cost‑5 sibling is filtered out. Without the re‑check we wou
 design.
 
 `filter_sd_maxcost` recomputes the true cost in original space and keeps designs within a small
-tolerance of the budget (`networktools.py:1548‑1554`):
+tolerance of the budget (`networktools.py‑1554`):
 
 ```python
 if max_cost:
@@ -4167,17 +4163,17 @@ count toward cost.** A KI candidate left un‑made carries value `0` and is free
 `(nan,nan)` / value‑0 encoding of §9.5, and it is why that encoding must survive expansion rather than
 being stripped early. Second, it costs each *original* reaction independently with the *uncompressed*
 cost dicts `uncmp_ko_cost` / `uncmp_ki_cost` (assembled in the orchestrator and, for gene problems,
-merged with gene costs at `compute_strain_designs.py:421‑422`) — never the compressed dicts. Third,
+merged with gene costs at `compute_strain_designs.py‑422`) — never the compressed dicts. Third,
 the surviving designs are **sorted by ascending true cost** via a throwaway `'**cost**'` key, so the
 cheapest realisations surface first; in the lazy path (below) this ordering is what makes
-`expanded[0]` the "cheapest representative" of a group (`compute_strain_designs.py:737`).
+`expanded[0]` the "cheapest representative" of a group (`compute_strain_designs.py`).
 
 #### The lazy‑expansion path (estimated count > 100 000)
 
 For problems where the fan‑out is enormous — many deep coupled groups multiplying together —
 materialising every expanded design would exhaust memory even though the search itself finished
 (this is issue #47, noted in `SDSolutions.save`). `_decompress_solutions` guards against this
-(`compute_strain_designs.py:638,654‑681`):
+(`compute_strain_designs.py,654‑681`):
 
 ```python
 LAZY_EXPANSION_THRESHOLD = 100_000
@@ -4188,13 +4184,13 @@ if estimated > LAZY_EXPANSION_THRESHOLD:
     sd, group_map, compressed_sd = _build_lazy_representatives(...)
 ```
 
-`_build_lazy_representatives` (`compute_strain_designs.py:721`) expands each compressed group *just
+`_build_lazy_representatives` (`compute_strain_designs.py`) expands each compressed group *just
 far enough* to keep **one** representative — the cheapest survivor of `expand_sd` + `filter_sd_maxcost`
 — and records the machinery (the compressed designs, the map, the uncompressed cost dicts, the model)
-in an `_expansion_meta` dict on the `SDSolutions` (`compute_strain_designs.py:667‑677`). The result
-reports `get_num_sols()` as the *estimated total* while only a handful are materialised
-(`get_num_materialized()`), and the user can force any group's full expansion on demand via
-`expand_group` / `expand_all` (`strainDesignSolutions.py:446,520`), which run the identical
+in an `_expansion_meta` dict on the `SDSolutions` (`compute_strain_designs.py‑677`). The result
+reports `get_num_sols` as the *estimated total* while only a handful are materialised
+(`get_num_materialized`), and the user can force any group's full expansion on demand via
+`expand_group` / `expand_all` (`strainDesignSolutions.py,520`), which run the identical
 expand→filter→translate pipeline lazily. This is a pure space/time optimisation — the eager and lazy
 paths compute the same designs; lazy just defers the combinatorial blow‑up until (if ever) the user
 asks for it.
@@ -4213,9 +4209,9 @@ numeric value with a fixed meaning:
 | `False`      | regulatory intervention not added         | — |
 | *(absent)*   | reaction never a candidate                | — |
 
-The value originates in `sd2dict` (`strainDesignMILP.py:200‑213`), which reads the solved binary
+The value originates in `sd2dict` (`strainDesignMILP.py‑213`), which reads the solved binary
 vector. A `z` variable is *inverted* iff it is a KI candidate — `z_inverted[i] = not isnan(ki_cost[i])`
-(`strainDesignProblem.py:148`). For a non‑inverted (KO) variable, `z=1` means "apply the cut", written
+(`strainDesignProblem.py`). For a non‑inverted (KO) variable, `z=1` means "apply the cut", written
 as `-sol = -1`; for an inverted (KI) variable, `z=1` means "insert", written as `+sol = +1`. The
 subtle line is the `0.0`:
 
@@ -4224,10 +4220,10 @@ elif args and args[0] and (sol[0, i] == 0) and self.z_inverted[i]:
     output[reacID[orig_i]] = 0.0
 ```
 
-Only when `show_no_ki` is on (it is, by default, set at `compute_strain_designs.py:526`) and the
+Only when `show_no_ki` is on (it is, by default, set at `compute_strain_designs.py`) and the
 variable is a KI candidate that came back at `z=0`, does the design record an explicit `0.0`.
 `_decompress_solutions` reads these `0`‑tagged designs via `get_reaction_sd_mark_no_ki`
-(`strainDesignSolutions.py:341`, `compute_strain_designs.py:650`).
+(`strainDesignSolutions.py`, `compute_strain_designs.py`).
 
 **Why encode "not added" at all, instead of just omitting it?** Because a knock‑in candidate that the
 solver *chose to leave out* is different information from a reaction that was *never a candidate*, and
@@ -4237,19 +4233,19 @@ several steps downstream need to tell them apart:
    group's members, so that a compressed un‑made KI does not silently reappear as made after expansion.
 2. **Cost correctness.** `filter_sd_maxcost` charges only `v != 0` interventions; an un‑made KI must be
    present‑but‑free, which requires it to be present with value `0`, not absent.
-3. **Bounds semantics.** `_compute_costs_and_bounds` (`strainDesignSolutions.py:247‑255`) turns value
+3. **Bounds semantics.** `_compute_costs_and_bounds` (`strainDesignSolutions.py‑255`) turns value
    `0` into bounds `(nan, nan)` — a deliberate "no bound change; this capability was considered and
    declined" marker, distinct from a KO's `(0,0)` and from an added KI's real bounds.
 
 The flip side is that these `0`/`False` entries are noise in a human‑readable listing. `strip_non_ki`
-(`strainDesignSolutions.py:768`) removes them:
+(`strainDesignSolutions.py`) removes them:
 
 ```python
 def strip_non_ki(sd):
     return {k: v for k, v in sd.items() if v not in (0.0, False)}
 ```
 
-The public accessors `get_reaction_sd` and `get_gene_sd` (`strainDesignSolutions.py:304,330`) pass
+The public accessors `get_reaction_sd` and `get_gene_sd` (`strainDesignSolutions.py,330`) pass
 every design through `strip_non_ki`, so the user sees only interventions that were *actually made*.
 The un‑stripped forms remain available through `get_reaction_sd_mark_no_ki` /
 `get_gene_sd_mark_no_ki` for callers that need the full picture. This "internal representation keeps
@@ -4264,15 +4260,15 @@ For gene‑based problems the MILP's `z` correspond to gene pseudoreactions ([Ch
 the design dicts are keyed by **gene** ids (and any surviving reaction/regulatory ids). The user
 usually wants both views: the *gene* interventions (what to edit in the lab) and the *reaction*
 phenotype (what those edits actually disable in the network). `SDSolutions.__init__` detects a gene
-problem (presence of `GKOCOST`/`GKICOST` in the setup, `strainDesignSolutions.py:91`) and builds both
-via `_translate_genes_to_reactions` (`strainDesignSolutions.py:134`).
+problem (presence of `GKOCOST`/`GKICOST` in the setup, `strainDesignSolutions.py`) and builds both
+via `_translate_genes_to_reactions` (`strainDesignSolutions.py`).
 
 The translation's job is: given a set of gene knockouts/knock‑ins, determine which *reactions* are
 disabled. A reaction is governed by its **gene–protein–reaction (GPR) rule**, an arbitrary Boolean
 expression over genes (e.g. `(b0001 and b0002) or b0003`). The previous implementation re‑parsed these
 rules into disjunctive normal form and evaluated a hand‑rolled `gpr_eval`. The current code instead
 reuses cobra's already‑parsed GPR abstract syntax tree and its evaluator
-(`strainDesignSolutions.py:159‑161`):
+(`strainDesignSolutions.py‑161`):
 
 ```python
 rxn_gpr = {r.id: r.gpr for g in model.genes for r in g.reactions}
@@ -4285,7 +4281,7 @@ convention**: `eval` treats every gene *listed* in `knockouts` as off and **ever
 present/active**. So you drive it entirely through which genes you place in the knockout set.
 
 The translation exploits this by evaluating each reaction's GPR under three different knockout sets, to
-answer three distinct phenotype questions (`strainDesignSolutions.py:174‑195`):
+answer three distinct phenotype questions (`strainDesignSolutions.py‑195`):
 
 ```python
 ko_off   = gene_ko | gene_no_ki    # KOs applied; un-made KIs off; made KIs on
@@ -4317,14 +4313,14 @@ Reading the three comparisons:
   else (typically an un‑made KI it depended on) → reaction "not added" (`reac_no_ki`, value `0`).
 
 Only reactions attached to an intervened gene are examined (`candidate_reacs` is built from the union
-of the gene KO/KI/no‑KI sets, `strainDesignSolutions.py:182‑185`) — every other reaction is untouched
+of the gene KO/KI/no‑KI sets, `strainDesignSolutions.py‑185`) — every other reaction is untouched
 by definition, so evaluating it would waste time and could only return "unchanged."
 
 The output preserves the §9.5 encoding on the reaction side: `-1.0` for `reac_ko`, `+1.0` for
 `reac_ki`, `0.0` for `reac_no_ki`, plus `True`/`False` for regulatory interventions
-(`strainDesignSolutions.py:196‑200`). The gene‑level view (`gene_sd`) is kept verbatim from the raw
-solution dicts (`strainDesignSolutions.py:142`), including any gene‑name→gene‑id normalisation
-(`strainDesignSolutions.py:147‑154`), so the two views stay linkable via `get_gene_reac_sd_assoc`
+(`strainDesignSolutions.py‑200`). The gene‑level view (`gene_sd`) is kept verbatim from the raw
+solution dicts (`strainDesignSolutions.py`), including any gene‑name→gene‑id normalisation
+(`strainDesignSolutions.py‑154`), so the two views stay linkable via `get_gene_reac_sd_assoc`
 (the association is typically many gene sets → one reaction phenotype, since different gene KOs can
 disable the same reactions).
 
@@ -4367,10 +4363,10 @@ mechanisms, either of which can leave a knockable-but-inert gene in the problem.
 
 #### Mechanism 1 — `reduce_gpr` pops protected/essential genes by **id only**
 
-`reduce_gpr` (`networktools.py:664`) is the pre-GPR-integration pass that removes genes which cannot
+`reduce_gpr` (`networktools.py`) is the pre-GPR-integration pass that removes genes which cannot
 usefully be knocked out — genes that only touch essential reactions, or that are essential to an essential
 reaction — so they never become MILP binary variables (see [Ch 4](#ch4) for the full GPR-reduction role). It builds
-a `protected_genes` set (steps 2–3, lines 890–901), and then, in step 4:
+a `protected_genes` set (steps 2–3), and then, in step 4:
 
 ```python
 # line 904
@@ -4382,7 +4378,7 @@ The removal key is `pg.id` **only**. If the caller passed `gko_cost` keyed by ge
 differs from its name, so **nothing is popped** and the protected/essential gene stays in the knockable
 cost dict.
 
-The asymmetry is visible one line later. Step 5 (line 907) protects "all genes that are not knockable",
+The asymmetry is visible one line later. Step 5 protects "all genes that are not knockable",
 and *this* line is name-aware:
 
 ```python
@@ -4390,29 +4386,29 @@ and *this* line is name-aware:
 [protected_genes.add(g) for g in model.genes if (g.id not in gkos) and (g.name not in gkos)]
 ```
 
-Likewise step 6 (lines 910–911) restores knock-in candidates by matching *either* `g.id in gkis` or
+Likewise step 6 restores knock-in candidates by matching *either* `g.id in gkis` or
 `g.name in gkis`. So `reduce_gpr` knows perfectly well that `gkos`/`gkis` may be name-keyed — every
-membership *test* checks both id and name — but the one place it *mutates* `gkos`, the `.pop()` at line
+membership *test* checks both id and name — but the one place it *mutates* `gkos`, the `.pop` at line
 904, uses `pg.id` alone. That is the fragility: a single un-mirrored key access in an otherwise
 id-or-name-tolerant function.
 
 The downstream effect compounds through the rest of `reduce_gpr`. `protected_genes_dict` is keyed by
-`pg.id` (line 912) and fed to `simplify_gpr_ast`, which rewrites each reaction's GPR treating protected
-genes as constant-`True` and **deletes them from the Boolean rule** (lines 914–932); then step 8 removes
-protected genes from `model.genes` entirely (lines 934–937). So after `reduce_gpr` a name-keyed essential
+`pg.id` and fed to `simplify_gpr_ast`, which rewrites each reaction's GPR treating protected
+genes as constant-`True` and **deletes them from the Boolean rule**; then step 8 removes
+protected genes from `model.genes` entirely. So after `reduce_gpr` a name-keyed essential
 gene can be in an inconsistent state: still present as a cost entry in `gkos` (because the pop missed it),
 but scrubbed out of the GPRs and the gene list. When `extend_model_gpr` then builds gene pseudoreactions
 from `model.genes` ([Ch 4](#ch4)), that gene has no pseudoreaction to attach a `z` to — the intervention is
-declared but wired to nothing, i.e. a neutral gene KO. **Fix direction:** pop by id *and* name at line 904,
+declared but wired to nothing, i.e. a neutral gene KO. **Fix direction:** pop by id *and* name,
 mirroring the membership tests already used at 907/910.
 
 #### Mechanism 2 — `_translate_genes_to_reactions` evaluates the GPR only over solution-present genes
 
 Even with a clean knockable set, a gene KO can be genuinely chosen by the MILP and still map to *no*
 reaction, because of how gene designs are translated back to reaction designs at decompression.
-`_translate_genes_to_reactions` (`strainDesignSolutions.py:135`) takes a gene-level cut set and asks, for
+`_translate_genes_to_reactions` (`strainDesignSolutions.py`) takes a gene-level cut set and asks, for
 each reaction the intervened genes touch, whether the reaction survives. It uses cobra's parsed Boolean GPR
-and its `.eval()` (line 161, `rxn_gpr = {r.id: r.gpr ...}`; the AST evaluator replaced the old DNF-only
+and its `.eval` (`rxn_gpr = {r.id: r.gpr ...}`; the AST evaluator replaced the old DNF-only
 `gpr_eval`, per PR #51):
 
 ```python
@@ -4435,7 +4431,7 @@ That default is exactly what produces a neutral KO. Consider a reaction with GPR
 that knocks out only `b`. Then `ko_off = {b}`, and `gpr_r.eval({b})` evaluates `False or True = True`
 (because `a`, not in the cut set, is treated as present) — the reaction is "still possible", so `b` is
 **not** added to `reac_ko`. The gene `b` is faithfully recorded in `gene_sd` (which is just a copy of the
-raw solution, line 142), but it contributes nothing to `reaction_sd`. An **OR-shadowed gene KO** — a gene
+raw solution), but it contributes nothing to `reaction_sd`. An **OR-shadowed gene KO** — a gene
 behind an `or` with a non-knocked partner — therefore always appears as a design that has a gene effect but
 no reaction effect. This is not a bug in the translator per se; it is the correct GPR semantics. It becomes
 a *reporting* surprise only because such a KO should arguably never have entered the design in the first
@@ -4451,7 +4447,7 @@ work" is a plausible signature:
   gene *pseudoreaction* is named from `gene.name`, while the gene *pseudometabolite* is always `g_{gene_id}`
   (see [Ch 4](#ch4)). A downstream lookup that expects one convention but gets the other silently misses.
 - **Name→id remap happens inside the translator, not before.** `_translate_genes_to_reactions` builds
-  `gene_name_id_dict` and rewrites name keys to id keys on its *working copy* (lines 147–154), but
+  `gene_name_id_dict` and rewrites name keys to id keys on its *working copy*, but
   `gene_sd` keeps the original (possibly name) keys. Two dicts, two key spaces, kept only loosely in sync.
 - **Truncation is solver-dependent** (§10.5b): long lumped names are sha256-truncated for Gurobi/GLPK but
   not CPLEX, so a name that is a valid key on CPLEX can be a *different* (hashed) key on Gurobi — id-keyed
@@ -4482,7 +4478,7 @@ def strip_non_ki(sd):
     return {k: v for k, v in sd.items() if v not in (0.0, False)}
 ```
 
-`get_reaction_sd()`/`get_gene_sd()` apply `strip_non_ki` (lines 312, 316), so the *stripped* view shows
+`get_reaction_sd`/`get_gene_sd` apply `strip_non_ki`, so the *stripped* view shows
 only real interventions. But the **raw `sols.reaction_sd` attribute is unstripped** — it still carries the
 `(some_KI, 0.0)` markers for every knock-in candidate that a given design did *not* add. If a user dedups
 or compares designs by `str(sols.reaction_sd)` (as the reporter's notebook did), two designs that make the
@@ -4491,7 +4487,7 @@ differently, and one can string-contain the other. That manufactures spurious su
 have **no** difference in actual interventions — a pure reporting artifact of comparing the unstripped
 representation.
 
-The corrective is mechanical: compare designs on the **stripped** view (`get_reaction_sd()`), i.e. on real
+The corrective is mechanical: compare designs on the **stripped** view (`get_reaction_sd`), i.e. on real
 interventions only. Value-0 markers must never enter a minimality comparison. This alone accounts for the
 bulk of the reported rate, and is consistent with the earlier compression-correctness fix (§10.3) having
 already removed the *structural* half of the reporter's original ~50%.
@@ -4502,7 +4498,7 @@ A small residual (~2% on the re-run, each superset adding exactly one provably-r
 non-minimality, and it has a different root — numerical tolerance at a growth-coupling boundary, compounded
 by the fact that `sd.ANY` gives no *cross-seed* global-minimality guarantee.
 
-The mechanism: within a single seed, `compute()` already excludes supersets. After it accepts a design it
+The mechanism: within a single seed, `compute` already excludes supersets. After it accepts a design it
 adds an exclusion (integer-cut) constraint `Σ z_active ≤ |active| − 1` (see [Ch 8](#ch8)) that forbids that design
 *and every superset of it* from reappearing in the same run. So true supersets cannot arise within one
 seed. They only appear when **pooling independent seeds**: seed A finds an irreducible cut set `C`; seed B,
@@ -4510,7 +4506,7 @@ exploring a different branch-and-bound tree, finds `C ∪ {r}` and accepts it be
 numerical tolerance, dropping `r` looked infeasible. Whether the extra intervention `r` is redundant is
 decided at a SUPPRESS boundary that sits essentially at zero — the observed growth-coupling min is ≈ 4×10⁻⁷,
 far below any biologically meaningful flux but far *above* the essentiality tolerance of `1e-10` (§10.6).
-At that boundary the subspace cost-minimization in `compute()` cannot reliably tell the redundant
+At that boundary the subspace cost-minimization in `compute` cannot reliably tell the redundant
 intervention from a needed one, so the non-minimal design is accepted as (locally) valid. Independent
 validation confirms these are real: both the sub- and superset give identical max biomass and identical
 suppress-boundary value, so the extra KO is provably inert.
@@ -4569,7 +4565,7 @@ PROTECT-violating designs on the reporter's setup; current code produces 0 acros
 `compute_strain_designs` is not free of side effects on its arguments. Two are worth internalizing.
 
 **Modules are copied; cost dicts largely are not.** The `sd_modules` list is defensively copied
-(`compute_strain_designs.py:190–191`, `[m.copy() for m in sd_modules]`), so the module objects the caller
+(`compute_strain_designs.py`, `[m.copy for m in sd_modules]`), so the module objects the caller
 passed are safe. The cost dicts are **not** copied — they are aliased:
 
 ```python
@@ -4580,11 +4576,11 @@ if key == REGCOST: uncmp_reg_cost = value   # <-- the caller's dict, by referenc
 ```
 
 `uncmp_reg_cost` *is* the caller's `reg_cost` object. The orchestrator makes a `deepcopy` for its own
-bookkeeping (`orig_reg_cost = deepcopy(uncmp_reg_cost)`, line 290), but it keeps operating on the aliased
+bookkeeping (`orig_reg_cost = deepcopy(uncmp_reg_cost)`), but it keeps operating on the aliased
 original.
 
 **`extend_model_regulatory` rewrites its dict's keys, and the orchestrator writes that back onto the
-caller's object.** `extend_model_regulatory` (`networktools.py:1187`) turns each human-readable constraint
+caller's object.** `extend_model_regulatory` (`networktools.py`) turns each human-readable constraint
 string (e.g. `'1 PDH + 1 PFL <= 5'`) into a generated pseudoreaction name (e.g. `p1_PDH_p1_PFK_le_5`) and
 mutates its argument dict in place to use those generated names. The orchestrator then does, for the
 immediate (reaction-based) regulatory constraints:
@@ -4601,11 +4597,11 @@ constraint strings — it contains parsed pseudoreaction names. Reusing that sam
 `compute_strain_designs` call is corrupt input: the generated names are not parseable constraint strings,
 so they misroute (deferred as if gene-regulatory) or raise. The same aliasing means the caller's
 `ko_cost` is also *augmented* in place — the regulatory pseudoreactions are added to it via
-`uncmp_ko_cost.update(...)` (lines 327, 414–415, 427).
+`uncmp_ko_cost.update(...)`.
 
 **Consequence & workaround.** Never reuse a `reg_cost` (or `ko_cost`) dict across runs; pass a fresh
 `dict(...)`/`deepcopy` each time, or reconstruct the setup per call. This is entirely internal to the API
-surface — there is a code comment acknowledging the in-place mutation (lines 313–314), but the fix (copy
+surface — there is a code comment acknowledging the in-place mutation, but the fix (copy
 the caller's dict on entry, as is already done for modules) has not been applied.
 
 ### 10.5 Gotcha (b) — Gurobi/GLPK-only name truncation (sha256; CPLEX exempt)
@@ -4624,7 +4620,7 @@ def truncate(id):
 ```
 
 The crucial detail is the **guard**: every truncation site fires only for `solver in {GUROBI, GLPK}`
-(lines 1026, 1043, 1059, 1072, 1088, 1103, 1144). **CPLEX is exempt.** The consequence is that the *same
+. **CPLEX is exempt.** The consequence is that the *same
 input model* produces *different reaction/metabolite identifiers* depending on which solver is selected: a
 long name is preserved verbatim under CPLEX but replaced by `<prefix>_<sha256[:20]>` under Gurobi/GLPK.
 That changes reaction/metabolite identity in logs and in any downstream lookup keyed by name — which is why
@@ -4653,18 +4649,15 @@ problems (e.g. `ko_cost` on ~1600 reactions) rather than on small models.
 
 **How they are handled now.**
 
-- *Gurobi* (`gurobi_interface.py:233–256`): on `gstatus.NUMERIC`, the solver **retries once with
+- *Gurobi* (`gurobi_interface.py`): on `gstatus.NUMERIC`, the solver **retries once with
   `NumericFocus = 3`**, restoring the previous value afterward. If the retry yields a solution it is
   accepted as `OPTIMAL`; if it yields an incumbent under time-limit-like status it is returned as
   `TIME_LIMIT_W_SOL`; otherwise it reports no solution (`TIME_LIMIT`) — never a crash.
-- *CPLEX* (`cplex_interface.py:209–215`, and `slim_solve` at 250–255): status `5`/`6` is accepted with a
+- *CPLEX* (`cplex_interface.py`, and `slim_solve` at 250–255): status `5`/`6` is accepted with a
   warning and mapped to `TIME_LIMIT_W_SOL` (the solution is used but flagged), rather than raising.
 
 The philosophy is *degrade, don't crash*: a numerically-imperfect incumbent is far more useful to an
-enumeration loop than an exception that discards the whole run. Note two residual rough edges: the raise
-for truly-unrecognized statuses still carries the original typo `"not yet handeld"` / `"Case not yet
-handeld"` (e.g. `gurobi_interface.py:258`, `cplex_interface.py:219`), and the SCIP/GLPK interfaces were
-flagged as likely to have analogous unhandled-status gaps that have not all been audited. Also relevant to
+enumeration loop than an exception that discards the whole run. Note one residual rough edge: the SCIP/GLPK interfaces were flagged as likely to have analogous unhandled-status gaps that have not all been audited. Also relevant to
 #38: an accepted "unscaled infeasibilities" solution *is* slightly imprecise, and that imprecision at the
 growth-coupling boundary is part of why the genuine non-minimal residual exists (§10.2) — the robustness
 fix trades a crash for occasionally accepting a marginally non-minimal design.
@@ -4673,7 +4666,7 @@ fix trades a crash for occasionally accepting a marginally non-minimal design.
 
 - **Hard-coded essentiality tolerance `1e-10`.** Both essential-reaction FVA passes classify a reaction as
   essential with `np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0`
-  (`compute_strain_designs.py:378` and `:465`) — the flux range must exclude zero by more than `1e-10`
+  (`compute_strain_designs.py` and `:465`) — the flux range must exclude zero by more than `1e-10`
   with a fixed sign. This absolute threshold has no relation to model scaling: a reaction that is
   biologically essential but whose minimal required flux is below `1e-10` will be missed (and remain
   wrongly knockable), while the ~`4e-7` growth-coupling boundary of §10.2 sits *above* the threshold and is
@@ -4682,7 +4675,7 @@ fix trades a crash for occasionally accepting a marginally non-minimal design.
 
 - **Size-1 MCS extraction is classical-MCS-only and knockable-scoped.** Reactions essential for a SUPPRESS
   module but not for any PROTECT module are pulled out as size-1 MCS and re-injected at decompression
-  (`compute_strain_designs.py:475–494`), but only when `is_classical_mcs` holds and only for reactions
+  (`compute_strain_designs.py`), but only when `is_classical_mcs` holds and only for reactions
   still in `cmp_ko_cost`. This is correct, but it means the set of designs the MILP enumerates is *not* the
   full set — anything relying on inspecting the raw compressed solutions must account for the re-injected
   size-1 MCS ([Ch 9](#ch9)), or it will under-count.
@@ -4697,8 +4690,8 @@ fix trades a crash for occasionally accepting a marginally non-minimal design.
   actually selected before trusting a timing.
 
 - **Comparing designs by the raw attribute vs. the accessor.** Reiterating the #38 lesson as a general
-  rule: `sols.reaction_sd`/`sols.gene_sd` are *unstripped* (carry value-0 KI markers); `get_reaction_sd()`/
-  `get_gene_sd()` are *stripped*. Any dedup, minimality check, or set-containment test must use the
+  rule: `sols.reaction_sd`/`sols.gene_sd` are *unstripped* (carry value-0 KI markers); `get_reaction_sd`/
+  `get_gene_sd` are *stripped*. Any dedup, minimality check, or set-containment test must use the
   stripped accessor, never `str(sols.reaction_sd)`. This one habit prevents an entire class of phantom
   subset/superset reports.
 
@@ -4789,17 +4782,17 @@ closed:
   The indicators are not the gap.
 
 - **NOT the pool parameters.** CPLEX sets `mip.pool.absgap=0`, `mip.pool.relgap=0`,
-  `mip.pool.intensity=4` at solver construction (`cplex_interface.py:161-163`), and Gurobi sets
-  `PoolGap=PoolGapAbs=1e-9` (`gurobi_interface.py:162-163`). These have been dated by `git blame` to
+  `mip.pool.intensity=4` at solver construction (`cplex_interface.py`), and Gurobi sets
+  `PoolGap=PoolGapAbs=1e-9` (`gurobi_interface.py`). These have been dated by `git blame` to
   2022 (CPLEX line `b87d49c1`, 2022-04-18 — not a recent regression) and, more importantly, **verified
-  inert for single `solve()`**: after a feasibility solve at `intensity=4`, `pool.get_num()==0`,
-  identical to `intensity=0`. CPLEX does not populate the pool during a plain `optimize()`; the pool
-  params only bite inside `populate()` (POPULATE). They are architecturally misplaced (they belong
-  inside `populate()`), but they are **not a performance bug for ANY/BEST**. Do not re-derive this — it
+  inert for single `solve`**: after a feasibility solve at `intensity=4`, `pool.get_num==0`,
+  identical to `intensity=0`. CPLEX does not populate the pool during a plain `optimize`; the pool
+  params only bite inside `populate` (POPULATE). They are architecturally misplaced (they belong
+  inside `populate`), but they are **not a performance bug for ANY/BEST**. Do not re-derive this — it
   was tested three ways.
 
 - **NOT a big-M conditioning catastrophe.** A discredited earlier reading claimed "CPLEX 400 s /
-  indicators catastrophic / use big-M." That number came from calling `backend.solve()` on the MILP's
+  indicators catastrophic / use big-M." That number came from calling `backend.solve` on the MILP's
   *construction* objective — a global optimization that no production path ever runs — on a self-made
   iML1515/1,4-BDO/`max_cost=40` dump with 2228 indicators and a loose cardinality bound. It is not
   representative of any real run and has been thrown out. **The dead-end to remember:** there is no
@@ -4966,7 +4959,7 @@ reactions without the exponential max-min — but it must be prototyped and chec
 
 #### 11.2.5 The whole-model preprocessing FVA
 
-`bound_blocked_or_irrevers_fva` ([Ch 5](#ch5), `networktools.py:1589`) is ~117 s and the entire preprocessing
+`bound_blocked_or_irrevers_fva` ([Ch 5](#ch5), `networktools.py`) is ~117 s and the entire preprocessing
 bottleneck. It runs one whole-model FVA — passing *no* `reaction_list` and *no* extra constraints, so it
 does the full `2n` objectives — and then classifies each reaction's bounds: redundant bound (FVA never
 reaches it) → ±inf; `min≥0` → irreversible-forward (`lb=0`); `max≤0` → blocked/reverse (`ub=0`); and it
@@ -5107,25 +5100,25 @@ lets a user write `"2 r1 - r2 <= 5"` instead of hand-assembling a `scipy.sparse`
 off-by-one bugs, index drift, and in-place-mutation footguns live, so it is worth the same care as the
 core.
 
-The functions appear in `compute_strain_designs` (the orchestrator, `compute_strain_designs.py:56`) in a
+The functions appear in `compute_strain_designs` (the orchestrator, `compute_strain_designs.py`) in a
 specific order, and the ordering is load-bearing. The map for this chapter, keyed to the preprocessing
-block (`compute_strain_designs.py:305–495`):
+block (`compute_strain_designs.py`):
 
 | step | function | file:line | when |
 |------|----------|-----------|------|
-| clean the model | `remove_ext_mets` | `compression.py:1707` | first, before any compression |
-| parse a constraint string | `parse_constraints` / `lineq2mat` | `parse_constr.py:26 / 89` | wherever a string enters |
-| encode a regulatory bound | `extend_model_regulatory` | `networktools.py:1187` | reaction-based now; gene-based after GPR |
-| gene KO → flux constraint | `gene_kos_to_constraints` | `networktools.py:438` | in `fba`/`fva` helpers |
-| remap modules to compressed space | `compress_modules` | `networktools.py:1314` | after each `compress_model` |
-| remap costs to compressed space | `compress_ki_ko_cost` | `networktools.py:1358` | after each `compress_model` |
+| clean the model | `remove_ext_mets` | `compression.py` | first, before any compression |
+| parse a constraint string | `parse_constraints` / `lineq2mat` | `parse_constr.py / 89` | wherever a string enters |
+| encode a regulatory bound | `extend_model_regulatory` | `networktools.py` | reaction-based now; gene-based after GPR |
+| gene KO → flux constraint | `gene_kos_to_constraints` | `networktools.py` | in `fba`/`fva` helpers |
+| remap modules to compressed space | `compress_modules` | `networktools.py` | after each `compress_model` |
+| remap costs to compressed space | `compress_ki_ko_cost` | `networktools.py` | after each `compress_model` |
 
 We take them roughly in pipeline order, but front-load the constraint parser because everything else
 consumes its output.
 
 ### 12.1 `remove_ext_mets` — deleting the boundary layer before compression
 
-`remove_ext_mets(model)` (`compression.py:1707`) is three statements:
+`remove_ext_mets(model)` (`compression.py`) is three statements:
 
 ```python
 def remove_ext_mets(model) -> None:
@@ -5175,7 +5168,7 @@ that produce/consume nothing after the boundary layer is gone; keeping them woul
 with no stoichiometric effect — pure noise for both FVA and the MILP. The order matters: metabolites
 first, then recompute `S`, then reactions — you cannot know a column is empty until the rows are gone.
 
-This runs exactly once, at `compute_strain_designs.py:310`, on the working copy `cmp_model`, immediately
+This runs exactly once, at `compute_strain_designs.py`, on the working copy `cmp_model`, immediately
 before regulatory extension and COMPRESS #1. It is deliberately the very first surgery: it is the only
 step that changes what "a genuine conservation relation" means, so it must precede everything that
 reasons about the nullspace.
@@ -5197,25 +5190,25 @@ consumes. There are two output shapes and the module offers both:
 #### 12.2.1 The scanner: `linexpr2dict` / `linexpr2mat`
 
 The atom of parsing is a single **linear expression** (a left-hand side, no sign, no rhs), handled by
-`linexpr2dict` (`parse_constr.py:304`) and its twin `linexpr2mat` (`parse_constr.py:251`). They differ
+`linexpr2dict` (`parse_constr.py`) and its twin `linexpr2mat` (`parse_constr.py`). They differ
 only in output — a dict vs. a one-row `csr_matrix` — and run the identical scan. Take
 `expr = "2 R3 - R1"`, `reaction_ids = ["R1","R2","R3","R4"]`.
 
 1. **Tokenize and strip.** Split on whitespace, then strip leading/trailing sign, space, and parenthesis
-   characters from each token (`re.sub(r"^(\s|-|\+|\()*|(\s|-|\+|\))*$", "", part)`, line 321). `"2 R3 -
+   characters from each token (`re.sub(r"^(\s|-|\+|\*|(\s|-|\+|\))*$", "", part)`). `"2 R3 -
    R1"` → tokens `["2", "R3", "R1"]` (the lone `-` is stripped away; its sign information is recovered
    later from the raw string, not from this token list).
 2. **Identify variables.** `ridx = [r for r in expr_parts if r in reaction_ids]` keeps only tokens that
    are known reaction ids → `["R3", "R1"]`. Membership is by exact string equality against the model's
    reaction id list, which is why reaction ids must be passed in and why digit-leading gene names are
    renamed upstream ([Ch 1](#ch1)) — a bare number token would be misread as a coefficient.
-3. **Validate syntax** (lines 329–341). Three rules, each raising a descriptive `Exception`:
+3. **Validate syntax**. Three rules, each raising a descriptive `Exception`:
    - no two numeric tokens in a row (`last_was_number` guard) — `"2 3 R1"` is rejected;
    - no leftover token that is neither a number nor a known reaction id — `"2 Rx"` with unknown `Rx`
      raises `Unknown identifier Rx`;
    - no reaction id may appear twice (`len(ridx) == len(set(ridx))`) — `"R1 + R1"` is rejected, because a
      single sparse cell cannot hold two independent coefficients.
-4. **Extract each coefficient** (lines 344–353). For every reaction id `rid`, a regex captures the run of
+4. **Extract each coefficient**. For every reaction id `rid`, a regex captures the run of
    sign/digit/dot characters immediately *preceding* that id in the raw string:
 
    ```python
@@ -5240,7 +5233,7 @@ only in output — a dict vs. a one-row `csr_matrix` — and run the identical s
 
 #### 12.2.2 The (in)equality splitters: `lineq2mat`, `lineq2list`
 
-A full **(in)equality** adds a sign and a right-hand side. `lineq2mat` (`parse_constr.py:89`) is the
+A full **(in)equality** adds a sign and a right-hand side. `lineq2mat` (`parse_constr.py`) is the
 one-shot string→matrix path:
 
 ```python
@@ -5251,7 +5244,7 @@ A        = linexpr2mat(lhs, reaction_ids)
 ```
 
 The split isolates the left expression (scanned by `linexpr2mat`) from the rhs (which *must* parse as a
-single float — the `except` clause at line 126 rejects anything else with "Right hand side must be a
+single float — the `except` clause rejects anything else with "Right hand side must be a
 float number"). Then the sign decides which matrix the row joins, and here is the one genuine piece of
 math in the parser — **canonicalizing every inequality to `≤`**:
 
@@ -5260,7 +5253,7 @@ math in the parser — **canonicalizing every inequality to `≤`**:
 - `>=` → append **`-A`** to `A_ineq`, **`-rhs`** to `b_ineq`.
 
 The `≥` case uses the elementary equivalence `a·x ≥ b  ⇔  -a·x ≤ -b`: negate both sides of the row.
-Worked example, the docstring's own case (`lineq2mat` docstring, lines 96–101):
+Worked example, the docstring's own case (`lineq2mat` docstring):
 
 ```
 equations   = ["2*c - b +3*a <= 2", "c - b = 0", "2*b -a >=-2"]
@@ -5290,22 +5283,22 @@ space or the tokenizer path that tolerates it; the safe, always-correct spelling
 `"2 c - b + 3 a <= 2"`. This is an easy place to trip, so upstream code that generates constraint strings
 (including `extend_model_regulatory`, §12.3) writes coefficients with explicit spaces.¹
 
-`lineq2list` (`parse_constr.py:141`) is the same split but emits list format
+`lineq2list` (`parse_constr.py`) is the same split but emits list format
 `(linexpr2dict(lhs), eq_sign, rhs)` instead of matrix rows, and — unlike `lineq2mat` — it does **not**
 negate `≥` rows (the sign token is preserved verbatim), because list format records the relation
-symbolically for later. Skipping empty strings (line 168) lets it tolerate trailing commas/newlines in a
+symbolically for later. Skipping empty strings lets it tolerate trailing commas/newlines in a
 multi-constraint string.
 
 #### 12.2.3 The dispatcher: `parse_constraints`
 
-`parse_constraints` (`parse_constr.py:26`) is the public front door that normalizes the *many* shapes a
+`parse_constraints` (`parse_constr.py`) is the public front door that normalizes the *many* shapes a
 user might pass into one uniform list-of-lists. It handles: falsy input → `[]`; a single string
-possibly holding several constraints separated by `,` or `\n` (split at line 49); a single constraint vs.
+possibly holding several constraints separated by `,` or `\n` (split); a single constraint vs.
 a list of constraints (the `type(constr[0]) is dict` test distinguishes a lone list-format constraint
-from a list of them, line 50); tuples coerced to lists (line 53); and finally, if the entries are still
-strings, delegating to `lineq2list` to scan them (line 56). The result is always the list format
+from a list of them); tuples coerced to lists; and finally, if the entries are still
+strings, delegating to `lineq2list` to scan them. The result is always the list format
 `[[{…}, sign, rhs], …]`. This is what modules carry, and it is the input to the compression remapping in
-§12.5. `parse_linexpr` (line 60) is the sign-less analogue for bare expressions (objectives, production
+§12.5. `parse_linexpr` is the sign-less analogue for bare expressions (objectives, production
 ids).
 
 ### 12.3 `extend_model_regulatory` — a bound as an intervention
@@ -5320,7 +5313,7 @@ stoichiometric model — for example "the combined flux through PDH and PFL must
   that PDH+PFL ≤ 5") on the same footing as a reaction knockout: it has a binary decision and a cost, and
   the MILP decides whether to buy it.
 
-`extend_model_regulatory(model, reg_itv)` (`networktools.py:1187`) encodes either kind as **extra
+`extend_model_regulatory(model, reg_itv)` (`networktools.py`) encodes either kind as **extra
 stoichiometry**, so that the downstream LP/MILP machinery — which only understands `Sv = 0` plus bounds —
 enforces it without any new constraint type.
 
@@ -5330,11 +5323,11 @@ Take the toggleable constraint `2 r1 + 3 r2 ≤ 4`. The routine adds one pseudom
 pseudoreactions:
 
 - For each reaction `rᵢ` in the constraint, give `rᵢ` a stoichiometric coefficient `wᵢ` for `m` (so `r1`
-  now *produces* 2 `m`, `r2` produces 3 `m`) — `r.add_metabolites({m: w})`, line 1283.
+  now *produces* 2 `m`, `r2` produces 3 `m`) — `r.add_metabolites({m: w})`.
 - Add a **bound reaction** `r_bnd`: `m -->` (consumes `m`), with bounds chosen from the sign (lines
   1288–1297). For `≤ rhs`: `-inf ≤ v_bnd ≤ rhs`.
 - For the toggleable case only, add a **control reaction** `r_ctl`: `--> m` (produces `m`), fully
-  unbounded `-inf ≤ v_ctl ≤ inf` (lines 1299–1305).
+  unbounded `-inf ≤ v_ctl ≤ inf`.
 
 The steady-state balance of the new pseudometabolite `m` is the whole trick. With all pieces present:
 
@@ -5353,14 +5346,14 @@ Now read off the two regimes:
 
 So *knocking out `r_ctl` = imposing the regulatory intervention.* That inversion is deliberate: it lets
 the identical KO machinery (binary `z`, integer cuts, cost accounting) drive regulatory edits with no
-special case — the reaction `r_ctl` is simply added to `ko_cost` with the user's cost `v` (line 1305,
+special case — the reaction `r_ctl` is simply added to `ko_cost` with the user's cost `v` (
 `regcost.update({reg_name: v}}`), and the orchestrator folds `regcost` into `cmp_ko_cost`
-(`compute_strain_designs.py:327` for reaction-based). For a **permanent** constraint (cost `np.nan`),
-`r_ctl` is simply omitted (the `if not np.isnan(v)` guard, line 1299): with no control reaction there is
+(`compute_strain_designs.py` for reaction-based). For a **permanent** constraint (cost `np.nan`),
+`r_ctl` is simply omitted (the `if not np.isnan(v)` guard): with no control reaction there is
 no `+v_ctl` term, `v_bnd = 2v_r1 + 3v_r2` always, and the bound holds unconditionally.
 
-The equality and `≥` cases set `r_bnd`'s bounds accordingly (lines 1288–1297): `=` pins
-`v_bnd` to `rhs` (the code sets lower and upper to `rhs`; note lines 1289–1291 set upper then lower —
+The equality and `≥` cases set `r_bnd`'s bounds accordingly: `=` pins
+`v_bnd` to `rhs` (the code sets lower and upper to `rhs`; note set upper then lower —
 the intermediate `-inf` upper is immediately overwritten, so the net effect is `v_bnd = rhs`), and `≥`
 uses `rhs ≤ v_bnd ≤ inf`. The `m -->` / `--> m` directions never change; only the `r_bnd` bounds carry
 the relation.
@@ -5385,11 +5378,11 @@ reg_itv.pop(k)                                            # remove the original 
 reg_itv.update({reg_name: {'str': k, 'cost': v}})         # replace with the generated name
 ```
 
-It walks a `.copy()` of the items (line 1251) but pops from and writes to the *original* dict. On return,
+It walks a `.copy` of the items but pops from and writes to the *original* dict. On return,
 the caller's dict no longer has the human-readable keys the caller passed in — they have been rewritten
 to generated names, with the original string demoted to a `'str'` field inside the value. Because the
 orchestrator's `uncmp_reg_cost` **aliases the caller's `reg_cost`** (it is bound by reference, then
-`.clear()`/`.update()`-ed at `compute_strain_designs.py:329–330`), a single `compute_strain_designs`
+`.clear`/`.update`-ed at `compute_strain_designs.py`), a single `compute_strain_designs`
 call silently empties and refills the caller's `reg_cost` dict. Re-running with the same dict object then
 mis-parses (the keys are now generated names, not constraint strings). The fix is to never reuse a
 `reg_cost` dict across calls — pass a fresh one. This is catalogued as a known footgun in [Ch 10](#ch10); the
@@ -5399,15 +5392,15 @@ mechanism is exactly the in-place `pop`/`update` above.
 
 A regulatory constraint may reference **reactions** (`1 PDH + 1 PFL <= 5`) or **genes**
 (`b0351 <= 2`, limiting a gene's activity). The distinction controls *when* the encoding can run, and the
-orchestrator splits them at `compute_strain_designs.py:315–330`:
+orchestrator splits them at `compute_strain_designs.py`:
 
 - **Reaction-based** constraints parse successfully against the current reaction id set, so they are
-  encoded **immediately** (line 327), *before* COMPRESS #1. `parse_constraints(k, _rxn_ids)` succeeds →
+  encoded **immediately**, *before* COMPRESS #1. `parse_constraints(k, _rxn_ids)` succeeds →
   the constraint goes into `_immediate_reg` and `extend_model_regulatory` runs at once.
 - **Gene-based** constraints reference identifiers that are *not* reaction ids yet — the gene has no
   pseudoreaction until GPR integration builds one ([Ch 4](#ch4)). Trying to parse them against reaction ids
-  throws, so they are routed to `_deferred_reg` (line 325) and held. They are encoded only **after**
-  `extend_model_gpr` has created the `g_<gene>` pseudoreactions (`compute_strain_designs.py:411–417`),
+  throws, so they are routed to `_deferred_reg` and held. They are encoded only **after**
+  `extend_model_gpr` has created the `g_<gene>` pseudoreactions (`compute_strain_designs.py`),
   at which point the gene name *is* a reaction id and the same `extend_model_regulatory` call works.
 
 The ordering is not cosmetic. A gene-regulatory bound `g <= X` is a bound on the *gene pseudoreaction's*
@@ -5417,13 +5410,13 @@ from COMPRESS #1: if a gene controls several reactions that get merged before GP
 reaction is hooked to the gene with a collapsed stoichiometry and the gene-regulatory bound would be
 mis-scaled. The code therefore adds those reactions to `no_coupled_compress_reacs`/`no_par_compress_reacs`
 so they survive to COMPRESS #2, where the `g_gene` metabolite already exists and the merge is correct
-(`compute_strain_designs.py:341–353`). The gene-vs-reaction encoding split and its rationale belong to Ch
+(`compute_strain_designs.py`). The gene-vs-reaction encoding split and its rationale belong to Ch
 4; here the point is only that `extend_model_regulatory` is called *twice* in the pipeline, on two disjoint
 sub-dicts, for exactly this reason.
 
 ### 12.4 `gene_kos_to_constraints` — a gene KO set as flux constraints
 
-`gene_kos_to_constraints(model, gene_kos)` (`networktools.py:438`) answers a narrower question than the
+`gene_kos_to_constraints(model, gene_kos)` (`networktools.py`) answers a narrower question than the
 MILP's GPR machinery: *given a concrete, fixed set of knocked-out genes, which reactions die, and what
 constraints pin them off?* It is used by the `fba`/`fva` helpers ([Ch 2](#ch2), [Ch 5](#ch5)) when a caller wants to
 evaluate a *specific* gene-KO scenario directly, not to *search* for interventions. (The search-time
@@ -5431,14 +5424,14 @@ encoding of gene KOs as intervention structure is `extend_model_gpr`, [Ch 4](#ch
 
 Mechanics:
 
-1. **Resolve identifiers** (lines 476–486). Each entry of `gene_kos` may be a gene id or a gene name;
+1. **Resolve identifiers**. Each entry of `gene_kos` may be a gene id or a gene name;
    names are mapped to ids via `{g.name: g.id}`, ids checked directly, unknown identifiers silently
    dropped.
-2. **Set gene states** (line 489): every knocked gene → `False`; every other gene is implicitly `None`
+2. **Set gene states**: every knocked gene → `False`; every other gene is implicitly `None`
    (undetermined).
-3. **Find candidate reactions** (lines 492–499): the union of reactions linked to any knocked gene
+3. **Find candidate reactions**: the union of reactions linked to any knocked gene
    (`gene_obj.reactions`). Only these can change; no need to evaluate the rest.
-4. **Evaluate each GPR** with tri-state Boolean logic, `evaluate_gpr_ast` (`networktools.py:401`). This
+4. **Evaluate each GPR** with tri-state Boolean logic, `evaluate_gpr_ast` (`networktools.py`). This
    walks the cobra GPR AST (`ast.Name` leaves, `ast.BoolOp` AND/OR nodes) over `{gene: True/False/None}`:
    - **AND**: `False` if *any* child is `False`; `True` only if *all* children are `True`; else `None`.
    - **OR**: `True` if *any* child is `True`; `False` only if *all* children are `False`; else `None`.
@@ -5448,7 +5441,7 @@ Mechanics:
    force the rule false — an isozyme (`geneA or geneB`) with just `geneA` knocked evaluates to `None`
    (undetermined, because `geneB` could carry it), not `False`. A reaction is declared dead only on a hard
    `False`.
-5. **Emit constraints** (line 513): for each reaction whose GPR evaluated to `False`,
+5. **Emit constraints**: for each reaction whose GPR evaluated to `False`,
    `[{r_id: 1}, '=', 0]` — the list format meaning `1·v = 0`, i.e. pin the reaction to zero flux. Sorted
    for determinism.
 
@@ -5464,7 +5457,7 @@ Compression ([Ch 3](#ch3)) merges reactions, so after every `compress_model` cal
 changes: a constraint or objective that named reaction `r7` may now have to name the lumped reaction
 `r7*r9`, and a cost that applied to `r7` and `r9` separately must be re-expressed for the merged column.
 Two functions repair this, both called right after each of the two compression rounds
-(`compute_strain_designs.py:361/363` for round 1, `436/437` for round 2).
+(`compute_strain_designs.py/363` for round 1, `436/437` for round 2).
 
 Both operate on the **compression map** `cmp_mapReac`, a list of per-step dicts. The field that matters
 here is `reac_map_exp = { new_reac : { old_reac : factor, … } }` — for each reaction produced by the
@@ -5481,7 +5474,7 @@ and the merged reaction's flux:
 - **Coupled** merge: the merged reactions are flux-coupled, `v_oldₖ = factorₖ · v_new`, where `factorₖ`
   is the proportionality constant from the shared nullspace direction.
 - **Parallel** merge: `v_new` is the *total* flux `Σₖ v_oldₖ`, split by fractions with `Σₖ factorₖ = 1`,
-  so again `v_oldₖ = factorₖ · v_new` (`compression.py:2127–2141` builds these fractions from the
+  so again `v_oldₖ = factorₖ · v_new` (`compression.py` builds these fractions from the
   stoichiometric scales).
 
 Given that relation, remap a linear constraint `Σₖ aₖ vₖ {≤,=} b` when a subset `L` of its reactions
@@ -5493,7 +5486,7 @@ merges into `new`:
 
 So the new coefficient on `v_new` is `Σ_{k∈L} aₖ·factorₖ`, and the right-hand side `b` is unchanged (the
 transformation is a change of variables on the left only). This is exactly `compress_modules`
-(`networktools.py:1350`):
+(`networktools.py`):
 
 ```python
 lumped_reacs = [k for k in c[0].keys() if k in old_reac_val]
@@ -5502,8 +5495,8 @@ c[0][new_reac] = np.sum([c[0].pop(k) * old_reac_val[k] for k in lumped_reacs])
 
 `c[0]` is the coefficient dict; `old_reac_val` is `{old: factor}`; each merged term is popped and its
 coefficient times its factor is accumulated onto `new_reac`. Objectives (`INNER_OBJECTIVE`,
-`OUTER_OBJECTIVE`, `PROD_ID`) are linear expressions and get the identical treatment (lines 1351–1354).
-Coefficients are first converted to exact rationals (`modules_coeff2rational`, line 1336) so the
+`OUTER_OBJECTIVE`, `PROD_ID`) are linear expressions and get the identical treatment.
+Coefficients are first converted to exact rationals (`modules_coeff2rational`) so the
 factor multiply-and-sum stays exact — the same integer/rational discipline compression itself insists on
 ([Ch 3](#ch3)): never let a merge introduce float drift into a constraint that the MILP will treat as hard.
 
@@ -5514,9 +5507,9 @@ factor multiply-and-sum stays exact — the same integer/rational discipline com
 **Why `compress_modules` skips parallel steps.** Line 1340 guards the whole remap with `if not parallel:`
 — it rewrites constraints/objectives *only* for coupled steps. This is safe, and necessary, because
 reactions referenced in any module are **protected from parallel merging** in the first place:
-`_collect_no_par_compress_reacs` (`compute_strain_designs.py:38`) gathers every reaction id named in a
+`_collect_no_par_compress_reacs` (`compute_strain_designs.py`) gathers every reaction id named in a
 module's constraints/objectives and passes them as `no_par_compress_reacs` to `compress_model`
-(`compute_strain_designs.py:333, 433`), which exempts them from the parallel compressor. A
+(`compute_strain_designs.py, 433`), which exempts them from the parallel compressor. A
 module-referenced reaction therefore never appears on the `old` side of a parallel `reac_map_exp`, so
 there is nothing to remap for those steps — and if the code *did* try, it would still be correct but
 redundant. (Coupled merges are not exempted this way; a module reaction may be coupled-merged, which is
@@ -5524,22 +5517,22 @@ precisely why the coupled branch must run the remap.)
 
 #### 12.5.2 Cost remapping and the parallel/coupled asymmetry
 
-`compress_ki_ko_cost(kocost, kicost, cmp_mapReac)` (`networktools.py:1358`) does the analogous job for the
+`compress_ki_ko_cost(kocost, kicost, cmp_mapReac)` (`networktools.py`) does the analogous job for the
 knockout- and knock-in-cost dicts, but here the merge kind genuinely changes the *arithmetic*, because a
 cost is a property of "cutting/adding this reaction," and what a cut of the *merged* reaction physically
 means differs between the two merge types.
 
-First, for provenance, each step records the cost dicts *as they stood entering that step* (line 1392,
+First, for provenance, each step records the cost dicts *as they stood entering that step* (
 `cmp.update({KOCOST: kocost, KICOST: kicost})`) — this is the self-describing invariant the reverse
-expansion in [Ch 9](#ch9) relies on. Then it rebuilds the dicts (lines 1393–1410):
+expansion in [Ch 9](#ch9) relies on. Then it rebuilds the dicts:
 
-- **KO cost of a merged reaction** (lines 1394–1401):
+- **KO cost of a merged reaction**:
   - **coupled** (and none of the group is a KI candidate): `min` of the members' KO costs. A coupled group
     fires together — knocking any one that carries the group's flux kills the whole coupled flux — so the
     cheapest cut suffices, hence the minimum.
   - **parallel**: `sum` of the members' KO costs. Parallel reactions are *alternative* routes carrying the
     same conversion; to actually knock the lumped capacity out you must cut *all* of them, so the costs add.
-- **KI cost of a merged reaction** (lines 1402–1410) — the mirror image:
+- **KI cost of a merged reaction** — the mirror image:
   - **coupled**: `sum` of the members' KI costs (adding a coupled pathway means adding every reaction in
     the chain).
   - **parallel** (and none of the group is a KO candidate): `min` (adding *one* of several parallel routes
@@ -5558,7 +5551,7 @@ violates the user's `max_cost` budget, or would prune valid cheap designs.
 
 ### 12.6 Ordering, and why it is load-bearing
 
-Reading the preprocessing block (`compute_strain_designs.py:305–495`) top to bottom, the utility calls
+Reading the preprocessing block (`compute_strain_designs.py`) top to bottom, the utility calls
 interleave with the heavy steps in a sequence that is not arbitrary:
 
 1. `remove_ext_mets` (§12.1) **first** — it redefines what a genuine conservation relation is, so it must
@@ -5572,7 +5565,7 @@ interleave with the heavy steps in a sequence that is not arbitrary:
 4. **GPR extension** ([Ch 4](#ch4)), then **gene-based** `extend_model_regulatory` (§12.3.3) — deferred to exactly
    this point because the gene pseudoreactions it references do not exist earlier.
 5. **COMPRESS #2**, then `compress_modules` + `compress_ki_ko_cost` again on the round-2 map; the two maps
-   are concatenated (`cmp_mapReac = cmp_mapReac_1 + cmp_mapReac_2`, line 439) into the single history that
+   are concatenated (`cmp_mapReac = cmp_mapReac_1 + cmp_mapReac_2`) into the single history that
    decompression ([Ch 9](#ch9)) later replays in reverse.
 
 `gene_kos_to_constraints` (§12.4) sits outside this sequence — it is invoked on demand by the
@@ -5584,9 +5577,7 @@ all of it: every constraint string, whether from a module, a regulatory interven
 
 ¹ Footnote on the `*` tokenization: the scanner splits only on whitespace, so `"2*c"` written without
 spaces around `*` becomes a single token `"2*c"` that is neither a known reaction id nor a pure-number
-match and therefore raises `Unknown identifier 2*c`. The docstrings advertise `"r1 + 3*r2 = 0.3"`-style
-input, which works only when the `*` is adjacent to a coefficient that the surrounding regex tolerates;
-the reliably-correct spelling used internally is space-separated (`"3 r2"`). If you extend the parser,
+match and therefore raises `Unknown identifier 2*c`. Coefficients must be space-separated (`"3 r2"`), which is the form the docstring examples now use. If you extend the parser,
 either strip `*` in the tokenizer or document the space requirement — the current behavior is
 inconsistent with the examples in its own docstrings.
 
@@ -5638,26 +5629,26 @@ Three concrete reasons, all visible in the code:
    `optcouple` module needs `inner_objective` + `prod_id` but *forbids* `outer_objective`. A
    flat keyword bag with per-type validation expresses "these keys are relevant, those are not"
    far more naturally than a fixed positional signature would. Unused fields are simply set to
-   `None` (`strainDesignModule.py:235-237`), so every module carries the same key set and
+   `None` (`strainDesignModule.py`), so every module carries the same key set and
    downstream code can blindly read `m[OUTER_OBJECTIVE]` without `hasattr` guards.
 
 2. **Modules must survive serialization and transformation as plain data.** They are embedded
    verbatim into the `sd_setup` dict stored on every `SDSolutions` (under the `MODULES` key), are
    `deepcopy`-ed repeatedly (setup construction, `SDModule.copy`), are JSON-dumpable when a setup
    is written to a `.json` file (`compute_strain_designs` accepts `SETUP` as a path and
-   `json.load`s it, `compute_strain_designs.py:181`), and are **remapped through the compression
+   `json.load`s it, `compute_strain_designs.py`), and are **remapped through the compression
    map** by `compress_modules` ([Ch 12](#ch12)), which walks the constraint dicts and rewrites reaction
    keys. A dict subclass is trivially all of these; a bespoke class would need custom
    `__getstate__`/`to_dict` glue.
 
 3. **The constructor is the single validation gate.** Because everything is keyed, one loop
-   (`strainDesignModule.py:229-233`) can enforce the whitelist:
+   (`strainDesignModule.py`) can enforce the whitelist:
 
    ```python
    allowed_keys = {CONSTRAINTS, INNER_OBJECTIVE, INNER_OPT_SENSE, OUTER_OBJECTIVE,
                    OUTER_OPT_SENSE, INNER_OPT_TOL, OUTER_OPT_TOL, PROD_ID,
                    'skip_checks', MIN_GCP, 'reac_ids'}
-   for key, value in kwargs.items():
+   for key, value in kwargs.items:
        if key in allowed_keys: self[key] = value
        else: raise Exception("Key " + key + " is not supported.")
    ```
@@ -5673,7 +5664,7 @@ else is keyword-only in practice (`*args` is accepted but ignored).
 
 #### 13.1.2 The six module types
 
-`module_type` must be one of six strings (`strainDesignModule.py:245`), all defined in
+`module_type` must be one of six strings (`strainDesignModule.py`), all defined in
 `names.py`:
 
 | Type | `names.py` value | Global objective it implies | Mandatory fields (beyond model/type) |
@@ -5694,16 +5685,16 @@ the bilevel types = nest an inner LP via strong duality) are the subject of [Ch 
 they are just labels that select a validation branch.
 
 Two documentation caveats worth flagging: `DOUBLEOPT` is a valid, accepted type in the code
-(`names.py:127`, validated exactly like OptKnock/RobustKnock at
-`strainDesignModule.py:248-257`) but is **not** described in the class docstring — the docstring
-predates it. And `names.py:120-123` deliberately rebinds `PROTECT`/`SUPPRESS`: they are first
+(`names.py`, validated exactly like OptKnock/RobustKnock at
+`strainDesignModule.py`) but is **not** described in the class docstring — the docstring
+predates it. And `names.py` deliberately rebinds `PROTECT`/`SUPPRESS`: they are first
 set to legacy internal strings `'mcs_lin'`/`'mcs_bilvl'` and then *immediately overwritten* with
 `'protect'`/`'suppress'`, so only the latter two are live. The overwrite is intentional (the old
 strings are kept in the module docstring for historical reference only).
 
 #### 13.1.3 Per-type validation, step by step
 
-The constructor's validation (`strainDesignModule.py:244-339`) runs in this order:
+The constructor's validation (`strainDesignModule.py`) runs in this order:
 
 1. **Type whitelist** (`:245`). Unknown `module_type` → exception.
 
@@ -5806,7 +5797,7 @@ outer objective), optionally with `min_gcp=0.05`.
 
 ### 13.2 `SDSolutions` — the result object
 
-`SDSolutions` (`strainDesignSolutions.py:31`) is the return value of `compute_strain_designs`,
+`SDSolutions` (`strainDesignSolutions.py`) is the return value of `compute_strain_designs`,
 `compute_strain_designs_from_preprocessed`, and the lower-level `SDMILP` compute methods. Its
 docstring is blunt: *"Instances of this class are not meant to be created by StrainDesign
 users."* The orchestrator builds it; the user reads it.
@@ -5890,7 +5881,7 @@ interventions (KO `-1`, added KI `1`, active reg `True`).
 | `get_reaction_sd_mark_no_ki(i=None)` | reaction-level, **raw** | **no** | Analysis that must see the *candidate* KIs that were declined (value 0). |
 | `get_gene_sd_mark_no_ki(i=None)` | gene-level, **raw** | **no** | Same, at gene level. |
 | `get_gene_reac_sd_assoc(i=None)` | `(reacs, assoc, gene_sd)` | yes | Map the (often n:1) many-genes-→-one-reaction-phenotype relationship. |
-| `get_num_sols()` | int | — | Count; returns the *estimated* total in lazy mode (see 13.2.4). |
+| `get_num_sols` | int | — | Count; returns the *estimated* total in lazy mode (see 13.2.4). |
 
 `i` may be `None` (all designs), a single `int`, or a list of indices; a bare `int` is wrapped
 to `[i]` internally. Two contract subtleties to note:
@@ -5919,9 +5910,9 @@ full-model designs. Materializing all of them is often pointless (they are inter
 can exhaust memory or hang `save` (issue #47). PR #40 introduced **lazy expansion** to defer
 that fan-out.
 
-The mechanism lives across `_decompress_solutions` (`compute_strain_designs.py:641`) and
+The mechanism lives across `_decompress_solutions` (`compute_strain_designs.py`) and
 `SDSolutions`. When the orchestrator's `estimate_expansion_size` exceeds
-`LAZY_EXPANSION_THRESHOLD` (`= 100_000`, `compute_strain_designs.py:638`), it builds **one
+`LAZY_EXPANSION_THRESHOLD` (`= 100_000`, `compute_strain_designs.py`), it builds **one
 representative expanded design per compressed group** via `_build_lazy_representatives`
 (`:721-756`, taking `expanded[0]`, the cheapest, per group) and constructs the solution with a
 `_lazy_init` payload:
@@ -5934,12 +5925,12 @@ sd_solutions = SDSolutions(orig_model, sd, status, setup, _lazy_init=lazy_meta)
 `compressed_sd`, `compression_map`, the uncompressed cost dicts, `max_cost`, the live `model`,
 and `estimated_total`. In lazy mode (`self._lazy == True`, `:75`):
 
-- **`get_num_sols()`** returns `self._estimated_total` (the *estimated* full count), not the
-  number materialized (`:284-288`). `get_num_materialized()` returns the actual count in
+- **`get_num_sols`** returns `self._estimated_total` (the *estimated* full count), not the
+  number materialized (`:284-288`). `get_num_materialized` returns the actual count in
   `reaction_sd`.
-- **`get_representative_sd()`** (`:431-444`) returns one stripped design per compressed group —
-  the cheap, canonical answer. If there is no `group_map` it falls back to `get_reaction_sd()`.
-- **`get_group(i)`** / **`get_num_groups()`** (`:414-429`) expose the group structure: which
+- **`get_representative_sd`** (`:431-444`) returns one stripped design per compressed group —
+  the cheap, canonical answer. If there is no `group_map` it falls back to `get_reaction_sd`.
+- **`get_group(i)`** / **`get_num_groups`** (`:414-429`) expose the group structure: which
   materialized indices share a compressed origin, and how many distinct compressed designs
   exist.
 - **`expand_group(grp_idx)`** (`:446-518`) does the on-demand work: it calls `expand_sd` +
@@ -5976,7 +5967,7 @@ versions), so the model is never pickled live. Instead:
   `embed_model=False` save stays lean (`:597-612`).
 - `save` **does not force expansion** of lazy/compressed results (`:565-571`) — it pickles them
   as-is, precisely to avoid the memory blow-up of issue #47. To persist a fully-expanded set,
-  call `expand_all()` first.
+  call `expand_all` first.
 - `load(filename, model=None, cmp_model=None)` (`:638-687`) rebuilds models only on request:
   `None` attaches nothing, `True` rebuilds the embedded snapshot via `model_from_dict`, and a
   passed `cobra.Model` attaches that object directly. `_resolve` (`:678-683`) implements this
@@ -5987,7 +5978,7 @@ versions), so the model is never pickled live. Instead:
 
 Finally, `SDSolutions` supports **merging** (`__iadd__`/`__add__`, `:704-765`): two result sets
 over the same model can be combined, deduplicating at the compressed-design level (via
-`frozenset(s.items())`) when compression info is present, or at the expanded level otherwise,
+`frozenset(s.items)`) when compression info is present, or at the expanded level otherwise,
 with `OPTIMAL` status winning. `_check_merge_compatible` (`:689-702`) refuses to merge across
 different models, across gene/reaction levels, or across incompatible compression maps. This is
 what lets the benchmarking harness stitch together the outputs of several seed runs into one
@@ -5995,7 +5986,7 @@ solution set.
 
 ### 13.3 The `sd_setup` object — one bundle, two roles
 
-`sd_setup` (the string key `SETUP = 'sd_setup'`, `names.py:160`) is the **single serializable
+`sd_setup` (the string key `SETUP = 'sd_setup'`, `names.py`) is the **single serializable
 dictionary that fully describes a strain-design problem** — modules, cost model, solver, and
 solve-control parameters, all in plain-data form. It is deliberately not a class: it is a bare
 `dict` of string keys → JSON-friendly values, precisely so it can be written to disk, version
@@ -6025,7 +6016,7 @@ The keys are the `names.py` constants; the value types are:
 | `'compress'`, `'gene_kos'`, `MILP_THREADS`, `'advanced'`, `'use_scenario'` | — | bool/int | compression toggle, gene-KO mode, threads, CNApy dummies |
 
 These are exactly the `allowed_keys` that `compute_strain_designs` accepts as top-level kwargs
-(`compute_strain_designs.py:174-177`) — which is the whole point: **`sd_setup` is a frozen copy
+(`compute_strain_designs.py`) — which is the whole point: **`sd_setup` is a frozen copy
 of the keyword arguments of a `compute_strain_designs` call.** The two views (a bag of kwargs, or
 one `sd_setup` dict) are interchangeable descriptions of the same problem.
 
@@ -6038,7 +6029,7 @@ the internal compressed one (see §13.3.3).
 
 `compute_strain_designs(model, **kwargs)` lets a caller pass the **entire** configuration as one
 `sd_setup=` argument instead of spelling out every parameter (docstring `:75-78`). The handling
-is at `compute_strain_designs.py:179-184`:
+is at `compute_strain_designs.py`:
 
 ```python
 if SETUP in kwargs:
@@ -6072,11 +6063,11 @@ ten-argument invocation into one auditable artifact.
 #### 13.3.3 Role 2 — `sd_setup` as OUTPUT / reproducibility record
 
 Every `SDSolutions` stores the setup it was produced under: `self.sd_setup = sd_setup`
-(`strainDesignSolutions.py:74`). This is what makes a result **self-describing** — the object
+(`strainDesignSolutions.py`). This is what makes a result **self-describing** — the object
 carries not just the answers but the full question. The orchestrator builds this record from the
 *original* model/modules/costs right before constructing the solution: it `deepcopy`s the setup
 returned by the MILP layer and overwrites the module/cost keys with the uncompressed originals
-(`compute_strain_designs.py:606-609` in the normal path, `:837-840` in the from-preprocessed
+(`compute_strain_designs.py` in the normal path, `:837-840` in the from-preprocessed
 path, and `:570-573` in the dump early-return), adding `GKOCOST`/`GKICOST` when in gene mode. The
 `deepcopy` is deliberate: the record must be an immutable snapshot, decoupled from any later
 mutation of the live cost dictionaries.
@@ -6086,7 +6077,7 @@ mutation of the live cost dictionaries.
 Carrying the full setup on the result is what lets the object be re-processed with **no reference
 to the original call site**:
 
-- **Re-costing.** `_compute_costs_and_bounds` (`strainDesignSolutions.py:204-243`) reads
+- **Re-costing.** `_compute_costs_and_bounds` (`strainDesignSolutions.py`) reads
   `KOCOST`/`KICOST`/`GKOCOST`/`GKICOST`/`REGCOST` *straight out of `sd_setup`* to total each
   design's cost. Because the cost model lives in the record, `sd_cost` can be recomputed for any
   (e.g. lazily expanded, §13.2.4) design without the caller re-supplying the cost dictionaries —
@@ -6118,7 +6109,7 @@ harness.
 #### 13.4.1 Dumping: `dump_preprocessed`
 
 `dump_preprocessed` is a kwarg to `compute_strain_designs` (whitelisted at
-`compute_strain_designs.py:176`); its value is a path. The orchestrator runs the *entire*
+`compute_strain_designs.py`); its value is a path. The orchestrator runs the *entire*
 preprocessing pipeline normally — compression #1/#2, GPR integration, all three FVA phases,
 size-1 MCS extraction, essential-reaction removal, and MILP-kwarg assembly — and then, just
 before it would solve the MILP (`:534-592`), if `dump_preprocessed` is set it pickles a
@@ -6239,7 +6230,7 @@ The four solvers do not agree on almost anything at the API level:
   pyscipopt wants variables and `Expr` objects assembled term by term; GLPK (via `swiglpk`) wants
   raw C arrays with **1-based** indexing.
 - **Infinity.** `numpy.inf` must be rewritten to `cplex.infinity`, `gurobipy.GRB.INFINITY`,
-  `SCIP.infinity()`, or GLPK's free-bound sentinels — each different.
+  `SCIP.infinity`, or GLPK's free-bound sentinels — each different.
 - **Indicator constraints.** CPLEX and Gurobi support them natively (with opposite conventions for
   how you say "active when the binary is 0"); SCIP supports only the *indicator = 1* case natively
   and needs an auxiliary variable for *indicator = 0*; GLPK has no concept of them at all.
@@ -6256,14 +6247,14 @@ against the `MILP_LP` API — `solve`, `slim_solve`, `populate`, `set_objective(
 and each backend implements exactly that surface with identical semantics. The invariant that makes
 this correct is that **every backend presents the same canonical minimization problem** and returns
 the **same canonical statuses**, regardless of how its underlying solver phrases them. `SDMILP`
-itself is defined as `class SDMILP(SDProblem, MILP_LP)` (`strainDesignMILP.py:31`) and simply calls
-`MILP_LP.__init__` with the matrices `SDProblem` assembled (`strainDesignMILP.py:92`), so the strain-
+itself is defined as `class SDMILP(SDProblem, MILP_LP)` (`strainDesignMILP.py`) and simply calls
+`MILP_LP.__init__` with the matrices `SDProblem` assembled (`strainDesignMILP.py`), so the strain-
 design MILP *is* an `MILP_LP` — the abstraction is not a wrapper the caller holds, it is a base class
 the problem inherits.
 
 ### 14.2 The canonical problem and the `MILP_LP` constructor
 
-`MILP_LP` accepts one problem shape (`solver_interface.py:36`):
+`MILP_LP` accepts one problem shape (`solver_interface.py`):
 
 ```
 minimize   cᵀx
@@ -6279,42 +6270,42 @@ with `A_ineq, A_eq ∈ scipy.sparse` of width `n = #variables`, `c, lb, ub, vtyp
 `indic_constr` an `IndicatorConstraints` object (Section 14.4). The sense is **always
 minimization**; the enumeration and dualization layers arrange their objectives accordingly ([Ch 8](#ch8)).
 
-The constructor (`solver_interface.py:103`) does four jobs before touching a solver:
+The constructor (`solver_interface.py`) does four jobs before touching a solver:
 
 1. **Keyword plumbing and defaults.** It accepts exactly the keys
    `{c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype, indic_constr, M, solver, skip_checks, tlim, seed,
    milp_threads}`; any other key raises. Missing pieces are defaulted so a caller may pass only a
    constraint matrix: `c → 0`, empty `A_eq`/`A_ineq` become `(0, n)` sparse matrices, `lb → -inf`,
-   `ub → +inf`, `vtype → 'C'·n` (`solver_interface.py:134–150`). Infinities/NaNs flow through here as
+   `ub → +inf`, `vtype → 'C'·n` (`solver_interface.py`). Infinities/NaNs flow through here as
    `numpy` values; each backend rewrites them to its own sentinel.
 
 2. **Solver selection.** If no `solver` is given, the first entry of the module-level `avail_solvers`
-   set is used (`solver_interface.py:118–120`). `avail_solvers` is populated at import in
+   set is used (`solver_interface.py`). `avail_solvers` is populated at import in
    `__init__.py` in the order GLPK, CPLEX, Gurobi, SCIP as each import succeeds; because it is a
    `set`, "first" is not a guaranteed priority order — for reproducible backend choice the caller
    should pass `solver=` explicitly (the orchestrator does). An explicit solver that is not installed
-   raises immediately (`solver_interface.py:124`).
+   raises immediately (`solver_interface.py`).
 
 3. **Dimension checks** (unless `skip_checks=True`). Row counts of `A_ineq`/`b_ineq` and
    `A_eq`/`b_eq` must match, all widths must equal `n`, and the indicator block's dimensions must be
-   internally consistent (`solver_interface.py:152–167`). These checks are the single most useful
+   internally consistent (`solver_interface.py`). These checks are the single most useful
    guard against a malformed dualization silently producing a wrong-shaped MILP; `skip_checks=True`
    is used only on hot paths where the shape is known (e.g. the `verify_sd` sub-LPs).
 
 4. **Type casting and the big-M warning.** All matrices are cast to `float`; then, if the solver is
    *not* GLPK but a finite `M` was supplied alongside indicator constraints, a warning fires that
-   `M` will be ignored (`solver_interface.py:179–181`) — because only GLPK consumes `M`. GLPK with
-   `milp_threads` set raises, since GLPK is single-threaded (`solver_interface.py:182–183`).
+   `M` will be ignored (`solver_interface.py`) — because only GLPK consumes `M`. GLPK with
+   `milp_threads` set raises, since GLPK is single-threaded (`solver_interface.py`).
 
-Then it instantiates the backend (`solver_interface.py:185–205`), passing the full tuple plus
+Then it instantiates the backend (`solver_interface.py`), passing the full tuple plus
 `seed` and `milp_threads` (and, for GLPK only, `M`). SCIP is special-cased: if the problem is a pure
 LP (`all vtype == 'C'` and no indicator constraints) it routes to the **SoPlex** LP object `SCIP_LP`
-and returns early; otherwise to the MILP object `SCIP_MILP` (`solver_interface.py:193–201`). Finally
+and returns early; otherwise to the MILP object `SCIP_MILP` (`solver_interface.py`). Finally
 it applies the time limit (`inf` if none), floored at 1 ms (Section 14.6).
 
 Note that `MILP_LP` keeps its *own* copies of `c, A_ineq, b_ineq, …` in sync with the backend: e.g.
 `add_ineq_constraints` both `vstack`s onto `self.A_ineq` *and* forwards to `self.backend`
-(`solver_interface.py:287–306`). This shadow copy is what lets the enumeration layer read back the
+(`solver_interface.py`). This shadow copy is what lets the enumeration layer read back the
 current constraint system (for integer cuts) without a solver round-trip.
 
 ### 14.3 The three solve entry points and result normalization
@@ -6322,21 +6313,21 @@ current constraint system (for integer cuts) without a solver round-trip.
 `MILP_LP` exposes three ways to solve, each forwarding to the backend and each with a distinct
 contract used by different parts of [Ch 8](#ch8)'s loop:
 
-- **`solve() → (x, opt, status)`** (`solver_interface.py:211`). The full solve: returns the solution
+- **`solve → (x, opt, status)`** (`solver_interface.py`). The full solve: returns the solution
   vector, objective value, and canonical status. Crucially, `MILP_LP.solve` post-processes the
   backend's raw `x`: when a solution exists (status not in `{INFEASIBLE, UNBOUNDED, TIME_LIMIT}`) it
   **rounds integer/binary variables to the nearest integer** and casts, leaving continuous variables
-  untouched (`solver_interface.py:223–224`). This is where solver integrality tolerances (a `z_j`
+  untouched (`solver_interface.py`). This is where solver integrality tolerances (a `z_j`
   coming back as `0.9999999997`) are cleaned into exact `0/1` so that the downstream integer-cut math
   and cost accounting are exact.
 
-- **`slim_solve() → opt`** (`solver_interface.py:227`). Returns only the optimal objective value, no
+- **`slim_solve → opt`** (`solver_interface.py`). Returns only the optimal objective value, no
   solution vector. This is the workhorse of preprocessing: FVA minimizes/maximizes each flux, and the
-  MILP verification LPs (`strainDesignMILP.py:286`, `valid[i] = not isnan(lp.slim_solve())`) only ask
+  MILP verification LPs (`strainDesignMILP.py`, `valid[i] = not isnan(lp.slim_solve)`) only ask
   "is this feasible / what is the bound," never needing `x`. Skipping solution-vector extraction
   matters because, across genome-scale FVA, that extraction cost is paid thousands of times.
 
-- **`populate(n) → (X, opt, status)`** (`solver_interface.py:241`). Returns a *list* of solution
+- **`populate(n) → (X, opt, status)`** (`solver_interface.py`). Returns a *list* of solution
   vectors — the solution pool — used by POPULATE enumeration to harvest many equally-optimal
   designs in one solver invocation. Only CPLEX and Gurobi implement this natively; SCIP and GLPK
   emulate it (Section 14.7).
@@ -6350,7 +6341,7 @@ unavailable on GLPK and SoPlex and degrades gracefully (Section 14.6).
 
 ### 14.4 Indicator constraints vs big-M, per backend
 
-An `IndicatorConstraints` object (`indicatorConstraints.py:22`) stores a *batch* of implications
+An `IndicatorConstraints` object (`indicatorConstraints.py`) stores a *batch* of implications
 `x_{binv[i]} = indicval[i] → A[i]·x [sense[i]] b[i]`, with `binv` the indicator variable indices,
 `A` a sparse matrix (one row per constraint), `b` the right-hand sides, `sense ∈ {'L','E','G'}`, and
 `indicval ∈ {0,1}`. This is a solver-neutral container; each backend translates it.
@@ -6364,14 +6355,14 @@ with them — and the `indic_constr` block carries only the genuinely indicator-
 The one exception is GLPK, which cannot represent indicators and must convert that block to big-M
 here, using the `M` value the abstraction passed it.
 
-**CPLEX** (`cplex_interface.py:132–141`). The batch is reshaped to CPLEX's format — each row becomes
+**CPLEX** (`cplex_interface.py`). The batch is reshaped to CPLEX's format — each row becomes
 `[[col indices],[coeffs]]` — and handed to `self.indicator_constraints.add_batch` with
 `indvar=binv`, `sense`, `rhs=b`, and `complemented = 1 - indicval`. CPLEX's native convention is
 "constraint active when `indvar = 1`," so an `indicval = 0` implication is passed as
 `complemented = 1`. This is a single native call; CPLEX handles the linkage internally with no big-M
 and no auxiliary variables, giving a tighter LP relaxation.
 
-**Gurobi** (`gurobi_interface.py:136–146`). Each row `i` is turned into a linear expression
+**Gurobi** (`gurobi_interface.py`). Each row `i` is turned into a linear expression
 `Σ vals·x[cols]` and registered with
 `addGenConstrIndicator(x[binv[i]], bool(indicval[i]), lhs, sense, b[i])`, where the sense is `'='`
 for `'E'` and `'<'` otherwise. Gurobi's API takes the *active value* directly as its second
@@ -6379,32 +6370,32 @@ argument, so no complementation arithmetic is needed. The constructor records
 `self._has_indicator_constr` because Gurobi 13's presolve has a known bug with indicators that the
 solve path must guard against (Section 14.8).
 
-**SCIP** (`scip_interface.py:139–159`). SCIP supports indicator constraints (`addConsIndicator`) but
+**SCIP** (`scip_interface.py`). SCIP supports indicator constraints (`addConsIndicator`) but
 with two limitations the code works around:
 - *Only `indicval = 1` is native.* For an `indicval = 0` implication the interface adds an auxiliary
   binary `z` and an XOR/complement equality `x_{binv} + z = 1`, then indicates on `z`
-  (`scip_interface.py:142–146`). So "active when the original binary is 0" becomes "active when the
+  (`scip_interface.py`). So "active when the original binary is 0" becomes "active when the
   fresh `z` is 1."
 - *Only `≤` (and `=` split) senses.* An `'E'` row is expanded to two rows `A·x ≤ b` and `-A·x ≤ -b`
-  (`scip_interface.py:149–154`); each resulting `≤` row is added as an `addConsIndicator` with the
+  (`scip_interface.py`); each resulting `≤` row is added as an `addConsIndicator` with the
   chosen binary. Thus SCIP's handling is *native indicator constraints*, just with more
   bookkeeping — it does **not** fall back to big-M.
 
-**GLPK** (`glpk_interface.py:150–179`). GLPK has no indicator support, so this is the one backend
+**GLPK** (`glpk_interface.py`). GLPK has no indicator support, so this is the one backend
 where the `IndicatorConstraints` block is reduced to **big-M rows** at construction, using the `M`
-passed down (default `1000` if none — `glpk_interface.py:154–155`). The reduction implements exactly
-the linearization documented in `indicatorConstraints.py:29–33`:
+passed down (default `1000` if none — `glpk_interface.py`). The reduction implements exactly
+the linearization documented in `indicatorConstraints.py`:
 - an `'E'` row is first split into `A·x ≤ b` and `-A·x ≤ -b`;
 - if the constraint is active when the binary is **1** (`indicval = 1`): set the binary's column
   coefficient to `+M` and add `M` to the RHS, giving `A·x + M·z ≤ b + M` — inactive (slack `M`) when
   `z = 0`, and the original `A·x ≤ b` when `z = 1`;
 - if active when the binary is **0** (`indicval = 0`): set the column coefficient to `-M`, giving
   `A·x − M·z ≤ b` — the original constraint at `z = 0`, relaxed by `M` at `z = 1`
-  (`glpk_interface.py:173–177`).
+  (`glpk_interface.py`).
 
 These synthesized rows are stacked below the ordinary `A_ineq`/`A_eq` rows and loaded as `GLP_UP`
-(upper-bounded) rows (`glpk_interface.py:181–197`). Two warnings fire announcing the reduction and
-the `M` used (`glpk_interface.py:156–157`). Because a loose `M` inflates the LP relaxation and
+(upper-bounded) rows (`glpk_interface.py`). Two warnings fire announcing the reduction and
+the `M` used (`glpk_interface.py`). Because a loose `M` inflates the LP relaxation and
 courts the numerical trouble genome-scale MCS problems are already prone to ([Ch 11](#ch11)), GLPK is the
 weakest backend for large strain-design MILPs and is best reserved for validation on small models.
 
@@ -6430,8 +6421,8 @@ carry information the abstraction must preserve or repair:
 | `TIME_LIMIT_W_SOL` | `11,13,107,113` **and 5,6** | `TIME_LIMIT/INTERRUPTED` with incumbent; NUMERIC salvage | `'timelimit','userinterrupt'` with sol; `'unknown'` salvage | `bool_tlim & GLP_FEAS` |
 | `ERROR` | `CplexError` (except code 1217) | `GurobiError` in `populate` | bare `except` | bare `except` |
 
-References: CPLEX `cplex_interface.py:188–219`; Gurobi `gurobi_interface.py:205–258`; SCIP
-`scip_interface.py:211–244`; GLPK `glpk_interface.py:231–256`.
+References: CPLEX `cplex_interface.py`; Gurobi `gurobi_interface.py`; SCIP
+`scip_interface.py`; GLPK `glpk_interface.py`.
 
 Three subtleties are worth calling out because they are correctness-load-bearing:
 
@@ -6439,18 +6430,18 @@ Three subtleties are worth calling out because they are correctness-load-bearing
    "infeasible *or* unbounded." The interface cannot let that ambiguity leak into the canonical
    vocabulary, so on `{INF_OR_UNBD, UNBOUNDED, INFEASIBLE}` it re-solves once with
    `DualReductions = 0` (which disables the presolve reduction responsible for the fusion), then
-   reads the now-unambiguous status (`gurobi_interface.py:218–232`). This costs an extra solve but
+   reads the now-unambiguous status (`gurobi_interface.py`). This costs an extra solve but
    guarantees the enumeration loop is told *exactly* whether the current knockout set made the
    SUPPRESS behavior infeasible (the whole point of an MCS) or accidentally left the problem
    unbounded.
 
 2. **CPLEX LP vs MIP code overloading.** Because CPLEX reuses `2`/`4` for LP-unbounded and
    `118`/`119` for MIP-unbounded (and similarly for other states), the interface lists *all* the
-   variants in each branch (`cplex_interface.py:204`, `246`), so the same `MILP_LP.slim_solve()`
+   variants in each branch (`cplex_interface.py`, `246`), so the same `MILP_LP.slim_solve`
    works whether the object was built as an LP (preprocessing) or a MIP (strain design).
 
 3. **Rounding at the boundary.** GLPK's `solve` rounds both `x` and `opt` to 12 decimals
-   (`glpk_interface.py:254–255`) as a workaround for GLPK returning values like `-1e-15`; combined
+   (`glpk_interface.py`) as a workaround for GLPK returning values like `-1e-15`; combined
    with `MILP_LP.solve`'s integer rounding, binary variables come back exactly `0/1`.
 
 Anything a backend cannot classify raises `"Case not yet handled"`, deliberately loud so that a new
@@ -6470,45 +6461,45 @@ sensitive to integrality slop (a spuriously "knocked-in" reaction from a `z_j = 
 | threads | `threads` (if set) | `Threads` (if set) | `parallel/{max,min}nthreads` | single-threaded |
 | output silenced | log/error/warn/results streams → `StringIO` | `OutputFlag = 0` | `display/verblevel = 0` | `msg_lev = 0` |
 
-References: CPLEX `cplex_interface.py:147–166`; Gurobi `gurobi_interface.py:149–164`; SCIP
-`scip_interface.py:161–185`, SoPlex `scip_interface.py:543–544`; GLPK `glpk_interface.py:204–213`.
+References: CPLEX `cplex_interface.py`; Gurobi `gurobi_interface.py`; SCIP
+`scip_interface.py`, SoPlex `scip_interface.py`; GLPK `glpk_interface.py`.
 
 - **Seed.** When the caller does not supply one, each MILP backend draws a fresh seed in `[0, 2¹⁶)`
-  and sets it (`cplex_interface.py:155–158`, `gurobi_interface.py:153–157`,
-  `scip_interface.py:164–168`). This makes a single run reproducible given a fixed seed but means
+  and sets it (`cplex_interface.py`, `gurobi_interface.py`,
+  `scip_interface.py`). This makes a single run reproducible given a fixed seed but means
   two default runs explore the branch-and-bound tree differently — relevant when comparing wall-times
   ([Ch 8](#ch8)/11 pin the seed for benchmarking). **GLPK cannot set a seed** — the code notes swiglpk
-  exposes no such hook (`glpk_interface.py:215–216`) — so GLPK enumeration order is not seed-tunable.
+  exposes no such hook (`glpk_interface.py`) — so GLPK enumeration order is not seed-tunable.
 
 - **Threads.** Only set if `milp_threads` is explicitly passed; otherwise each solver uses its own
   default (typically all cores). SCIP sets *both* min and max thread counts. GLPK rejects the option
   upstream in `MILP_LP.__init__`.
 
 - **Working memory (CPLEX only).** For MIPs, CPLEX's `workmem` is set to **75 % of total physical
-  RAM** (`cplex_interface.py:151–152`, via `psutil.virtual_memory()`), so that CPLEX keeps its
+  RAM** (`cplex_interface.py`, via `psutil.virtual_memory`), so that CPLEX keeps its
   branch-and-cut node file and cut pool in memory rather than spilling to disk on the large iML1515
   problems. No equivalent knob is set for the others.
 
 - **Time limit.** `MILP_LP.set_time_limit(t)` floors `t` at `1e-3` s before dispatch
-  (`solver_interface.py:283`). The reason is documented in-line: the enumeration loop computes the
-  remaining budget as `endtime − time.time()` right after a `> 0` guard, and a scheduling hiccup can
+  (`solver_interface.py`). The reason is documented in-line: the enumeration loop computes the
+  remaining budget as `endtime − time.time` right after a `> 0` guard, and a scheduling hiccup can
   make it zero or slightly negative; a 1 ms floor keeps the value valid because **Gurobi rejects a
   negative `TimeLimit`** and, critically, **GLPK treats `tm_lim == 0` as "no limit"** (an unbounded
-  run). Each backend then clamps against its own maximum: CPLEX maps `inf → timelimit.max()`
-  (`cplex_interface.py:369–374`); GLPK stores milliseconds and caps at its initial `tm_lim`
-  (`glpk_interface.py:423–432`); SCIP caps at its `limits/time` max (`scip_interface.py:394–399`);
+  run). Each backend then clamps against its own maximum: CPLEX maps `inf → timelimit.max`
+  (`cplex_interface.py`); GLPK stores milliseconds and caps at its initial `tm_lim`
+  (`glpk_interface.py`); SCIP caps at its `limits/time` max (`scip_interface.py`);
   `SCIP_LP.set_time_limit` is a **no-op** — SoPlex LP solves are not time-limited
-  (`scip_interface.py:738–740`).
+  (`scip_interface.py`).
 
 - **LP method / warm start.** `set_lp_method` maps the neutral constants
   `LP_METHOD_{AUTO,PRIMAL,DUAL,BARRIER}` to each solver's code
-  (`cplex_interface.py:327–336`, `gurobi_interface.py:376–384`, `scip_interface.py:367–378`,
-  `glpk_interface.py:379–392`). Barrier is unavailable on GLPK (falls back to dual, with a warning)
+  (`cplex_interface.py`, `gurobi_interface.py`, `scip_interface.py`,
+  `glpk_interface.py`). Barrier is unavailable on GLPK (falls back to dual, with a warning)
   and on SoPlex (`SCIP_LP.set_lp_method` is a no-op). Basis extraction (`get_basis`/`set_basis`) is
   supported on CPLEX, Gurobi, and GLPK for warm-starting LP re-solves; `SCIP_MILP` refuses it (the
-  LP basis is discarded after a MIP solve — `scip_interface.py:386–392`), and `SCIP_LP`
+  LP basis is discarded after a MIP solve — `scip_interface.py`), and `SCIP_LP`
   *reconstructs* an approximate basis from `getBasisInds` plus solution values
-  (`scip_interface.py:683–729`).
+  (`scip_interface.py`).
 
 **No MIP optimality gap is set anywhere.** Neither `mip.tolerances.mipgap` (CPLEX) nor `MIPGap`
 (Gurobi) appears in these constructors, so both solvers run at their **default relative gap of
@@ -6522,30 +6513,30 @@ variables are hard-rounded on the way out (Section 14.3).
 re-solving after each integer cut. The two commercial solvers do it natively; the two open-source
 ones fake it.
 
-**CPLEX** (`cplex_interface.py:260–311`). `populate` sets the pool capacity and the populate limit
-to `n` (or their maxima for `n = inf`), calls `populate_solution_pool()`, translates the status, and
+**CPLEX** (`cplex_interface.py`). `populate` sets the pool capacity and the populate limit
+to `n` (or their maxima for `n = inf`), calls `populate_solution_pool`, translates the status, and
 harvests every pool member via `self.solution.pool.get_values(i)`. The pool *behaviour* is governed
-by three parameters fixed in the constructor (`cplex_interface.py:161–163`):
+by three parameters fixed in the constructor (`cplex_interface.py`):
 `mip.pool.absgap = 0.0`, `mip.pool.relgap = 0.0`, and `mip.pool.intensity = 4`. Absgap/relgap `= 0`
 mean **only solutions matching the optimal objective are retained** — exactly what MCS enumeration
 wants (all minimum-cost designs, nothing worse); `intensity = 4` is CPLEX's most aggressive pool-
-generation effort. **These three parameters are inert for a single `solve()`**: `solve` calls
-`super().solve()`, not `populate_solution_pool()`, so during ANY/BEST the pool is never populated
+generation effort. **These three parameters are inert for a single `solve`**: `solve` calls
+`super.solve`, not `populate_solution_pool`, so during ANY/BEST the pool is never populated
 and stays empty (verified; CONTEXT). They matter only inside `populate`. This is not a performance
 bug — it is simply that pool configuration only takes effect on the pool-generating call.
 
-**Gurobi** (`gurobi_interface.py:289–342`). `populate` sets `PoolSolutions = n` (or `MAXINT`),
+**Gurobi** (`gurobi_interface.py`). `populate` sets `PoolSolutions = n` (or `MAXINT`),
 `PoolSearchMode = 2` ("find the n best solutions, systematically"), and raises `NumericFocus = 2`
 for the pool sweep, solves, then **restores** `PoolSearchMode = 0` and `NumericFocus = 0` so an
-ensuing single `solve()` is not slowed by pool search. The equivalent of CPLEX's absgap/relgap `= 0`
-is set in the *constructor*: `PoolGap = 1e-9` and `PoolGapAbs = 1e-9` (`gurobi_interface.py:162–163`),
+ensuing single `solve` is not slowed by pool search. The equivalent of CPLEX's absgap/relgap `= 0`
+is set in the *constructor*: `PoolGap = 1e-9` and `PoolGapAbs = 1e-9` (`gurobi_interface.py`),
 i.e. keep essentially only optimal-objective solutions. Harvesting (`getSolutions`,
-`gurobi_interface.py:488–496`) iterates the pool via `SolutionNumber` and — this is the important
+`gurobi_interface.py`) iterates the pool via `SolutionNumber` and — this is the important
 filter — **keeps a pool member only if its `PoolObjVal == ObjVal`**, dropping any non-optimal-cost
 solution Gurobi may have parked in the pool. Without this filter the pool could return designs above
 the minimum cost.
 
-**SCIP** (`scip_interface.py:282–336`) and **GLPK** (`glpk_interface.py:291–349`) have **no native
+**SCIP** (`scip_interface.py`) and **GLPK** (`glpk_interface.py`) have **no native
 pool**, so `populate` is *emulated* by a high-level loop that reproduces the pool semantics:
 
 1. solve to optimality; keep `x`, record `min_cx`;
@@ -6556,16 +6547,16 @@ pool**, so `populate` is *emulated* by a high-level loop that reproduces the poo
 4. loop: solve, and if still optimal, exclude and append — until the problem becomes infeasible
    (no more min-cost designs) or the time budget runs out;
 5. **tear down** the temporary rows by freeing their RHS to `+∞` (SCIP `chgRhs(..., None)`,
-   `scip_interface.py:326–330`; GLPK `set_ineq_constraint(j, 0, inf)`, `glpk_interface.py:334–338`),
+   `scip_interface.py`; GLPK `set_ineq_constraint(j, 0, inf)`, `glpk_interface.py`),
    rather than deleting them (row deletion is "very unstable" in GLPK, per the in-code comment).
 
 Two backend-specific wrinkles: the exclusion constraint's binary set is recomputed each pass, and
 **GLPK must treat integer variables as binaries too**, because GLPK silently promotes a binary whose
-bounds are pinned to `0` into an integer variable (`glpk_interface.py:555–557`), which would
+bounds are pinned to `0` into an integer variable (`glpk_interface.py`), which would
 otherwise be missed by the exclusion. If the loop exits by infeasibility it is relabelled `OPTIMAL`
-(the pool was exhausted, not a genuine failure) — `scip_interface.py:323–324`,
-`glpk_interface.py:332–333`. SCIP's emulated exclusion uses `addExclusionConstraintIneq`
-(`scip_interface.py:478–484`), the classic `Σ_{j∈S} z_j − Σ_{j∉S}(…) ≤ |S| − 1` cut restricted to
+(the pool was exhausted, not a genuine failure) — `scip_interface.py`,
+`glpk_interface.py`. SCIP's emulated exclusion uses `addExclusionConstraintIneq`
+(`scip_interface.py`), the classic `Σ_{j∈S} z_j − Σ_{j∉S}(…) ≤ |S| − 1` cut restricted to
 the binary variables.
 
 The performance consequence: on SCIP/GLPK, POPULATE pays *one full MILP solve per design found*,
@@ -6586,29 +6577,29 @@ raising.
   solution that is optimal in the scaled problem but shows small infeasibilities when unscaled. Both
   `solve` and `slim_solve` now take the objective value, log a warning recommending tighter bounds,
   and return it as `TIME_LIMIT_W_SOL` (a "usable but not certified-exact" status) rather than
-  hitting the `"Case not yet handled"` branch (`cplex_interface.py:209–215`, `250–251`). Downstream,
+  hitting the `"Case not yet handled"` branch (`cplex_interface.py`, `250–251`). Downstream,
   `verify_sd` ([Ch 8](#ch8)) will re-check the design, so accepting the caveated incumbent is safe.
 
 - **Gurobi status 12 — `NUMERIC`.** On numerical failure, `solve` retries once with the strongest
   setting, `NumericFocus = 3`, restores the previous focus, and then: if now optimal, report
   `OPTIMAL`; else if any incumbent exists (`SolCount > 0`), accept it as `TIME_LIMIT_W_SOL` with a
   warning; else report `TIME_LIMIT` with no solution — never a crash
-  (`gurobi_interface.py:233–256`). `slim_solve` mirrors this by returning the incumbent objective if
-  one exists, else `nan` (`gurobi_interface.py:282–284`), and `populate` pre-emptively runs the pool
+  (`gurobi_interface.py`). `slim_solve` mirrors this by returning the incumbent objective if
+  one exists, else `nan` (`gurobi_interface.py`), and `populate` pre-emptively runs the pool
   sweep at `NumericFocus = 2`.
 
 - **Gurobi 13 indicator-presolve bug (error 10005).** A separate robustness layer,
-  `_safe_optimize` (`gurobi_interface.py:173–190`), wraps every `optimize()` call: Gurobi 13 can
+  `_safe_optimize` (`gurobi_interface.py`), wraps every `optimize` call: Gurobi 13 can
   raise `GurobiError 10005` ("Unable to retrieve attribute 'ObjBound'") when indicator constraints
   meet presolve. Rather than disabling presolve globally (~1.6× slowdown), it catches *only* that
   error *only when indicators are present* and retries with `Presolve = 0, Crossover = 1`. This is
   why the constructor records `self._has_indicator_constr`.
 
 - **SCIP `'unknown'` and GLPK undefined states** are handled in the same spirit: SCIP salvages an
-  incumbent if `getSols()` is non-empty, else reports `TIME_LIMIT` (`scip_interface.py:232–240`,
+  incumbent if `getSols` is non-empty, else reports `TIME_LIMIT` (`scip_interface.py`,
   `270–271`); GLPK's bare-`except` paths return `ERROR`/`-1` cleanly rather than propagating a
-  swiglpk crash (`glpk_interface.py:258–262`), and the LP pre-solve in `solve_MILP_LP` retries with
-  presolve on if `glp_simplex` returns `GLP_EFAIL` on a feasible LP (`glpk_interface.py:536–541`).
+  swiglpk crash (`glpk_interface.py`), and the LP pre-solve in `solve_MILP_LP` retries with
+  presolve on if `glp_simplex` returns `GLP_EFAIL` on a feasible LP (`glpk_interface.py`).
 
 The common design principle: a numerically caveated but present solution is returned as
 `TIME_LIMIT_W_SOL` and left for the outer verification to accept or reject, never crashing the
@@ -6632,9 +6623,9 @@ preprocessing FVA ~117 s, MILP build ~4 s, populate ~1101 s. Reading that agains
 2. **Per-LP overhead in preprocessing goes through this layer.** The ~117 s of blocked/irreversible
    FVA is thousands of small LPs, each a `slim_solve` on a freshly constructed backend object.
    Gurobi mitigates the per-object cost by sharing **one quiet `Env`** across all models
-   (`gurobi_interface.py:31–41`, `_get_quiet_env`) — creating a Gurobi environment per model would
+   (`gurobi_interface.py`, `_get_quiet_env`) — creating a Gurobi environment per model would
    spin up a licence session each time, which on a node-locked HPC licence is expensive. CPLEX
-   constructs a fresh `Cplex()` per object (and sizes `workmem` to 75 % RAM each time). For a run
+   constructs a fresh `Cplex` per object (and sizes `workmem` to 75 % RAM each time). For a run
    that instantiates the interface thousands of times, this fixed per-solve overhead — object
    creation, parameter setting, matrix load — is real and is paid inside `MILP_LP.__init__` and the
    backend constructors, which is exactly why `slim_solve` (no solution-vector extraction) and
@@ -6644,7 +6635,7 @@ preprocessing FVA ~117 s, MILP build ~4 s, populate ~1101 s. Reading that agains
    in its preferred bulk form (CPLEX `set_coefficients` on COO triplets, Gurobi `addMConstr` on the
    sparse matrix directly, GLPK a single `glp_load_matrix`), so the per-call cost is solver-native
    assembly, not a Python re-encoding loop — with the exception of SCIP, whose term-by-term `Expr`
-   assembly (`scip_interface.py:124–136`) is inherently slower and compounds its lack of a native
+   assembly (`scip_interface.py`) is inherently slower and compounds its lack of a native
    pool. This is the mechanical reason SCIP and GLPK, while correct, are validation backends rather
    than the engines behind the benchmark numbers.
 
@@ -6664,7 +6655,7 @@ reactions?", "what is the maximal product yield per mole of substrate?". None of
 inside the compute pipeline (the preprocessing FVA calls, [Ch 5](#ch5), reach a *different* internal
 entry point in `speedy_fva`; here we document the *public* wrappers). They all live in
 `lptools.py` — "a collection of functions for the LP-based analysis of metabolic networks"
-(`lptools.py:19`) — and are re-exported at package top level (`__init__.py:60`,
+(`lptools.py`) — and are re-exported at package top level (`__init__.py`,
 `from .lptools import *`), so a user writes `from straindesign import fba, fva, plot_flux_space, yopt`.
 
 This chapter covers six public entry points and their private helpers:
@@ -6687,7 +6678,7 @@ transform behind `yopt`, and the flux-vector expansion (as opposed to the interv
 of [Ch 9](#ch9)).
 
 A note that pervades the whole module: the objective sign convention. Every one of these functions
-builds its LP through `MILP_LP` ([Ch 14](#ch14)), whose `solve()`/`slim_solve()` **minimize** `c·x`. A user
+builds its LP through `MILP_LP` ([Ch 14](#ch14)), whose `solve`/`slim_solve` **minimize** `c·x`. A user
 request to *maximize* is therefore serviced by negating `c` and negating the returned optimum. You
 will see `c = [-i for i in c]` and `opt_cx = -opt_cx` repeatedly; that is this convention, not a bug.
 
@@ -6699,7 +6690,7 @@ will see `c = [-i for i in c]` and `opt_cx = -opt_cx` repeatedly; that is this c
 sol = fba(model, obj=..., obj_sense='maximize', constraints='...', pfba=0, solver=None)
 ```
 
-`fba` (`lptools.py:438`) solves
+`fba` (`lptools.py`) solves
 
 ```
  max / min   cᵀ v
@@ -6712,32 +6703,32 @@ sol = fba(model, obj=..., obj_sense='maximize', constraints='...', pfba=0, solve
 and returns a `cobra.core.Solution` carrying `objective_value`, the flux vector `fluxes` (a
 `{reaction_id: value}` dict), and a `status` string. The keyword options:
 
-- **`obj`** (`lptools.py:499–504`) — the objective, as a reaction-ID string, a linear-expression
+- **`obj`** (`lptools.py`) — the objective, as a reaction-ID string, a linear-expression
   string (`'2 EX_etoh_e - EX_ac_e'`), or a dict `{'EX_etoh_e': 2, 'EX_ac_e': -1}`. A string is parsed
   by `linexpr2dict` and then densified to a coefficient row by `linexprdict2mat`. If `obj` is omitted,
   the objective is read from the model itself: `c = [i.objective_coefficient for i in model.reactions]`.
-- **`obj_sense`** (`lptools.py:506–511`) — `'maximize'`/`'max'` (default, inferred from
+- **`obj_sense`** (`lptools.py`) — `'maximize'`/`'max'` (default, inferred from
   `model.objective_direction` when `obj` is not given) or `'minimize'`/`'min'`. Maximization is
   realized by negating `c`.
-- **`constraints`** (`lptools.py:492–497`) — extra linear constraints layered on top of the model, in
+- **`constraints`** (`lptools.py`) — extra linear constraints layered on top of the model, in
   any of the flexible input forms (string, list of strings, list of `[dict, sign, rhs]`). These pass
   through `resolve_gene_constraints` (so a constraint may name a *gene*: `'b0008 = -1'` becomes the
   reaction-level effect of knocking that gene out; see [Ch 12](#ch12)) and then `parse_constraints` /
   `lineqlist2mat`, which turn them into `A_ineq, b_ineq, A_eq, b_eq` rows ([Ch 12](#ch12) owns this grammar).
   The stoichiometric block `S v = 0` is stacked on top of the user's equality rows
-  (`lptools.py:523–531`).
-- **`solver`** (`lptools.py:518–520`) — `'glpk' | 'cplex' | 'gurobi' | 'scip'`, resolved by
-  `select_solver` (`lptools.py:45`): a supplied name wins if available; otherwise the solver named in
+  (`lptools.py`).
+- **`solver`** (`lptools.py`) — `'glpk' | 'cplex' | 'gurobi' | 'scip'`, resolved by
+  `select_solver` (`lptools.py`): a supplied name wins if available; otherwise the solver named in
   the model, then the cobra configuration, then the first available in priority order
   `glpk, cplex, gurobi, scip`.
-- **`pfba`** (`lptools.py:513–516`) — the parsimonious-FBA level, discussed next.
+- **`pfba`** (`lptools.py`) — the parsimonious-FBA level, discussed next.
 
 #### Unbounded-objective repair
 
-If the primal comes back `UNBOUNDED` (`lptools.py:544–551`) the objective can grow without limit, so
+If the primal comes back `UNBOUNDED` (`lptools.py`) the objective can grow without limit, so
 there is no finite optimal `v` to report — but the user still wants a representative flux vector on the
 ray. The code re-solves the *opposite* objective to find the extreme in the bounded direction
-(`min_cx = num_prob.slim_solve()`) and then **pins the objective to a finite value** with an added
+(`min_cx = num_prob.slim_solve`) and then **pins the objective to a finite value** with an added
 equality row (`add_eq_constraints(c, min_cx)`, or to `-1.0` when the reversed optimum is non-positive)
 before solving once more. The returned `objective_value` stays the unbounded signal; the flux vector is
 a concrete point on the unbounded face. This is a deliberate usability choice: return *something*
@@ -6750,27 +6741,27 @@ distributions achieve the same growth. pFBA picks a biologically motivated repre
 adding a secondary objective *after* pinning the primary optimum `opt_cx` (`add_eq_constraints(c_pfba,
 [opt_cx])`). Two levels:
 
-- **`pfba=1` — minimize total flux** (`lptools.py:587–602`). Each reaction is split into a forward and
+- **`pfba=1` — minimize total flux** (`lptools.py`). Each reaction is split into a forward and
   reverse part `v = v⁺ − v⁻`, `v⁺, v⁻ ≥ 0`, by horizontally stacking `A` with `−A` and building the
   split bounds `lb_pfba = [max(0, l)] + [max(0, -u)]`, `ub_pfba = [max(0, u)] + [max(0, -l)]`. Minimizing
   `∑(v⁺ + v⁻) = ∑|vⱼ|` (objective `[1.0]*2n`) subject to the pinned primal gives the flux vector with the
   smallest 1-norm — the "minimal enzyme usage" distribution. The reported flux is recomposed
-  `x = v⁺ − v⁻` (`lptools.py:602`).
+  `x = v⁺ − v⁻` (`lptools.py`).
 
-- **`pfba=2` — minimize the number of active reactions** (`lptools.py:556–586`). This is a genuine MILP,
+- **`pfba=2` — minimize the number of active reactions** (`lptools.py`). This is a genuine MILP,
   not an LP. First an FVA (with the primal pinned, `kwargs_fva[...].append([{...}, '=', opt_cx])`) finds
   which reactions are *essential* under the optimum — a reaction whose min and max fluxes share a sign
   (`prod(sign(lim)) > 0`) cannot be switched off, so it is excluded from the knockable set
   (`ub_pfba2 = ... 0.0 if prod(sign(lim)) > 0 else 1.0`). Then a binary `y_j` per remaining reaction is
   wired by an **indicator constraint** `y_j = 1 ⇒ v_j = 0` (`IndicatorConstraints([...], A_ic, [0]*numr,
-  'E'*numr, [1.0]*numr)`, `lptools.py:570–571`) and `∑ −y_j` is minimized, i.e. the count of forced-zero
+  'E'*numr, [1.0]*numr)`, `lptools.py`) and `∑ −y_j` is minimized, i.e. the count of forced-zero
   reactions is maximized. The reactions selected zero are fixed to `lb=ub=0` and level-1 pFBA is then run
   on the reduced network. This yields the sparsest-support flux distribution.
 
 #### The compressed-flux hook
 
 `fba` accepts two undocumented-in-signature kwargs, `cmp_map` and `orig_reaction_ids`
-(`lptools.py:607–611`). If both are present the resulting flux dict — computed on whatever model was
+(`lptools.py`). If both are present the resulting flux dict — computed on whatever model was
 passed — is run through `expand_fluxes` (§15.5) to yield fluxes keyed by the *original* reaction IDs.
 This is the glue that lets you FBA a compressed model but read the answer in original terms.
 
@@ -6781,25 +6772,25 @@ df = fva(model, constraints='EX_o2_e=0', solver='gurobi',
          compress=None, threads=None, reaction_list=None)
 ```
 
-`fva` (`lptools.py:245`) determines, for every reaction, the full range `[min vⱼ, max vⱼ]` reachable at
+`fva` (`lptools.py`) determines, for every reaction, the full range `[min vⱼ, max vⱼ]` reachable at
 steady state under the model bounds and any extra `constraints`. Mathematically it is `2n` linear
 programs — for each reaction `j`, minimize and maximize `vⱼ` over the same polytope FBA uses ([Ch 2](#ch2) gives
-the standard form; `fva_legacy`, `lptools.py:285`, is the literal brute-force `2n`-LP reference kept for
+the standard form; `fva_legacy`, `lptools.py`, is the literal brute-force `2n`-LP reference kept for
 debugging). The return is a `pandas.DataFrame` indexed by reaction ID with two columns, `minimum` and
 `maximum`.
 
-The public `fva` is a **one-line delegator** (`lptools.py:281–282`):
+The public `fva` is a **one-line delegator** (`lptools.py`):
 
 ```python
 from straindesign.speedy_fva import speedy_fva
 return speedy_fva(model, **kwargs)
 ```
 
-so its real options are `speedy_fva`'s (`speedy_fva.py:263`), and the acceleration mathematics is [Ch 5](#ch5).
+so its real options are `speedy_fva`'s (`speedy_fva.py`), and the acceleration mathematics is [Ch 5](#ch5).
 For the API contract, the options a user sets are:
 
 - **`constraints`**, **`solver`** — as for `fba` (gene IDs are resolved, strings parsed to matrix rows).
-- **`compress`** (`speedy_fva.py:291`, default `None`) — whether to lump flux-coupled reactions and drop
+- **`compress`** (`speedy_fva.py`, default `None`) — whether to lump flux-coupled reactions and drop
   conservation rows *before* the scan, then map results back. When `None` it **auto-enables for models
   with ≥ 200 reactions** (`compress = n_original >= 200`). Compression shrinks the LP and makes each of
   the `2n` solves cheaper; the ranges of lumped reactions are recovered from the representative's range.
@@ -6807,16 +6798,16 @@ For the API contract, the options a user sets are:
 - **`reaction_list`** (default `None`) — restrict the scan to a subset of reactions, so you pay for `2k`
   LPs instead of `2n`. Used heavily by the internal pipeline ([Ch 5](#ch5)'s knockable-scoped FVA) but available
   to users who only care about a handful of reactions.
-- **`threads`** (default `None`) — parallel worker count; auto-set to `Configuration().processes` for
-  models with ≥ 1000 reactions, else 1 (`speedy_fva.py:305–306`). The multiprocessing machinery
-  (`SDPool`, the `fva_worker_*` init/compute helpers at `lptools.py:148–242`, with a GLPK-specific path
+- **`threads`** (default `None`) — parallel worker count; auto-set to `Configuration.processes` for
+  models with ≥ 1000 reactions, else 1 (`speedy_fva.py`). The multiprocessing machinery
+  (`SDPool`, the `fva_worker_*` init/compute helpers at `lptools.py`, with a GLPK-specific path
   because GLPK cannot solve in a spawned thread) is shared with the legacy implementation.
 
 An infeasible base problem yields a DataFrame of `NaN`s rather than an exception (`fva_legacy`
-demonstrates this at `lptools.py:319–324`). Fluxes with `|v| < 1e-11` are snapped to `0.0`
-(`lptools.py:384`) to suppress solver noise.
+demonstrates this at `lptools.py`). Fluxes with `|v| < 1e-11` are snapped to `0.0`
+(`lptools.py`) to suppress solver noise.
 
-A companion utility, **`remove_redundant_bounds`** (`lptools.py:392`), runs `fva` and then relaxes every
+A companion utility, **`remove_redundant_bounds`** (`lptools.py`), runs `fva` and then relaxes every
 non-binding bound in place: if `fva_min > lb + tol` the lower bound never binds, so it is set to `−inf`;
 symmetrically for the upper bound. It returns the FVA DataFrame and mutates the model. This is the
 user-facing sibling of the internal `bound_blocked_or_irrevers_fva` ([Ch 5](#ch5)) — the same idea (a bound the
@@ -6846,8 +6837,8 @@ sol = yopt(model, obj_num='2 EX_etoh_e', obj_den='-6 EX_glc__D_e',
            obj_sense='maximize', constraints='EX_o2_e=0', solver=None)
 ```
 
-`yopt` (`lptools.py:733`) requires `obj_num` and `obj_den` (each a string or dict; missing either raises,
-`lptools.py:797–811`) and returns a `Solution`.
+`yopt` (`lptools.py`) requires `obj_num` and `obj_den` (each a string or dict; missing either raises,
+`lptools.py`) and returns a `Solution`.
 
 #### The transform
 
@@ -6869,27 +6860,27 @@ constraint `Aᵢᵀv ≤ bᵢ` homogenizes to `Aᵢᵀy ≤ bᵢ t`, i.e. `Aᵢ�
 
 and the original flux is recovered as `v = y / t`.
 
-The code builds precisely this (`lptools.py:870–890`). It appends one extra column — the scale variable
+The code builds precisely this (`lptools.py`). It appends one extra column — the scale variable
 `t` — to every matrix:
 
-- inequalities: `A_ineq_lfp = [A_ineq | −b_ineq]`, `b_ineq_lfp = 0` (`lptools.py:872–873`);
+- inequalities: `A_ineq_lfp = [A_ineq | −b_ineq]`, `b_ineq_lfp = 0` (`lptools.py`);
 - equalities: stack `[A_eq | −b_eq]` with the normalization row `[obj_den | 0]`, RHS `[0,…,0, d]`
-  (`lptools.py:874–878`);
+  (`lptools.py`);
 - objective `c = [−d·obj_num | 0]`, minimized (the `−d` and the outer sign flip restore the requested
-  `max`/`min`, `lptools.py:813–817`, `896–897`).
+  `max`/`min`, `lptools.py`, `896–897`).
 
-Note the bounds are *first folded into `A_ineq`* as explicit rows (`lptools.py:841–847`) — because in the
+Note the bounds are *first folded into `A_ineq`* as explicit rows (`lptools.py`) — because in the
 homogenized problem a finite bound `vⱼ ≤ uⱼ` must also become `yⱼ − uⱼ t ≤ 0`, so it cannot stay a plain
 variable bound. Only finite bounds are added (`isinf` filtered).
 
-After solving, `factor = x[-1]` is `t`, and the reported flux is `x[i] / factor` (`lptools.py:892–895`);
+After solving, `factor = x[-1]` is `t`, and the reported flux is `x[i] / factor` (`lptools.py`);
 if `t = 0` the flux vector is scalable by any positive factor and `sol.scalable = True` is set.
 
 #### The sign of the denominator — `den_sign`
 
 The transform assumes `dᵀv` keeps a *fixed sign* over the polytope; the normalization `dᵀy = 1` (or
 `= −1`) implicitly chooses it. But a user's denominator could be positive on part of the polytope and
-negative on another, or fixed at zero. `yopt` handles this robustly (`lptools.py:848–868`) by first
+negative on another, or fixed at zero. `yopt` handles this robustly (`lptools.py`) by first
 solving for the min and max of `dᵀv`:
 
 - if `min dᵀv < 0`, `−1` is a viable normalization sign;
@@ -6897,7 +6888,7 @@ solving for the min and max of `dᵀv`:
 - if neither (the denominator can only be `0`), the yield is undefined — return `INFEASIBLE`.
 
 It then solves the LFP once per attainable sign in `den_sign` and keeps the better optimum
-(`lptools.py:877–890`). The documented failure taxonomy (`lptools.py:747–757`) maps directly onto the
+(`lptools.py`). The documented failure taxonomy (`lptools.py`) maps directly onto the
 return values:
 
 | Situation | Return |
@@ -6907,7 +6898,7 @@ return values:
 | numerator unbounded while denominator can be 0 | `UNBOUNDED`, flux from fixing the numerator |
 | denominator can reach 0 (yield undefined) | flux vector maximizing the numerator, warning logged |
 
-The `UNBOUNDED` branch (`lptools.py:905–951`) is the subtle one: an infinite yield means the numerator
+The `UNBOUNDED` branch (`lptools.py`) is the subtle one: an infinite yield means the numerator
 grows while the denominator stays fixed near zero, so the code separately checks whether the numerator is
 bounded when `dᵀv = 0` is added as a constraint, and returns a representative flux accordingly.
 
@@ -6915,7 +6906,7 @@ bounded when `dᵀv = 0` is added as a constraint, and returns a representative 
 
 #### What it visualizes
 
-`plot_flux_space` (`lptools.py:1406`) projects the (high-dimensional) steady-state flux polytope onto 2 or
+`plot_flux_space` (`lptools.py`) projects the (high-dimensional) steady-state flux polytope onto 2 or
 3 user-chosen axes and draws the resulting shadow. The two canonical uses:
 
 - **Production envelope** — x = growth rate, y = product exchange. The shape shows, for every attainable
@@ -6934,14 +6925,14 @@ plot_flux_space(model, ('r1','r2','r3'))                                       #
 #### Axis grammar
 
 Each axis in `axes` is either a single linear expression → a **`'rate'`** axis (`len(ax)==1`,
-`lptools.py:1545–1546`), or a `[numerator, denominator]` pair → a **`'yield'`** axis (`len(ax)==2`,
-`lptools.py:1547–1548`). A rate axis is scanned with `fba`; a yield axis with `yopt` (§15.3). Two or three
-axes are allowed (`lptools.py:1528`, else raise). Options mirror the other tools plus:
+`lptools.py`), or a `[numerator, denominator]` pair → a **`'yield'`** axis (`len(ax)==2`,
+`lptools.py`). A rate axis is scanned with `fba`; a yield axis with `yopt` (§15.3). Two or three
+axes are allowed (`lptools.py`, else raise). Options mirror the other tools plus:
 
 - **`constraints`, `solver`** — as before, applied to every internal LP so you can plot the envelope of a
   *sub*-model (e.g. add the knockouts of a candidate design as `constraints` and see how the envelope
   changes).
-- **`points`** (`lptools.py:1532–1538`, default 40 in 2D, 25 in 3D) — resolution of the *approximate*
+- **`points`** (`lptools.py`, default 40 in 2D, 25 in 3D) — resolution of the *approximate*
   (yield-containing) regions only. For pure rate axes the boundary is traced *exactly* (see below) and
   `points` is ignored.
 - **`show`** (default `True`), **`plt_backend`**, **`cmap`** (default `'managua'`, for 3D face colouring).
@@ -6953,40 +6944,40 @@ matplotlib artist. A user who wants a custom figure sets `show=False` and rebuil
 #### The mathematics of a production envelope
 
 For each axis the code first finds the overall range by optimizing that axis both ways
-(`lptools.py:1552–1553` for rate, `1562–1563` for yield). `val_limits[i] = [min, max]` and the drawing
-window `ax_limits` is padded to include the origin (`lptools.py:1568–1569`). An axis whose min ≈ max is
-**degenerate**; `_detect_degeneracy` (`lptools.py:1014`) classifies the projection as `point`, `line`,
+(`lptools.py` for rate, `1562–1563` for yield). `val_limits[i] = [min, max]` and the drawing
+window `ax_limits` is padded to include the origin (`lptools.py`). An axis whose min ≈ max is
+**degenerate**; `_detect_degeneracy` (`lptools.py`) classifies the projection as `point`, `line`,
 `plane`, or `full` by counting degenerate axes, and each class has its own cheap drawing path
-(`lptools.py:1598–1634`, `1752–1820`) rather than a wasted full scan.
+(`lptools.py`, `1752–1820`) rather than a wasted full scan.
 
 For the non-degenerate 2D case the boundary is traced by one of two algorithms:
 
-- **Rate–rate → exact convex polygon** (`_trace_polygon_rate_rate`, `lptools.py:1030`). The projection of
+- **Rate–rate → exact convex polygon** (`_trace_polygon_rate_rate`, `lptools.py`). The projection of
   a polytope under a linear map is again a convex polytope, so the boundary is a polygon with finitely
   many vertices, each the maximizer of some direction. The algorithm finds the four axis extremes,
   orders them CCW by `atan2` about the centroid, then **recursively refines each edge**: for edge
   `(vᵢ, vⱼ)` it optimizes the outward normal direction `n = (dy, −dx)` (one FBA with objective
-  `nₓ·ax₀ + n_y·ax₁`, `lptools.py:1095–1101`); if the maximizer lies beyond the edge (`dist > tol`), it is
+  `nₓ·ax₀ + n_y·ax₁`, `lptools.py`); if the maximizer lies beyond the edge (`dist > tol`), it is
   a new vertex and both sub-edges recurse. This is `O(V)` LPs for `V` vertices and returns the polygon
   *exactly* — no discretization error. This is why `points` is irrelevant for production envelopes.
 
-- **Yield-containing → adaptive upper/lower boundary** (`_trace_boundary_adaptive`, `lptools.py:1134`).
+- **Yield-containing → adaptive upper/lower boundary** (`_trace_boundary_adaptive`, `lptools.py`).
   A yield axis makes the region non-polygonal, so the boundary is traced as two functions of the x-axis:
-  scan x, and at each x fix axis-0 to that value (`_make_fix_constraint`, `lptools.py:993` — for a yield
+  scan x, and at each x fix axis-0 to that value (`_make_fix_constraint`, `lptools.py` — for a yield
   axis this fixes `num − value·den = 0`, i.e. the ratio, as a linear equality) and optimize axis-1 up and
   down. Midpoints are refined recursively wherever the true boundary deviates from the linear
-  interpolation by more than `abs_tol` (`lptools.py:1176–1199`), to a depth `max(5, log2(points))`
-  (`lptools.py:1640`). The polygon is `upper + reversed(lower)`. Such plots are labelled
-  `'approximate'` on the axes (`lptools.py:1740–1741`).
+  interpolation by more than `abs_tol` (`lptools.py`), to a depth `max(5, log2(points))`
+  (`lptools.py`). The polygon is `upper + reversed(lower)`. Such plots are labelled
+  `'approximate'` on the axes (`lptools.py`).
 
 The 3D paths generalize this: pure-rate axes get an **exact polytope** by `ConvexHull` + iterative
-face-normal refinement (`_trace_polytope_3d_rate`, `lptools.py:1206` — optimize each hull face's outward
+face-normal refinement (`_trace_polytope_3d_rate`, `lptools.py` — optimize each hull face's outward
 normal, add any new vertex, repeat until no face yields one), with coplanar simplices merged into polygon
-faces (`_hull_face_polygons`, `lptools.py:1272`) for clean rendering. One yield axis triggers
+faces (`_hull_face_polygons`, `lptools.py`) for clean rendering. One yield axis triggers
 **slicing**: scan the yield level, trace an exact rate–rate polygon per slice, and stitch adjacent slices
-into a triangle mesh (`_trace_3d_slice_polygon`, `lptools.py:1308`; `_triangulate_strips`,
-`lptools.py:1371`). Two or more yield axes fall back to a full grid scan (`lptools.py:1838–1902`).
-Faces are coloured by normal direction through the chosen `cmap` (`_normal_color`, `lptools.py:1924`).
+into a triangle mesh (`_trace_3d_slice_polygon`, `lptools.py`; `_triangulate_strips`,
+`lptools.py`). Two or more yield axes fall back to a full grid scan (`lptools.py`).
+Faces are coloured by normal direction through the chosen `cmap` (`_normal_color`, `lptools.py`).
 
 To *use* it for design validation: plot the envelope of the wild-type, then call again with the design's
 knockouts injected as `constraints` (e.g. `constraints=['ACALD = 0', 'PFL = 0']`) and overlay
@@ -7002,12 +6993,12 @@ original reactions. Three pieces cooperate.
 
 #### `expand_fluxes` — lifting a flux vector
 
-`expand_fluxes(fluxes_cmp, cmp_map, orig_reaction_ids)` (`lptools.py:955`) reverses the compression to
+`expand_fluxes(fluxes_cmp, cmp_map, orig_reaction_ids)` (`lptools.py`) reverses the compression to
 recover a flux for every original reaction. The compression map is a list of step-dicts; each step's
 `reac_map_exp` is `{ cmp_id : { orig_id : factor, … } }` — the reactions *before* the step that were
 lumped into each compressed reaction, with the rational scaling that made the merge exact (the same
 structure [Ch 9](#ch9) uses, `networktools.py`). The algorithm walks the steps **in reverse**
-(`lptools.py:983–987`):
+(`lptools.py`):
 
 ```python
 for step in reversed(cmp_map):
@@ -7023,7 +7014,7 @@ type ([Ch 3](#ch3)):
 - **coupled reactions** — `factor` is the stoichiometric coupling coefficient, so the split is exact and
   deterministic;
 - **parallel reactions** — the total compressed flux is distributed by the stored proportional factors;
-- **removed reactions** (blocked / never appear in any step) — set to `0.0` (`lptools.py:988–990`).
+- **removed reactions** (blocked / never appear in any step) — set to `0.0` (`lptools.py`).
 
 This is the crucial contrast with [Ch 9](#ch9)'s `expand_sd`, which lifts an *intervention set* and therefore
 **ignores** the factors (it only needs the set of original IDs behind a compressed one). Here we lift a
@@ -7031,18 +7022,18 @@ This is the crucial contrast with [Ch 9](#ch9)'s `expand_sd`, which lifts an *in
 
 #### `slim_fba_via_cmp` — objective-only FBA on the compressed model
 
-`slim_fba_via_cmp(model, cmp_model, cmp_map, obj=..., constraints=..., ...)` (`lptools.py:617`) returns
+`slim_fba_via_cmp(model, cmp_model, cmp_map, obj=..., constraints=..., ...)` (`lptools.py`) returns
 just the **optimal objective value**, in original-model units, without ever materializing a full flux
 vector — the cheapest possible compressed FBA. It:
 
 1. resolves and compresses the constraints (`resolve_gene_constraints` then `compress_constraints`,
-   which applies the same coefficient-scaling as the compression map, `lptools.py:656–660`);
+   which applies the same coefficient-scaling as the compression map, `lptools.py`);
 2. **traces only the objective reactions** through the compression steps to accumulate their cumulative
-   coupling factor and map them to compressed IDs (`lptools.py:678–689`) — this is the "slim" part:
+   coupling factor and map them to compressed IDs (`lptools.py`) — this is the "slim" part:
    instead of expanding an `O(n)` vector it follows only the handful of reactions in `obj`. The
    compressed objective coefficient is `coeff · cum_factor`;
 3. solves with `slim_solve` (objective only, no vector) and returns `−opt_cx`/`opt_cx` per `obj_sense`
-   (`lptools.py:722–730`). Because `c` was pre-scaled by `cum_factor`, the returned number is already in
+   (`lptools.py`). Because `c` was pre-scaled by `cum_factor`, the returned number is already in
    original units.
 
 Use it when you need to evaluate a design's objective (say, max growth) thousands of times — e.g. inside
@@ -7050,17 +7041,17 @@ an outer search or a batch scan over candidate constraint sets — on a large mo
 
 #### Compressed `plot_flux_space`
 
-`plot_flux_space` accepts optional `cmp_model` and `cmp_map` kwargs (`lptools.py:1470–1503`). When both
+`plot_flux_space` accepts optional `cmp_model` and `cmp_map` kwargs (`lptools.py`). When both
 are supplied it:
 
 - resolves gene constraints on the *original* model and compresses them (`compress_constraints`);
 - maps each axis's reaction IDs to compressed IDs via `_build_cmp_reverse_map`
-  (`networktools.py:515` — walks forward through steps building `{orig_id : final_cmp_id}`), while
-  tracing the cumulative coupling factor per axis into `_ax_scale` (`lptools.py:1487–1499`);
+  (`networktools.py` — walks forward through steps building `{orig_id : final_cmp_id}`), while
+  tracing the cumulative coupling factor per axis into `_ax_scale` (`lptools.py`);
 - switches `model = cmp_model` and runs the entire tracing machinery in the small space;
 - finally **rescales the traced coordinates back to original units** by multiplying by `_ax_scale`
-  (`lptools.py:1589–1596` for limits, `1660–1668` for the polygon vertices) and restores the original
-  reaction names as axis labels (`lptools.py:1575–1581`).
+  (`lptools.py` for limits, `1660–1668` for the polygon vertices) and restores the original
+  reaction names as axis labels (`lptools.py`).
 
 The user sees an envelope drawn in original-reaction coordinates, but every LP behind it ran on the
 compressed network. All the coupling factors are applied at the end, so the picture is quantitatively
