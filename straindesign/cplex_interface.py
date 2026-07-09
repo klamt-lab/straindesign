@@ -216,7 +216,7 @@ class Cplex_MILP_LP(Cplex):
             else:
                 logging.exception(status)
                 logging.exception(self.solution.get_status_string())
-                raise Exception("Case not yet handeld")
+                raise Exception("Case not yet handled")
             x = self.solution.get_values()
             return x, min_cx, status
 
@@ -252,7 +252,7 @@ class Cplex_MILP_LP(Cplex):
             else:
                 logging.exception(status)
                 logging.exception(self.solution.get_status_string())
-                raise Exception("Case not yet handeld")
+                raise Exception("Case not yet handled")
             return opt
         except CplexError as exc:
             return nan
@@ -299,7 +299,7 @@ class Cplex_MILP_LP(Cplex):
             else:
                 logging.exception(status)
                 logging.exception(self.solution.get_status_string())
-                raise Exception("Case not yet handeld")
+                raise Exception("Case not yet handled")
             x = [self.solution.pool.get_values(i) for i in range(self.solution.pool.get_num())]
             return x, min_cx, status
 

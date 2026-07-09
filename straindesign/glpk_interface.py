@@ -249,7 +249,7 @@ class GLPK_MILP_LP():
                 status = UNBOUNDED
                 return x, min_cx, status
             else:
-                raise Exception('Status code ' + str(status) + " not yet handeld.")
+                raise Exception('Status code ' + str(status) + " not yet handled.")
             x = self.getSolution(status)
             x = [round(y, 12) for y in x]  # workaround, round to 12 decimals
             min_cx = round(min_cx, 12)
@@ -281,7 +281,7 @@ class GLPK_MILP_LP():
             elif bool_tlim or status in [GLP_INFEAS, GLP_NOFEAS]:  # infeasible or timeout
                 opt = nan
             else:
-                raise Exception('Status code ' + str(status) + " not yet handeld.")
+                raise Exception('Status code ' + str(status) + " not yet handled.")
             opt = round(opt, 12)  # workaround, round to 12 decimals
             return opt
         except:

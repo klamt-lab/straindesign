@@ -239,7 +239,7 @@ class SCIP_MILP(pso.Model):
                     status = TIME_LIMIT
                     return x, min_cx, status
             else:
-                raise Exception('Status code ' + str(status) + " not yet handeld.")
+                raise Exception('Status code ' + str(status) + " not yet handled.")
             x = self.getSolution()
             return x, min_cx, status
 
@@ -272,7 +272,7 @@ class SCIP_MILP(pso.Model):
             elif status in ['inforunbd', 'unbounded']:
                 opt = -inf
             else:
-                raise Exception('Status code ' + str(status) + " not yet handeld.")
+                raise Exception('Status code ' + str(status) + " not yet handled.")
             return opt
 
         except:
