@@ -526,7 +526,7 @@ The two terms are the max growth with and without production. The objective is t
 
 Construction:
 1. Build primal for the "with production" LP → `(A_ineq_p, ..., c_p)`.
-2. Build primal for the "baseline" LP (no production constraint) → `(A_ineq_b, ..., c_b)`.
+2. Build primal for the "baseline" LP (production fixed to zero, `prod = 0`) → `(A_ineq_b, ..., c_b)`.
 3. Dualize the baseline LP → `c_dual_b` (dual objective coefficients).
 4. Assemble combined block with strong duality for both LPs.
 5. Final objective: `c_p - c_b` (growth with production minus baseline).
