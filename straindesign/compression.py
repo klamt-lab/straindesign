@@ -2000,7 +2000,7 @@ def compress_model_coupled(model, compression_backend='sparse_rref', propagate_g
                                       protected_reactions=protected_reactions)
         reaction_map = result.reaction_map
         # Python compressor handles contradicting groups internally via bounds
-        # intersection in _handle_coupled_combine (removes zero-flux groups and
+        # intersection in _handle_compress (removes zero-flux groups and
         # re-iterates to find new couplings).
 
     # Propagate GPR rules: AND-combine contributing reactions' GPR ASTs

@@ -255,7 +255,7 @@ class Gurobi_MILP_LP(gp.Model):
                 status = TIME_LIMIT
                 return x, min_cx, status
         else:
-            raise Exception('Status code ' + str(status) + " not yet handeld.")
+            raise Exception('Status code ' + str(status) + " not yet handled.")
         x = self.getSolution()
         return x, min_cx, status
 
@@ -283,7 +283,7 @@ class Gurobi_MILP_LP(gp.Model):
             # Numerical trouble: return best incumbent value if available, else nan
             opt = self.ObjVal if self.SolCount > 0 else nan
         else:
-            raise Exception('Status code ' + str(status) + " not yet handeld.")
+            raise Exception('Status code ' + str(status) + " not yet handled.")
         return opt
 
     def populate(self, n) -> Tuple[List, float, float]:
@@ -330,7 +330,7 @@ class Gurobi_MILP_LP(gp.Model):
                 status = UNBOUNDED
                 return x, min_cx, status
             else:
-                raise Exception('Status code ' + str(status) + " not yet handeld.")
+                raise Exception('Status code ' + str(status) + " not yet handled.")
             x = self.getSolutions()
             return x, min_cx, status
 

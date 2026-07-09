@@ -87,7 +87,16 @@ class SDModule(Dict):
         mandatory arguments: model, module_type='optcouple', inner_objective, prod_id
         optional arguments: constraints, inner_opt_sense, min_gcp, skip_checks, reac_ids
         (Detailed description of the arguments follow below)
-        
+
+    DoubleOpt:
+        Enforce two parallel optimality conditions on the same primal: a flux state that is simultaneously
+        optimal with respect to an *inner* and an *outer* objective (each encoded via its own strong-duality
+        coupling). This advanced module generalizes the bilevel constructions above to two coupled objectives.
+
+        mandatory arguments: model, module_type='doubleopt', inner_objective, outer_objective
+        optional arguments: constraints, inner_opt_sense, outer_opt_sense, skip_checks, reac_ids
+        (Detailed description of the arguments follow below)
+
     Suppress:
         MCS-like suppression of a subspace of all steady-state flux vectors. The 'constraints' parameter is used to
         descirbe the flux states that should not be eliminated from the flux space. Depending on the goal of the
@@ -137,9 +146,9 @@ class SDModule(Dict):
             
         module_type (str):
         
-            A string that specifies the module type. Allowed values are 'optknock', 'robustknock', 
-            'optcouple', 'protect', 'suppress'. Depending on the specified module type, other parameters
-            must be set accordingly (see description above).
+            A string that specifies the module type. Allowed values are 'optknock', 'robustknock',
+            'optcouple', 'doubleopt', 'protect', 'suppress'. Depending on the specified module type, other
+            parameters must be set accordingly (see description above).
             
         constraints (optional (str) or (list of str) or (list of [dict,str,float])): (Default: '')
         

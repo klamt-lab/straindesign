@@ -226,7 +226,7 @@ Steps:
 **File:** `compression.py`
 **Orchestrated by:** `networktools.compress_model`
 
-Before FVA or GPR processing, the model is compressed with `propagate_gpr=True`. This merges coupled and parallel reactions while propagating GPR rules through the compression map: when reactions are lumped, their GPR rules are AND-combined (using sympy `And`/`Or` constructors for flattening and deduplication). The result is a much smaller model that retains correct GPR annotations.
+Before FVA or GPR processing, the model is compressed with `propagate_gpr=True`. This merges coupled and parallel reactions while propagating GPR rules through the compression map. When reactions are lumped, their GPR rules are combined according to the merge type: **coupled (serial)** merges **AND**-combine the rules (all members must be present to carry flux), while **parallel** merges **OR**-combine them (any member suffices). Both use sympy `And`/`Or` constructors for flattening and deduplication. The result is a much smaller model that retains correct GPR annotations.
 
 After compress #1:
 - `compress_modules(sd_modules, cmp_mapReac_1)` — rewrites constraint/objective reaction IDs.
@@ -314,12 +314,9 @@ The function returns a `reac_map` dict mapping original reactions to the new art
 
 #### Step 3 — GPR solution translation (`SDSolutions.__init__`)
 
-After computation, the artificial reactions in solutions are translated back to gene-level interventions using `gpr_eval`. This evaluates each solution's intervention set against the DNF GPR rules to determine which reactions are truly knocked out (or added).
+After computation, gene-level interventions are translated to the reactions they disable in `SDSolutions._translate_genes_to_reactions` (`strainDesignSolutions.py`), using cobra's already-parsed GPR AST rather than a hand-rolled evaluator. For each reaction it calls `reaction.gpr.eval(knockouts)` — cobra's boolean evaluator over the GPR tree — treating the solution's knocked-out genes as absent and all other genes as present; a reaction is knocked out iff its GPR evaluates to `False`.
 
-`gpr_eval(cj_terms, interv)`:
-- `cj_terms`: the GPR rule as a list of "conjunctive clauses" (AND-groups within OR expression).
-- `interv`: current gene intervention state.
-- Returns `True/False/nan` (active/inactive/undetermined).
+This replaced the earlier home-grown DNF `gpr_eval` (removed in PR #51). Using cobra's `GPR.eval` is correct for arbitrary boolean GPR structure and needs no re-parsing. (The related tri-state AST evaluator used during preprocessing to build gene-KO constraints is `evaluate_gpr_ast` in `networktools.py`.)
 
 ### 4.5 Compression Pass 2 (after GPR extension)
 
@@ -374,7 +371,7 @@ This is used by:
 
 The compression backend is chosen by the `compression_backend` parameter:
 - `'sparse_rref'` (default): Pure Python, uses `RationalMatrix` for exact arithmetic. No Java dependency.
-- `'efmtool_rref'` (legacy): Uses the bundled `efmtool.jar` via JPype for RREF. Requires `pip install straindesign[java]`. Available via `compress_model_efmtool`.
+- `'efmtool_rref'` (legacy): Uses the bundled `efmtool.jar` via JPype for RREF. Requires `pip install straindesign[java]`. Selected by passing `compression_backend='efmtool_rref'` (routed through `compress_model` / `compress_model_coupled`; there is no separate `compress_model_efmtool` entry point).
 
 ### 4.7 Regulatory Interventions
 
@@ -476,7 +473,7 @@ s.t.      v ∈ argmax { inner_objective(v) : v feasible }
 
 This bilevel program is converted to a single-level MILP using **LP duality**:
 
-**LP Duality Theorem:** For a minimization LP `{min c'x : Ax ≤ b, x ≥ 0}`, the dual is `{max b'y : A'y ≤ c, y ≥ 0}`. At optimality, primal and dual objectives are equal: `c'x* = b'y*`.
+**LP Duality Theorem:** For a maximization LP `{max c'x : Ax ≤ b, x ≥ 0}`, the dual is `{min b'y : A'y ≥ c, y ≥ 0}`. At optimality, primal and dual objectives are equal: `c'x* = b'y*`. StrainDesign reads the inner problem as a maximization and `LP_dualize` builds this dual (dual variables + dual-feasibility constraints `A'y ≥ c`).
 
 **`LP_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p, ...)`**
 
@@ -529,7 +526,7 @@ The two terms are the max growth with and without production. The objective is t
 
 Construction:
 1. Build primal for the "with production" LP → `(A_ineq_p, ..., c_p)`.
-2. Build primal for the "baseline" LP (no production constraint) → `(A_ineq_b, ..., c_b)`.
+2. Build primal for the "baseline" LP (production fixed to zero, `prod = 0`) → `(A_ineq_b, ..., c_b)`.
 3. Dualize the baseline LP → `c_dual_b` (dual objective coefficients).
 4. Assemble combined block with strong duality for both LPs.
 5. Final objective: `c_p - c_b` (growth with production minus baseline).
@@ -741,7 +738,7 @@ Falls back to `compute_optimal` for SCIP and GLPK (which lack native pool suppor
 For a solution with binary vector `z`:
 
 **Case 1 — z is all zeros (wild-type):**
-Add `sum(z_i) ≥ 1` → forces at least one intervention next time. Implemented as `1 ≥ −1` (infeasible if all z = 0).
+Add the all-ones row `sum(z_i) ≤ −1`. Since every `z_i ≥ 0`, this constraint is **unsatisfiable**, so it deliberately renders the MILP infeasible and terminates enumeration. This case only arises when the wild-type already satisfies the design (no intervention is needed / possible), so there is no valid non-empty cut to add. (Some solvers reject empty rows, hence the explicit all-ones coefficient vector; see `add_exclusion_constraints`, `strainDesignMILP.py`.)
 
 **Case 2 — z has exactly one non-zero entry (single intervention):**
 Set `ub[idx] = 0` → permanently disable that intervention.
@@ -786,11 +783,11 @@ After expansion, the cost of a solution in original space may differ from compre
 
 ### 8.2 GPR Translation
 
-**SDSolutions** translates gene interventions to reaction phenotypes using `gpr_eval`.
+**SDSolutions** translates gene interventions to reaction phenotypes in `_translate_genes_to_reactions` using cobra's parsed GPR AST.
 
 For each gene-level solution `gene_sd`:
 1. Collect all affected reactions from the model's GPR rules.
-2. Evaluate each reaction's GPR with the gene states using `gpr_eval`.
+2. Evaluate each reaction's GPR with the gene states using cobra's `reaction.gpr.eval(knockouts)`.
 3. Reactions whose GPR evaluates to `False` (given knockouts) are collected as reaction knockouts.
 4. Reactions requiring knocked-in genes that are `True` (given additions) are collected as reaction additions.
 
@@ -1003,13 +1000,6 @@ This could cause silent incorrect results for SUPPRESS modules with equality con
 
 **⚠ Big-M for GLPK with large flux ranges:**
 GLPK uses `M = cobra_bound_threshold = 1000` by default. For models with non-standard bounds (e.g., ATPM = 8.39, but oxygen intake up to 10,000), this can produce incorrect strain designs. Models should always have `remove_dummy_bounds` applied, but verifying this is enforced is important.
-
-**⚠ `add_exclusion_constraints_ineq` has a bug:**
-```python
-A_ineq = [1.0 if z[j, i] else -1.0 for i in self.idx_z]
-A_ineq.resize((1, self.A_ineq.shape[1]))  # ← list.resize doesn't exist
-```
-`list.resize` is a NumPy array method, not a list method. This would raise an `AttributeError` at runtime. This method is not used in the current main computation paths (OptKnock uses `add_exclusion_constraints`), but should be fixed. The fix: convert to `np.array` before calling `.resize`.
 
 **⚠ Legacy name double-assignment in `names.py`:**
 ```python
@@ -1317,7 +1307,7 @@ The `sd_setup` dict format is designed for CNApy interoperability. Ensuring full
 
 The following design choices have a measurable impact on MILP enumeration
 performance. They are listed roughly by impact, based on benchmarking with
-e_coli_core (95 rxns, 353 MCS) and iML1515 (1920 compressed rxns, 393 MCS).
+e_coli_core (95 rxns, 353 MCS) and iML1515 (1923 compressed rxns, 393 gene-MCS).
 
 **Unbounded reactions save constraints and variables.**
 Reactions with infinite bounds (`-inf` / `inf`) do not generate big-M or
@@ -1331,12 +1321,13 @@ The SD formulation creates one binary z per reaction, but only knockable
 reactions (non-zero cost, non-essential) actually need one. Non-knockable
 z-variables have ub=0 and are fixed to zero; with solver presolve disabled
 they become dead weight. `_trim_z_variables` removes them before the solver
-sees the problem. On iML1515: 462 → 205 binaries after trimming.
+sees the problem. On iML1515 (gene-MCS): 1923 → 525 binaries after trimming (1398 non-knockable removed).
 
 **Aggressive compression.**
 Two-pass network compression (before and after GPR extension) reduces the
-stoichiometric matrix substantially. On iML1515: 2712 → 1920 reactions,
-1728 → 974 metabolites. Every removed reaction is one fewer z-variable,
+stoichiometric matrix substantially. On iML1515 (gene-MCS pipeline): 2712 → 1923
+reactions (two passes: 2712 → 1237 before GPR extension, then 3256 → 1923 after),
+1877 → 976 metabolites. Every removed reaction is one fewer z-variable,
 one fewer column in all constraint matrices, and fewer indicator constraints.
 
 **GPR propagation through compression.**
@@ -1387,7 +1378,7 @@ pytest tests -v --log-cli-level=INFO --junit-xml=test-results.xml
 2. MILP construction — after changes to `link_z`, `build_primal_from_cbm`, or dualization functions: run with a small toy model and verify solutions against known correct answers.
 3. Compression — changes to `compression.py` or `networktools.py` must verify that `expand_sd` correctly reconstructs original-space solutions.
 4. Solver backends — changes to any `*_interface.py` file require testing with the specific solver installed.
-5. GPR translation — changes to `networktools.extend_model_gpr` or `SDSolutions.gpr_eval` must be tested with models that have AND/OR GPR logic (e.g., iJO1366 for *E. coli*).
+5. GPR translation — changes to `networktools.extend_model_gpr` or `SDSolutions._translate_genes_to_reactions` must be tested with models that have AND/OR GPR logic (e.g., iJO1366 for *E. coli*).
 
 **Adding new tests:**
 - Use a small toy model (3-5 reactions) for unit tests of MILP construction.
@@ -1473,5 +1464,5 @@ compute_strain_designs(model, **kwargs)
     ├── filter_sd_maxcost(sd, max_cost, ...)
     ├── postprocess_reg_sd(sd, ...)
     └── SDSolutions(model, sd, status, sd_setup)
-            └── [if gene_kos] translate gene_sd → reaction_sd via gpr_eval
+            └── [if gene_kos] translate gene_sd → reaction_sd via cobra GPR.eval
 ```

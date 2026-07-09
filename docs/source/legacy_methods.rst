@@ -4,10 +4,10 @@ Legacy Methods
 This page documents optional legacy functionality that requires additional
 dependencies beyond the core StrainDesign installation.
 
-Java-based EFMTool compression (``backend='efmtool_rref'``)
-------------------------------------------------------------
+Java-based EFMTool compression (``compression_backend='efmtool_rref'``)
+-----------------------------------------------------------------------
 
-The default compression backend is ``backend='sparse_rref'``, a pure Python
+The default compression backend is ``compression_backend='sparse_rref'``, a pure Python
 implementation with no extra dependencies. A legacy Java-based backend is
 available for comparison or reproducibility purposes.
 
@@ -19,8 +19,8 @@ or::
 
     pip install jpype1
 
-Then pass ``backend='efmtool_rref'`` to :func:`~straindesign.compress_model`
-or to ``compute_strain_designs`` via the ``backend`` keyword argument.
+Then pass ``compression_backend='efmtool_rref'`` to :func:`~straindesign.compress_model`
+or to ``compute_strain_designs`` via the ``compression_backend`` keyword argument.
 
 JAVA_HOME path
 --------------

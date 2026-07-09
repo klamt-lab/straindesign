@@ -148,7 +148,12 @@ class SDProblem:
         self.z_non_targetable = [np.isnan(x) for x in self.cost]
         for i in [i for i, x in enumerate(self.cost) if np.isnan(x)]:
             self.cost[i] = 0.0
-        # Prepare top 3 lines of MILP (sum of weighted interventions below (0) and above (1) threshold) and objective function (2)
+        # Top 3 fixed rows of A_ineq (with the b_ineq values assembled just below):
+        #   row 0 (idx_row_maxcost):  -cost . z <= 0        -> total intervention cost >= 0
+        #   row 1 (idx_row_mincost):   cost . z <= max_cost -> total intervention cost <= max_cost (budget cap)
+        #   row 2 (idx_row_obj):       objective placeholder row (set later via fixObjective)
+        # NOTE: the maxcost/mincost names are historical and read counter-intuitively -- row 0 is the
+        # >= 0 lower bracket, row 1 is the <= max_cost upper cap.
         self.idx_row_maxcost = 0
         self.idx_row_mincost = 1
         self.idx_row_obj = 2
@@ -740,11 +745,13 @@ class SDProblem:
         M_lb = [self.lb[i] for i in np.nonzero(cont_vars)[0]]
         M_ub = [self.ub[i] for i in np.nonzero(cont_vars)[0]]
         # M_A contains a list of all knockable constraints. We need to maximize their value (M_A(i)*x) to get a good M
-        # M_A(i)*x - z*M <= b
-        # M*x <= b+z*M
-        #     or
-        # M_A(i)*x + z*M <= b + M
-        # b is the right hand side value
+        # Big-M knockout of a constraint a_ineq*x <= b, with M = max(a_ineq*x) over the relaxed
+        # polytope (b is the right-hand-side value). The z-coefficient carries the b offset so the
+        # knocked-out state relaxes to the TIGHT bound a_ineq*x <= M (not b+M):
+        #   sense > 0 (z=1 knocks out): z-coeff = (b - M)  ->  a_ineq*x + (b-M)*z <= b
+        #       z=0: a_ineq*x <= b (active);   z=1: a_ineq*x <= M (relaxed)
+        #   sense < 0 (z=0 knocks out): z-coeff = (M - b), RHS := M  ->  a_ineq*x + (M-b)*z <= M
+        #       z=1: a_ineq*x <= b (active);   z=0: a_ineq*x <= M (relaxed)
         M_A = self.A_ineq[[True if i in knockable_constr_ineq else False for i in range(0, self.A_ineq.shape[0])], :][:, cont_vars]
         M_A = list(M_A.toarray())
         M_b = [self.b_ineq[i] for i in range(0, self.A_ineq.shape[0]) if i in knockable_constr_ineq]
@@ -959,14 +966,21 @@ def build_primal_from_cbm(model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None,
 def LP_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p,
             z_map_constr_ineq_p=None, z_map_constr_eq_p=None, z_map_vars_p=None) -> \
         Tuple[sparse.csr_matrix, Tuple, sparse.csr_matrix, Tuple, Tuple, Tuple, sparse.csr_matrix, sparse.csr_matrix, sparse.csr_matrix]:
-    """Translate a primal system to its LP dual system
-    
-    The primal system must be given in the standard form: A_ineq x <= b_ineq, A_eq x = b_eq, lb <= x < ub, min{c'x}. The LP duality
-    theorem defines a set of two problems. If one of the LPs is a maximization and and optimum exists, the optimal value of this LP
-    is identical to the minimal optimum of its LP dual problem. LP duality can be used for nested optimization, since solving the 
-    primal and the LP dual problem, while enfocing equality of the objective value, guarantees optimality.
-    
-    Construction of the LP dual:    
+    """Construct the LP dual (dual-feasibility system) of a primal system
+
+    The primal is read as a MAXIMIZATION in the standard form: max{c'x} s.t. A_ineq x <= b_ineq,
+    A_eq x = b_eq, lb <= x <= ub. This returns the dual variables y, the dual-feasibility constraints
+    A'y {>=,=,<=} c (sign rules below), and the dual objective coefficients (= the primal right-hand
+    sides). It is the dual-feasibility block of the KKT conditions -- deliberately NOT a complete/solved
+    dual on its own. Callers compose it:
+        - farkas_dualize adds the normalization b'y <= -1 (with c == 0) -> an infeasibility certificate
+          of the primal system;
+        - the bilevel / strong-duality path adds the primal system and the objective equality c'x = b'y
+          (strong duality) -> an optimality certificate.
+    (LP duality: the optimum of the maximization equals the minimal optimum of its dual; enforcing
+    equality of the two objective values encodes inner optimality for nested optimization.)
+
+    Construction of the LP dual:
         Variables translate to constraints:
             x={R} ->   =
             x>=0  ->  >= (new constraint is multiplied with -1 to translate to <= e.g. -A_i' y <= -c_i)
@@ -1252,9 +1266,9 @@ def reassign_lb_ub_from_ineq(A_ineq, b_ineq, A_eq, b_eq, lb, ub,
 
 def prevent_boundary_knockouts(A_ineq, b_ineq, lb, ub, z_map_constr_ineq, z_map_vars) -> \
         Tuple[sparse.csr_matrix, Tuple, Tuple, Tuple, sparse.csr_matrix]:
-    """Put negative lower bounds and positive upper bounds into (notknockable) inequalities
+    """Put positive lower bounds and negative upper bounds into (notknockable) inequalities
     
-    This is a helper function that puts negative lower bounds and positive upper bounds into (not-knockable) 
+    This is a helper function that puts positive lower bounds and negative upper bounds into (not-knockable) 
     inequalities. Later on, one may simulate the knockouts by multiplying the upper and lower bounds with a
     binary variable z. This functions prevents that 
     
