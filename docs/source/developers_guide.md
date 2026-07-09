@@ -226,7 +226,7 @@ Steps:
 **File:** `compression.py`
 **Orchestrated by:** `networktools.compress_model`
 
-Before FVA or GPR processing, the model is compressed with `propagate_gpr=True`. This merges coupled and parallel reactions while propagating GPR rules through the compression map: when reactions are lumped, their GPR rules are AND-combined (using sympy `And`/`Or` constructors for flattening and deduplication). The result is a much smaller model that retains correct GPR annotations.
+Before FVA or GPR processing, the model is compressed with `propagate_gpr=True`. This merges coupled and parallel reactions while propagating GPR rules through the compression map. When reactions are lumped, their GPR rules are combined according to the merge type: **coupled (serial)** merges **AND**-combine the rules (all members must be present to carry flux), while **parallel** merges **OR**-combine them (any member suffices). Both use sympy `And`/`Or` constructors for flattening and deduplication. The result is a much smaller model that retains correct GPR annotations.
 
 After compress #1:
 - `compress_modules(sd_modules, cmp_mapReac_1)` — rewrites constraint/objective reaction IDs.
