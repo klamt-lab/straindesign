@@ -1252,9 +1252,9 @@ def reassign_lb_ub_from_ineq(A_ineq, b_ineq, A_eq, b_eq, lb, ub,
 
 def prevent_boundary_knockouts(A_ineq, b_ineq, lb, ub, z_map_constr_ineq, z_map_vars) -> \
         Tuple[sparse.csr_matrix, Tuple, Tuple, Tuple, sparse.csr_matrix]:
-    """Put negative lower bounds and positive upper bounds into (notknockable) inequalities
+    """Put positive lower bounds and negative upper bounds into (notknockable) inequalities
     
-    This is a helper function that puts negative lower bounds and positive upper bounds into (not-knockable) 
+    This is a helper function that puts positive lower bounds and negative upper bounds into (not-knockable) 
     inequalities. Later on, one may simulate the knockouts by multiplying the upper and lower bounds with a
     binary variable z. This functions prevents that 
     
