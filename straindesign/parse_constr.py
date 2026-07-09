@@ -31,8 +31,8 @@ def parse_constraints(constr, reaction_ids) -> list:
     Args:
         constr (str or list of str): 
             (List of) constraints in string form.
-            E.g.: ["r1 + 3*r2 = 0.3", "-5*r3 -r4 <= -0.5"] or
-            "1.0 r1 + 3.0*r2 =0.3,-r4-5*r3<=-0.5" or ...
+            E.g.: ["r1 + 3 r2 = 0.3", "-5 r3 -r4 <= -0.5"] or
+            "1.0 r1 + 3.0 r2 =0.3,-r4-5 r3<=-0.5" or ...
             
         reaction_ids (list of str): 
             List of reaction identifiers.
@@ -65,8 +65,8 @@ def parse_linexpr(expr, reaction_ids) -> List:
     Args:
         expr (str or list of str): 
             (List of) expressions in string form.
-            E.g.: ["r1 + 3*r2", "-5*r3 -r4"] or
-            "1.0 r1 + 3.0*r2,-r4-5*r3" or ...
+            E.g.: ["r1 + 3 r2", "-5 r3 -r4"] or
+            "1.0 r1 + 3.0 r2,-r4-5 r3" or ...
             
         reaction_ids (list of str): 
             List of reaction identifiers.
@@ -93,7 +93,7 @@ def lineq2mat(equations, reaction_ids) -> Tuple[sparse.csr_matrix, Tuple, sparse
     list defines the order of variables and thus the columns of the resulting matrices, the order
     of (in)equalities will be preserved in the output matrices. As an example, take the input:
     
-    equations = ["2*c - b +3*a <= 2","c - b = 0","2*b -a >=-2"], reaction_ids = ["a","b","c"]
+    equations = ["2 c - b +3 a <= 2","c - b = 0","2 b -a >=-2"], reaction_ids = ["a","b","c"]
     
     This will be translated to the form A_ineq * x <= b_ineq, A_eq * x = b_eq and hence to
     
@@ -102,7 +102,7 @@ def lineq2mat(equations, reaction_ids) -> Tuple[sparse.csr_matrix, Tuple, sparse
     
     Args:
         equations (list of str): 
-            (List of) (in)equalities in string form equations=["r1 + 3*r2 = 0.3", "-5*r3 -r4 <= -0.5"]
+            (List of) (in)equalities in string form equations=["r1 + 3 r2 = 0.3", "-5 r3 -r4 <= -0.5"]
             
         reaction_ids (list of str): 
             List of reaction identifiers or variable names that are used to recognize variables in
@@ -144,13 +144,13 @@ def lineq2list(equations, reaction_ids) -> List:
     Input inequalities in the form of strings are translated into a specific list format that
     facilitates the readout of left-hand-side, equality sign and right-hand-side of the inequality.
     
-    equations = ["2*c - b +3*a <= 2","c - b = 0","2*b -5...], reaction_ids = ["a","b","c"]
+    equations = ["2 c - b +3 a <= 2","c - b = 0","2 b -5...], reaction_ids = ["a","b","c"]
     
     This will be translated to the [[{"a":3.0,"b":-1.0,"c":2.0},"<=",2.0],[{"b":-1.0,"c":1.0},"=",0.0], ...]
     
     Args:
         equations (list of str): 
-            (List of) (in)equalities in string form equations=["r1 + 3*r2 = 0.3", "-5*r3 -r4 <= -0.5"]
+            (List of) (in)equalities in string form equations=["r1 + 3 r2 = 0.3", "-5 r3 -r4 <= -0.5"]
             
         reaction_ids (list of str): 
             List of reaction identifiers or variable names that are used to recognize variables in
