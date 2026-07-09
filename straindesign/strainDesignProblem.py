@@ -966,14 +966,21 @@ def build_primal_from_cbm(model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None,
 def LP_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p,
             z_map_constr_ineq_p=None, z_map_constr_eq_p=None, z_map_vars_p=None) -> \
         Tuple[sparse.csr_matrix, Tuple, sparse.csr_matrix, Tuple, Tuple, Tuple, sparse.csr_matrix, sparse.csr_matrix, sparse.csr_matrix]:
-    """Translate a primal system to its LP dual system
-    
-    The primal system must be given in the standard form: A_ineq x <= b_ineq, A_eq x = b_eq, lb <= x < ub, min{c'x}. The LP duality
-    theorem defines a set of two problems. If one of the LPs is a maximization and and optimum exists, the optimal value of this LP
-    is identical to the minimal optimum of its LP dual problem. LP duality can be used for nested optimization, since solving the 
-    primal and the LP dual problem, while enfocing equality of the objective value, guarantees optimality.
-    
-    Construction of the LP dual:    
+    """Construct the LP dual (dual-feasibility system) of a primal system
+
+    The primal is read as a MAXIMIZATION in the standard form: max{c'x} s.t. A_ineq x <= b_ineq,
+    A_eq x = b_eq, lb <= x <= ub. This returns the dual variables y, the dual-feasibility constraints
+    A'y {>=,=,<=} c (sign rules below), and the dual objective coefficients (= the primal right-hand
+    sides). It is the dual-feasibility block of the KKT conditions -- deliberately NOT a complete/solved
+    dual on its own. Callers compose it:
+        - farkas_dualize adds the normalization b'y <= -1 (with c == 0) -> an infeasibility certificate
+          of the primal system;
+        - the bilevel / strong-duality path adds the primal system and the objective equality c'x = b'y
+          (strong duality) -> an optimality certificate.
+    (LP duality: the optimum of the maximization equals the minimal optimum of its dual; enforcing
+    equality of the two objective values encodes inner optimality for nested optimization.)
+
+    Construction of the LP dual:
         Variables translate to constraints:
             x={R} ->   =
             x>=0  ->  >= (new constraint is multiplied with -1 to translate to <= e.g. -A_i' y <= -c_i)
