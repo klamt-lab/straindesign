@@ -93,7 +93,7 @@ class SDProblem:
     """
 
     def __init__(self, model: Model, sd_modules: List[SDModule], *args, **kwargs):
-        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis', SEED, MILP_THREADS}
+        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis', SEED, MILP_THREADS, 'milp_nullspace'}
         # set all keys passed in kwargs
         for key, value in dict(kwargs).items():
             if key in allowed_keys:
@@ -665,12 +665,14 @@ class SDProblem:
                           (A_ineq_i.shape[0], A_eq_i.shape[0], A_ineq_i.shape[1],
                            z_map_constr_ineq_i.nnz + z_map_constr_eq_i.nnz, z_map_vars_i.nnz))
         elif sd_module[MODULE_TYPE] == SUPPRESS:
-            A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i, z_map_vars_i = farkas_dualize(
+            _dualize = nullspace_dualize if getattr(self, 'milp_nullspace', False) else farkas_dualize
+            A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i, z_map_vars_i = _dualize(
                 A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
             c_i = [0 for _ in range(A_ineq_i.shape[1])]
-            logging.info('  Farkas dual: %d ineq rows, %d eq rows, %d vars, '
+            logging.info('  %s dual: %d ineq rows, %d eq rows, %d vars, '
                           '%d knockable constraints, %d knockable vars' %
-                          (A_ineq_i.shape[0], A_eq_i.shape[0], A_ineq_i.shape[1],
+                          ('Nullspace' if getattr(self, 'milp_nullspace', False) else 'Farkas',
+                           A_ineq_i.shape[0], A_eq_i.shape[0], A_ineq_i.shape[1],
                            z_map_constr_ineq_i.nnz + z_map_constr_eq_i.nnz, z_map_vars_i.nnz))
         elif sd_module[MODULE_TYPE] == OPTKNOCK:
             A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = reassign_lb_ub_from_ineq(
@@ -1203,6 +1205,158 @@ def farkas_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
         return A_ineq_f, b_ineq_f, A_eq_f, b_eq_f, lb_f, ub_f, z_map_constr_ineq_f, z_map_constr_eq_f, z_map_vars_f
     else:
         return A_ineq_f, b_ineq_f, A_eq_f, b_eq_f, lb_f, ub_f, z_map_constr_ineq_f, z_map_constr_eq_f, z_map_vars_f
+
+
+def _nullspace_float(A_eq_p):
+    """Return an exact right-nullspace basis of A_eq_p as a float scipy CSR matrix.
+
+    Uses straindesign.sparse_nullspace (exact rational kernel). Handles both the
+    int64-CSR return and the arbitrary-precision ExactCOO return (big integers that
+    do not fit int64). Coefficients are cast to float64; the kernel property
+    ``A_eq_p @ K == 0`` holds exactly for any scalar scaling, so casting is safe for
+    building the projection (the MILP is solved in floating point regardless).
+    """
+    from straindesign import sparse_nullspace
+    K = sparse_nullspace(sparse.csr_matrix(A_eq_p))
+    if sparse.issparse(K):
+        return K.astype(float).tocsr()
+    # ExactCOO namedtuple (rows, cols, data, shape, denom) with Python-int data
+    rows, cols, data, shape, denom = K.rows, K.cols, K.data, K.shape, K.denom
+    fdata = np.array([float(d) / float(denom) for d in data], dtype=float)
+    return sparse.csr_matrix((fdata, (np.asarray(rows), np.asarray(cols))), shape=shape)
+
+
+def nullspace_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
+                      z_map_constr_ineq_p=None, z_map_constr_eq_p=None, z_map_vars_p=None,
+                      scale_rows=True) -> \
+        Tuple[sparse.csr_matrix, Tuple, sparse.csr_matrix, Tuple, Tuple, sparse.csr_matrix, sparse.csr_matrix, sparse.csr_matrix]:
+    """Nullspace-based (NB) Farkas dual for the SUPPRESS module.
+
+    Drop-in alternative to :func:`farkas_dualize` with an identical I/O contract. Instead of
+    keeping the metabolite (equality-constraint) dual variables ``u``, they are projected out
+    with the exact rational kernel ``K`` of the primal equality block ``A_eq_p`` (so that
+    ``A_eq_p @ K == 0``). This is the formulation of Klamt, Mahadevan & von Kamp (2020,
+    BMC Bioinformatics, doi:10.1186/s12859-020-03837-3) and the CellNetAnalyzer
+    ``milp_nullspace`` option.
+
+    Derivation (matching this module's own sign conventions, i.e. those of ``LP_dualize``
+    with primal objective ``c = 0``). The FLB dual introduces, per primal reaction ``j``, the
+    reduced-cost quantity ``v_j := A_eq_p[:,j]^T u + Abar_ineq[:,j]^T w`` where ``w >= 0`` are the
+    inequality (target + bound) duals and ``Abar_ineq`` is ``A_ineq_p`` augmented with the
+    inhomogeneous variable bounds (exactly as ``LP_dualize`` does). Dual feasibility is the sign
+    of ``v_j`` by the primal variable class: ``v_j >= 0`` (x_geq0), ``v_j <= 0`` (x_leq0),
+    ``v_j = 0`` (x_eR). Making ``v`` explicit gives the defining equalities
+    ``v - A_eq_p^T u - Abar_ineq^T w = 0`` (n rows). Left-multiplying by ``K^T`` eliminates ``u``
+    (because ``K^T A_eq_p^T = (A_eq_p K)^T = 0``), leaving
+
+        K^T v - (Abar_ineq K)^T w = 0        (n - rank(A_eq_p) static equalities; not knockable)
+
+    The metabolite duals ``u`` vanish. The normalization ``b_prim^T y <= -1`` becomes
+    ``b_eq_p^T u + bbar^T w <= -1``; since ``b_eq_p == 0`` for the classical MCS gate (steady
+    state + inequality targets) the ``u`` term drops and it is ``bbar^T w <= -1``.
+
+    The z-coupling is IDENTICAL to FLB: reaction ``j``'s knockability lands on the sign
+    constraint of ``v_j`` exactly where ``LP_dualize`` maps ``z_map_vars_p[:,j]`` onto the
+    per-reaction stationarity row (geq0/leq0 -> ineq, eR -> eq). ``w`` and the projected
+    equalities carry no z-coupling (the primal inequalities/equalities are non-knockable).
+
+    Requires the "classical MCS" primal structure produced by ``build_primal_from_cbm``:
+    non-knockable primal (in)equality constraints and ``b_eq_p == 0``. If these do not hold the
+    function falls back to :func:`farkas_dualize` (always correct) and logs a warning.
+
+    Args and Returns: identical to :func:`farkas_dualize`.
+    """
+    n = A_ineq_p.shape[1]  # number of primal variables (reactions)
+
+    # --- Preconditions for the clean nullspace projection; else fall back to FLB. ---
+    unsupported = False
+    if z_map_constr_eq_p is not None and z_map_constr_eq_p.nnz > 0:
+        unsupported = True
+    if z_map_constr_ineq_p is not None and z_map_constr_ineq_p.nnz > 0:
+        unsupported = True
+    if b_eq_p and any(abs(float(b)) > 1e-9 for b in b_eq_p):
+        unsupported = True
+    if unsupported:
+        logging.warning('  nullspace_dualize: primal structure unsupported for NB projection '
+                        '(knockable constraints or nonzero eq-RHS); falling back to farkas_dualize.')
+        return farkas_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
+                              z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
+
+    numz = max([0] + [z.shape[0] for z in [z_map_vars_p, z_map_constr_eq_p, z_map_constr_ineq_p] if z is not None])
+    if numz and z_map_vars_p is None:
+        z_map_vars_p = sparse.csc_matrix((numz, n))
+    z_map_vars_p = z_map_vars_p.tocsc()
+
+    # --- 1. Augment A_ineq_p with inhomogeneous variable bounds (mirror LP_dualize). ---
+    lb_inh = [i for i in np.nonzero(lb_p)[0] if not isinf(lb_p[i])]
+    ub_inh = [i for i in np.nonzero(ub_p)[0] if not isinf(ub_p[i])]
+    LB = sparse.csr_matrix((len(lb_inh) * [-1], (range(len(lb_inh)), lb_inh)), shape=(len(lb_inh), n))
+    UB = sparse.csr_matrix((len(ub_inh) * [1], (range(len(ub_inh)), ub_inh)), shape=(len(ub_inh), n))
+    Abar = sparse.vstack((A_ineq_p, LB, UB)).tocsr()
+    bbar = list(b_ineq_p) + [-lb_p[i] for i in lb_inh] + [ub_p[i] for i in ub_inh]
+    p = Abar.shape[0]  # number of w-duals (>= 0)
+
+    # --- 2. Exact kernel of A_eq_p (metabolite duals to eliminate). ---
+    K = _nullspace_float(A_eq_p)  # n x q, A_eq_p @ K == 0
+    q = K.shape[1]
+
+    # --- 3. Primal variable sign classes (same predicates as LP_dualize). ---
+    lb_a, ub_a = np.asarray(lb_p, dtype=float), np.asarray(ub_p, dtype=float)
+    x_geq0 = np.nonzero(np.greater_equal(lb_a, 0) & np.greater(ub_a, 0))[0]
+    x_eR = np.nonzero(np.greater(0, lb_a) & np.greater(ub_a, 0))[0]
+    x_leq0 = np.nonzero(np.greater(0, lb_a) & np.greater_equal(0, ub_a))[0]
+
+    # --- 4. Assemble the raw dual (variables [v (n); w (p)]), before normalization. ---
+    # Projected feasibility equalities: K^T v - (Abar K)^T w = 0  (q rows, not knockable)
+    KT = K.transpose().tocsr()                       # q x n  -> coefficient on v
+    AbarK = (Abar @ K).transpose().tocsr()           # q x p  -> coefficient on w (= (Abar K)^T)
+    A_eq_proj = sparse.hstack((KT, -AbarK)).tocsr()
+    if scale_rows and A_eq_proj.nnz:
+        # Row-scale each =0 equality by its max |coef| to tame large integer kernel entries.
+        rmax = np.maximum(np.abs(A_eq_proj).max(axis=1).toarray().ravel(), 1e-300)
+        A_eq_proj = sparse.diags(1.0 / rmax) @ A_eq_proj
+    b_eq_proj = [0.0] * q
+
+    # Sign-constraint rows on v_j (v-block only; w-block zero).
+    # ineq block, geq0 then leq0 to match LP_dualize's dual-ineq ordering:
+    #   geq0: v_j >= 0  ->  -v_j <= 0 ;   leq0: v_j <= 0  ->  v_j <= 0
+    def _sign_ineq(idx, coef):
+        return sparse.csr_matrix((len(idx) * [coef], (range(len(idx)), idx)), shape=(len(idx), n))
+    sign_geq0 = _sign_ineq(x_geq0, -1.0)
+    sign_leq0 = _sign_ineq(x_leq0, 1.0)
+    A_ineq_sign = sparse.hstack((sparse.vstack((sign_geq0, sign_leq0)),
+                                 sparse.csr_matrix((len(x_geq0) + len(x_leq0), p)))).tocsr()
+    b_ineq_sign = [0.0] * (len(x_geq0) + len(x_leq0))
+    # eq block: eR reversible reactions -> v_j = 0
+    sign_eR = sparse.csr_matrix((len(x_eR) * [1.0], (range(len(x_eR)), x_eR)), shape=(len(x_eR), n))
+    A_eq_sign = sparse.hstack((sign_eR, sparse.csr_matrix((len(x_eR), p)))).tocsr()
+    b_eq_sign = [0.0] * len(x_eR)
+
+    A_ineq_d = A_ineq_sign
+    b_ineq_d = b_ineq_sign
+    A_eq_d = sparse.vstack((A_eq_proj, A_eq_sign)).tocsr()
+    b_eq_d = b_eq_proj + b_eq_sign
+    lb_d = [-np.inf] * n + [0.0] * p       # v free, w >= 0
+    ub_d = [np.inf] * (n + p)
+
+    # z-maps: reaction j's knockability -> its v_j sign row (geq0/leq0 -> ineq, eR -> eq).
+    z_map_constr_ineq_d = sparse.hstack((z_map_vars_p[:, x_geq0], z_map_vars_p[:, x_leq0])).tocsc()
+    z_map_constr_eq_d = sparse.hstack((sparse.csc_matrix((numz, q)), z_map_vars_p[:, x_eR])).tocsc()
+    z_map_vars_d = sparse.csc_matrix((numz, n + p))  # no variable-level knockability
+
+    # --- 5. Reassign single-variable non-knockable sign rows into bounds (as FLB does). ---
+    A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, lb_d, ub_d, z_map_constr_ineq_d, z_map_constr_eq_d = \
+        reassign_lb_ub_from_ineq(A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, lb_d, ub_d,
+                                 z_map_constr_ineq_d, z_map_constr_eq_d, z_map_vars_d)
+
+    # --- 6. Append the Farkas normalization  bbar^T w <= -1  (not knockable). ---
+    c_d = [0.0] * n + list(bbar)   # dual objective: 0 on v, bbar on w
+    A_ineq_f = sparse.vstack((A_ineq_d, sparse.csr_matrix(c_d))).tocsr()
+    b_ineq_f = list(b_ineq_d) + [-1]
+    z_map_constr_ineq_f = sparse.hstack((z_map_constr_ineq_d, sparse.csr_matrix((numz, 1)))).tocsc()
+
+    return A_ineq_f, b_ineq_f, A_eq_d, b_eq_d, lb_d, ub_d, z_map_constr_ineq_f, z_map_constr_eq_d, z_map_vars_d
+
 
 def reassign_lb_ub_from_ineq(A_ineq, b_ineq, A_eq, b_eq, lb, ub,
                              z_map_constr_ineq=None, z_map_constr_eq=None, z_map_vars=None) -> \
