@@ -400,9 +400,6 @@ class Cplex_MILP_LP(Cplex):
         cols_A = [int(a) for a in A_ineq.col]
         # convert matrix coefficients to float
         data_A = [float(a) for a in A_ineq.data]
-        # skip if there are no nonzero coefficients: the rows were already created
-        # by linear_constraints.add above (a legal all-zero row like 0 <= b), and
-        # CPLEX's set_coefficients raises IndexError on an empty argument list.
         if A_ineq.nnz:
             self.linear_constraints.set_coefficients(zip(rows_A, cols_A, data_A))
 
@@ -429,9 +426,6 @@ class Cplex_MILP_LP(Cplex):
         cols_A = [int(a) for a in A_eq.col]
         # convert matrix coefficients to float
         data_A = [float(a) for a in A_eq.data]
-        # skip if there are no nonzero coefficients: the rows were already created
-        # by linear_constraints.add above (a legal all-zero row like 0 == b), and
-        # CPLEX's set_coefficients raises IndexError on an empty argument list.
         if A_eq.nnz:
             self.linear_constraints.set_coefficients(zip(rows_A, cols_A, data_A))
 
