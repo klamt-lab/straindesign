@@ -93,7 +93,7 @@ class SDProblem:
     """
 
     def __init__(self, model: Model, sd_modules: List[SDModule], *args, **kwargs):
-        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis', SEED, MILP_THREADS, 'milp_nullspace'}
+        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis', SEED, MILP_THREADS, 'milp_nullspace', 'split_level'}
         # set all keys passed in kwargs
         for key, value in dict(kwargs).items():
             if key in allowed_keys:
@@ -665,6 +665,10 @@ class SDProblem:
                           (A_ineq_i.shape[0], A_eq_i.shape[0], A_ineq_i.shape[1],
                            z_map_constr_ineq_i.nnz + z_map_constr_eq_i.nnz, z_map_vars_i.nnz))
         elif sd_module[MODULE_TYPE] == SUPPRESS:
+            if getattr(self, 'split_level', 0):
+                A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p = \
+                    split_reversible_primal(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
+                                            z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
             _dualize = nullspace_dualize if getattr(self, 'milp_nullspace', False) else farkas_dualize
             A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i, z_map_vars_i = _dualize(
                 A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
@@ -1205,6 +1209,40 @@ def farkas_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
         return A_ineq_f, b_ineq_f, A_eq_f, b_eq_f, lb_f, ub_f, z_map_constr_ineq_f, z_map_constr_eq_f, z_map_vars_f
     else:
         return A_ineq_f, b_ineq_f, A_eq_f, b_eq_f, lb_f, ub_f, z_map_constr_ineq_f, z_map_constr_eq_f, z_map_vars_f
+
+
+def split_reversible_primal(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
+                            z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p):
+    """Split every bidirectional primal reaction (lb<0<ub) into forward/backward >=0 columns.
+
+    Reproduces CellNetAnalyzer's ``split_level 1`` (splitting the reversible reactions), but applied
+    at the PRIMAL level so it is agnostic to the downstream dualization (FLB or NB benefit uniformly).
+    A reversible flux ``x_j`` becomes ``x_j^f - x_j^b`` with ``x_j^f,x_j^b >= 0``: the forward column
+    keeps stoichiometry and ``[0, ub_j]``; a new backward column carries the negated stoichiometry with
+    ``[0, -lb_j]``. The knock-out indicator ``z_j`` is copied onto the backward column (knocking the
+    reaction zeroes both directions). In the dual this replaces each reversible reaction's single
+    EQUALITY stationarity row (an 'E' indicator after link_z) with two INEQUALITY rows ('L' indicators)
+    -- the paper's "counterintuitively faster" split.
+
+    Correctness-preserving (any real ``x_j`` is representable); MCS counts are unchanged.
+    """
+    n = A_ineq_p.shape[1]
+    lb_p = list(lb_p); ub_p = list(ub_p)
+    rev = [j for j in range(n) if lb_p[j] < 0 and ub_p[j] > 0]
+    if not rev:
+        return (A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
+                z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
+    A_ineq_p = A_ineq_p.tocsc(); A_eq_p = A_eq_p.tocsc()
+    z_map_vars_p = z_map_vars_p.tocsc()
+    A_ineq_split = sparse.hstack((A_ineq_p, -A_ineq_p[:, rev])).tocsr()
+    A_eq_split = sparse.hstack((A_eq_p, -A_eq_p[:, rev])).tocsr()
+    ub_split = ub_p + [-lb_p[j] for j in rev]
+    lb_split = lb_p + [0.0] * len(rev)
+    for j in rev:
+        lb_split[j] = 0.0  # forward part becomes irreversible
+    z_map_vars_split = sparse.hstack((z_map_vars_p, z_map_vars_p[:, rev])).tocsc()
+    return (A_ineq_split, b_ineq_p, A_eq_split, b_eq_p, lb_split, ub_split,
+            z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_split)
 
 
 def _nullspace_float(A_eq_p):
