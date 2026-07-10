@@ -691,8 +691,9 @@ class SDProblem:
         
         (1) Translate equality-KOs/KIs to two inequality-KOs/KIs
         (2) Translate variable-KOs/KIs to inequality-KIs/KOs
-        (3) Try to bound the problem with LPs
-        (4) Use LP-determined bounds to link z-variables, where such bounds were found
+        (3) Determine big-M values from variable bounds: zero/single-variable rows get a finite M
+            from the bounds; multi-variable rows are left unbounded (M=inf)
+        (4) Link z-variables via big-M for the rows that got a finite M
         (5) Translate remaining inequalities back to equalities when possible and link z via indicator constraints.
         If necessary, the solver interface will translate them to big-M constraints.
         (6) Remove redundant equalities from static problem
@@ -733,51 +734,51 @@ class SDProblem:
         self.b_ineq += bnd_constr_b
         self.z_map_constr_ineq = sparse.hstack((self.z_map_constr_ineq, z_lb_ub)).tocsc()
 
-        # 3. Use LP to identify M-values for knockable constraints
-        #    For this purpose, first construct a most relaxed LP-model (use all possible constraint-KOs, no possible var-KOs)
+        # 3. Big-M values for knockable constraints, read directly from the variable bounds.
+        #    A knockable constraint a_ineq*x <= b relaxes via M = max(a_ineq*x) over the polytope;
+        #    the z-coefficient carries the b offset so the knocked-out state relaxes to the tight
+        #    bound a_ineq*x <= M (not b+M):
+        #      sense > 0 (z=1 knocks out): z-coeff = (b - M)  ->  a_ineq*x + (b-M)*z <= b
+        #          z=0: a_ineq*x <= b (active);   z=1: a_ineq*x <= M (relaxed)
+        #      sense < 0 (z=0 knocks out): z-coeff = (M - b), RHS := M  ->  a_ineq*x + (M-b)*z <= M
+        #          z=1: a_ineq*x <= b (active);   z=0: a_ineq*x <= M (relaxed)
+        #    Zero/single-variable rows take a finite M from the bounds; multi-variable rows are
+        #    unbounded on the polytope (M = +inf), which the linker realizes as an indicator
+        #    constraint (gurobi/cplex) or the constant self.M (glpk/user-M).
         knockable_constr_ineq = np.sort(self.z_map_constr_ineq.nonzero()[1])
 
         cont_vars = [False if i in self.idx_z else True for i in range(0, numvars)]
-        M_A_ineq = self.A_ineq[[False if i in knockable_constr_ineq else True for i in range(0, self.A_ineq.shape[0])], :][:, cont_vars]
-        M_b_ineq = [self.b_ineq[i] for i in range(0, self.A_ineq.shape[0]) if i not in knockable_constr_ineq]
-        M_A_eq = self.A_eq[:, cont_vars]
-        M_b_eq = self.b_eq.copy()
         M_lb = [self.lb[i] for i in np.nonzero(cont_vars)[0]]
         M_ub = [self.ub[i] for i in np.nonzero(cont_vars)[0]]
-        # M_A contains a list of all knockable constraints. We need to maximize their value (M_A(i)*x) to get a good M
-        # Big-M knockout of a constraint a_ineq*x <= b, with M = max(a_ineq*x) over the relaxed
-        # polytope (b is the right-hand-side value). The z-coefficient carries the b offset so the
-        # knocked-out state relaxes to the TIGHT bound a_ineq*x <= M (not b+M):
-        #   sense > 0 (z=1 knocks out): z-coeff = (b - M)  ->  a_ineq*x + (b-M)*z <= b
-        #       z=0: a_ineq*x <= b (active);   z=1: a_ineq*x <= M (relaxed)
-        #   sense < 0 (z=0 knocks out): z-coeff = (M - b), RHS := M  ->  a_ineq*x + (M-b)*z <= M
-        #       z=1: a_ineq*x <= b (active);   z=0: a_ineq*x <= M (relaxed)
-        M_A = self.A_ineq[[True if i in knockable_constr_ineq else False for i in range(0, self.A_ineq.shape[0])], :][:, cont_vars]
-        M_A = list(M_A.toarray())
-        M_b = [self.b_ineq[i] for i in range(0, self.A_ineq.shape[0]) if i in knockable_constr_ineq]
+        M_A = self.A_ineq[[True if i in knockable_constr_ineq else False for i in range(0, self.A_ineq.shape[0])], :][:, cont_vars].tocsr()
 
-        processes = Configuration().processes
-        num_Ms = len(M_A)
-        processes = min(processes, num_Ms)
-
+        num_Ms = M_A.shape[0]
         max_Ax = [np.nan] * num_Ms
 
-        # Dummy to check if optimization runs
-        # worker_init(M_A,M_A_ineq,M_b_ineq,M_A_eq,M_b_eq,M_lb,M_ub,list(solvers.keys())[0])
-        # worker_compute(1)
-
-        logging.info('  Bounding MILP.')
-        if processes > 1 and num_Ms > 1000:
-            with SDPool(processes,
-                        initializer=worker_init,
-                        initargs=(M_A, M_A_ineq, M_b_ineq, M_A_eq, M_b_eq, M_lb, M_ub, getattr(self, SOLVER), getattr(self, SEED))) as pool:
-                chunk_size = num_Ms // processes
-                for i, value in pool.imap_unordered(worker_compute, range(num_Ms), chunksize=chunk_size):
-                    max_Ax[i] = value
-        else:
-            worker_init(M_A, M_A_ineq, M_b_ineq, M_A_eq, M_b_eq, M_lb, M_ub, getattr(self, SOLVER), getattr(self, SEED))
-            for i in range(num_Ms):
-                _, max_Ax[i] = worker_compute(i)
+        # max(a*x) from bounds: zero rows -> 0; single-variable rows -> coeff*(ub if coeff>0 else lb),
+        # or +inf if that bound is infinite; multi-variable rows -> +inf (unbounded dual constraint).
+        n_zero = 0
+        n_single = 0
+        n_multi = 0
+        for i in range(num_Ms):
+            row = M_A.getrow(i)
+            nnz = row.nnz
+            if nnz == 0:
+                max_Ax[i] = 0.0
+                n_zero += 1
+            elif nnz == 1:
+                col_idx = row.indices[0]
+                coeff = row.data[0]
+                if coeff > 0:
+                    max_Ax[i] = coeff * M_ub[col_idx] if not isinf(M_ub[col_idx]) else np.inf
+                else:
+                    max_Ax[i] = coeff * M_lb[col_idx] if not isinf(M_lb[col_idx]) else np.inf
+                n_single += 1
+            else:
+                max_Ax[i] = np.inf
+                n_multi += 1
+        logging.info('  Bounding MILP: %d constraints (%d zero, %d single-var, %d multi-var->indicator/M).' %
+                      (num_Ms, n_zero, n_single, n_multi))
 
         # round Ms up to 5 digits
         Ms = [np.ceil(M * 1e5) / 1e5 if not isinf(M) else self.M for M in max_Ax]
@@ -1322,47 +1323,3 @@ def prevent_boundary_knockouts(A_ineq, b_ineq, lb, ub, z_map_constr_ineq, z_map_
         z_map_constr_ineq = sparse.hstack([z_map_constr_ineq, sparse.csc_matrix((numz, new_z_cols))])
 
     return A_ineq, b_ineq, lb, ub, z_map_constr_ineq
-
-
-def _worker_cleanup():
-    """Dispose the global LP and solver environment on worker exit."""
-    global lp_glob
-    try:
-        if lp_glob is not None and hasattr(lp_glob, 'solver'):
-            from io import StringIO
-            from contextlib import redirect_stdout, redirect_stderr
-            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
-                if lp_glob.solver == 'gurobi':
-                    lp_glob.backend.dispose()
-                    import gurobipy as gp
-                    gp.disposeDefaultEnv()
-                elif lp_glob.solver == 'cplex':
-                    lp_glob.backend.end()
-        lp_glob = None
-    except Exception:
-        pass
-
-
-def worker_init(A, A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver, seed):
-    """Helper function for determining bounds on linear expressions"""
-    global lp_glob
-    lp_glob = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb, ub=ub, solver=solver, seed=seed)
-    if lp_glob == CPLEX:
-        lp_glob.backend.parameters.lpmethod.set(1)
-        lp_glob.backend.parameters.threads.set(1)
-    elif solver == 'gurobi':
-        lp_glob.backend.params.Threads = 1
-    lp_glob.solver = solver
-    lp_glob.A = A
-    if solver in ('gurobi', 'cplex'):
-        import atexit
-        atexit.register(_worker_cleanup)
-
-
-def worker_compute(i) -> Tuple[int, float]:
-    """Helper function for determining bounds on linear expressions"""
-    global lp_glob
-    # maximize by minimizing negative objective and negating result
-    lp_glob.set_objective(-lp_glob.A[i])
-    min_cx = -lp_glob.slim_solve()
-    return i, min_cx
