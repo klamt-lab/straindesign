@@ -4,8 +4,11 @@ Standard FVA solves 2*n independent LPs (max and min for each reaction).
 This implementation reduces LP count via a two-phase approach:
 
 Phase 1 — Scan LPs (cheap, resolve ~50-70% of bounds):
-  a. v=0 feasibility: free resolutions when zero flux is feasible
-  b. min(sum(|x|)): pushes reactions toward zero, resolves lb=0/ub=0 bounds
+  a. trivial flux vector v=0 test: if feasible, all exisiting lb=0/ub=0 bounds
+     are immediately confirmed as flux limits.
+  b. min(sum(|x|)): pushes reactions toward zero, resolves lb=0/ub=0 bounds.
+     All fluxes that take the value 0 also immediately confirm the bounds 
+     as true flux limits.
   c. Push-to-bounds: directed objectives push unresolved reactions toward
      their variable bounds, with dual simplex warm-start for fast re-solves
   Each scan LP solution is processed by bound scanning (vectorized at-bound
@@ -42,17 +45,9 @@ from straindesign.compression import (
 )
 
 
-# Minimum number of *unresolved* objectives remaining AFTER the Phase-1 scan
-# (n_remaining) for parallel Phase-2 dispatch to be worthwhile.  This is tied to
-# the bounds left to determine after the zero-sweep, not the raw model size: the
-# sequential path re-solves each remaining objective with a dual-simplex WARM
-# START (near-free re-optimization), while parallel workers each solve cold and
-# oversubscribe cores on a shared host -- measured a ~5x NET LOSS on the
-# genome-scale GPR-extended FVA (iML1515, n_remaining ~1300).  The true crossover
-# is really core-availability-bound (parallel only wins with more genuinely free
-# cores than the warm-start speedup ratio), which a single count cannot capture,
-# so this floor is set well above ordinary genome-scale workloads: we only pay
-# the parallel gamble when the residual workload is very large.  Tunable.
+# Tunable threshold at which parallel FVA kicks in. Is compared against the number of
+# LPs that are left to be solved by Phase 2. Empirically, parallel is only worthwhile
+# at high LP counts.
 _PARALLEL_PHASE2_MIN = 4000
 
 
