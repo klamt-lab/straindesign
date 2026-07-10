@@ -447,12 +447,10 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     t0 = time.time()
     # Save pre-FVA bounds for dump_preprocessed (bound config experiments)
     pre_fva_bounds = {r.id: (r.lower_bound, r.upper_bound) for r in cmp_model.reactions}
-    # Subset-scope the bound-stripping FVA off reactions already at (0,+inf) --
-    # the ~767 gene/AND/OR GPR pseudo-reactions. FVA on such a reaction can only
-    # ever tighten a genuinely blocked one to (0,0); leaving it at (0,+inf)
-    # changes no feasible flux (the stoichiometry already forces it to 0) and a
-    # blocked knockable can never belong to a minimal cut set, so the MCS
-    # enumeration is unchanged (verified: e_coli_core 455, iML1515 393).
+    # Subset-scope the bound-stripping FVA off reactions already at (0,+inf). 
+    # FVA on such a reaction can only ever tighten a genuinely blocked one 
+    # to (0,0); leaving it at (0,+inf) changes no feasible flux (the stoichiometry 
+    # already forces it to 0) and a blocked knockable can never belong to a minimal cut set.
     _fva_scope = [r.id for r in cmp_model.reactions
                   if not (float(r.lower_bound) == 0.0
                           and np.isinf(float(r.upper_bound))
