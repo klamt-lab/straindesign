@@ -564,6 +564,16 @@ class SDMILP(SDProblem, MILP_LP):
         status = OPTIMAL
         sols = sparse.csr_matrix((0, self.num_z))
         logging.info('Enumerating strain designs ...')
+        # On CPLEX and Gurobi solution pools are populated at each cost level.
+        # Keep track of the cost level of the last enumeration step.
+        # Exit when too close to the cost step, i.e. so close that the cheapest
+        # intervention cost would tip us over the cost limit. This is done
+        # to avoid a last expensive enumeration step we know will return empty.
+        cost_cap = float(self.max_cost) if self.max_cost is not None \
+            else float(np.sum(np.abs(self.cost)))
+        pos_cost = [c for c in self.cost if c > 0]
+        cost_step = min(pos_cost) if pos_cost else 1.0
+        pool_exhausts_level = self.solver in [CPLEX, GUROBI]
         while sols.shape[0] < self.max_solutions and \
           status == OPTIMAL and \
           endtime-time.time() > 0:
@@ -589,7 +599,12 @@ class SDMILP(SDProblem, MILP_LP):
                     else:
                         logging.warning('Invalid (minimal) solution found: ' + str(output))
                         self.add_exclusion_constraints(z[i])
-            if (status != OPTIMAL):  # or (z[i]*self.cost == self.max_cost):
+            if status != OPTIMAL:
+                break
+            # Avoid and empty exhaustion round once the complete cost-cap level
+            # has been enumerated (see note above the loop).
+            if self.is_mcs_computation and pool_exhausts_level and z.shape[0] > 0 \
+                    and float(np.max(z * self.cost)) >= cost_cap - cost_step * 1e-6:
                 break
         if status == INFEASIBLE and sols.shape[0] > 0:  # all solutions found or solution limit reached
             status = OPTIMAL

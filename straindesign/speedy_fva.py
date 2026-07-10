@@ -4,8 +4,11 @@ Standard FVA solves 2*n independent LPs (max and min for each reaction).
 This implementation reduces LP count via a two-phase approach:
 
 Phase 1 — Scan LPs (cheap, resolve ~50-70% of bounds):
-  a. v=0 feasibility: free resolutions when zero flux is feasible
-  b. min(sum(|x|)): pushes reactions toward zero, resolves lb=0/ub=0 bounds
+  a. trivial flux vector v=0 test: if feasible, all exisiting lb=0/ub=0 bounds
+     are immediately confirmed as flux limits.
+  b. min(sum(|x|)): pushes reactions toward zero, resolves lb=0/ub=0 bounds.
+     All fluxes that take the value 0 also immediately confirm the bounds 
+     as true flux limits.
   c. Push-to-bounds: directed objectives push unresolved reactions toward
      their variable bounds, with dual simplex warm-start for fast re-solves
   Each scan LP solution is processed by bound scanning (vectorized at-bound
@@ -40,6 +43,12 @@ from straindesign.compression import (
     compress_cobra_model, CompressionMethod, remove_conservation_relations,
     stoichmat_coeff2rational, remove_blocked_reactions,
 )
+
+
+# Tunable threshold at which parallel FVA kicks in. Is compared against the number of
+# LPs that are left to be solved by Phase 2. Empirically, parallel is only worthwhile
+# at high LP counts.
+_PARALLEL_PHASE2_MIN = 4000
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +288,9 @@ def speedy_fva(model, **kwargs):
     threads : int or None, optional (default None)
         Number of parallel workers for Phase 2 dispatch.  None = auto
         (Configuration().processes if n >= 1000, else 1).
+    reaction_list : list of str, optional (default None)
+        Only compute FVA for these reaction IDs.  Non-listed reactions get
+        NaN in the returned DataFrame.  None = compute for all reactions.
     verbose : bool, optional (default False)
 
     Returns
@@ -288,6 +300,7 @@ def speedy_fva(model, **kwargs):
     compress = kwargs.pop('compress', None)
     precheck = kwargs.pop('precheck', None)
     threads = kwargs.pop('threads', None)
+    reaction_list = kwargs.pop('reaction_list', None)
     orig_reaction_ids = model.reactions.list_attr("id")
     n_original = len(orig_reaction_ids)
     cmp_maps = []
@@ -298,7 +311,9 @@ def speedy_fva(model, **kwargs):
     if precheck is None:
         precheck = True
     if threads is None:
-        threads = Configuration().processes if n_original >= 1000 else 1
+        # Worker cap only; whether Phase 2 actually goes parallel is decided
+        # below from n_remaining (post-scan) against _PARALLEL_PHASE2_MIN.
+        threads = Configuration().processes
     threads = max(1, int(threads))
 
     t_phase = {}
@@ -371,6 +386,16 @@ def speedy_fva(model, **kwargs):
     res_min[fixed] = True
     incumbent_max[fixed] = ub[fixed]
     incumbent_min[fixed] = lb[fixed]
+
+    # Scope FVA to reaction_list: mark non-listed reactions as resolved with NaN
+    if reaction_list is not None:
+        scope_set = set(reaction_list)
+        for idx, rid in enumerate(reaction_ids):
+            if rid not in scope_set:
+                res_max[idx] = True
+                res_min[idx] = True
+                incumbent_max[idx] = nan
+                incumbent_min[idx] = nan
 
     # Stats
     lps_solved = 0
@@ -526,7 +551,7 @@ def speedy_fva(model, **kwargs):
     n_remaining = 2 * n_orig - n_done
     phase2_entry_count = n_remaining  # for stats
 
-    if n_remaining >= 1000 and threads > 1:
+    if n_remaining >= _PARALLEL_PHASE2_MIN and threads > 1:
         # Parallel dispatch via SDPool
         # Build list of unresolved objective indices (even=max, odd=min)
         unresolved = []
