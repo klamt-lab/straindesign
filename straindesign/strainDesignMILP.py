@@ -564,11 +564,16 @@ class SDMILP(SDProblem, MILP_LP):
         status = OPTIMAL
         sols = sparse.csr_matrix((0, self.num_z))
         logging.info('Enumerating strain designs ...')
-        # On CPLEX and Gurobi solution pools are populated at each cost level.
-        # Keep track of the cost level of the last enumeration step.
-        # Exit when too close to the cost step, i.e. so close that the cheapest
-        # intervention cost would tip us over the cost limit. This is done
-        # to avoid a last expensive enumeration step we know will return empty.
+        # Sound terminal-round skip (MCS on native-pool solvers only): with the
+        # exhaustive pool params shipped for gurobi/cplex (PoolGapAbs/PoolSolutions
+        # and pool.absgap/relgap/intensity, respectively), a single populateZ
+        # returns the COMPLETE current-minimum cost level. Because the min-cost
+        # objective enumerates cost levels in increasing order, once a complete
+        # level reaches the cost cap (max_cost) nothing cheaper remains (all
+        # already found) and nothing costlier is admissible (cost-cap row
+        # idx_row_mincost). The final populate — which otherwise only proves
+        # exhaustion by returning INFEASIBLE with 0 new designs — is then a
+        # full B&B re-solve that adds nothing, so it can be skipped.
         cost_cap = float(self.max_cost) if self.max_cost is not None \
             else float(np.sum(np.abs(self.cost)))
         pos_cost = [c for c in self.cost if c > 0]
@@ -601,8 +606,8 @@ class SDMILP(SDProblem, MILP_LP):
                         self.add_exclusion_constraints(z[i])
             if status != OPTIMAL:
                 break
-            # Avoid and empty exhaustion round once the complete cost-cap level
-            # has been enumerated (see note above the loop).
+            # skip the terminal INFEASIBLE exhaustion round once the complete
+            # cost-cap level has been enumerated (see note above the loop)
             if self.is_mcs_computation and pool_exhausts_level and z.shape[0] > 0 \
                     and float(np.max(z * self.cost)) >= cost_cap - cost_step * 1e-6:
                 break
