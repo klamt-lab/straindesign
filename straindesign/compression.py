@@ -1475,7 +1475,13 @@ def compress_cobra_model(model,
         model: COBRA model to compress (should be preprocessed)
         methods: Compression methods. Default: CompressionMethod.standard()
         in_place: Modify original model (True) or work on copy (False)
-        suppressed_reactions: Reaction names to exclude from compression
+        suppressed_reactions: Reaction names removed from the network before
+            compression (destructive; the reactions are deleted from the
+            stoichiometric matrix). Note this changes the nullspace, so it is
+            not the right tool for merely keeping reactions intact.
+        protected_reactions: Reaction names kept in the network but exempted
+            from being merged into a coupled (lumped) group. Non-destructive:
+            the reactions stay, only their lumping is prevented.
 
     Returns:
         CompressionResult with compressed model and transformation data
