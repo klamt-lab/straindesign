@@ -319,6 +319,7 @@ def speedy_fva(model, **kwargs):
     t_phase = {}
     _tp0 = _time.perf_counter()
 
+    orig_model = model  # uncompressed model: carries the user-facing reaction and gene IDs
     if compress:
         model, cmp_maps = _compress_for_fva(model)
     t_phase['compress'] = _time.perf_counter() - _tp0
@@ -329,7 +330,8 @@ def speedy_fva(model, **kwargs):
     has_constraints = CONSTRAINTS in kwargs and kwargs[CONSTRAINTS]
     if has_constraints:
         from straindesign.networktools import resolve_gene_constraints
-        kwargs[CONSTRAINTS] = resolve_gene_constraints(model, kwargs[CONSTRAINTS])
+        # Resolve gene/reaction constraints in the original ID space, then map onto the compressed model
+        kwargs[CONSTRAINTS] = resolve_gene_constraints(orig_model, kwargs[CONSTRAINTS])
         kwargs[CONSTRAINTS] = parse_constraints(kwargs[CONSTRAINTS], orig_reaction_ids)
         if cmp_maps:
             kwargs[CONSTRAINTS] = _map_constraints(
