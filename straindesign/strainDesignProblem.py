@@ -231,8 +231,8 @@ class SDProblem:
     def _region_fva_override(self, sd_module):
         """Per-BLOCK bound override for a PROTECT module: blocked + reversibility only.
 
-        Runs FVA over the module's own region ({Sv=0, model bounds, module constraints}) and returns
-        {rxn_id: (lo, hi)} carrying ONLY the two structural facts Phil chose to pass:
+        Derives {rxn_id: (lo, hi)} from the module's region-FVA ranges, carrying ONLY two structural
+        facts:
           - blocked in-region (min == max == 0)     -> (0.0, 0.0)
           - one-sided in-region (min >= 0)          -> lo = 0.0   (never negative in the region)
           - one-sided in-region (max <= 0)          -> hi = 0.0   (never positive in the region)
@@ -241,15 +241,21 @@ class SDProblem:
         override, NOT written into the model, so this is scoped to the PROTECT block only and cannot
         make a reaction non-targetable for another module (the shared-z pitfall).
 
+        The ranges come from ``sd_module['fva_bounds']``, computed once during preprocessing in
+        compute_strain_designs (all reactions, all modules). The fva() fallback only fires when SDMILP
+        is built directly, without that preprocessing (e.g. a bare SDProblem in a test).
+
         Soundness (PROTECT): a reaction blocked in the protected region is 0 in every protected flux
         state, so forcing it to 0 on KO removes no protected state -> its z-link here is vacuous.
         Fixing the sign of a one-sided reaction likewise removes no protected state. So neither change
         can alter which knockout sets keep the region feasible -> the design set is unchanged.
         """
-        from straindesign.lptools import fva
         solver = getattr(self, SOLVER, None)
         tol = 1e-10 if select_solver(solver) in [SCIP, GLPK] else 0.0
-        limits = fva(self.model, constraints=sd_module[CONSTRAINTS], solver=solver)
+        limits = sd_module.get('fva_bounds')
+        if limits is None:
+            from straindesign.lptools import fva
+            limits = fva(self.model, constraints=sd_module[CONSTRAINTS], solver=solver)
         override = {}
         for rid, lim in limits.iterrows():
             lo = hi = None
