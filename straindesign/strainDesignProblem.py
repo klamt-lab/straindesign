@@ -699,6 +699,34 @@ class SDProblem:
         (6) Remove redundant equalities from static problem
         """
 
+        # 0. Fix structurally-vacuous intervention binaries to zero.
+        #    A targetable KO z that maps to NOTHING -- no variable (z_map_vars), no inequality
+        #    (z_map_constr_ineq) and no equality (z_map_constr_eq) -- controls no part of the
+        #    continuous problem: toggling it changes no constraint, it only spends budget. Such a z
+        #    can never belong to a minimal cut (it is dominated by the same set without it), so
+        #    fixing it to 0 removes a dead binary and its budget-row term without changing any
+        #    strain design. This is the same surface as F-block: a reaction blocked in the module
+        #    region loses its z-map entries here, and compression can leave such binaries behind
+        #    (measured: 3/173 targetable on iMLcore, 0 on e_coli_core). Once per-module FVA writes
+        #    blocked reactions to (0,0), this step reclaims those binaries automatically.
+        #    NB: skip non-targetable (already fixed), inverted/KI z's (different semantics), and any
+        #    z with lb>0 (essential KI) -- forcing ub=0 there would create lb>ub.
+        zmv = self.z_map_vars.tocsc()
+        zci0 = self.z_map_constr_ineq.tocsc()
+        zce0 = self.z_map_constr_eq.tocsc()
+        n_vacuous = 0
+        for z in range(self.num_z):
+            if self.z_non_targetable[z] or self.z_inverted[z] or self.lb[z] > 0:
+                continue
+            has_var = zmv[z, :].nnz if z < zmv.shape[0] else 0
+            has_ineq = zci0[z, :].nnz if z < zci0.shape[0] else 0
+            has_eq = zce0[z, :].nnz if z < zce0.shape[0] else 0
+            if not (has_var or has_ineq or has_eq):
+                self.ub[z] = 0.0          # fix the binary to 0; presolve drops the fixed column
+                n_vacuous += 1
+        if n_vacuous:
+            logging.info('  Fixed %d structurally-vacuous intervention binaries to zero.' % n_vacuous)
+
         # 1. Split knockable equality constraints into foward and reverse direction
         knockable_constr_eq = self.z_map_constr_eq.nonzero()[1]  # first array: z, second array: eq constr
         eq_constr_A = sparse.vstack((self.A_eq[knockable_constr_eq, :], -self.A_eq[knockable_constr_eq, :]))
