@@ -92,7 +92,8 @@ class SDProblem:
     """
 
     def __init__(self, model: Model, sd_modules: List[SDModule], *args, **kwargs):
-        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis', SEED, MILP_THREADS}
+        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis', SEED, MILP_THREADS,
+                        'protect_region_fva'}
         # set all keys passed in kwargs
         for key, value in dict(kwargs).items():
             if key in allowed_keys:
@@ -228,12 +229,47 @@ class SDProblem:
         # np.savetxt("Ab_py.tsv", Ab.todense(), delimiter='\t')
         self.vtype = 'B' * self.num_z + 'C' * (self.z_map_vars.shape[1] - self.num_z)
 
+    def _region_fva_override(self, sd_module):
+        """Per-BLOCK bound override for a PROTECT module: blocked + reversibility only.
+
+        Runs FVA over the module's own region ({Sv=0, model bounds, module constraints}) and returns
+        {rxn_id: (lo, hi)} carrying ONLY the two structural facts Phil chose to pass:
+          - blocked in-region (min == max == 0)     -> (0.0, 0.0)
+          - one-sided in-region (min >= 0)          -> lo = 0.0   (never negative in the region)
+          - one-sided in-region (max <= 0)          -> hi = 0.0   (never positive in the region)
+        Magnitudes are NOT touched (no non-binding-bound -> +/-inf relaxation -- that is the
+        fva_tighten behaviour a benchmark flagged as a regression). Values are returned as an
+        override, NOT written into the model, so this is scoped to the PROTECT block only and cannot
+        make a reaction non-targetable for another module (the shared-z pitfall).
+
+        Soundness (PROTECT): a reaction blocked in the protected region is 0 in every protected flux
+        state, so forcing it to 0 on KO removes no protected state -> its z-link here is vacuous.
+        Fixing the sign of a one-sided reaction likewise removes no protected state. So neither change
+        can alter which knockout sets keep the region feasible -> the design set is unchanged.
+        """
+        from straindesign.lptools import fva
+        solver = getattr(self, SOLVER, None)
+        tol = 1e-10 if select_solver(solver) in [SCIP, GLPK] else 0.0
+        limits = fva(self.model, constraints=sd_module[CONSTRAINTS], solver=solver)
+        override = {}
+        for rid, lim in limits.iterrows():
+            lo = hi = None
+            if lim.minimum >= tol:
+                lo = 0.0
+            if lim.maximum <= -tol:
+                hi = 0.0
+            if lim.minimum >= tol and lim.maximum <= tol:   # blocked in-region
+                lo, hi = 0.0, 0.0
+            if lo is not None or hi is not None:
+                override[rid] = (lo, hi)
+        return override
+
     def addModule(self, sd_module):
         """Generate module LP and z-linking-matrix for each module and add them to the strain design MILP
-        
+
         Args:
             sd_module (straindesign.SDModule):
-                Modules to describe strain design problems like protected or suppressed flux states for 
+                Modules to describe strain design problems like protected or suppressed flux states for
                 MCS strain design or inner and outer objective functions for OptKnock. See description
                 of SDModule for more information on how to set up modules.
         """
@@ -246,8 +282,13 @@ class SDProblem:
         # 2. Construct LP for module
         if sd_module[MODULE_TYPE] in [PROTECT, SUPPRESS] and sd_module[INNER_OBJECTIVE] is None:
             # Classical MCS
+            # PROTECT-only, opt-in: tighten THIS block's bounds with region-FVA (blocked +
+            # reversibility). SUPPRESS is left untouched (its Farkas path is out of scope for now).
+            bound_override = None
+            if sd_module[MODULE_TYPE] == PROTECT and getattr(self, 'protect_region_fva', False):
+                bound_override = self._region_fva_override(sd_module)
             A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p \
-                = build_primal_from_cbm(self.model, V_ineq, v_ineq, V_eq, v_eq)
+                = build_primal_from_cbm(self.model, V_ineq, v_ineq, V_eq, v_eq, bound_override=bound_override)
         elif sd_module[MODULE_TYPE] in [PROTECT, SUPPRESS, OPTKNOCK, OPTCOUPLE]:
             c_in = linexprdict2mat(sd_module[INNER_OBJECTIVE], self.model.reactions.list_attr('id'))
             # by default, assume maximization of the inner objective
@@ -993,7 +1034,8 @@ class ContMILP:
         self.z_map_constr_eq = z_map_constr_eq
         self.z_map_vars = z_map_vars
 
-def build_primal_from_cbm(model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None, c=None) -> \
+def build_primal_from_cbm(model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None, c=None,
+                          bound_override=None) -> \
         Tuple[sparse.csr_matrix, Tuple, sparse.csr_matrix, Tuple, Tuple, Tuple, sparse.csr_matrix, sparse.csr_matrix, sparse.csr_matrix]:
     """Builds primal LP from constraint-based model and (optionally) additional constraints.
     
@@ -1043,6 +1085,22 @@ def build_primal_from_cbm(model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None,
     b_ineq = v_ineq.copy()
     lb = [float(v.lower_bound) for v in model.reactions]
     ub = [float(v.upper_bound) for v in model.reactions]
+    # Optional per-BLOCK bound override (e.g. region-FVA for a PROTECT module). Scoped to THIS
+    # block only -- the model is never mutated and other modules' blocks are unaffected, so a
+    # reaction blocked in one module's region stays globally targetable via the others. Keys are
+    # reaction ids; values (lo, hi) intersect the model bounds (max on lb, min on ub) so an
+    # override can only ever TIGHTEN, never loosen.
+    if bound_override:
+        for i, r in enumerate(model.reactions):
+            ov = bound_override.get(r.id)
+            if ov is not None:
+                lo, hi = ov
+                if lo is not None:
+                    lb[i] = max(lb[i], float(lo))
+                if hi is not None:
+                    ub[i] = min(ub[i], float(hi))
+                if lb[i] > ub[i]:            # numeric guard: never emit an inconsistent block
+                    lb[i], ub[i] = float(lo), float(hi)
     z_map_vars = sparse.identity(numr, 'd', format="csc")
     z_map_constr_eq = sparse.csc_matrix((numr, A_eq.shape[0]))
     z_map_constr_ineq = sparse.csc_matrix((numr, A_ineq.shape[0]))
