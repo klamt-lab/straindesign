@@ -806,6 +806,64 @@ class SDProblem:
                     self.b_ineq[row] = Ms[row]
         self.z_map_constr_ineq = self.z_map_constr_ineq.tocsc()
 
+        # 4b. (NOT ENABLED -- kept as a design note for the FVA-bounds work.)
+        #
+        # Consolidation counterpart to the ineq->eq lumping in step 5: an arity-1 row IS a bound,
+        # so carrying it as a row makes the MILP state the same restriction twice. Folding the
+        # tightest single-variable inequality per variable into lb/ub is safe HERE (and only here):
+        #   - z-mapped rows are excluded, so no knockout link is folded away;
+        #   - step 4 baked finite M's in as a z-coefficient, raising those rows to arity 2, so
+        #     they are excluded automatically;
+        #   - dualization is long done (prevent_boundary_knockouts runs pre-dualize inside
+        #     build_primal_from_cbm), so an unconditional row and an unconditional bound are
+        #     equivalent from here on. The same fold BEFORE dualization would NOT be safe: a
+        #     positive lb on a knockable variable picks up a z-mapping when dualized, letting a
+        #     KO relax it -- which is exactly what prevent_boundary_knockouts exists to prevent,
+        #     and why reassign_lb_ub_from_ineq() guards on z_map_vars at its call site in
+        #     addModule().
+        #
+        # WHY IT IS OFF: measured on e_coli_core (SUPPRESS, and SUPPRESS+PROTECT), at this point
+        # A_ineq contains ZERO arity-1 rows -- step 4 has already lifted every single-variable
+        # knockable row to arity 2, and every remaining row is multi-variable. The fold is a
+        # strict no-op today. It becomes useful once non-knockable single-variable rows are
+        # introduced -- e.g. when per-module FVA ranges are folded in as bounds.
+        #
+        # If enabled, note two things about reusing reassign_lb_ub_from_ineq() here verbatim:
+        #   (1) its arity scan is O(nnz^2) (`list(row_ineq).count(i)` per nonzero) and must be
+        #       rewritten with np.bincount before it can run at genome scale -- it would dwarf
+        #       the per-row LP this step already replaced;
+        #   (2) it RAISES on lb > ub; at this stage a contradictory system is a legitimate
+        #       INFEASIBLE and should be reported, not raised out of the MILP build.
+        #
+        # self.A_ineq = self.A_ineq.tocsr()
+        # self.A_ineq.eliminate_zeros()
+        # nnz_per_row = np.diff(self.A_ineq.indptr)
+        # z_rows = set(self.z_map_constr_ineq.nonzero()[1].tolist())
+        # fold_rows = [i for i in np.nonzero(nnz_per_row == 1)[0].tolist() if i not in z_rows]
+        # if fold_rows:
+        #     new_lb, new_ub = list(self.lb), list(self.ub)
+        #     for i in fold_rows:
+        #         j = int(self.A_ineq.indices[self.A_ineq.indptr[i]])
+        #         coef = float(self.A_ineq.data[self.A_ineq.indptr[i]])
+        #         val = float(self.b_ineq[i]) / coef
+        #         if coef > 0:                 # coef*x <= b  ->  x <= b/coef   (tightest ub = min)
+        #             new_ub[j] = min(new_ub[j], val)
+        #         else:                        # coef*x <= b  ->  x >= b/coef   (tightest lb = max)
+        #             new_lb[j] = max(new_lb[j], val)
+        #     if any(l > u for l, u in zip(new_lb, new_ub)):
+        #         logging.warning('  Bound folding produced lb > ub (infeasible static problem); '
+        #                         'keeping the rows and leaving it to the solver.')
+        #     else:
+        #         self.lb, self.ub = new_lb, new_ub
+        #         keep = np.ones(self.A_ineq.shape[0], dtype=bool)
+        #         keep[fold_rows] = False
+        #         self.A_ineq = self.A_ineq[keep, :]
+        #         self.b_ineq = [self.b_ineq[i] for i in range(len(keep)) if keep[i]]
+        #         self.z_map_constr_ineq = self.z_map_constr_ineq.tocsc()[:, keep]
+        #         Ms = [Ms[i] for i in range(len(keep)) if keep[i]]   # Ms is indexed by A_ineq row
+        # NB knockable_constr_ineq holds pre-fold row indices but is dead after step 5's
+        #    `tuple(...)` rebind, so the index shift above is harmless.
+
         # 5. Translate back remaining inequalities to equations if applicable and link via indicator constraints
         knockable_constr_ineq = tuple(knockable_constr_ineq)
         knockable_constr_ineq_ic = [i for i in range(self.A_ineq.shape[0]) if isinf(Ms[i])]
