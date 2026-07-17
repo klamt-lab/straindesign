@@ -748,35 +748,8 @@ class SDProblem:
         (5) Translate remaining inequalities back to equalities when possible and link z via indicator constraints.
         If necessary, the solver interface will translate them to big-M constraints.
         (6) Remove redundant equalities from static problem
+        (7) Fix intervention binaries the linked MILP leaves free
         """
-
-        # 0. Fix structurally-vacuous intervention binaries to zero.
-        #    A targetable KO z that maps to NOTHING -- no variable (z_map_vars), no inequality
-        #    (z_map_constr_ineq) and no equality (z_map_constr_eq) -- controls no part of the
-        #    continuous problem: toggling it changes no constraint, it only spends budget. Such a z
-        #    can never belong to a minimal cut (it is dominated by the same set without it), so
-        #    fixing it to 0 removes a dead binary and its budget-row term without changing any
-        #    strain design. This is the same surface as F-block: a reaction blocked in the module
-        #    region loses its z-map entries here, and compression can leave such binaries behind
-        #    (measured: 3/173 targetable on iMLcore, 0 on e_coli_core). Once per-module FVA writes
-        #    blocked reactions to (0,0), this step reclaims those binaries automatically.
-        #    NB: skip non-targetable (already fixed), inverted/KI z's (different semantics), and any
-        #    z with lb>0 (essential KI) -- forcing ub=0 there would create lb>ub.
-        zmv = self.z_map_vars.tocsc()
-        zci0 = self.z_map_constr_ineq.tocsc()
-        zce0 = self.z_map_constr_eq.tocsc()
-        n_vacuous = 0
-        for z in range(self.num_z):
-            if self.z_non_targetable[z] or self.z_inverted[z] or self.lb[z] > 0:
-                continue
-            has_var = zmv[z, :].nnz if z < zmv.shape[0] else 0
-            has_ineq = zci0[z, :].nnz if z < zci0.shape[0] else 0
-            has_eq = zce0[z, :].nnz if z < zce0.shape[0] else 0
-            if not (has_var or has_ineq or has_eq):
-                self.ub[z] = 0.0          # fix the binary to 0; presolve drops the fixed column
-                n_vacuous += 1
-        if n_vacuous:
-            logging.info('  Fixed %d structurally-vacuous intervention binaries to zero.' % n_vacuous)
 
         # 1. Split knockable equality constraints into foward and reverse direction
         knockable_constr_eq = self.z_map_constr_eq.nonzero()[1]  # first array: z, second array: eq constr
@@ -1023,6 +996,38 @@ class SDProblem:
         keep_eq = [False if i in knockable_constr_eq_ic else True for i in range(self.A_eq.shape[0])]
         self.A_eq = self.A_eq[keep_eq, :]
         self.b_eq = [self.b_eq[i] for i in range(len(keep_eq)) if keep_eq[i]]
+
+        # 7. Fix intervention binaries the linked MILP leaves FREE.
+        #    After ALL linking, a targetable KO z that gates no indicator and appears in no finite-M
+        #    row controls nothing -- its only footprint is its own cost in the budget/objective rows
+        #    (idx_row_maxcost/mincost/obj). Toggling it changes no constraint, so it is in no minimal
+        #    cut; fix it to 0. Running this at the END of link_z (rather than up front on the z-maps)
+        #    catches a strictly larger set: z's whose rows were lumped/removed by steps 5/b6 end up
+        #    free here too (measured 8 vs 0 on e_coli, 6 vs 3 on iMLcore). Done explicitly rather than
+        #    relying on solver presolve to spot the dominated column.
+        #    NB indicators are exactly the rows that could NOT be bounded (M=inf), so they are never
+        #    trivially satisfiable -- a fixable z therefore never carries an indicator, and there is
+        #    nothing to fold into the static problem; ub=0 is the whole operation. Skip non-targetable
+        #    (already fixed), inverted/KI z's, and lb>0 (essential KI) where ub=0 would give lb>ub.
+        Aic = self.A_ineq.tocsc()
+        Aec = self.A_eq.tocsc() if self.A_eq.shape[0] else None
+        budget_rows = {self.idx_row_maxcost, self.idx_row_mincost, self.idx_row_obj}
+        z_with_ind = set(int(b) for b in self.indic_constr.binv) if self.indic_constr is not None else set()
+        n_free = 0
+        for z in range(self.num_z):
+            if self.z_non_targetable[z] or self.z_inverted[z] or self.lb[z] > 0 or self.ub[z] == 0:
+                continue
+            if z in z_with_ind:
+                continue
+            col = Aic.getcol(z).tocoo()
+            if any((r not in budget_rows) and v != 0 for r, v in zip(col.row.tolist(), col.data.tolist())):
+                continue                       # finite-M z-link -> controls a row
+            if Aec is not None and Aec.getcol(z).nnz:
+                continue                       # equality z-link
+            self.ub[z] = 0.0
+            n_free += 1
+        if n_free:
+            logging.info('  Fixed %d free intervention binaries to zero (no indicator or z-link).' % n_free)
 
 
 class ContMILP:
