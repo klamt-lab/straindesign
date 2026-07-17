@@ -229,7 +229,8 @@ class SDProblem:
         self.vtype = 'B' * self.num_z + 'C' * (self.z_map_vars.shape[1] - self.num_z)
 
     def _region_fva_override(self, sd_module):
-        """Per-BLOCK bound override for a PROTECT module: blocked + reversibility only.
+        """Per-BLOCK bound override for a classical-MCS module (PROTECT or SUPPRESS): blocked +
+        reversibility only.
 
         Derives {rxn_id: (lo, hi)} from the module's region-FVA ranges, carrying ONLY two structural
         facts:
@@ -245,10 +246,12 @@ class SDProblem:
         compute_strain_designs (all reactions, all modules). The fva() fallback only fires when SDMILP
         is built directly, without that preprocessing (e.g. a bare SDProblem in a test).
 
-        Soundness (PROTECT): a reaction blocked in the protected region is 0 in every protected flux
-        state, so forcing it to 0 on KO removes no protected state -> its z-link here is vacuous.
-        Fixing the sign of a one-sided reaction likewise removes no protected state. So neither change
-        can alter which knockout sets keep the region feasible -> the design set is unchanged.
+        Soundness: a reaction blocked in the module's region is already 0 across that whole region, so
+        fixing its bound to 0 (or fixing the sign of a one-sided reaction) does not remove any point of
+        the region. For PROTECT the region is the protected/desired set; for SUPPRESS it is the
+        undesired set that the primal describes before farkas_dualize. In both cases the region is
+        unchanged, so which knockout sets keep it feasible (PROTECT) / make it infeasible (SUPPRESS) is
+        unchanged -> the design set is identical.
         """
         solver = getattr(self, SOLVER, None)
         tol = 1e-10 if select_solver(solver) in [SCIP, GLPK] else 0.0
@@ -287,13 +290,13 @@ class SDProblem:
         # 2. Construct LP for module
         if sd_module[MODULE_TYPE] in [PROTECT, SUPPRESS] and sd_module[INNER_OBJECTIVE] is None:
             # Classical MCS
-            # PROTECT: tighten THIS block's bounds with region-FVA (blocked + reversibility). This is
-            # always sound (a reaction blocked in the protected region is 0 in every protected state,
-            # so its KO changes nothing there -> its z-link here is vacuous) and design-preserving, so
-            # it is unconditional. SUPPRESS is left untouched (its Farkas path is out of scope).
-            bound_override = None
-            if sd_module[MODULE_TYPE] == PROTECT:
-                bound_override = self._region_fva_override(sd_module)
+            # Tighten THIS block's bounds with region-FVA (blocked + reversibility). Sign-only, so it
+            # never over-tightens: it only fixes bounds the region already forces (a reaction
+            # blocked/one-sided in the region is already 0/one-sided there), leaving the region -- and
+            # hence the design set -- unchanged, while making the vacuous z-links droppable. Applied to
+            # both PROTECT and SUPPRESS: for SUPPRESS the undesired-region primal is bounded the same
+            # way before farkas_dualize, so the certificate is unchanged.
+            bound_override = self._region_fva_override(sd_module)
             A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p \
                 = build_primal_from_cbm(self.model, V_ineq, v_ineq, V_eq, v_eq, bound_override=bound_override)
         elif sd_module[MODULE_TYPE] in [PROTECT, SUPPRESS, OPTKNOCK, OPTCOUPLE]:
