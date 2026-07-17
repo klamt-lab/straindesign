@@ -1250,50 +1250,73 @@ def reassign_lb_ub_from_ineq(A_ineq, b_ineq, A_eq, b_eq, lb, ub,
     if z_map_vars is None:
         z_map_vars = sparse.csc_matrix((numz, numr))
 
+    # Rows carrying exactly one entry ARE bounds. Find them with a bincount over the nonzero row
+    # indices and read the single (column, value) straight off the COO -- the previous
+    # `[i for i in row_ineq if list(row_ineq).count(i) == 1]` rebuilt the row list and rescanned
+    # it once per nonzero (O(nnz^2), plus an O(nnz) `not in` list test per candidate and an
+    # O(nnz) row slice per hit). That is fine for a handful of rows but makes this function
+    # unusable at genome scale.
+    def _single_entry_rows(A, z_map_constr):
+        """Ascending indices of rows with exactly one nonzero, excluding knockable rows,
+        plus row->column and row->value lookups for those rows."""
+        rows, cols = A.nonzero()  # scipy .nonzero() already drops explicit zeros
+        counts = np.bincount(rows, minlength=A.shape[0])
+        single = np.nonzero(counts == 1)[0]
+        knockable = set(z_map_constr.nonzero()[1].tolist())
+        keep = np.array([i for i in single.tolist() if i not in knockable], dtype=int)
+        row2col = np.full(A.shape[0], -1, dtype=int)
+        row2val = np.zeros(A.shape[0], dtype=float)
+        if len(single):
+            sel = np.isin(rows, single)
+            row2col[rows[sel]] = cols[sel]
+            data = np.asarray(A.tocsr()[rows[sel], cols[sel]]).ravel()
+            row2val[rows[sel]] = data
+        return keep, row2col, row2val
+
     # translate entries to lb or ub
-    # find all entries in A_ineq
-    row_ineq = A_ineq.nonzero()[0]
-    # filter for rows with only one entry
-    var_bound_constraint_ineq = [i for i in row_ineq if list(row_ineq).count(i) == 1]
-    # exclude knockable constraints
-    var_bound_constraint_ineq = [i for i in var_bound_constraint_ineq if i not in z_map_constr_ineq.nonzero()[1]]
+    var_bound_constraint_ineq, ineq_row2col, ineq_row2val = _single_entry_rows(A_ineq, z_map_constr_ineq)
     # retrieve all bounds from inequality constraints
     for i in var_bound_constraint_ineq:
-        idx_r = A_ineq[i, :].nonzero()[1][0]  # get reaction from constraint (column of entry)
-        if A_ineq[i, idx_r] > 0:  # upper bound constraint
-            ub[idx_r] += [b_ineq[i] / A_ineq[i, idx_r]]
+        idx_r = int(ineq_row2col[i])  # get reaction from constraint (column of entry)
+        coef = ineq_row2val[i]
+        if coef > 0:  # upper bound constraint
+            ub[idx_r] += [b_ineq[i] / coef]
         else:  # lower bound constraint
-            lb[idx_r] += [b_ineq[i] / A_ineq[i, idx_r]]
+            lb[idx_r] += [b_ineq[i] / coef]
 
-    # find all entries in A_eq
-    row_eq = A_eq.nonzero()[0]
-    # filter for rows with only one entry
-    var_bound_constraint_eq = [i for i in row_eq if list(row_eq).count(i) == 1]
-    # exclude knockable constraints
-    var_bound_constraint_eq = [i for i in var_bound_constraint_eq if i not in z_map_constr_eq.nonzero()[1]]
+    var_bound_constraint_eq, eq_row2col, eq_row2val = _single_entry_rows(A_eq, z_map_constr_eq)
+    # knockability is a property of the VARIABLE here, so precompute it per column once instead
+    # of slicing z_map_vars inside the loop
+    col_has_z = np.asarray((z_map_vars != 0).sum(axis=0)).ravel() > 0
     # retrieve all bounds from equality constraints
     # and partly set lb or ub derived from equality constraints, for instance:
     # If x =  5, set ub = 5 and keep the inequality constraint -x <= -5.
     # If x = -5, set lb =-5 and keep the inequality constraint  x <= -5.
     A_ineq_new = sparse.csr_matrix((0, numr))
     b_ineq_new = []
+    eq_rows_to_keep_as_ineq = []
     for i in var_bound_constraint_eq:
-        idx_r = A_eq[i, :].nonzero()[1][0]  # get reaction from constraint (column of entry)
-        if any(z_map_vars[:, idx_r]):  # if reaction is knockable
-            if A_eq[i, idx_r] * b_eq[i] > 0:  # upper bound constraint
-                ub[idx_r] += [b_eq[i] / A_eq[i, idx_r]]
-                A_ineq_new = sparse.vstack((A_ineq_new, -A_eq[i, :]))
-                b_ineq_new += [-b_eq[i]]
-            elif A_eq[i, idx_r] * b_eq[i] < 0:  # lower bound constraint
-                lb[idx_r] += [b_eq[i] / A_eq[i, idx_r]]
-                A_ineq_new = sparse.vstack((A_ineq_new, A_eq[i, :]))
-                b_ineq_new += [b_eq[i]]
+        idx_r = int(eq_row2col[i])  # get reaction from constraint (column of entry)
+        coef = eq_row2val[i]
+        if col_has_z[idx_r]:  # if reaction is knockable
+            if coef * b_eq[i] > 0:  # upper bound constraint
+                ub[idx_r] += [b_eq[i] / coef]
+                eq_rows_to_keep_as_ineq += [(i, -1.0)]
+            elif coef * b_eq[i] < 0:  # lower bound constraint
+                lb[idx_r] += [b_eq[i] / coef]
+                eq_rows_to_keep_as_ineq += [(i, 1.0)]
             else:
                 ub[idx_r] += [0.0]
                 lb[idx_r] += [0.0]
         else:
-            lb[idx_r] += [b_eq[i] / A_eq[i, idx_r]]
-            ub[idx_r] += [b_eq[i] / A_eq[i, idx_r]]
+            lb[idx_r] += [b_eq[i] / coef]
+            ub[idx_r] += [b_eq[i] / coef]
+    # build the retained direction(s) in ONE vstack instead of growing the matrix per row
+    if eq_rows_to_keep_as_ineq:
+        idx = [i for i, _ in eq_rows_to_keep_as_ineq]
+        sgn = np.array([s for _, s in eq_rows_to_keep_as_ineq])
+        A_ineq_new = sparse.diags(sgn) @ A_eq.tocsr()[idx, :]
+        b_ineq_new = [s * b_eq[i] for i, s in eq_rows_to_keep_as_ineq]
     # set tightest bounds (avoid inf)
     lb = [max([i for i in l if not isinf(i)] + [np.nan]) for l in lb]
     ub = [min([i for i in u if not isinf(i)] + [np.nan]) for u in ub]
@@ -1306,18 +1329,24 @@ def reassign_lb_ub_from_ineq(A_ineq, b_ineq, A_eq, b_eq, lb, ub,
         raise Exception("There is a lower bound that is greater than its upper bound counterpart.")
 
     # remove constraints that became redundant
+    # (boolean masks; the previous `i in <list>` test inside a per-row comprehension was
+    #  O(rows * len(list)))
     numineq = A_ineq.shape[0]
-    A_ineq = A_ineq[[False if i in var_bound_constraint_ineq else True for i in range(0, numineq)]]
-    b_ineq = [b_ineq[i] for i in range(0, len(b_ineq)) if i not in var_bound_constraint_ineq]
-    z_map_constr_ineq = z_map_constr_ineq[:, [False if i in var_bound_constraint_ineq else True for i in range(0, numineq)]]
+    keep_ineq = np.ones(numineq, dtype=bool)
+    keep_ineq[var_bound_constraint_ineq] = False
+    A_ineq = A_ineq[keep_ineq]
+    b_ineq = [b_ineq[i] for i in range(0, len(b_ineq)) if keep_ineq[i]]
+    z_map_constr_ineq = z_map_constr_ineq[:, keep_ineq]
     numeq = A_eq.shape[0]
-    A_eq = A_eq[[False if i in var_bound_constraint_eq else True for i in range(0, numeq)]]
-    b_eq = [b_eq[i] for i in range(0, len(b_eq)) if i not in var_bound_constraint_eq]
+    keep_eq = np.ones(numeq, dtype=bool)
+    keep_eq[var_bound_constraint_eq] = False
+    A_eq = A_eq[keep_eq]
+    b_eq = [b_eq[i] for i in range(0, len(b_eq)) if keep_eq[i]]
     # add equality constraints that transformed to inequality constraints
     A_ineq = sparse.vstack((A_ineq, A_ineq_new))
     b_ineq += b_ineq_new
     if numz:
-        z_map_constr_eq = z_map_constr_eq[:, [False if i in var_bound_constraint_eq else True for i in range(0, numeq)]]
+        z_map_constr_eq = z_map_constr_eq[:, keep_eq]
         z_map_constr_ineq = sparse.hstack((z_map_constr_ineq, sparse.csc_matrix((numz, A_ineq_new.shape[0]))))
         return A_ineq, b_ineq, A_eq, b_eq, lb, ub, z_map_constr_ineq, z_map_constr_eq
     else:
