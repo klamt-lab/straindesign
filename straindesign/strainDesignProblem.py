@@ -92,8 +92,7 @@ class SDProblem:
     """
 
     def __init__(self, model: Model, sd_modules: List[SDModule], *args, **kwargs):
-        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis', SEED, MILP_THREADS,
-                        'protect_region_fva'}
+        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis', SEED, MILP_THREADS}
         # set all keys passed in kwargs
         for key, value in dict(kwargs).items():
             if key in allowed_keys:
@@ -282,10 +281,12 @@ class SDProblem:
         # 2. Construct LP for module
         if sd_module[MODULE_TYPE] in [PROTECT, SUPPRESS] and sd_module[INNER_OBJECTIVE] is None:
             # Classical MCS
-            # PROTECT-only, opt-in: tighten THIS block's bounds with region-FVA (blocked +
-            # reversibility). SUPPRESS is left untouched (its Farkas path is out of scope for now).
+            # PROTECT: tighten THIS block's bounds with region-FVA (blocked + reversibility). This is
+            # always sound (a reaction blocked in the protected region is 0 in every protected state,
+            # so its KO changes nothing there -> its z-link here is vacuous) and design-preserving, so
+            # it is unconditional. SUPPRESS is left untouched (its Farkas path is out of scope).
             bound_override = None
-            if sd_module[MODULE_TYPE] == PROTECT and getattr(self, 'protect_region_fva', False):
+            if sd_module[MODULE_TYPE] == PROTECT:
                 bound_override = self._region_fva_override(sd_module)
             A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p \
                 = build_primal_from_cbm(self.model, V_ineq, v_ineq, V_eq, v_eq, bound_override=bound_override)
