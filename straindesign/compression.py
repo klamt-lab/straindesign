@@ -2069,25 +2069,18 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
         return (stoich, fwd[i], rev[i], inh[i])
 
     # Find parallel reactions by exact key comparison (hash pre-filter, then full compare)
-    subset_list = []
-    prev_found = set()
     protected = [r.id in protected_rxns for r in model.reactions]
     keys = [_parallel_key(i) for i in range(len(model.reactions))]
-    key_hashes = [hash(k) for k in keys]
 
-    for i in range(len(model.reactions)):
-        if i in prev_found:
-            continue
-        if protected[i]:
-            subset_list.append([i])
-            continue
-        subset_i = [i]
-        for j in range(i + 1, len(model.reactions)):
-            if (not protected[j] and j not in prev_found
-                    and key_hashes[i] == key_hashes[j] and keys[i] == keys[j]):
-                subset_i.append(j)
-                prev_found.add(j)
-        subset_list.append(subset_i)
+    # Group reactions that share an exact key in a single O(n) pass. dict hashes-then-compares the
+    # keys internally (same test as the old pairwise loop) and preserves first-occurrence order, so
+    # each group's representative is its smallest index and subset_list stays ordered by ascending
+    # representative -- matching the surviving-reaction order after remove_reactions below. Protected
+    # reactions get a unique 2-tuple key (real keys are 4-tuples) so they never merge.
+    groups = {}
+    for i, key in enumerate(keys):
+        groups.setdefault(('\0protected', i) if protected[i] else key, []).append(i)
+    subset_list = list(groups.values())
 
     # Lump parallel reactions
     del_rxns = [False] * len(model.reactions)
