@@ -966,7 +966,7 @@ def reduce_gpr(model, essential_reacs, gkis, gkos):
 remove_irrelevant_genes = reduce_gpr
 
 
-def extend_model_gpr(model, use_names=False):
+def extend_model_gpr(model, use_names=False, solver=None):
     """Integrate GPR-rules into a metabolic model as pseudo metabolites and reactions using AST parsing
     
     COBRA modules often have gene-protein-reaction (GPR) rules associated with each reaction. 
@@ -1036,7 +1036,12 @@ def extend_model_gpr(model, use_names=False):
         h = hashlib.sha256(id.encode()).hexdigest()[:20]
         return id[0:MAX_NAME_LEN - 21] + "_" + h
 
-    solver = search('(' + '|'.join(avail_solvers) + ')', model.solver.interface.__name__)[0]
+    # The solver name only selects the reaction-name-length limit (Gurobi/GLPK truncate at
+    # MAX_NAME_LEN; CPLEX does not). Callers that already know it pass it in; otherwise fall back to
+    # reading it off the model's solver interface. Passing it avoids depending on the copy carrying a
+    # live solver of the right backend.
+    if solver is None:
+        solver = search('(' + '|'.join(avail_solvers) + ')', model.solver.interface.__name__)[0]
 
     # Track created metabolites to avoid duplicates
     created_metabolites = set()
