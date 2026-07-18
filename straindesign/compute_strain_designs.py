@@ -32,7 +32,7 @@ from straindesign.names import *
 from straindesign.networktools import   remove_ext_mets, bound_blocked_or_irrevers_fva, \
                                         reduce_gpr, extend_model_gpr, extend_model_regulatory, \
                                         compress_model, compress_modules, compress_ki_ko_cost, expand_sd, filter_sd_maxcost, \
-                                        estimate_expansion_size, with_suppressed_lp, _silent_io
+                                        estimate_expansion_size, with_suppressed_lp, _silent_io, copy_model_suppressed
 
 
 def _restore_module_coeff_scaling(cmp_model, sd_modules, cmp_mapReac, orig_sd_modules):
@@ -375,7 +375,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     logging.info('  Using ' + kwargs[SOLVER] + ' for solving LPs during preprocessing.')
     with _silent_io():
         orig_model = model
-        model = model.copy()
+        model = copy_model_suppressed(model)
     orig_ko_cost = deepcopy(uncmp_ko_cost)
     orig_ki_cost = deepcopy(uncmp_ki_cost)
     orig_reg_cost = deepcopy(uncmp_reg_cost)
@@ -396,7 +396,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     # 1) Preprocess Model
     # Copy model for compression/processing
     with _silent_io():
-        cmp_model = model.copy()
+        cmp_model = copy_model_suppressed(model)
     # remove external metabolites
     remove_ext_mets(cmp_model)
     # Extend with regulatory constraints: reaction-based can be applied now,

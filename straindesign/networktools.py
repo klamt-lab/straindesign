@@ -104,6 +104,30 @@ class _SolverStub:
 
 _SOLVER_STUB = _SolverStub('__stub__')
 
+
+def copy_model_suppressed(model):
+    """cobra ``model.copy()`` WITHOUT deep-copying (and rebuilding) the optlang solver backend.
+
+    A plain copy deepcopies the live solver, which triggers optlang's ``__setstate__`` and rebuilds
+    the whole Gurobi/CPLEX model (~3s per copy on iML1515). Preprocessing does not need a live solver
+    on the copies -- FVA builds its own LP and compression manipulates the stoichiometry directly -- so
+    we temporarily swap the solver for the lightweight stub, copy (~0.3s), restore the original's
+    solver, and give the copy a fresh EMPTY solver of the same interface (see below).
+    """
+    iface = model.solver.interface          # captured before stubbing
+    saved = model._solver
+    try:
+        model._solver = _SOLVER_STUB
+        new = model.copy()
+    finally:
+        model._solver = saved
+    # Attach a FRESH EMPTY solver of the same interface. Deepcopy would rebuild the whole populated
+    # optlang backend (~3s on iML1515); an empty one is near-free and is all preprocessing needs -- it
+    # exposes .interface (extend_model_gpr reads the solver name off it) and accepts the reactions that
+    # gene-MCS's GPR extension adds. Under LP suppression the state syncs on context exit anyway.
+    new._solver = iface.Model()
+    return new
+
 _ORIG_CONTAINER_GETITEM = None  # saved Container.__getitem__
 
 
