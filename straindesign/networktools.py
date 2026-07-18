@@ -966,7 +966,7 @@ def reduce_gpr(model, essential_reacs, gkis, gkos):
 remove_irrelevant_genes = reduce_gpr
 
 
-def extend_model_gpr(model, use_names=False, solver=None):
+def extend_model_gpr(model, use_names=False):
     """Integrate GPR-rules into a metabolic model as pseudo metabolites and reactions using AST parsing
     
     COBRA modules often have gene-protein-reaction (GPR) rules associated with each reaction. 
@@ -1028,20 +1028,13 @@ def extend_model_gpr(model, use_names=False, solver=None):
                         "\nOne of the generated reaction names is beyond or close to the limit of 255 "+\
                         "characters\npermitted by GLPK and Gurobi. The name of the newly generated "+\
                         "reaction or metabolite: \n "+id+",\ngenerated from reaction or metabolite:\n "+\
-                        p+"\n"+"was therefore trimmed to:\n "+id[0:MAX_NAME_LEN]+".\nThis trimming is "+\
-                        "usually safe, no guarantee is given. To avoid this message,\nuse the CPLEX "+\
-                        "solver or consider simplifying GPR rules or gene names in your model.")
+                        p+"\n"+"was therefore trimmed to:\n "+truncate(id)+".\nThis trimming is "+\
+                        "usually safe, no guarantee is given. To avoid this message,\nconsider "+\
+                        "simplifying GPR rules or gene names in your model.")
 
     def truncate(id):
         h = hashlib.sha256(id.encode()).hexdigest()[:20]
         return id[0:MAX_NAME_LEN - 21] + "_" + h
-
-    # The solver name only selects the reaction-name-length limit (Gurobi/GLPK truncate at
-    # MAX_NAME_LEN; CPLEX does not). Callers that already know it pass it in; otherwise fall back to
-    # reading it off the model's solver interface. Passing it avoids depending on the copy carrying a
-    # live solver of the right backend.
-    if solver is None:
-        solver = search('(' + '|'.join(avail_solvers) + ')', model.solver.interface.__name__)[0]
 
     # Track created metabolites to avoid duplicates
     created_metabolites = set()
@@ -1051,7 +1044,7 @@ def extend_model_gpr(model, use_names=False, solver=None):
         gene_met_id = f'g_{gene_id}'
 
         # Check name length and truncate if necessary
-        if len(gene_met_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
+        if len(gene_met_id) > MAX_NAME_LEN:
             if truncate(gene_met_id) not in [m.id for m in model.metabolites]:
                 warning_name_too_long(gene_met_id, gene_id)
             gene_met_id = truncate(gene_met_id)
@@ -1068,7 +1061,7 @@ def extend_model_gpr(model, use_names=False, solver=None):
                 reaction_id = gene.id
 
             # Check name length and truncate if necessary
-            if len(reaction_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
+            if len(reaction_id) > MAX_NAME_LEN:
                 warning_name_too_long(reaction_id, gene_id)
                 reaction_id = truncate(reaction_id)
 
@@ -1084,7 +1077,7 @@ def extend_model_gpr(model, use_names=False, solver=None):
         and_met_id = "_and_".join(sorted(child_metabolites))
 
         # Check name length and truncate if necessary
-        if len(and_met_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
+        if len(and_met_id) > MAX_NAME_LEN:
             if truncate(and_met_id) not in [m.id for m in model.metabolites]:
                 warning_name_too_long(and_met_id, "AND combination")
             and_met_id = truncate(and_met_id)
@@ -1097,7 +1090,7 @@ def extend_model_gpr(model, use_names=False, solver=None):
             reaction_id = f"R_{and_met_id}"
 
             # Check name length and truncate if necessary
-            if len(reaction_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
+            if len(reaction_id) > MAX_NAME_LEN:
                 warning_name_too_long(reaction_id, "AND combination")
                 reaction_id = truncate(reaction_id)
 
@@ -1113,7 +1106,7 @@ def extend_model_gpr(model, use_names=False, solver=None):
         or_met_id = "_or_".join(sorted(child_metabolites))
 
         # Check name length and truncate if necessary
-        if len(or_met_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
+        if len(or_met_id) > MAX_NAME_LEN:
             if truncate(or_met_id) not in [m.id for m in model.metabolites]:
                 warning_name_too_long(or_met_id, "OR combination")
             or_met_id = truncate(or_met_id)
@@ -1128,7 +1121,7 @@ def extend_model_gpr(model, use_names=False, solver=None):
                 reaction_id = f"R{i}_{or_met_id}"
 
                 # Check name length and truncate if necessary
-                if len(reaction_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
+                if len(reaction_id) > MAX_NAME_LEN:
                     warning_name_too_long(reaction_id, "OR combination")
                     reaction_id = truncate(reaction_id)
 
@@ -1169,7 +1162,7 @@ def extend_model_gpr(model, use_names=False, solver=None):
                 r_rev.id = r.id + '_reverse_' + hex(hash(r))[8:]
             r_rev.lower_bound = np.max([0, r_rev.lower_bound])
             reac_map[r.id].update({r_rev.id: -1.0})
-            if len(r_rev.id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
+            if len(r_rev.id) > MAX_NAME_LEN:
                 warning_name_too_long(r_rev.id, r.id)
                 r_rev.id = truncate(r_rev.id)
             rev_reac.add(r_rev)
