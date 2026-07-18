@@ -547,7 +547,10 @@ def fba(model, **kwargs) -> Solution:
         if min_cx <= 0 or isnan(min_cx):
             num_prob.add_eq_constraints(c, [-1.0])
         else:
-            num_prob.add_eq_constraints(c, min_cx)
+            # add_eq_constraints expects a list; c is negated for the maximize->min_cx solve above,
+            # so [-min_cx] pins c'x = min_cx (the attainable minimum). Bare float here raised
+            # "'float' object is not iterable" on every unbounded/cone model.
+            num_prob.add_eq_constraints(c, [-min_cx])
         x, _, _ = num_prob.solve()
     elif status not in [OPTIMAL, UNBOUNDED]:
         status = INFEASIBLE
