@@ -307,6 +307,17 @@ def jBigFraction2sympyRat(val):
     return jBigIntegerPair2sympyRat(val.getNumerator(), val.getDenominator())
 
 
+def jBigFraction2fraction(val):
+    """Convert Java BigFraction to fractions.Fraction.
+
+    Use this (not the sympy variant) for any value that enters the model or the
+    compression map -- those must never hold sympy numbers.
+    """
+    from fractions import Fraction
+    r = jBigIntegerPair2sympyRat(val.getNumerator(), val.getDenominator())
+    return Fraction(int(r.p), int(r.q))
+
+
 def jBigIntegerPair2sympyRat(numer, denom):
     """Convert Java BigInteger pair to sympy Rational (requires sympy)."""
     import sympy
@@ -442,7 +453,8 @@ def compress_model_java(model, suppressed_reactions=set()):
         model.reactions[r0_mi].subset_stoich = []
         for ai in rxn_ai:
             mi = active_to_model[ai]
-            factor = jBigFraction2sympyRat(comprec.post.getBigFractionValueAt(ai, j))
+            # Fraction (not sympy): this factor scales model coefficients and enters subset_stoich
+            factor = jBigFraction2fraction(comprec.post.getBigFractionValueAt(ai, j))
             model.reactions[mi] *= factor
             if model.reactions[mi].lower_bound not in (0, -float('inf')):
                 model.reactions[mi].lower_bound /= abs(subset_matrix[ai, j])
@@ -472,7 +484,7 @@ def compress_model_java(model, suppressed_reactions=set()):
                 merged_obj = 0.0
                 for ai in rxn_ai:
                     mi = active_to_model[ai]
-                    factor = jBigFraction2sympyRat(comprec.post.getBigFractionValueAt(ai, j))
+                    factor = jBigFraction2fraction(comprec.post.getBigFractionValueAt(ai, j))
                     merged_obj += _obj.pop(old_reac_ids[mi], 0.0) * float(factor)
                 if merged_obj != 0:
                     _obj[model.reactions[r0_mi].id] = merged_obj

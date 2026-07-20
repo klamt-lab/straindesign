@@ -28,7 +28,9 @@ from collections import namedtuple
 from fractions import Fraction
 from scipy import sparse
 from scipy.sparse import csr_matrix, csc_matrix
-from sympy import Rational, Symbol as SympySymbol, And as SympyAnd, Or as SympyOr
+# sympy is used only for GPR boolean simplification (Symbol/And/Or). Rational must NOT be
+# used for stoichiometric coefficients -- the model/compression map hold fractions.Fraction only.
+from sympy import Symbol as SympySymbol, And as SympyAnd, Or as SympyOr
 from cobra import Configuration
 from cobra.util.array import create_stoichiometric_matrix
 
@@ -1732,16 +1734,25 @@ def remove_dummy_bounds(model) -> None:
 
 
 def stoichmat_coeff2rational(model) -> None:
-    """Convert stoichiometric coefficients to rational numbers."""
+    """Convert stoichiometric coefficients to exact fractions.Fraction.
+
+    The model must never hold sympy numbers: they leak into model.copy()/serialisation
+    and the compression map, and buy nothing (the RREF backend converts to Fraction
+    internally anyway). sympy appears only transiently inside the efmtool backend and is
+    cast to Fraction before returning; any that still slips in is defensively cast here.
+    """
     for rxn in model.reactions:
         for met, coeff in rxn._metabolites.items():
-            if isinstance(coeff, (float, int)):
-                rxn._metabolites[met] = float_to_rational(coeff)
-            elif not hasattr(coeff, 'p'):  # Not sympy.Rational
-                if hasattr(coeff, 'numerator'):  # fractions.Fraction
-                    rxn._metabolites[met] = Rational(coeff.numerator, coeff.denominator)
-                else:
-                    raise TypeError(f"Unsupported coefficient type: {type(coeff)}")
+            if isinstance(coeff, Fraction):
+                continue                                        # already exact
+            elif isinstance(coeff, (float, int)):
+                rxn._metabolites[met] = float_to_rational(coeff)          # -> Fraction
+            elif hasattr(coeff, 'p'):                           # sympy.Rational -> Fraction
+                rxn._metabolites[met] = Fraction(int(coeff.p), int(coeff.q))
+            elif hasattr(coeff, 'numerator'):                   # other Rational -> Fraction
+                rxn._metabolites[met] = Fraction(coeff.numerator, coeff.denominator)
+            else:
+                raise TypeError(f"Unsupported coefficient type: {type(coeff)}")
 
 
 def stoichmat_coeff2float(model) -> None:
@@ -1940,6 +1951,18 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
                 cmp_mapReac.append({"reac_map_exp": reac_map_exp, "parallel": False})
 
             run += 1
+
+    # Prune stale group (subsystem) members. Compression renames/removes reactions but leaves
+    # model.groups referencing the removed objects; cobra's model.copy() and serialisation walk
+    # group members with get_by_id() and raise KeyError on those stale refs (this is what makes a
+    # freshly-compressed model uncopyable -- e.g. speedy_fva's internal model.copy()). Keep only
+    # members still present in the model. Groups are annotations, unused by the MILP/FVA math.
+    if model.groups:
+        valid_ids = {c.id for c in list(model.reactions) + list(model.metabolites) + list(model.genes)}
+        for grp in model.groups:
+            stale = [mem for mem in grp.members if mem.id not in valid_ids]
+            if stale:
+                grp.remove_members(stale)
 
     # suppress_lp_context handles solver rebuild and objective restoration on exit
     return cmp_mapReac

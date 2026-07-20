@@ -1577,7 +1577,7 @@ def filter_sd_maxcost(sd, max_cost, kocost, kicost):
 
 
 def modules_coeff2rational(sd_modules):
-    """Convert coefficients to rational numbers using sympy.Rational"""
+    """Convert SDModule coefficients to exact fractions.Fraction (never sympy)."""
     from .compression import float_to_rational
     for i, module in enumerate(sd_modules):
         for param in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
