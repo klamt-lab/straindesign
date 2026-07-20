@@ -1517,6 +1517,9 @@ def compress_cobra_model(model,
 
     # Apply to model (uses direct manipulation, bypasses solver)
     reaction_map = _apply_compression_to_model(model, compression_record, reaction_names)
+    # Keep the compressed model copy-/serialise-safe (renamed/removed reactions leave stale
+    # group refs that break cobra model.copy() -- e.g. speedy_fva's internal copy).
+    prune_stale_group_members(model)
 
     pre_matrix = compression_record.pre.to_numpy()
     post_matrix = compression_record.post.to_numpy()
@@ -1762,6 +1765,24 @@ def stoichmat_coeff2float(model) -> None:
             rxn._metabolites[met] = float(coeff)
 
 
+def prune_stale_group_members(model) -> None:
+    """Drop group (subsystem) members that no longer exist in the model.
+
+    Compression renames/removes reactions but leaves model.groups referencing the removed
+    objects; cobra's model.copy() and serialisation walk group members with get_by_id() and
+    raise KeyError on those stale refs (this is what makes a freshly-compressed model
+    uncopyable -- e.g. speedy_fva's internal model.copy()). Groups are annotations, unused by
+    the MILP/FVA math, so we keep only members still present in the model.
+    """
+    if not model.groups:
+        return
+    valid_ids = {c.id for c in list(model.reactions) + list(model.metabolites) + list(model.genes)}
+    for grp in model.groups:
+        stale = [mem for mem in grp.members if mem.id not in valid_ids]
+        if stale:
+            grp.remove_members(stale)
+
+
 # =============================================================================
 # GPR Propagation Helpers
 # =============================================================================
@@ -1952,17 +1973,8 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
 
             run += 1
 
-    # Prune stale group (subsystem) members. Compression renames/removes reactions but leaves
-    # model.groups referencing the removed objects; cobra's model.copy() and serialisation walk
-    # group members with get_by_id() and raise KeyError on those stale refs (this is what makes a
-    # freshly-compressed model uncopyable -- e.g. speedy_fva's internal model.copy()). Keep only
-    # members still present in the model. Groups are annotations, unused by the MILP/FVA math.
-    if model.groups:
-        valid_ids = {c.id for c in list(model.reactions) + list(model.metabolites) + list(model.genes)}
-        for grp in model.groups:
-            stale = [mem for mem in grp.members if mem.id not in valid_ids]
-            if stale:
-                grp.remove_members(stale)
+    # Keep the compressed model copy-/serialise-safe (see prune_stale_group_members).
+    prune_stale_group_members(model)
 
     # suppress_lp_context handles solver rebuild and objective restoration on exit
     return cmp_mapReac
