@@ -33,6 +33,7 @@ from straindesign.networktools import   remove_ext_mets, bound_blocked_or_irreve
                                         reduce_gpr, extend_model_gpr, extend_model_regulatory, \
                                         compress_model, compress_modules, compress_ki_ko_cost, expand_sd, filter_sd_maxcost, \
                                         estimate_expansion_size, with_suppressed_lp, _silent_io, copy_model_suppressed
+from straindesign.gpr_bitmask import simplify_model_gprs
 
 
 def _restore_module_coeff_scaling(cmp_model, sd_modules, cmp_mapReac, orig_sd_modules):
@@ -503,6 +504,10 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                 num_gpr = len([True for r in cmp_model.reactions if r.gene_reaction_rule])
                 logging.info('  Simplified to ' + str(num_genes) + ' genes and ' +
                     str(num_gpr) + ' gpr rules.')
+        # Leaf-minimize the GPR rules before building the pseudo-reaction gadget. Monotone
+        # boolean-equivalent rewrite (designs unchanged), so it always runs for gene-based
+        # (gMCS) computations to shrink the gadget extend_model_gpr generates.
+        simplify_model_gprs(cmp_model)
         logging.info('  Extending metabolic network with gpr associations.')
         reac_map = extend_model_gpr(cmp_model, has_gene_names)
         for i, m in enumerate(sd_modules):
