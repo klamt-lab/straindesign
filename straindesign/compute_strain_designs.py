@@ -444,6 +444,25 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             # compression passes (keeps the coupled-exemption matching them by name)
             no_par_compress_reacs.update(no_coupled_compress_reacs)
         compression_backend = kwargs.get('compression_backend', 'sparse_rref')
+        # --- Reversibility pre-tightening (BEFORE compress #1) ---
+        # Exact per-reaction reversibility (sign-only FVA, faster than full FVA): fix lb/ub to 0
+        # for directions that carry no flux in the base polytope. Design-neutral (a base-infeasible
+        # direction stays infeasible under any added module constraint -- same tightening SD already
+        # applies after compress #2 at bound_blocked_or_irrevers_fva, just moved up). Doing it here
+        # lets compress #1 fuse the now-one-directional reactions and, since the GPR fwd/rev split
+        # fires on lb<0, avoids splitting genuinely irreversible reactions.
+        from straindesign.speedy_fva import fast_reversibility
+        t0 = time.time()
+        _rev = fast_reversibility(cmp_model, solver=kwargs[SOLVER])
+        _n_tight = 0
+        for r in cmp_model.reactions:
+            can_fwd, can_rev = _rev[r.id]
+            if not can_fwd and float(r._upper_bound) > 0.0:
+                r._upper_bound = min(0.0, float(r._upper_bound)); _n_tight += 1
+            if not can_rev and float(r._lower_bound) < 0.0:
+                r._lower_bound = max(0.0, float(r._lower_bound)); _n_tight += 1
+        logging.info('  Reversibility pre-tightening fixed %d reaction directions (%.1fs).'
+                     % (_n_tight, time.time() - t0))
         logging.info('Compressing Network (' + str(len(cmp_model.reactions)) + ' reactions).')
         t0 = time.time()
         cmp_mapReac_1 = compress_model(cmp_model, no_par_compress_reacs,
