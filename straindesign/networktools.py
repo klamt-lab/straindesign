@@ -370,6 +370,11 @@ def suppress_lp_context(model):
             if hasattr(model, '_suppressed_obj'):
                 del model._suppressed_obj
             if current_ids != _pre_ids:
+                # Reactions were added/removed/renamed, so model.groups may reference objects the
+                # model no longer holds. cobra's copy()/serialisation resolve group members with
+                # get_by_id() and raise KeyError on those, which makes the model uncopyable.
+                from straindesign.compression import prune_stale_group_members
+                prune_stale_group_members(model)
                 try:
                     solver_interface = model.solver.interface
                     model._solver = solver_interface.Model()

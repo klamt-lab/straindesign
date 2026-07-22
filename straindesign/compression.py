@@ -28,9 +28,6 @@ from collections import namedtuple
 from fractions import Fraction
 from scipy import sparse
 from scipy.sparse import csr_matrix, csc_matrix
-# sympy is used only for GPR boolean simplification (Symbol/And/Or). Rational must NOT be
-# used for stoichiometric coefficients -- the model/compression map hold fractions.Fraction only.
-from sympy import Symbol as SympySymbol, And as SympyAnd, Or as SympyOr
 from cobra import Configuration
 from cobra.util.array import create_stoichiometric_matrix
 
@@ -1517,9 +1514,6 @@ def compress_cobra_model(model,
 
     # Apply to model (uses direct manipulation, bypasses solver)
     reaction_map = _apply_compression_to_model(model, compression_record, reaction_names)
-    # Keep the compressed model copy-/serialise-safe (renamed/removed reactions leave stale
-    # group refs that break cobra model.copy() -- e.g. speedy_fva's internal copy).
-    prune_stale_group_members(model)
 
     pre_matrix = compression_record.pre.to_numpy()
     post_matrix = compression_record.post.to_numpy()
@@ -1788,52 +1782,66 @@ def prune_stale_group_members(model) -> None:
 # =============================================================================
 
 
-def _gpr_ast_to_sympy(node):
-    """Convert a cobra GPR AST node to a sympy boolean expression.
+def _gpr_ast_to_expr(node):
+    """Convert a cobra GPR AST node to a nested expression.
 
-    Returns None for empty GPR (node is None), meaning the reaction has
-    no gene requirement and is always active.
+    A gene is its name (str); a boolean node is ``('and'|'or', [children])``.
+    Returns None for an empty GPR (no gene requirement, i.e. always active).
     """
     if node is None:
         return None
     if isinstance(node, ast.BoolOp):
-        children = [_gpr_ast_to_sympy(v) for v in node.values]
-        if isinstance(node.op, ast.And):
-            return SympyAnd(*children)
-        else:
-            return SympyOr(*children)
-    elif isinstance(node, ast.Name):
-        return SympySymbol(node.id)
+        op = 'and' if isinstance(node.op, ast.And) else 'or'
+        children = [_gpr_ast_to_expr(v) for v in node.values]
+        return _combine_exprs([c for c in children if c is not None], op)
+    if isinstance(node, ast.Name):
+        return node.id
     return None
 
 
-def _sympy_to_gpr_string(expr):
-    """Convert a sympy boolean expression to a GPR rule string.
+def _combine_exprs(exprs, op):
+    """Join expressions under ``op``, flattening same-op children and dropping duplicates.
 
-    Produces correctly parenthesised output with sorted gene names for
-    deterministic results.  Returns '' for None input.
+    Mirrors what a boolean-algebra constructor does for these two rules and nothing more:
+    associativity (flatten) and idempotence (dedupe). Any real simplification is left to
+    reduce_gpr / gpr_bitmask downstream.
+    """
+    flat = []
+    for e in exprs:
+        if isinstance(e, tuple) and e[0] == op:
+            flat.extend(e[1])
+        else:
+            flat.append(e)
+    seen, uniq = set(), []
+    for e in flat:
+        key = _expr_to_gpr_string(e)
+        if key not in seen:
+            seen.add(key)
+            uniq.append(e)
+    if not uniq:
+        return None
+    return uniq[0] if len(uniq) == 1 else (op, uniq)
+
+
+def _expr_to_gpr_string(expr):
+    """Render an expression as a GPR rule string.
+
+    Operands are sorted so equivalent inputs give byte-identical rules, and a nested clause of
+    the opposite operator is parenthesised. Returns '' for None.
     """
     if expr is None:
         return ''
-    if isinstance(expr, SympySymbol):
-        return str(expr)
-    if expr.func == SympyAnd:
-        parts = []
-        for arg in sorted(expr.args, key=str):
-            s = _sympy_to_gpr_string(arg)
-            if hasattr(arg, 'func') and arg.func == SympyOr:
-                s = f'({s})'
-            parts.append(s)
-        return ' and '.join(parts)
-    if expr.func == SympyOr:
-        parts = []
-        for arg in sorted(expr.args, key=str):
-            s = _sympy_to_gpr_string(arg)
-            if hasattr(arg, 'func') and arg.func == SympyAnd:
-                s = f'({s})'
-            parts.append(s)
-        return ' or '.join(parts)
-    return str(expr)
+    if isinstance(expr, str):
+        return expr
+    op, args = expr
+    other = 'or' if op == 'and' else 'and'
+    parts = []
+    for arg in sorted(args, key=_expr_to_gpr_string):
+        s = _expr_to_gpr_string(arg)
+        if isinstance(arg, tuple) and arg[0] == other:
+            s = f'({s})'
+        parts.append(s)
+    return f' {op} '.join(parts)
 
 
 def _combine_gpr_and(gpr_bodies):
@@ -1846,17 +1854,11 @@ def _combine_gpr_and(gpr_bodies):
     which acts as True in boolean logic.  AND with True is a no-op, so empty GPRs
     are skipped.  Returns '' if all inputs are empty (no gene restriction).
 
-    Uses sympy And constructor which automatically flattens nested ANDs and
-    deduplicates terms.  Full simplification is deferred to reduce_gpr downstream.
+    Nested ANDs are flattened and duplicate terms dropped; full simplification is deferred to
+    reduce_gpr downstream.
     """
-    sympy_exprs = [_gpr_ast_to_sympy(b) for b in gpr_bodies]
-    non_empty = [s for s in sympy_exprs if s is not None]
-    if not non_empty:
-        return ''
-    if len(non_empty) == 1:
-        return _sympy_to_gpr_string(non_empty[0])
-    combined = SympyAnd(*non_empty)
-    return _sympy_to_gpr_string(combined)
+    exprs = [e for e in (_gpr_ast_to_expr(b) for b in gpr_bodies) if e is not None]
+    return _expr_to_gpr_string(_combine_exprs(exprs, 'and'))
 
 
 def _combine_gpr_or(gpr_bodies):
@@ -1868,18 +1870,13 @@ def _combine_gpr_or(gpr_bodies):
     If any input is None (reaction always active regardless of genes), the
     combined reaction is also always active, so the result is '' (no restriction).
 
-    Uses sympy Or constructor which automatically flattens nested ORs and
-    deduplicates terms.  Full simplification is deferred to reduce_gpr downstream.
+    Nested ORs are flattened and duplicate terms dropped; full simplification is deferred to
+    reduce_gpr downstream.
     """
-    sympy_exprs = [_gpr_ast_to_sympy(b) for b in gpr_bodies]
-    if any(s is None for s in sympy_exprs):
+    exprs = [_gpr_ast_to_expr(b) for b in gpr_bodies]
+    if not exprs or any(e is None for e in exprs):
         return ''
-    if not sympy_exprs:
-        return ''
-    if len(sympy_exprs) == 1:
-        return _sympy_to_gpr_string(sympy_exprs[0])
-    combined = SympyOr(*sympy_exprs)
-    return _sympy_to_gpr_string(combined)
+    return _expr_to_gpr_string(_combine_exprs(exprs, 'or'))
 
 
 # =============================================================================
@@ -1973,10 +1970,8 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
 
             run += 1
 
-    # Keep the compressed model copy-/serialise-safe (see prune_stale_group_members).
-    prune_stale_group_members(model)
-
-    # suppress_lp_context handles solver rebuild and objective restoration on exit
+    # suppress_lp_context handles solver rebuild, objective restoration and stale-group pruning
+    # on exit
     return cmp_mapReac
 
 
@@ -2113,11 +2108,10 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
     protected = [r.id in protected_rxns for r in model.reactions]
     keys = [_parallel_key(i) for i in range(len(model.reactions))]
 
-    # Group reactions that share an exact key in a single O(n) pass. dict hashes-then-compares the
-    # keys internally (same test as the old pairwise loop) and preserves first-occurrence order, so
-    # each group's representative is its smallest index and subset_list stays ordered by ascending
-    # representative -- matching the surviving-reaction order after remove_reactions below. Protected
-    # reactions get a unique 2-tuple key (real keys are 4-tuples) so they never merge.
+    # Group reactions that share an exact key in a single O(n) pass. dict preserves first-occurrence
+    # order, so each group's representative is its smallest index and subset_list stays ordered by
+    # ascending representative -- matching the surviving-reaction order after remove_reactions below.
+    # Protected reactions get a unique 2-tuple key (real keys are 4-tuples) so they never merge.
     groups = {}
     for i, key in enumerate(keys):
         groups.setdefault(('\0protected', i) if protected[i] else key, []).append(i)
@@ -2208,8 +2202,9 @@ __all__ = [
     'compress_model_efmtool',  # backward-compat alias
     'compress_model_parallel',
     # GPR propagation helpers
-    '_gpr_ast_to_sympy',
-    '_sympy_to_gpr_string',
+    '_gpr_ast_to_expr',
+    '_expr_to_gpr_string',
+    '_combine_exprs',
     '_combine_gpr_and',
     '_combine_gpr_or',
     # Preprocessing
