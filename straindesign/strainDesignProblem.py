@@ -256,11 +256,10 @@ class SDProblem:
         """
         limits = sd_module.get('fva_bounds')
         if limits is None:
-            # Region-FVA bounds are precomputed once in compute_strain_designs' preprocessing and
-            # passed on the module. If they are absent (a bare SDProblem, e.g. gmcs or a test), we do
-            # NOT run a fresh full-model FVA here -- that cost belongs in preprocessing, not in the
-            # MILP constructor (it was ~122s on genome-scale models). The override is a design-neutral
-            # bound tightening, so skipping it is sound.
+            # Region-FVA bounds are precomputed in compute_strain_designs' preprocessing and passed
+            # on the module. A bare SDProblem (a test, or a direct caller) supplies none and gets no
+            # override: that FVA belongs in preprocessing, not in the MILP constructor. The override
+            # only tightens bounds, so omitting it is design-neutral.
             return {}
         solver = getattr(self, SOLVER, None)
         tol = 1e-10 if select_solver(solver) in [SCIP, GLPK] else 0.0
@@ -765,7 +764,7 @@ class SDProblem:
         self.A_ineq = sparse.vstack((self.A_ineq, eq_constr_A)).tocsr()
         self.b_ineq += eq_constr_b
         self.z_map_constr_ineq = sparse.hstack((self.z_map_constr_ineq, z_eq)).tocsc()
-        # Remove knockable equalities from A_eq (set membership -> O(1); was `i in <ndarray>` = O(n) per row = O(n^2))
+        # Remove knockable equalities from A_eq; the set keeps membership O(1) per row
         n_rows_eq = self.A_eq.shape[0]
         _kc_eq = set(int(i) for i in knockable_constr_eq)
         keep_eq = [i not in _kc_eq for i in range(0, n_rows_eq)]
@@ -786,7 +785,7 @@ class SDProblem:
         lb_constr_b = [0 for _ in knockable_vars_leq0]
         bnd_constr_A = sparse.vstack((ub_constr_A, lb_constr_A)).tocsr()
         bnd_constr_b = ub_constr_b + lb_constr_b
-        # map each knockable var -> its (first) z in one pass (was a full-array scan per var = O(n^2))
+        # map each knockable var -> its first z in one pass, so the lookup below is O(1)
         _vz = {}
         for _z, _v in zip(knockable_vars[0].tolist(), knockable_vars[1].tolist()):
             _vz.setdefault(_v, _z)
@@ -810,11 +809,11 @@ class SDProblem:
         #    constraint (gurobi/cplex) or the constant self.M (glpk/user-M).
         knockable_constr_ineq = np.unique(self.z_map_constr_ineq.nonzero()[1])
 
-        _idxz = set(self.idx_z)                                          # O(1) membership (was O(n) list `in`)
+        _idxz = set(self.idx_z)                                          # O(1) membership in the scan below
         cont_vars = [i not in _idxz for i in range(0, numvars)]
         M_lb = [self.lb[i] for i in np.nonzero(cont_vars)[0]]
         M_ub = [self.ub[i] for i in np.nonzero(cont_vars)[0]]
-        M_A = self.A_ineq[knockable_constr_ineq, :][:, cont_vars].tocsr()   # fancy-index rows (was per-row `in`)
+        M_A = self.A_ineq[knockable_constr_ineq, :][:, cont_vars].tocsr()
 
         num_Ms = M_A.shape[0]
         max_Ax = [np.nan] * num_Ms
@@ -846,7 +845,7 @@ class SDProblem:
 
         # round Ms up to 5 digits
         Ms = [np.ceil(M * 1e5) / 1e5 if not isinf(M) else self.M for M in max_Ax]
-        # fill up M-vector also for notknockable reactions (vectorised scatter; was O(rows * knockable))
+        # fill up M-vector also for notknockable reactions
         _Ms_full = np.full(self.A_ineq.shape[0], np.nan)
         _Ms_full[knockable_constr_ineq] = np.array(Ms, dtype=float)
         Ms = _Ms_full
@@ -884,11 +883,10 @@ class SDProblem:
         #     and why reassign_lb_ub_from_ineq() guards on z_map_vars at its call site in
         #     addModule().
         #
-        # WHY IT IS OFF: measured on e_coli_core (SUPPRESS, and SUPPRESS+PROTECT), at this point
-        # A_ineq contains ZERO arity-1 rows -- step 4 has already lifted every single-variable
-        # knockable row to arity 2, and every remaining row is multi-variable. The fold is a
-        # strict no-op today. It becomes useful once non-knockable single-variable rows are
-        # introduced -- e.g. when per-module FVA ranges are folded in as bounds.
+        # It is OFF because at this point A_ineq holds no arity-1 rows: step 4 lifts every
+        # single-variable knockable row to arity 2, and the rest are multi-variable, so the fold is
+        # a no-op. It becomes useful once non-knockable single-variable rows exist -- e.g. when
+        # per-module FVA ranges are folded in as bounds.
         #
         # If enabled, note two things about reusing reassign_lb_ub_from_ineq() here verbatim:
         #   (1) its arity scan is O(nnz^2) (`list(row_ineq).count(i)` per nonzero) and must be
@@ -1364,12 +1362,9 @@ def reassign_lb_ub_from_ineq(A_ineq, b_ineq, A_eq, b_eq, lb, ub,
     if z_map_vars is None:
         z_map_vars = sparse.csc_matrix((numz, numr))
 
-    # Rows carrying exactly one entry ARE bounds. Find them with a bincount over the nonzero row
-    # indices and read the single (column, value) straight off the COO -- the previous
-    # `[i for i in row_ineq if list(row_ineq).count(i) == 1]` rebuilt the row list and rescanned
-    # it once per nonzero (O(nnz^2), plus an O(nnz) `not in` list test per candidate and an
-    # O(nnz) row slice per hit). That is fine for a handful of rows but makes this function
-    # unusable at genome scale.
+    # Rows carrying exactly one entry ARE bounds. A bincount over the nonzero row indices finds
+    # them and the single (column, value) is read straight off the COO, which keeps the scan
+    # linear in nnz -- necessary for this to be usable at genome scale.
     def _single_entry_rows(A, z_map_constr):
         """Ascending indices of rows with exactly one nonzero, excluding knockable rows,
         plus row->column and row->value lookups for those rows."""
@@ -1442,9 +1437,7 @@ def reassign_lb_ub_from_ineq(A_ineq, b_ineq, A_eq, b_eq, lb, ub,
     if any(np.greater(lb, ub)):
         raise Exception("There is a lower bound that is greater than its upper bound counterpart.")
 
-    # remove constraints that became redundant
-    # (boolean masks; the previous `i in <list>` test inside a per-row comprehension was
-    #  O(rows * len(list)))
+    # remove constraints that became redundant (boolean masks keep this linear in the row count)
     numineq = A_ineq.shape[0]
     keep_ineq = np.ones(numineq, dtype=bool)
     keep_ineq[var_bound_constraint_ineq] = False

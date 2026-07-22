@@ -585,8 +585,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     cmp_size1_mcs = []
     # FVA over each module's region, scoped to knockable reactions. The ranges serve two purposes:
     # (1) essentiality for size-1 MCS detection, and (2) region-FVA subproblem tightening, read back
-    # in SDMILP -- so the separate region FVA in strainDesignProblem is no longer needed. flux_limits
-    # is stored on the module and flows to SDMILP via sd_modules. Scoping to knockable reactions keeps
+    # in SDMILP, which is why SDProblem runs no region FVA of its own. flux_limits is stored on the
+    # module and flows to SDMILP via sd_modules. Scoping to knockable reactions keeps
     # the LP count down (and only knockable reactions carry z-links to tighten anyway).
     knockable_ids = list(set(cmp_ko_cost.keys()) | set(cmp_ki_cost.keys()))
     for m in sd_modules:
@@ -667,11 +667,9 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     # enumeration loop variant (only affects the POPULATE approach):
     #   'populate' -> single full-budget populate loop (SDMILP.enumerate)   [default, all solvers]
     #   'ksweep'   -> ascending-cardinality sweep      (SDMILP.enumerate_ksweep)   [explicit opt-in only]
-    # k-sweep is faster on CPLEX gene-MCS with UNIT costs (iML1515-cone: ~1.8-2.1x, near gMCSpy parity),
-    # but it only enumerates completely for integer-valued intervention costs and is slower on gurobi, so
-    # it is not worth defaulting on as a per-solver special case. Use the standard populate loop for all
-    # solvers; k-sweep stays available via an explicit enum_method='ksweep'.
-    #   was: enum_method = kwargs.pop('enum_method', 'ksweep' if kwargs.get(SOLVER) == CPLEX else 'populate')
+    # 'ksweep' enumerates completely only for integer-valued intervention costs, and is faster than
+    # 'populate' on CPLEX gene-MCS with unit costs but slower on gurobi. It is therefore opt-in
+    # rather than a per-solver default: pass enum_method='ksweep' explicitly to use it.
     enum_method = kwargs.pop('enum_method', 'populate')
 
     dump_preprocessed = kwargs.pop('dump_preprocessed', None)
