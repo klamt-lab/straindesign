@@ -2018,41 +2018,47 @@ def compress_model_coupled(model, compression_backend='sparse_rref', propagate_g
     Returns:
         dict: Mapping {compressed_id: {orig_id: factor, ...}}
     """
-    # Save GPR AST bodies before either backend clears them
-    if propagate_gpr:
-        saved_gpr_bodies = {r.id: r.gpr.body for r in model.reactions}
+    # All stoichiometry manipulation below (reaction renames, removals) must not
+    # touch the optlang solver -- compression is pure linear algebra. suppress_lp_context
+    # patches cobra/optlang at the class level so a stub-solver copy is safe; it nests as
+    # a no-op when compress_model() (the full routine) already holds the context.
+    from straindesign.networktools import suppress_lp_context
+    with suppress_lp_context(model):
+        # Save GPR AST bodies before either backend clears them
+        if propagate_gpr:
+            saved_gpr_bodies = {r.id: r.gpr.body for r in model.reactions}
 
-    if compression_backend == 'efmtool_rref':
-        from .efmtool_cmp_interface import compress_model_java
-        reaction_map = compress_model_java(model, suppressed_reactions=suppressed_reactions)
-        # Java backend handles contradicting groups internally (CoupledContradicting).
-        # Clean up any remaining zero-flux reactions that the Java compressor created.
-        zero_flux = {r for r in model.reactions if r.lower_bound == 0 and r.upper_bound == 0}
-        for r in zero_flux:
-            reaction_map.pop(r.id, None)
-        if zero_flux:
-            model.remove_reactions(list(zero_flux), remove_orphans=True)
-    else:
-        # Clear gene rules to match Java behavior
-        for r in model.reactions:
-            r.gene_reaction_rule = ''
+        if compression_backend == 'efmtool_rref':
+            from .efmtool_cmp_interface import compress_model_java
+            reaction_map = compress_model_java(model, suppressed_reactions=suppressed_reactions)
+            # Java backend handles contradicting groups internally (CoupledContradicting).
+            # Clean up any remaining zero-flux reactions that the Java compressor created.
+            zero_flux = {r for r in model.reactions if r.lower_bound == 0 and r.upper_bound == 0}
+            for r in zero_flux:
+                reaction_map.pop(r.id, None)
+            if zero_flux:
+                model.remove_reactions(list(zero_flux), remove_orphans=True)
+        else:
+            # Clear gene rules to match Java behavior
+            for r in model.reactions:
+                r.gene_reaction_rule = ''
 
-        result = compress_cobra_model(model, methods=CompressionMethod.standard(), in_place=True,
-                                      protected_reactions=protected_reactions)
-        reaction_map = result.reaction_map
-        # Python compressor handles contradicting groups internally via bounds
-        # intersection in _handle_compress (removes zero-flux groups and
-        # re-iterates to find new couplings).
+            result = compress_cobra_model(model, methods=CompressionMethod.standard(), in_place=True,
+                                          protected_reactions=protected_reactions)
+            reaction_map = result.reaction_map
+            # Python compressor handles contradicting groups internally via bounds
+            # intersection in _handle_compress (removes zero-flux groups and
+            # re-iterates to find new couplings).
 
-    # Propagate GPR rules: AND-combine contributing reactions' GPR ASTs
-    if propagate_gpr:
-        for cmp_id, orig_map in reaction_map.items():
-            try:
-                rxn = model.reactions.get_by_id(cmp_id)
-            except KeyError:
-                continue
-            gpr_bodies = [saved_gpr_bodies.get(orig_id) for orig_id in orig_map]
-            rxn.gene_reaction_rule = _combine_gpr_and(gpr_bodies)
+        # Propagate GPR rules: AND-combine contributing reactions' GPR ASTs
+        if propagate_gpr:
+            for cmp_id, orig_map in reaction_map.items():
+                try:
+                    rxn = model.reactions.get_by_id(cmp_id)
+                except KeyError:
+                    continue
+                gpr_bodies = [saved_gpr_bodies.get(orig_id) for orig_id in orig_map]
+                rxn.gene_reaction_rule = _combine_gpr_and(gpr_bodies)
 
     return reaction_map
 
