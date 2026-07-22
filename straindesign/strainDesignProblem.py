@@ -243,8 +243,9 @@ class SDProblem:
         make a reaction non-targetable for another module (the shared-z pitfall).
 
         The ranges come from ``sd_module['fva_bounds']``, computed once during preprocessing in
-        compute_strain_designs (all reactions, all modules). The fva() fallback only fires when SDMILP
-        is built directly, without that preprocessing (e.g. a bare SDProblem in a test).
+        compute_strain_designs (all reactions, all modules). If they are absent (a bare SDProblem, not
+        going through that preprocessing), this returns no override -- it does NOT run a fresh
+        full-model FVA (that cost belongs in preprocessing, not the MILP constructor).
 
         Soundness: a reaction blocked in the module's region is already 0 across that whole region, so
         fixing its bound to 0 (or fixing the sign of a one-sided reaction) does not remove any point of
@@ -253,12 +254,16 @@ class SDProblem:
         unchanged, so which knockout sets keep it feasible (PROTECT) / make it infeasible (SUPPRESS) is
         unchanged -> the design set is identical.
         """
-        solver = getattr(self, SOLVER, None)
-        tol = 1e-10 if select_solver(solver) in [SCIP, GLPK] else 0.0
         limits = sd_module.get('fva_bounds')
         if limits is None:
-            from straindesign.lptools import fva
-            limits = fva(self.model, constraints=sd_module[CONSTRAINTS], solver=solver)
+            # Region-FVA bounds are precomputed once in compute_strain_designs' preprocessing and
+            # passed on the module. If they are absent (a bare SDProblem, e.g. gmcs or a test), we do
+            # NOT run a fresh full-model FVA here -- that cost belongs in preprocessing, not in the
+            # MILP constructor (it was ~122s on genome-scale models). The override is a design-neutral
+            # bound tightening, so skipping it is sound.
+            return {}
+        solver = getattr(self, SOLVER, None)
+        tol = 1e-10 if select_solver(solver) in [SCIP, GLPK] else 0.0
         override = {}
         for rid, lim in limits.iterrows():
             lo = hi = None
@@ -760,11 +765,13 @@ class SDProblem:
         self.A_ineq = sparse.vstack((self.A_ineq, eq_constr_A)).tocsr()
         self.b_ineq += eq_constr_b
         self.z_map_constr_ineq = sparse.hstack((self.z_map_constr_ineq, z_eq)).tocsc()
-        # Remove knockable equalities from A_eq
+        # Remove knockable equalities from A_eq (set membership -> O(1); was `i in <ndarray>` = O(n) per row = O(n^2))
         n_rows_eq = self.A_eq.shape[0]
-        self.A_eq = self.A_eq[[False if i in knockable_constr_eq else True for i in range(0, n_rows_eq)]]
-        self.b_eq = [self.b_eq[i] for i in range(0, len(self.b_eq)) if i not in knockable_constr_eq]
-        self.z_map_constr_eq = self.z_map_constr_eq[:, [False if i in knockable_constr_eq else True for i in range(0, n_rows_eq)]]
+        _kc_eq = set(int(i) for i in knockable_constr_eq)
+        keep_eq = [i not in _kc_eq for i in range(0, n_rows_eq)]
+        self.A_eq = self.A_eq[keep_eq]
+        self.b_eq = [self.b_eq[i] for i in range(0, len(self.b_eq)) if i not in _kc_eq]
+        self.z_map_constr_eq = self.z_map_constr_eq[:, keep_eq]
 
         # 2. Translate all variable knockouts to inequality knockouts
         numvars = self.A_ineq.shape[1]
@@ -779,7 +786,11 @@ class SDProblem:
         lb_constr_b = [0 for _ in knockable_vars_leq0]
         bnd_constr_A = sparse.vstack((ub_constr_A, lb_constr_A)).tocsr()
         bnd_constr_b = ub_constr_b + lb_constr_b
-        var_kos = [knockable_vars[0][(knockable_vars[1] == i).nonzero()[0][0]] for i in knockable_vars_geq0 + knockable_vars_leq0]
+        # map each knockable var -> its (first) z in one pass (was a full-array scan per var = O(n^2))
+        _vz = {}
+        for _z, _v in zip(knockable_vars[0].tolist(), knockable_vars[1].tolist()):
+            _vz.setdefault(_v, _z)
+        var_kos = [_vz[int(i)] for i in knockable_vars_geq0 + knockable_vars_leq0]
         z_lb_ub = -self.z_map_vars[:, knockable_vars_geq0 + knockable_vars_leq0]
         # add constraints to main problem
         self.A_ineq = sparse.vstack((self.A_ineq, bnd_constr_A)).tocsr()
@@ -797,12 +808,13 @@ class SDProblem:
         #    Zero/single-variable rows take a finite M from the bounds; multi-variable rows are
         #    unbounded on the polytope (M = +inf), which the linker realizes as an indicator
         #    constraint (gurobi/cplex) or the constant self.M (glpk/user-M).
-        knockable_constr_ineq = np.sort(self.z_map_constr_ineq.nonzero()[1])
+        knockable_constr_ineq = np.unique(self.z_map_constr_ineq.nonzero()[1])
 
-        cont_vars = [False if i in self.idx_z else True for i in range(0, numvars)]
+        _idxz = set(self.idx_z)                                          # O(1) membership (was O(n) list `in`)
+        cont_vars = [i not in _idxz for i in range(0, numvars)]
         M_lb = [self.lb[i] for i in np.nonzero(cont_vars)[0]]
         M_ub = [self.ub[i] for i in np.nonzero(cont_vars)[0]]
-        M_A = self.A_ineq[[True if i in knockable_constr_ineq else False for i in range(0, self.A_ineq.shape[0])], :][:, cont_vars].tocsr()
+        M_A = self.A_ineq[knockable_constr_ineq, :][:, cont_vars].tocsr()   # fancy-index rows (was per-row `in`)
 
         num_Ms = M_A.shape[0]
         max_Ax = [np.nan] * num_Ms
@@ -834,12 +846,10 @@ class SDProblem:
 
         # round Ms up to 5 digits
         Ms = [np.ceil(M * 1e5) / 1e5 if not isinf(M) else self.M for M in max_Ax]
-        # fill up M-vector also for notknockable reactions
-        Ms = [
-            Ms[np.array([i == j
-                         for j in knockable_constr_ineq]).nonzero()[0][0]] if i in knockable_constr_ineq else np.nan
-            for i in range(self.A_ineq.shape[0])
-        ]
+        # fill up M-vector also for notknockable reactions (vectorised scatter; was O(rows * knockable))
+        _Ms_full = np.full(self.A_ineq.shape[0], np.nan)
+        _Ms_full[knockable_constr_ineq] = np.array(Ms, dtype=float)
+        Ms = _Ms_full
 
         # 4. Link constraints to z-variables for available upper bounds
         self.z_map_constr_ineq = self.z_map_constr_ineq.tocsc()
@@ -1091,7 +1101,10 @@ def build_primal_from_cbm(model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None,
         V_eq = sparse.csr_matrix((0, numr))
         v_eq = []
     if c is None:
-        c = [i.objective_coefficient for i in model.reactions]
+        # Empty objective by default -- do NOT read reaction.objective_coefficient (an optlang/solver
+        # access). An explicit objective (e.g. an OptKnock inner objective) is passed by the caller;
+        # classical-MCS modules (PROTECT/SUPPRESS) define their region via constraints and do not use c.
+        c = [0.0] * numr
     S = sparse.csr_matrix(create_stoichiometric_matrix(model))
     # fill matrices
     A_eq = sparse.vstack((S, V_eq))
