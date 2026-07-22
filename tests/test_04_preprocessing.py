@@ -15,10 +15,11 @@ from straindesign.compression import (
     stoichmat_coeff2float,
     _combine_gpr_and,
     _combine_gpr_or,
-    _gpr_ast_to_sympy,
-    _sympy_to_gpr_string,
+    _gpr_ast_to_expr,
+    _expr_to_gpr_string,
 )
-from sympy import simplify_logic, And as SA, Or as SO, Symbol as SS
+from cobra.core.gene import GPR
+from sympy import simplify_logic
 
 
 # ── GPR extension + compression ──────────────────────────────────────
@@ -61,24 +62,20 @@ def test_gpr_extension_compression2(model_gpr):
 
 # ── GPR propagation helper unit tests ────────────────────────────────
 
-class TestGprAstToSympy:
+class TestGprAstToExpr:
     def test_none_returns_none(self):
-        assert _gpr_ast_to_sympy(None) is None
+        assert _gpr_ast_to_expr(None) is None
 
     def test_single_gene(self):
-        node = ast.Name(id='g1')
-        result = _gpr_ast_to_sympy(node)
-        assert result == SS('g1')
+        assert _gpr_ast_to_expr(ast.Name(id='g1')) == 'g1'
 
     def test_and_expression(self):
         node = ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')])
-        result = _gpr_ast_to_sympy(node)
-        assert result == SA(SS('g1'), SS('g2'))
+        assert _gpr_ast_to_expr(node) == ('and', ['g1', 'g2'])
 
     def test_or_expression(self):
         node = ast.BoolOp(op=ast.Or(), values=[ast.Name(id='g1'), ast.Name(id='g2')])
-        result = _gpr_ast_to_sympy(node)
-        assert result == SO(SS('g1'), SS('g2'))
+        assert _gpr_ast_to_expr(node) == ('or', ['g1', 'g2'])
 
     def test_nested(self):
         # (g1 and g2) or g3
@@ -86,43 +83,46 @@ class TestGprAstToSympy:
             ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')]),
             ast.Name(id='g3')
         ])
-        result = _gpr_ast_to_sympy(node)
-        expected = SO(SA(SS('g1'), SS('g2')), SS('g3'))
-        assert result == expected
+        assert _gpr_ast_to_expr(node) == ('or', [('and', ['g1', 'g2']), 'g3'])
+
+    def test_nested_same_op_is_flattened(self):
+        # g1 and (g2 and g3)
+        node = ast.BoolOp(op=ast.And(), values=[
+            ast.Name(id='g1'),
+            ast.BoolOp(op=ast.And(), values=[ast.Name(id='g2'), ast.Name(id='g3')])
+        ])
+        assert _gpr_ast_to_expr(node) == ('and', ['g1', 'g2', 'g3'])
 
 
-class TestSympyToGprString:
+class TestExprToGprString:
     def test_none_returns_empty(self):
-        assert _sympy_to_gpr_string(None) == ''
+        assert _expr_to_gpr_string(None) == ''
 
-    def test_single_symbol(self):
-        assert _sympy_to_gpr_string(SS('g1')) == 'g1'
+    def test_single_gene(self):
+        assert _expr_to_gpr_string('g1') == 'g1'
 
     def test_and(self):
-        result = _sympy_to_gpr_string(SA(SS('g1'), SS('g2')))
-        assert result == 'g1 and g2'
+        assert _expr_to_gpr_string(('and', ['g1', 'g2'])) == 'g1 and g2'
 
     def test_or(self):
-        result = _sympy_to_gpr_string(SO(SS('g1'), SS('g2')))
-        assert result == 'g1 or g2'
+        assert _expr_to_gpr_string(('or', ['g1', 'g2'])) == 'g1 or g2'
 
     def test_nested_and_in_or(self):
-        # g3 or (g1 and g2)
-        expr = SO(SA(SS('g1'), SS('g2')), SS('g3'))
-        result = _sympy_to_gpr_string(expr)
-        assert result == '(g1 and g2) or g3'
+        assert _expr_to_gpr_string(('or', [('and', ['g1', 'g2']), 'g3'])) == '(g1 and g2) or g3'
 
     def test_nested_or_in_and(self):
-        # g3 and (g1 or g2)
-        expr = SA(SO(SS('g1'), SS('g2')), SS('g3'))
-        result = _sympy_to_gpr_string(expr)
-        assert result == '(g1 or g2) and g3'
+        assert _expr_to_gpr_string(('and', [('or', ['g1', 'g2']), 'g3'])) == '(g1 or g2) and g3'
 
     def test_deterministic_sorting(self):
-        # Should always produce same order
-        result1 = _sympy_to_gpr_string(SA(SS('g2'), SS('g1'), SS('g3')))
-        result2 = _sympy_to_gpr_string(SA(SS('g3'), SS('g1'), SS('g2')))
+        result1 = _expr_to_gpr_string(('and', ['g2', 'g1', 'g3']))
+        result2 = _expr_to_gpr_string(('and', ['g3', 'g1', 'g2']))
         assert result1 == result2 == 'g1 and g2 and g3'
+
+    def test_roundtrips_through_cobra(self):
+        # whatever we render must parse back to an equivalent rule in cobra
+        rule = _expr_to_gpr_string(('or', [('and', ['g1', 'g2']), 'g3']))
+        assert GPR.from_string(rule).as_symbolic() == \
+               GPR.from_string('(g1 and g2) or g3').as_symbolic()
 
 
 class TestCombineGprAnd:
@@ -175,7 +175,7 @@ class TestCombineGprOr:
         assert result == 'g1 or g2'
 
     def test_deduplication(self):
-        """OR with duplicate terms should deduplicate (sympy constructor)."""
+        """OR with duplicate terms should deduplicate."""
         # g1 OR g1 -> g1
         node1 = ast.Name(id='g1')
         node2 = ast.Name(id='g1')
@@ -271,11 +271,9 @@ class TestModelGprCompression:
             f"Expected r4, r5, r6 to be merged. Reaction map: {reac_map}"
 
         from cobra.core.gene import GPR
-        parsed = GPR.from_string(target_rxn.gene_reaction_rule)
-        result_sympy = _gpr_ast_to_sympy(parsed.body)
-
-        g1, g4, g5, g7, g8, g9 = [SS(f'g{i}') for i in [1, 4, 5, 7, 8, 9]]
-        expected = SO(SA(g1, g4, g7, g8), SA(g1, g4, g5, g8, g9))
+        result_sympy = GPR.from_string(target_rxn.gene_reaction_rule).as_symbolic()
+        expected = GPR.from_string(
+            '(g1 and g4 and g7 and g8) or (g1 and g4 and g5 and g8 and g9)').as_symbolic()
 
         assert simplify_logic(result_sympy ^ expected) == False, \
             f"GPR mismatch. Got: {result_sympy}, expected: {expected}"
@@ -302,11 +300,8 @@ class TestModelGprCompression:
 
         assert target_rxn is not None
         from cobra.core.gene import GPR
-        parsed = GPR.from_string(target_rxn.gene_reaction_rule)
-        result_sympy = _gpr_ast_to_sympy(parsed.body)
-
-        g3, g6, g8 = SS('g3'), SS('g6'), SS('g8')
-        expected = SO(g8, SA(g3, g6))
+        result_sympy = GPR.from_string(target_rxn.gene_reaction_rule).as_symbolic()
+        expected = GPR.from_string('g8 or (g3 and g6)').as_symbolic()
 
         assert simplify_logic(result_sympy ^ expected) == False, \
             f"GPR mismatch. Got: {result_sympy}, expected: {expected}"
@@ -365,8 +360,8 @@ class TestEfmtoolBackendGpr:
                 continue
 
             from cobra.core.gene import GPR
-            sym_rref = _gpr_ast_to_sympy(GPR.from_string(gpr_rref).body)
-            sym_java = _gpr_ast_to_sympy(GPR.from_string(gpr_java).body)
+            sym_rref = GPR.from_string(gpr_rref).as_symbolic()
+            sym_java = GPR.from_string(gpr_java).as_symbolic()
             assert simplify_logic(sym_rref ^ sym_java) == False, \
                 f"GPR mismatch for group {sorted(group_key)}: rref='{gpr_rref}', java='{gpr_java}'"
 
