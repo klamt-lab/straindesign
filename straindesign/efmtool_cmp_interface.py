@@ -310,8 +310,7 @@ def jBigFraction2sympyRat(val):
 def jBigFraction2fraction(val):
     """Convert Java BigFraction to fractions.Fraction.
 
-    Use this (not the sympy variant) for any value that enters the model or the
-    compression map -- those must never hold sympy numbers.
+    Use this for any value that enters the model or the compression map.
     """
     from fractions import Fraction
     r = jBigIntegerPair2sympyRat(val.getNumerator(), val.getDenominator())
@@ -453,7 +452,6 @@ def compress_model_java(model, suppressed_reactions=set()):
         model.reactions[r0_mi].subset_stoich = []
         for ai in rxn_ai:
             mi = active_to_model[ai]
-            # Fraction (not sympy): this factor scales model coefficients and enters subset_stoich
             factor = jBigFraction2fraction(comprec.post.getBigFractionValueAt(ai, j))
             model.reactions[mi] *= factor
             if model.reactions[mi].lower_bound not in (0, -float('inf')):

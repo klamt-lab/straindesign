@@ -32,7 +32,7 @@ from straindesign.names import *
 from straindesign.networktools import   remove_ext_mets, bound_blocked_or_irrevers_fva, \
                                         reduce_gpr, extend_model_gpr, extend_model_regulatory, \
                                         compress_model, compress_modules, compress_ki_ko_cost, expand_sd, filter_sd_maxcost, \
-                                        estimate_expansion_size, with_suppressed_lp, _silent_io, copy_model_suppressed
+                                        estimate_expansion_size, with_suppressed_lp, _silent_io
 from straindesign.gpr_bitmask import simplify_model_gprs
 
 
@@ -265,8 +265,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
-        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'compression_backend', 'dump_preprocessed',
-        'enum_method'
+        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'compression_backend', 'dump_preprocessed'
     }
     logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
@@ -377,7 +376,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     logging.info('  Using ' + kwargs[SOLVER] + ' for solving LPs during preprocessing.')
     with _silent_io():
         orig_model = model
-        model = copy_model_suppressed(model)
+        model = model.copy()
     orig_ko_cost = deepcopy(uncmp_ko_cost)
     orig_ki_cost = deepcopy(uncmp_ki_cost)
     orig_reg_cost = deepcopy(uncmp_reg_cost)
@@ -398,7 +397,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     # 1) Preprocess Model
     # Copy model for compression/processing
     with _silent_io():
-        cmp_model = copy_model_suppressed(model)
+        cmp_model = model.copy()
     # remove external metabolites
     remove_ext_mets(cmp_model)
     # Extend with regulatory constraints: reaction-based can be applied now,
@@ -664,13 +663,9 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     else:
         solution_approach = BEST
 
-    # enumeration loop variant (only affects the POPULATE approach):
-    #   'populate' -> single full-budget populate loop (SDMILP.enumerate)   [default, all solvers]
-    #   'ksweep'   -> ascending-cardinality sweep      (SDMILP.enumerate_ksweep)   [explicit opt-in only]
-    # 'ksweep' enumerates completely only for integer-valued intervention costs, and is faster than
-    # 'populate' on CPLEX gene-MCS with unit costs but slower on gurobi. It is therefore opt-in
-    # rather than a per-solver default: pass enum_method='ksweep' explicitly to use it.
-    enum_method = kwargs.pop('enum_method', 'populate')
+    # SDMILP.enumerate_ksweep is an alternative POPULATE loop, disabled for now. It is complete only
+    # for integer-valued intervention costs, and was faster on CPLEX gene-MCS but slower on gurobi.
+    # enum_method = kwargs.pop('enum_method', 'populate')
 
     dump_preprocessed = kwargs.pop('dump_preprocessed', None)
 
@@ -684,7 +679,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                 'kwargs_milp': kwargs_milp,
                 'kwargs_computation': kwargs_computation,
                 'solution_approach': solution_approach,
-                'enum_method': enum_method,
                 'cmp_mapReac': cmp_mapReac,
                 # Expansion/filtering data
                 'uncmp_ko_cost': uncmp_ko_cost,
@@ -741,10 +735,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     elif solution_approach == BEST:
         cmp_sd_solution = sd_milp.compute_optimal(**kwargs_computation)
     elif solution_approach == POPULATE:
-        if enum_method == 'ksweep':
-            cmp_sd_solution = sd_milp.enumerate_ksweep(**kwargs_computation)
-        else:
-            cmp_sd_solution = sd_milp.enumerate(**kwargs_computation)
+        cmp_sd_solution = sd_milp.enumerate(**kwargs_computation)
     logging.info('  MILP solved (%.1fs).' % (time.time() - t0))
 
     # Decompress solutions
@@ -903,7 +894,7 @@ def _build_lazy_representatives(cmp_sds, cmp_size1_mcs, cmp_mapReac, max_cost,
 
 def compute_strain_designs_from_preprocessed(dump, seed=None, solver=None,
                                              solution_approach=None, max_solutions=None,
-                                             time_limit=None, enum_method=None):
+                                             time_limit=None):
     """Load preprocessed model and run MILP solve with optional overrides.
 
     Args:
@@ -944,11 +935,8 @@ def compute_strain_designs_from_preprocessed(dump, seed=None, solver=None,
     orig_gki_cost = d.get('orig_gki_cost')
     max_cost = d['max_cost']
     cmp_size1_mcs = d['cmp_size1_mcs']
-    enum_meth = d.get('enum_method', 'populate')
 
     # Apply overrides
-    if enum_method is not None:
-        enum_meth = enum_method
     if seed is not None:
         kwargs_milp[SEED] = seed
     if solver is not None:
@@ -979,10 +967,7 @@ def compute_strain_designs_from_preprocessed(dump, seed=None, solver=None,
     elif sol_approach == BEST:
         cmp_sd_solution = sd_milp.compute_optimal(**kwargs_computation)
     elif sol_approach == POPULATE:
-        if enum_meth == 'ksweep':
-            cmp_sd_solution = sd_milp.enumerate_ksweep(**kwargs_computation)
-        else:
-            cmp_sd_solution = sd_milp.enumerate(**kwargs_computation)
+        cmp_sd_solution = sd_milp.enumerate(**kwargs_computation)
     logging.info('  MILP solved (%.1fs).' % (time.time() - t0))
 
     setup = deepcopy(cmp_sd_solution.sd_setup)

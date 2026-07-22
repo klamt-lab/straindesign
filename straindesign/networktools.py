@@ -105,26 +105,23 @@ class _SolverStub:
 _SOLVER_STUB = _SolverStub('__stub__')
 
 
-def copy_model_suppressed(model):
-    """cobra ``model.copy()`` WITHOUT deep-copying (and rebuilding) the optlang solver backend.
+def _suppressed_copy(model):
+    """``Model.copy`` while LP updates are suppressed: no deep copy of the optlang backend.
 
-    A plain copy deepcopies the live solver, which triggers optlang's ``__setstate__`` and rebuilds
-    the whole Gurobi/CPLEX model (~3s per copy on iML1515). Preprocessing does not need a live solver
-    on the copies -- FVA builds its own LP and compression manipulates the stoichiometry directly -- so
-    we temporarily swap the solver for the lightweight stub, copy (~0.3s), restore the original's
-    solver, and give the copy a fresh EMPTY solver of the same interface (see below).
+    A plain copy deepcopies the live solver, which rebuilds the whole Gurobi/CPLEX model (~3s per
+    copy on iML1515). Under suppression nothing reads that solver -- FVA builds its own LP and
+    compression manipulates the stoichiometry directly -- so the solver is swapped for a stub while
+    copying (~0.3s) and the copy is given a fresh empty solver of the same interface. The empty
+    solver still exposes ``.interface`` and accepts reactions added by the GPR extension.
     """
     iface = model.solver.interface          # captured before stubbing
     saved = model._solver
+    orig_copy = next(o for cls, attr, o in _ORIG_COBRA if cls is Model and attr == 'copy')
     try:
         model._solver = _SOLVER_STUB
-        new = model.copy()
+        new = orig_copy(model)
     finally:
         model._solver = saved
-    # Attach a FRESH EMPTY solver of the same interface. Deepcopy would rebuild the whole populated
-    # optlang backend (~3s on iML1515); an empty one is near-free and is all preprocessing needs -- it
-    # exposes .interface (extend_model_gpr reads the solver name off it) and accepts the reactions that
-    # gene-MCS's GPR extension adds. Under LP suppression the state syncs on context exit anyway.
     new._solver = iface.Model()
     return new
 
@@ -291,6 +288,9 @@ def _suppress_lp_updates(model):
     if Model.remove_metabolites is not _suppressed_remove_metabolites:
         _ORIG_COBRA.append((Model, 'remove_metabolites', Model.remove_metabolites))
         Model.remove_metabolites = _suppressed_remove_metabolites
+    if Model.copy is not _suppressed_copy:
+        _ORIG_COBRA.append((Model, 'copy', Model.copy))
+        Model.copy = _suppressed_copy
 
     # Permissive solver container: return stub for missing keys
     global _ORIG_CONTAINER_GETITEM
@@ -332,8 +332,6 @@ def _is_lp_suppressed():
     return _ORIG_SLC is not None or _ORIG_SB is not None or _ORIG_OSLC is not None or len(_ORIG_COBRA) > 0
 
 
-
-
 @contextmanager
 def suppress_lp_context(model):
     """Context manager that suppresses all solver-touching operations.
@@ -372,8 +370,6 @@ def suppress_lp_context(model):
             if hasattr(model, '_suppressed_obj'):
                 del model._suppressed_obj
             if current_ids != _pre_ids:
-                # Drop group members the model no longer holds: cobra's copy()/serialisation
-                # resolve them with get_by_id() and raise KeyError, making the model uncopyable.
                 if model.groups:
                     kept = {c.id for c in
                             list(model.reactions) + list(model.metabolites) + list(model.genes)}
@@ -1588,7 +1584,7 @@ def filter_sd_maxcost(sd, max_cost, kocost, kicost):
 
 
 def modules_coeff2rational(sd_modules):
-    """Convert SDModule coefficients to exact fractions.Fraction (never sympy)."""
+    """Convert SDModule coefficients to exact fractions.Fraction."""
     from .compression import float_to_rational
     for i, module in enumerate(sd_modules):
         for param in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
