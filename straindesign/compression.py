@@ -1731,13 +1731,7 @@ def remove_dummy_bounds(model) -> None:
 
 
 def stoichmat_coeff2rational(model) -> None:
-    """Convert stoichiometric coefficients to exact fractions.Fraction.
-
-    The model must never hold sympy numbers: they leak into model.copy()/serialisation
-    and the compression map, and buy nothing (the RREF backend converts to Fraction
-    internally anyway). sympy appears only transiently inside the efmtool backend and is
-    cast to Fraction before returning; any that still slips in is defensively cast here.
-    """
+    """Convert stoichiometric coefficients to exact fractions.Fraction."""
     for rxn in model.reactions:
         for met, coeff in rxn._metabolites.items():
             if isinstance(coeff, Fraction):
@@ -1759,75 +1753,41 @@ def stoichmat_coeff2float(model) -> None:
             rxn._metabolites[met] = float(coeff)
 
 
-def prune_stale_group_members(model) -> None:
-    """Drop group (subsystem) members that no longer exist in the model.
-
-    Compression renames/removes reactions but leaves model.groups referencing the removed
-    objects; cobra's model.copy() and serialisation walk group members with get_by_id() and
-    raise KeyError on those stale refs (this is what makes a freshly-compressed model
-    uncopyable -- e.g. speedy_fva's internal model.copy()). Groups are annotations, unused by
-    the MILP/FVA math, so we keep only members still present in the model.
-    """
-    if not model.groups:
-        return
-    valid_ids = {c.id for c in list(model.reactions) + list(model.metabolites) + list(model.genes)}
-    for grp in model.groups:
-        stale = [mem for mem in grp.members if mem.id not in valid_ids]
-        if stale:
-            grp.remove_members(stale)
-
-
 # =============================================================================
 # GPR Propagation Helpers
 # =============================================================================
 
 
-def _gpr_ast_to_expr(node):
-    """Convert a cobra GPR AST node to a nested expression.
+def _gpr_ast_to_expr(node, op=None):
+    """Convert a cobra GPR AST node to a nested expression, or join expressions under ``op``.
 
-    A gene is its name (str); a boolean node is ``('and'|'or', [children])``.
-    Returns None for an empty GPR (no gene requirement, i.e. always active).
+    A gene is its name (str) and a boolean node is ``(op, (children...))``; None means no gene
+    requirement (always active). Passing ``op`` joins the given expressions instead of
+    converting a node, applying only associativity (same-op children are flattened) and
+    idempotence (duplicates dropped) -- real simplification is left to reduce_gpr downstream.
     """
-    if node is None:
-        return None
-    if isinstance(node, ast.BoolOp):
-        op = 'and' if isinstance(node.op, ast.And) else 'or'
-        children = [_gpr_ast_to_expr(v) for v in node.values]
-        return _combine_exprs([c for c in children if c is not None], op)
-    if isinstance(node, ast.Name):
-        return node.id
-    return None
-
-
-def _combine_exprs(exprs, op):
-    """Join expressions under ``op``, flattening same-op children and dropping duplicates.
-
-    Mirrors what a boolean-algebra constructor does for these two rules and nothing more:
-    associativity (flatten) and idempotence (dedupe). Any real simplification is left to
-    reduce_gpr / gpr_bitmask downstream.
-    """
-    flat = []
-    for e in exprs:
-        if isinstance(e, tuple) and e[0] == op:
-            flat.extend(e[1])
+    if op is None:
+        if isinstance(node, ast.BoolOp):
+            op = 'and' if isinstance(node.op, ast.And) else 'or'
+            node = [_gpr_ast_to_expr(v) for v in node.values]
+        elif isinstance(node, ast.Name):
+            return node.id
         else:
-            flat.append(e)
-    seen, uniq = set(), []
-    for e in flat:
-        key = _expr_to_gpr_string(e)
-        if key not in seen:
-            seen.add(key)
-            uniq.append(e)
-    if not uniq:
-        return None
-    return uniq[0] if len(uniq) == 1 else (op, uniq)
+            return None
+    flat = []
+    for e in node:
+        if e is None:
+            continue
+        flat.extend(e[1] if isinstance(e, tuple) and e[0] == op else [e])
+    uniq = list(dict.fromkeys(flat))
+    return (op, tuple(uniq)) if len(uniq) > 1 else (uniq[0] if uniq else None)
 
 
 def _expr_to_gpr_string(expr):
-    """Render an expression as a GPR rule string.
+    """Render an expression as a GPR rule string, '' for None.
 
-    Operands are sorted so equivalent inputs give byte-identical rules, and a nested clause of
-    the opposite operator is parenthesised. Returns '' for None.
+    Operands are sorted so equivalent inputs give identical rules, and a nested clause of the
+    opposite operator is parenthesised.
     """
     if expr is None:
         return ''
@@ -1835,48 +1795,22 @@ def _expr_to_gpr_string(expr):
         return expr
     op, args = expr
     other = 'or' if op == 'and' else 'and'
-    parts = []
-    for arg in sorted(args, key=_expr_to_gpr_string):
-        s = _expr_to_gpr_string(arg)
-        if isinstance(arg, tuple) and arg[0] == other:
-            s = f'({s})'
-        parts.append(s)
+    parts = [f'({s})' if isinstance(a, tuple) and a[0] == other else s
+             for a, s in sorted(((a, _expr_to_gpr_string(a)) for a in args), key=lambda p: p[1])]
     return f' {op} '.join(parts)
 
 
-def _combine_gpr_and(gpr_bodies):
-    """Combine GPR AST bodies with AND logic (for coupled/serial reaction merge).
+def _combine_gprs(gpr_bodies, op):
+    """Combine GPR AST bodies (reaction.gpr.body, may include None) under ``op``, as a rule string.
 
-    Args:
-        gpr_bodies: list of AST nodes (reaction.gpr.body), may include None
-
-    An empty/None GPR means the reaction has no gene requirement (always active),
-    which acts as True in boolean logic.  AND with True is a no-op, so empty GPRs
-    are skipped.  Returns '' if all inputs are empty (no gene restriction).
-
-    Nested ANDs are flattened and duplicate terms dropped; full simplification is deferred to
-    reduce_gpr downstream.
-    """
-    exprs = [e for e in (_gpr_ast_to_expr(b) for b in gpr_bodies) if e is not None]
-    return _expr_to_gpr_string(_combine_exprs(exprs, 'and'))
-
-
-def _combine_gpr_or(gpr_bodies):
-    """Combine GPR AST bodies with OR logic (for parallel reaction merge).
-
-    Args:
-        gpr_bodies: list of AST nodes (reaction.gpr.body), may include None
-
-    If any input is None (reaction always active regardless of genes), the
-    combined reaction is also always active, so the result is '' (no restriction).
-
-    Nested ORs are flattened and duplicate terms dropped; full simplification is deferred to
-    reduce_gpr downstream.
+    An empty GPR is True: under 'and' it is dropped, under 'or' it makes the whole rule
+    unrestricted (''). Used to merge the GPRs of reactions that compression lumps together --
+    'and' for coupled/serial merges, 'or' for parallel ones.
     """
     exprs = [_gpr_ast_to_expr(b) for b in gpr_bodies]
-    if not exprs or any(e is None for e in exprs):
+    if op == 'or' and (not exprs or any(e is None for e in exprs)):
         return ''
-    return _expr_to_gpr_string(_combine_exprs(exprs, 'or'))
+    return _expr_to_gpr_string(_gpr_ast_to_expr(exprs, op))
 
 
 # =============================================================================
@@ -2013,10 +1947,7 @@ def compress_model_coupled(model, compression_backend='sparse_rref', propagate_g
     Returns:
         dict: Mapping {compressed_id: {orig_id: factor, ...}}
     """
-    # All stoichiometry manipulation below (reaction renames, removals) must not
-    # touch the optlang solver -- compression is pure linear algebra. suppress_lp_context
-    # patches cobra/optlang at the class level so a stub-solver copy is safe; it nests as
-    # a no-op when compress_model() (the full routine) already holds the context.
+    # Compression is pure linear algebra; keep it off the optlang solver.
     from straindesign.networktools import suppress_lp_context
     with suppress_lp_context(model):
         # Save GPR AST bodies before either backend clears them
@@ -2026,7 +1957,6 @@ def compress_model_coupled(model, compression_backend='sparse_rref', propagate_g
         if compression_backend == 'efmtool_rref':
             from .efmtool_cmp_interface import compress_model_java
             reaction_map = compress_model_java(model, suppressed_reactions=suppressed_reactions)
-            # Java backend handles contradicting groups internally (CoupledContradicting).
             # Clean up any remaining zero-flux reactions that the Java compressor created.
             zero_flux = {r for r in model.reactions if r.lower_bound == 0 and r.upper_bound == 0}
             for r in zero_flux:
@@ -2041,9 +1971,6 @@ def compress_model_coupled(model, compression_backend='sparse_rref', propagate_g
             result = compress_cobra_model(model, methods=CompressionMethod.standard(), in_place=True,
                                           protected_reactions=protected_reactions)
             reaction_map = result.reaction_map
-            # Python compressor handles contradicting groups internally via bounds
-            # intersection in _handle_compress (removes zero-flux groups and
-            # re-iterates to find new couplings).
 
         # Propagate GPR rules: AND-combine contributing reactions' GPR ASTs
         if propagate_gpr:
@@ -2053,7 +1980,7 @@ def compress_model_coupled(model, compression_backend='sparse_rref', propagate_g
                 except KeyError:
                     continue
                 gpr_bodies = [saved_gpr_bodies.get(orig_id) for orig_id in orig_map]
-                rxn.gene_reaction_rule = _combine_gpr_and(gpr_bodies)
+                rxn.gene_reaction_rule = _combine_gprs(gpr_bodies, 'and')
 
     return reaction_map
 
@@ -2142,7 +2069,7 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
         for rxn_idx_group in subset_list:
             main_rxn = model.reactions[rxn_idx_group[0]]
             gpr_bodies = [old_gpr_bodies.get(old_reac_ids[j]) for j in rxn_idx_group]
-            group_gpr.append((main_rxn, _combine_gpr_or(gpr_bodies)))
+            group_gpr.append((main_rxn, _combine_gprs(gpr_bodies, 'or')))
 
     remove_list = [model.reactions[i] for i in np.where(del_rxns)[0]]
     if remove_list:
@@ -2204,9 +2131,7 @@ __all__ = [
     # GPR propagation helpers
     '_gpr_ast_to_expr',
     '_expr_to_gpr_string',
-    '_combine_exprs',
-    '_combine_gpr_and',
-    '_combine_gpr_or',
+    '_combine_gprs',
     # Preprocessing
     'remove_blocked_reactions',
     'remove_ext_mets',

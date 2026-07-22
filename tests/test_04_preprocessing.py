@@ -13,8 +13,7 @@ from straindesign.compression import (
     stoichmat_coeff2rational,
     remove_conservation_relations,
     stoichmat_coeff2float,
-    _combine_gpr_and,
-    _combine_gpr_or,
+    _combine_gprs,
     _gpr_ast_to_expr,
     _expr_to_gpr_string,
 )
@@ -71,11 +70,11 @@ class TestGprAstToExpr:
 
     def test_and_expression(self):
         node = ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')])
-        assert _gpr_ast_to_expr(node) == ('and', ['g1', 'g2'])
+        assert _gpr_ast_to_expr(node) == ('and', ('g1', 'g2'))
 
     def test_or_expression(self):
         node = ast.BoolOp(op=ast.Or(), values=[ast.Name(id='g1'), ast.Name(id='g2')])
-        assert _gpr_ast_to_expr(node) == ('or', ['g1', 'g2'])
+        assert _gpr_ast_to_expr(node) == ('or', ('g1', 'g2'))
 
     def test_nested(self):
         # (g1 and g2) or g3
@@ -83,7 +82,7 @@ class TestGprAstToExpr:
             ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')]),
             ast.Name(id='g3')
         ])
-        assert _gpr_ast_to_expr(node) == ('or', [('and', ['g1', 'g2']), 'g3'])
+        assert _gpr_ast_to_expr(node) == ('or', (('and', ('g1', 'g2')), 'g3'))
 
     def test_nested_same_op_is_flattened(self):
         # g1 and (g2 and g3)
@@ -91,7 +90,7 @@ class TestGprAstToExpr:
             ast.Name(id='g1'),
             ast.BoolOp(op=ast.And(), values=[ast.Name(id='g2'), ast.Name(id='g3')])
         ])
-        assert _gpr_ast_to_expr(node) == ('and', ['g1', 'g2', 'g3'])
+        assert _gpr_ast_to_expr(node) == ('and', ('g1', 'g2', 'g3'))
 
 
 class TestExprToGprString:
@@ -127,23 +126,23 @@ class TestExprToGprString:
 
 class TestCombineGprAnd:
     def test_all_empty(self):
-        assert _combine_gpr_and([None, None]) == ''
+        assert _combine_gprs([None, None], 'and') == ''
 
     def test_single_non_empty(self):
         node = ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')])
-        result = _combine_gpr_and([node])
+        result = _combine_gprs([node], 'and')
         assert result == 'g1 and g2'
 
     def test_skip_empty(self):
         """Empty GPR (None) should be skipped in AND combination."""
         node = ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')])
-        result = _combine_gpr_and([node, None, None])
+        result = _combine_gprs([node, None, None], 'and')
         assert result == 'g1 and g2'
 
     def test_two_non_empty(self):
         node1 = ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')])
         node2 = ast.Name(id='g3')
-        result = _combine_gpr_and([node1, node2])
+        result = _combine_gprs([node1, node2], 'and')
         assert result == 'g1 and g2 and g3'
 
     def test_simplification(self):
@@ -151,27 +150,27 @@ class TestCombineGprAnd:
         # (g1 and g2) AND (g1 and g3) -> g1 and g2 and g3
         node1 = ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')])
         node2 = ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g3')])
-        result = _combine_gpr_and([node1, node2])
+        result = _combine_gprs([node1, node2], 'and')
         assert result == 'g1 and g2 and g3'
 
     def test_empty_list(self):
-        assert _combine_gpr_and([]) == ''
+        assert _combine_gprs([], 'and') == ''
 
 
 class TestCombineGprOr:
     def test_any_empty_returns_empty(self):
         """If any reaction has empty GPR (always active), result is empty."""
         node = ast.Name(id='g1')
-        result = _combine_gpr_or([node, None])
+        result = _combine_gprs([node, None], 'or')
         assert result == ''
 
     def test_all_empty(self):
-        assert _combine_gpr_or([None, None]) == ''
+        assert _combine_gprs([None, None], 'or') == ''
 
     def test_two_non_empty(self):
         node1 = ast.Name(id='g1')
         node2 = ast.Name(id='g2')
-        result = _combine_gpr_or([node1, node2])
+        result = _combine_gprs([node1, node2], 'or')
         assert result == 'g1 or g2'
 
     def test_deduplication(self):
@@ -179,7 +178,7 @@ class TestCombineGprOr:
         # g1 OR g1 -> g1
         node1 = ast.Name(id='g1')
         node2 = ast.Name(id='g1')
-        result = _combine_gpr_or([node1, node2])
+        result = _combine_gprs([node1, node2], 'or')
         assert result == 'g1'
 
     def test_no_absorption(self):
@@ -187,11 +186,11 @@ class TestCombineGprOr:
         # (g1 and g2) OR g1 -> kept as-is (not simplified to g1)
         node1 = ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')])
         node2 = ast.Name(id='g1')
-        result = _combine_gpr_or([node1, node2])
+        result = _combine_gprs([node1, node2], 'or')
         assert 'g1 and g2' in result and 'or' in result
 
     def test_empty_list(self):
-        assert _combine_gpr_or([]) == ''
+        assert _combine_gprs([], 'or') == ''
 
 
 # ── GPR propagation integration tests (model_gpr.xml) ────────────────

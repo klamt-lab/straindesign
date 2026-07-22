@@ -332,6 +332,8 @@ def _is_lp_suppressed():
     return _ORIG_SLC is not None or _ORIG_SB is not None or _ORIG_OSLC is not None or len(_ORIG_COBRA) > 0
 
 
+
+
 @contextmanager
 def suppress_lp_context(model):
     """Context manager that suppresses all solver-touching operations.
@@ -370,11 +372,15 @@ def suppress_lp_context(model):
             if hasattr(model, '_suppressed_obj'):
                 del model._suppressed_obj
             if current_ids != _pre_ids:
-                # Reactions were added/removed/renamed, so model.groups may reference objects the
-                # model no longer holds. cobra's copy()/serialisation resolve group members with
-                # get_by_id() and raise KeyError on those, which makes the model uncopyable.
-                from straindesign.compression import prune_stale_group_members
-                prune_stale_group_members(model)
+                # Drop group members the model no longer holds: cobra's copy()/serialisation
+                # resolve them with get_by_id() and raise KeyError, making the model uncopyable.
+                if model.groups:
+                    kept = {c.id for c in
+                            list(model.reactions) + list(model.metabolites) + list(model.genes)}
+                    for grp in model.groups:
+                        stale = [m for m in grp.members if m.id not in kept]
+                        if stale:
+                            grp.remove_members(stale)
                 try:
                     solver_interface = model.solver.interface
                     model._solver = solver_interface.Model()
