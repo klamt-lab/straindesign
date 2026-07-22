@@ -36,97 +36,6 @@ from straindesign.networktools import   remove_ext_mets, bound_blocked_or_irreve
 from straindesign.gpr_bitmask import simplify_model_gprs
 
 
-def _restore_module_coeff_scaling(cmp_model, sd_modules, cmp_mapReac, orig_sd_modules):
-    """Revert compression-induced coefficient shifts in strain-design module constraints.
-
-    Lumping folds several reactions into one and scales the module-constraint coefficient of the
-    lumped reaction by the lumping ratio (see compress_modules). When a target reaction (e.g.
-    biomass) is lumped, that ratio can be large (4484x on iML1515), so ``biomass >= 0.001`` becomes
-    ``4484*v_lumped >= 0.001`` -- an effective per-variable threshold of ~2e-7, below LP feasibility
-    tolerance. That sub-tolerance value is a COMPRESSION ARTIFACT: it does not exist in the original
-    model, where the coefficient was ~1 and the small numbers lived in the biomass stoichiometry.
-
-    This function undoes that shift. For each compressed reaction appearing in a module constraint it
-    rescales the variable ``v' = s * v`` with ``s = |compressed coef| / max|original coef|`` so the
-    constraint coefficient returns to the largest coefficient the reaction had in the ORIGINAL
-    constraint. The transform is exact (a change of variable units): the reaction's stoichiometry
-    column is divided by ``s``, its finite bounds multiplied by ``s``, and every module coefficient on
-    it divided by ``s`` -- so the feasible set and every strain design are unchanged. The small
-    numbers move back into the stoichiometry (Sv=0), exactly where the original model carried them.
-
-    The rescaling is recorded as a 1:1 pseudo-step appended to ``cmp_mapReac`` for completeness;
-    ``expand_sd`` treats a single-reaction map as knockout-identity, so decompression is unaffected.
-
-    NB operates on ``cmp_model._metabolites`` / ``_lower_bound`` / ``_upper_bound`` directly: the
-    compressed model's optlang solver is stale, so ``add_metabolites`` would raise. Kept exact-rational
-    (Fraction) throughout, consistent with exact-nullspace compression.
-
-    Called once, right after ``cmp_mapReac = cmp_mapReac_1 + cmp_mapReac_2``.
-    """
-    from fractions import Fraction
-
-    def _frac(x):
-        if isinstance(x, Fraction):
-            return x
-        try:
-            return Fraction(x)
-        except Exception:
-            return Fraction(float(x)).limit_denominator(10**12)
-
-    def _expand(reac):
-        cur = {reac}
-        for exp in cmp_mapReac[::-1]:
-            rme = exp["reac_map_exp"]
-            cur = set().union(*[set(rme[r].keys()) if r in rme else {r} for r in cur])
-        return cur
-
-    # largest |coef| each reaction carried in any ORIGINAL module constraint
-    orig_coef = {}
-    for m in orig_sd_modules:
-        for c in (m[CONSTRAINTS] or []):
-            for k, v in c[0].items():
-                orig_coef[k] = max(orig_coef.get(k, Fraction(0)), abs(_frac(v)))
-
-    # scale per compressed reaction (consistent across constraints -- same lumping)
-    scales = {}
-    for m in sd_modules:
-        for c in (m[CONSTRAINTS] or []):
-            for R, C in c[0].items():
-                targets = [orig_coef[o] for o in _expand(R) if orig_coef.get(o, 0) != 0]
-                if not targets:
-                    continue
-                s = abs(_frac(C)) / max(targets)
-                if s != 1:
-                    scales[R] = s
-    if not scales:
-        return sd_modules, cmp_mapReac
-
-    for R, s in scales.items():
-        r = cmp_model.reactions.get_by_id(R)
-        inv = Fraction(1) / s
-        for met in list(r._metabolites.keys()):
-            r._metabolites[met] = r._metabolites[met] * inv          # column /= s
-        if r._lower_bound not in (float('inf'), float('-inf')):
-            r._lower_bound = r._lower_bound * s                      # finite bounds *= s
-        if r._upper_bound not in (float('inf'), float('-inf')):
-            r._upper_bound = r._upper_bound * s
-    for m in sd_modules:
-        for c in (m[CONSTRAINTS] or []):
-            for R, s in scales.items():
-                if R in c[0]:
-                    c[0][R] = _frac(c[0][R]) / s
-        for p in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
-            if m.get(p):
-                for R, s in scales.items():
-                    if R in m[p]:
-                        m[p][R] = _frac(m[p][R]) / s
-    cmp_mapReac.append({"reac_map_exp": {R: {R: s} for R, s in scales.items()},
-                        "parallel": False, KOCOST: {}, KICOST: {}})
-    logging.info('  Reverted compression coeff shift on %d module reaction(s) '
-                 '(largest scale %.4g).' % (len(scales), float(max(scales.values()))))
-    return sd_modules, cmp_mapReac
-
-
 def _collect_no_par_compress_reacs(sd_modules):
     """Collect reaction IDs referenced in SD modules that must not be parallel-compressed."""
     reacs = set()
@@ -552,9 +461,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2 = compress_ki_ko_cost(
             cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2)
         cmp_mapReac = cmp_mapReac_1 + cmp_mapReac_2
-        # Undo compression-induced coefficient shifts in module constraints. Exact change of
-        # variable units; design set unchanged, small numbers returned to the stoichiometry.
-        sd_modules, cmp_mapReac = _restore_module_coeff_scaling(cmp_model, sd_modules, cmp_mapReac, orig_sd_modules)
         logging.info('  Compressed to ' + str(len(cmp_model.reactions)) + ' reactions (%.1fs).' % (time.time() - t0))
     else:
         cmp_mapReac = []

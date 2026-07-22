@@ -362,6 +362,29 @@ class RationalMatrix:
 
         self._invalidate_cache()
 
+    def scale_column(self, col: int, scalar_num: int, scalar_den: int) -> None:
+        """Multiply a column by a scalar: col[i] *= scalar_num/scalar_den."""
+        if scalar_num == 0 or scalar_num == scalar_den:
+            return
+        num_lil, den_lil = self._num_sparse, self._den_sparse
+        num_csc = num_lil.tocsc() if num_lil.format != 'csc' else num_lil
+        den_csc = den_lil.tocsc() if den_lil.format != 'csc' else den_lil
+        entries = [(num_csc.indices[i], int(num_csc.data[i]), int(den_csc.data[i]))
+                   for i in range(num_csc.indptr[col], num_csc.indptr[col + 1])]
+        for row, cur_num, cur_den in entries:
+            if cur_num == 0:
+                continue
+            new_num, new_den = cur_num * scalar_num, cur_den * scalar_den
+            if new_den < 0:
+                new_num, new_den = -new_num, -new_den
+            g = gcd(abs(new_num), new_den)
+            if g:
+                new_num //= g
+                new_den //= g
+            num_lil[row, col] = new_num
+            den_lil[row, col] = new_den if new_num != 0 else 0
+        self._invalidate_cache()
+
     # -------------------------------------------------------------------------
     # Conversion
     # -------------------------------------------------------------------------
@@ -1282,6 +1305,9 @@ class StoichMatrixCompressor:
         work.post.begin_batch_edit()
 
         for group in groups:
+            # nonzeros per member BEFORE merging: afterwards the master's column holds the whole
+            # group and would always look like the most detailed member
+            nnz = {r: sum(1 for _ in work.cmp.iter_column_fractions(r)) for r in group}
             self._combine_coupled(work, group, ratios)
 
             # Check bounds intersection to detect contradicting groups.
@@ -1323,6 +1349,7 @@ class StoichMatrixCompressor:
                 # Consistent: only remove slaves (merged into master)
                 for idx in group[1:]:
                     reactions_to_remove.add(idx)
+                self._restore_group_scale(work, group, ratios, nnz)
 
         # End batch edit mode
         work.cmp.end_batch_edit()
@@ -1333,6 +1360,34 @@ class StoichMatrixCompressor:
         work.remove_reactions_by_indices(reactions_to_remove)
 
         return contradicting_removed
+
+    def _restore_group_scale(self, work: _WorkRecord, group: List[int],
+                             ratios: List[Optional[Fraction]], nnz: Dict[int, int]) -> None:
+        """Express a merged group in the units of its most detailed member.
+
+        A lumped group's ratios are fixed but its overall scale is free, and the scale that falls out
+        of merging into ``group[0]`` can be extreme -- on iML1515 the biomass lump comes out 4484x,
+        which turns ``biomass >= 0.001`` into a threshold below LP feasibility tolerance. The member
+        with the most stoichiometric coefficients is the one whose scale is worth keeping (biomass,
+        wherever biomass is part of a group), so the merged column is rescaled into its units.
+
+        ``cmp`` (stoichiometry), ``post`` (the expansion map, and through it the module-constraint
+        coefficients) and the bounds are scaled together, so the change of units is exact.
+        """
+        master = group[0]
+        keep = max(group, key=lambda r: nnz[r])
+        if keep == master:
+            return
+        lam = abs(ratios[keep])                     # |.| so the reaction keeps its orientation
+        if lam == 0 or lam == 1:
+            return
+        # v_master = ratios[keep] * v_keep, so re-expressing the lump in v_keep multiplies the
+        # column by that ratio and divides the bounds by it.
+        work.cmp.scale_column(master, lam.numerator, lam.denominator)
+        work.post.scale_column(master, lam.numerator, lam.denominator)
+        lb, ub = work.bounds[master]
+        f = float(lam)
+        work.bounds[master] = (lb if isinf(lb) else lb / f, ub if isinf(ub) else ub / f)
 
     def _combine_coupled(self, work: _WorkRecord, group: List[int], ratios: List[Optional[Fraction]]) -> None:
         """Combine coupled reactions into master reaction.
