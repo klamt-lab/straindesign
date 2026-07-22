@@ -657,11 +657,19 @@ class SDMILP(SDProblem, MILP_LP):
             self.time_limit = np.inf
         if self.show_no_ki is None:
             self.show_no_ki = True
-        # k-sweep is only defined for MCS with a finite (integer) cost budget.
+        # k-sweep is only defined for MCS with a finite, INTEGER cost budget.
+        # The level loop pins sum(cost*z) == k for integer k, so it enumerates the
+        # pool completely only when every intervention cost is integer-valued: with
+        # fractional or mixed costs (ki/reg costs, non-unit ko costs) the achievable
+        # totals are non-integer and would be silently skipped between levels. Guard
+        # on cost integrality and fall back to the full-budget populate otherwise.
         max_cost_finite = self.max_cost is not None and np.isfinite(self.max_cost)
-        if (not self.is_mcs_computation) or (not max_cost_finite):
-            logging.warning("enum_method='ksweep' requires an MCS computation with a finite "
-                            "max_cost; falling back to standard populate enumeration.")
+        finite_costs = [c for c in self.cost if np.isfinite(c)]
+        costs_integer = all(abs(c - round(c)) < 1e-9 for c in finite_costs)
+        if (not self.is_mcs_computation) or (not max_cost_finite) or (not costs_integer):
+            logging.warning("enum_method='ksweep' requires an MCS computation with a finite, "
+                            "integer-valued intervention cost budget; falling back to standard "
+                            "populate enumeration.")
             return self.enumerate(**kwargs)
         # first check if strain doesn't already fulfill the strain design setup
         if self.verify_sd(sparse.csr_matrix((1, self.num_z)))[0]:
@@ -686,7 +694,7 @@ class SDMILP(SDProblem, MILP_LP):
         n_cont = len(self.c) - self.num_z
         cost_full = [float(c) for c in self.cost] + [0.0] * n_cont
         neg_cost_full = [-c for c in cost_full]
-        k_max = int(np.ceil(self.max_cost))
+        k_max = int(np.floor(self.max_cost))  # a cost-k solution is within budget only if k <= max_cost
         endtime = time.time() + self.time_limit
         status = OPTIMAL
         hit_timelimit = False
