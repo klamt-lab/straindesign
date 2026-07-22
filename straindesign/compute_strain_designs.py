@@ -665,12 +665,14 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         solution_approach = BEST
 
     # enumeration loop variant (only affects the POPULATE approach):
-    #   'populate' -> single full-budget populate loop (SDMILP.enumerate)
-    #   'ksweep'   -> ascending-cardinality sweep      (SDMILP.enumerate_ksweep)
-    # Default is solver-conditional (benchmarked on iML1515-cone gene-MCS, design-identical 393):
-    # k-sweep gives CPLEX ~1.8-2.1x and near-parity with gMCSpy, but is SLOWER on gurobi (0.58-0.98x),
-    # where the native populate loop already beats gMCSpy. So default ksweep for cplex, populate else.
-    enum_method = kwargs.pop('enum_method', 'ksweep' if kwargs.get(SOLVER) == CPLEX else 'populate')
+    #   'populate' -> single full-budget populate loop (SDMILP.enumerate)   [default, all solvers]
+    #   'ksweep'   -> ascending-cardinality sweep      (SDMILP.enumerate_ksweep)   [explicit opt-in only]
+    # k-sweep is faster on CPLEX gene-MCS with UNIT costs (iML1515-cone: ~1.8-2.1x, near gMCSpy parity),
+    # but it only enumerates completely for integer-valued intervention costs and is slower on gurobi, so
+    # it is not worth defaulting on as a per-solver special case. Use the standard populate loop for all
+    # solvers; k-sweep stays available via an explicit enum_method='ksweep'.
+    #   was: enum_method = kwargs.pop('enum_method', 'ksweep' if kwargs.get(SOLVER) == CPLEX else 'populate')
+    enum_method = kwargs.pop('enum_method', 'populate')
 
     dump_preprocessed = kwargs.pop('dump_preprocessed', None)
 
