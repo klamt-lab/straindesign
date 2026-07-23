@@ -1363,19 +1363,33 @@ class StoichMatrixCompressor:
 
     def _restore_group_scale(self, work: _WorkRecord, group: List[int],
                              ratios: List[Optional[Fraction]], nnz: Dict[int, int]) -> None:
-        """Express a merged group in the units of its most detailed member.
+        """Express a merged group in the units of one of its members.
 
         A lumped group's ratios are fixed but its overall scale is free, and the scale that falls out
         of merging into ``group[0]`` can be extreme -- on iML1515 the biomass lump comes out 4484x,
-        which turns ``biomass >= 0.001`` into a threshold below LP feasibility tolerance. The member
-        with the most stoichiometric coefficients is the one whose scale is worth keeping (biomass,
-        wherever biomass is part of a group), so the merged column is rescaled into its units.
+        which turns ``biomass >= 0.001`` into a threshold below LP feasibility tolerance. So the merged
+        column is rescaled into the units of a chosen member. First choice: a member with a small
+        finite bound (an uptake limit, ATP maintenance, ...) whose bound is worth preserving, taken
+        only if re-expressing the lump in its units stays within one order of magnitude -- this skips
+        members that are stoichiometrically minor (e.g. a trace exchange in the biomass group, which
+        would reintroduce the 4484x). Otherwise the member with the most stoichiometric coefficients,
+        which is the biomass reaction wherever biomass is part of a group.
 
         ``cmp`` (stoichiometry), ``post`` (the expansion map, and through it the module-constraint
         coefficients) and the bounds are scaled together, so the change of units is exact.
         """
         master = group[0]
-        keep = max(group, key=lambda r: nnz[r])
+
+        def _small_bound(r):
+            fin = [abs(x) for x in work.bounds[r] if not isinf(x) and x != 0 and abs(x) < 100]
+            return min(fin) if fin else None
+
+        def _lam(r):
+            return 1.0 if ratios[r] is None else float(abs(ratios[r]))   # master's own ratio is 1
+
+        bounded = [(b, r) for r in group for b in [_small_bound(r)]
+                   if b is not None and 0.1 <= _lam(r) <= 10]
+        keep = min(bounded)[1] if bounded else max(group, key=lambda r: nnz[r])
         if keep == master:
             return
         lam = abs(ratios[keep])                     # |.| so the reaction keeps its orientation
