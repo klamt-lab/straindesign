@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pure-Python bitmask minimizer for monotone (positive-unate) Gene-Protein-Reaction rules.
+"""Simplify monotone (positive-unate) Gene-Protein-Reaction rules, in pure Python.
 
 Pipeline:  parse -> minimal SOP (DNF + absorption) -> algebraic factoring.
 Cubes are int bitmasks (bit i == variable i): subset = (a & b) == a, union = a | b.
@@ -72,18 +72,18 @@ def absorb(cubes):
     return keep
 
 
-def to_cover(node):
+def to_dnf(node):
     t = node[0]
     if t == 'VAR':   return [bit(node[1])]
     if t == 'CONST': return [] if not node[1] else [0]
     if t == 'OR':
         cov = []
-        for ch in node[1]: cov += to_cover(ch)
+        for ch in node[1]: cov += to_dnf(ch)
         return absorb(cov)
     if t == 'AND':
         cov = [0]
         for ch in node[1]:
-            sub = to_cover(ch)
+            sub = to_dnf(ch)
             cov = absorb([a | b for a in cov for b in sub])
         return cov
     raise ValueError(t)
@@ -191,7 +191,7 @@ def factor_auto(node, budget=50000):
     if node[0] == 'VAR':
         return node
     if est_cubes(node) <= budget:
-        return factor(to_cover(node))
+        return factor(to_dnf(node))
     if node[0] == 'AND':
         return ('AND', [factor_auto(c, budget) for c in node[1]])
     _WARN.append("OR-block of ~%d cubes exceeds budget %d; split anyway." % (est_cubes(node), budget))
@@ -210,7 +210,7 @@ def selfcheck(tree, node, budget):
     if node[0] == 'VAR':
         return True
     if est_cubes(tree) <= budget:
-        return set(to_cover(tree)) == set(to_cover(node))
+        return set(to_dnf(tree)) == set(to_dnf(node))
     if tree[0] != node[0] or len(tree[1]) != len(node[1]):
         return False
     return all(selfcheck(tc, nc, budget) for tc, nc in zip(tree[1], node[1]))
@@ -252,5 +252,5 @@ def simplify_model_gprs(model, budget=50000):
             if new and new != s:
                 r.gene_reaction_rule = new; nchg += 1
         except Exception as e:
-            logging.warning('gpr_bitmask: kept original GPR for %s (%s)' % (r.id, type(e).__name__))
+            logging.warning('gpr_simplify: kept original GPR for %s (%s)' % (r.id, type(e).__name__))
     logging.info('  GPR rule simplification: %d rules, %d rewritten.' % (n, nchg))

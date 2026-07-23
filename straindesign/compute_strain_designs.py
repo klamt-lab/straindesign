@@ -33,7 +33,7 @@ from straindesign.networktools import   remove_ext_mets, bound_blocked_or_irreve
                                         reduce_gpr, extend_model_gpr, extend_model_regulatory, \
                                         compress_model, compress_modules, compress_ki_ko_cost, expand_sd, filter_sd_maxcost, \
                                         estimate_expansion_size, with_suppressed_lp, _silent_io
-from straindesign.gpr_bitmask import simplify_model_gprs
+from straindesign.gpr_simplify import simplify_model_gprs
 
 
 def _collect_no_par_compress_reacs(sd_modules):
