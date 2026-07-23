@@ -1349,7 +1349,22 @@ class StoichMatrixCompressor:
                 # Consistent: only remove slaves (merged into master)
                 for idx in group[1:]:
                     reactions_to_remove.add(idx)
-                self._restore_group_scale(work, group, ratios, nnz)
+                # Pick the member whose units the lump keeps. nnz was counted pre-merge above;
+                # co-locate the small-bound test with it here so the whole decision reads in one
+                # place. Prefer a reaction with a small finite bound (e.g. Biomass, ATP
+                # maintenance) whose own ratio is near 1; else the member with the most
+                # coefficients. Master bounds are already intersected at this point.
+                def _small_bound(r):
+                    fin = [abs(x) for x in work.bounds[r] if not isinf(x) and x != 0 and abs(x) < 100]
+                    return min(fin) if fin else None
+
+                def _lam(r):
+                    return 1.0 if ratios[r] is None else float(abs(ratios[r]))   # master's own ratio is 1
+
+                bounded = [(b, r) for r in group for b in [_small_bound(r)]
+                           if b is not None and 0.1 <= _lam(r) <= 10]
+                keep = min(bounded)[1] if bounded else max(group, key=lambda r: nnz[r])
+                self._restore_group_scale(work, group, ratios, keep)
 
         # End batch edit mode
         work.cmp.end_batch_edit()
@@ -1362,27 +1377,16 @@ class StoichMatrixCompressor:
         return contradicting_removed
 
     def _restore_group_scale(self, work: _WorkRecord, group: List[int],
-                             ratios: List[Optional[Fraction]], nnz: Dict[int, int]) -> None:
+                             ratios: List[Optional[Fraction]], keep: int) -> None:
         """Express a merged group in the units of one of its members.
 
         A lump's ratios are fixed but its overall scale is free, and merging into ``group[0]`` can
         yield an extreme scale (the iML1515 biomass lump comes out 4484x, pushing ``biomass >= 0.001``
-        below LP feasibility tolerance). Re-express the column so that reactions with many members or a
-        specific small finite bound (e.g. Biomass, ATP maintenance) keep their scale. ``cmp``, ``post``
-        and the bounds are scaled together, so the change of units is exact.
+        below LP feasibility tolerance). ``keep`` names the member whose units to re-express in
+        (chosen by the caller from the nnz / small-bound criteria); ``cmp``, ``post`` and the bounds
+        are scaled together, so the change of units is exact.
         """
         master = group[0]
-
-        def _small_bound(r):
-            fin = [abs(x) for x in work.bounds[r] if not isinf(x) and x != 0 and abs(x) < 100]
-            return min(fin) if fin else None
-
-        def _lam(r):
-            return 1.0 if ratios[r] is None else float(abs(ratios[r]))   # master's own ratio is 1
-
-        bounded = [(b, r) for r in group for b in [_small_bound(r)]
-                   if b is not None and 0.1 <= _lam(r) <= 10]
-        keep = min(bounded)[1] if bounded else max(group, key=lambda r: nnz[r])
         if keep == master:
             return
         lam = abs(ratios[keep])                     # |.| so the reaction keeps its orientation
