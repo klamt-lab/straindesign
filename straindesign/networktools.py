@@ -423,7 +423,7 @@ from straindesign.compression import (
     remove_ext_mets,
     remove_conservation_relations,
     remove_dummy_bounds,
-    stoichmat_coeff2rational,
+    stoichmat_coeff_to_fraction,
     stoichmat_coeff2float,
 )
 
@@ -1361,7 +1361,7 @@ def compress_modules(sd_modules, cmp_mapReac):
         (list of SDModule):
         A list of strain design modules for the compressed network
     """
-    sd_modules = modules_coeff2rational(sd_modules)
+    sd_modules = modules_coeff_to_fraction(sd_modules)
     for cmp in cmp_mapReac:
         reac_map_exp = cmp["reac_map_exp"]
         parallel = cmp["parallel"]
@@ -1583,19 +1583,19 @@ def filter_sd_maxcost(sd, max_cost, kocost, kicost):
     return sd
 
 
-def modules_coeff2rational(sd_modules):
+def modules_coeff_to_fraction(sd_modules):
     """Convert SDModule coefficients to exact fractions.Fraction."""
-    from .compression import float_to_rational
+    from .compression import float_to_fraction
     for i, module in enumerate(sd_modules):
         for param in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
             if param in module and module[param] is not None:
                 if param == CONSTRAINTS:
                     for constr in module[CONSTRAINTS]:
                         for reac in constr[0].keys():
-                            constr[0][reac] = float_to_rational(constr[0][reac])
+                            constr[0][reac] = float_to_fraction(constr[0][reac])
                 if param in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                     for reac in module[param].keys():
-                        module[param][reac] = float_to_rational(module[param][reac])
+                        module[param][reac] = float_to_fraction(module[param][reac])
     return sd_modules
 
 

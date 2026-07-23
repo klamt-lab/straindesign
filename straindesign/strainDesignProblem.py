@@ -1013,10 +1013,11 @@ class SDProblem:
         #    catches a strictly larger set: z's whose rows were lumped/removed by steps 5/b6 end up
         #    free here too (measured 8 vs 0 on e_coli, 6 vs 3 on iMLcore). Done explicitly rather than
         #    relying on solver presolve to spot the dominated column.
-        #    NB indicators are exactly the rows that could NOT be bounded (M=inf), so they are never
-        #    trivially satisfiable -- a fixable z therefore never carries an indicator, and there is
-        #    nothing to fold into the static problem; ub=0 is the whole operation. Skip non-targetable
-        #    (already fixed), inverted/KI z's, and lb>0 (essential KI) where ub=0 would give lb>ub.
+        #    NB indicators are exactly the rows whose box-bound big-M was infinite (arity >= 2). Step 7
+        #    does NOT inspect their feasible-region redundancy -- that is deferred to the region-FVA
+        #    override and the upstream essentiality scans; here a fixable z simply carries no indicator,
+        #    so ub=0 is the whole operation. Skip non-targetable (already fixed), inverted/KI z's, and
+        #    lb>0 (essential KI) where ub=0 would give lb>ub.
         Aic = self.A_ineq.tocsc()
         Aec = self.A_eq.tocsc() if self.A_eq.shape[0] else None
         budget_rows = {self.idx_row_maxcost, self.idx_row_mincost, self.idx_row_obj}
@@ -1099,9 +1100,6 @@ def build_primal_from_cbm(model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None,
         V_eq = sparse.csr_matrix((0, numr))
         v_eq = []
     if c is None:
-        # Empty objective by default -- do NOT read reaction.objective_coefficient (an optlang/solver
-        # access). An explicit objective (e.g. an OptKnock inner objective) is passed by the caller;
-        # classical-MCS modules (PROTECT/SUPPRESS) define their region via constraints and do not use c.
         c = [0.0] * numr
     S = sparse.csr_matrix(create_stoichiometric_matrix(model))
     # fill matrices
@@ -1111,11 +1109,6 @@ def build_primal_from_cbm(model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None,
     b_ineq = v_ineq.copy()
     lb = [float(v.lower_bound) for v in model.reactions]
     ub = [float(v.upper_bound) for v in model.reactions]
-    # Optional per-BLOCK bound override (e.g. region-FVA for a PROTECT module). Scoped to THIS
-    # block only -- the model is never mutated and other modules' blocks are unaffected, so a
-    # reaction blocked in one module's region stays globally targetable via the others. Keys are
-    # reaction ids; values (lo, hi) intersect the model bounds (max on lb, min on ub) so an
-    # override can only ever TIGHTEN, never loosen.
     if bound_override:
         for i, r in enumerate(model.reactions):
             ov = bound_override.get(r.id)

@@ -10,7 +10,7 @@ from straindesign.compression import (
     compress_model_coupled,
     compress_model_parallel,
     remove_blocked_reactions,
-    stoichmat_coeff2rational,
+    stoichmat_coeff_to_fraction,
     remove_conservation_relations,
     stoichmat_coeff2float,
     _combine_gprs,
@@ -204,7 +204,7 @@ class TestModelGprCompression:
     def test_coupled_compression_propagates_gpr(self, gpr_model):
         """Coupled compression should AND-combine GPR rules, skipping empty ones."""
         remove_blocked_reactions(gpr_model)
-        stoichmat_coeff2rational(gpr_model)
+        stoichmat_coeff_to_fraction(gpr_model)
         remove_conservation_relations(gpr_model)
 
         orig_gprs = {r.id: r.gene_reaction_rule for r in gpr_model.reactions}
@@ -255,7 +255,7 @@ class TestModelGprCompression:
         DNF: (g1 & g4 & g7 & g8) | (g1 & g4 & g5 & g8 & g9)
         """
         remove_blocked_reactions(gpr_model)
-        stoichmat_coeff2rational(gpr_model)
+        stoichmat_coeff_to_fraction(gpr_model)
         remove_conservation_relations(gpr_model)
 
         reac_map = compress_model_coupled(gpr_model, propagate_gpr=True)
@@ -286,7 +286,7 @@ class TestModelGprCompression:
         AND combine (skip empty): just r3's GPR = g8 or (g3 and g6)
         """
         remove_blocked_reactions(gpr_model)
-        stoichmat_coeff2rational(gpr_model)
+        stoichmat_coeff_to_fraction(gpr_model)
         remove_conservation_relations(gpr_model)
 
         reac_map = compress_model_coupled(gpr_model, propagate_gpr=True)
@@ -327,13 +327,13 @@ class TestEfmtoolBackendGpr:
 
         # Sparse RREF path
         remove_blocked_reactions(gpr_model)
-        stoichmat_coeff2rational(gpr_model)
+        stoichmat_coeff_to_fraction(gpr_model)
         remove_conservation_relations(gpr_model)
         rref_map = compress_model_coupled(gpr_model, compression_backend='sparse_rref', propagate_gpr=True)
 
         # Efmtool path
         remove_blocked_reactions(model_java)
-        stoichmat_coeff2rational(model_java)
+        stoichmat_coeff_to_fraction(model_java)
         remove_conservation_relations(model_java)
         java_map = compress_model_coupled(model_java, compression_backend='efmtool_rref', propagate_gpr=True)
 

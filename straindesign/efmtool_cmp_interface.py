@@ -308,10 +308,7 @@ def jBigFraction2sympyRat(val):
 
 
 def jBigFraction2fraction(val):
-    """Convert Java BigFraction to fractions.Fraction.
-
-    Use this for any value that enters the model or the compression map.
-    """
+    """Convert Java BigFraction to fractions.Fraction."""
     from fractions import Fraction
     r = jBigIntegerPair2sympyRat(val.getNumerator(), val.getDenominator())
     return Fraction(int(r.p), int(r.q))
@@ -388,13 +385,13 @@ def compress_model_java(model, suppressed_reactions=set()):
         dict: Reaction map from compressed to original reactions with scaling factors
     """
     import jpype
-    from .networktools import stoichmat_coeff2rational
+    from .networktools import stoichmat_coeff_to_fraction
 
     # Initialize Java if not already done
     _init_java()
 
     # Convert to rational coefficients for Java
-    stoichmat_coeff2rational(model)
+    stoichmat_coeff_to_fraction(model)
 
     for r in model.reactions:
         r.gene_reaction_rule = ''

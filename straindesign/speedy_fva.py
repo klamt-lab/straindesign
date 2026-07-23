@@ -41,7 +41,7 @@ from straindesign.names import CONSTRAINTS, SOLVER, OPTIMAL, UNBOUNDED, GLPK, LP
 from straindesign.networktools import suppress_lp_context
 from straindesign.compression import (
     compress_cobra_model, CompressionMethod, remove_conservation_relations,
-    stoichmat_coeff2rational, stoichmat_coeff2float, remove_blocked_reactions,
+    stoichmat_coeff_to_fraction, stoichmat_coeff2float, remove_blocked_reactions,
 )
 
 
@@ -79,7 +79,7 @@ def _compress_for_fva(model):
         finally:
             model._solver = saved_solver
         remove_blocked_reactions(cmp_model)
-        stoichmat_coeff2rational(cmp_model)
+        stoichmat_coeff_to_fraction(cmp_model)
         n_before = len(cmp_model.reactions)
         # Single-pass coupled compression (NULLSPACE only, no RECURSIVE iteration)
         for r in cmp_model.reactions:
@@ -769,6 +769,7 @@ def speedy_fva(model, **kwargs):
 _REV_TOL = 1e-7          # own max/min threshold (== FVA's directionality threshold)
 _REV_SCAN_TOL = 1e-3     # co-option certifies only on flux comfortably above solver noise
 _REV_REBUILD_EVERY = 200
+_FINAL_SWEEP_TOL = 1e-11  # final-sweep threshold: snap near-zero min/max to exactly 0
 
 
 def _rev_structural_sweep(model):
@@ -822,8 +823,7 @@ def fast_reversibility(model, solver=None, compress=True):
     yeast-GEM: ~68 vs ~4 ms/LP compressed); (3) warm-started per-reaction max/min on the
     compressed model (objective-only change) with a co-option scan that certifies other
     reactions carrying flux; (4) map compressed min/max back to the original reactions.
-    Sign of the achieved min/max gives reversibility. Validated exact vs FVA on
-    e_coli_core / iJO1366 / iML1515 / yeast-GEM (0 unsound, 0 lossy)."""
+    Sign of the achieved min/max gives reversibility."""
     solver = select_solver(solver, model)
     orig_rid = [r.id for r in model.reactions]
 
@@ -918,8 +918,8 @@ def fast_reversibility(model, solver=None, compress=True):
             scan(np.array(x_list[:n], dtype=np.float64))
 
     # (4) expand compressed min/max back to original reactions
-    incumbent_max[np.abs(incumbent_max) < 1e-11] = 0.0
-    incumbent_min[np.abs(incumbent_min) < 1e-11] = 0.0
+    incumbent_max[np.abs(incumbent_max) < _FINAL_SWEEP_TOL] = 0.0
+    incumbent_min[np.abs(incumbent_min) < _FINAL_SWEEP_TOL] = 0.0
     df = DataFrame({"minimum": incumbent_min, "maximum": incumbent_max}, index=cmp_rid)
     if cmp_maps:
         df = _expand_fva(df, cmp_maps, orig_rid)

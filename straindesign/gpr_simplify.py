@@ -18,13 +18,17 @@ import logging
 _popcount = getattr(int, 'bit_count', None) or (lambda c: bin(c).count('1'))
 
 
-# ---- parser (accepts and/or and */+; robust to any gene id incl. digit-leading / dotted) ----
 def tokenize(s):
     for m in re.finditer(r'\(|\)|\*|\+|[^\s()*+]+', s):
         yield m.group()
 
 
 def parse(s):
+    """Parse a GPR string into an AST.
+
+    Accepts both ``and``/``or`` and ``*``/``+`` operators, and is robust to any gene id,
+    including digit-leading or dotted names.
+    """
     toks = list(tokenize(s)); pos = 0
     def peek(): return toks[pos] if pos < len(toks) else None
     def eat():

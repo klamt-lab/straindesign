@@ -42,7 +42,7 @@ LOG = logging.getLogger(__name__)
 # =============================================================================
 
 
-def float_to_rational(val, max_precision: int = 6, max_denom: int = 100) -> Fraction:
+def float_to_fraction(val, max_precision: int = 6, max_denom: int = 100) -> Fraction:
     """Convert float to Fraction with bounded denominators."""
     if isinstance(val, Fraction):
         return val
@@ -159,7 +159,7 @@ class RationalMatrix:
             for c in range(cols):
                 val = arr[r, c]
                 if val != 0:
-                    frac = float_to_rational(val, max_precision, max_denom)
+                    frac = float_to_fraction(val, max_precision, max_denom)
                     row_idx.append(r)
                     col_idx.append(c)
                     num_data.append(frac.numerator)
@@ -189,7 +189,7 @@ class RationalMatrix:
                     elif hasattr(coeff, 'numerator'):
                         frac = Fraction(coeff.numerator, coeff.denominator)
                     else:
-                        frac = float_to_rational(coeff, max_precision, max_denom)
+                        frac = float_to_fraction(coeff, max_precision, max_denom)
 
                     row_idx.append(i)
                     col_idx.append(j)
@@ -1305,8 +1305,8 @@ class StoichMatrixCompressor:
         work.post.begin_batch_edit()
 
         for group in groups:
-            # nonzeros per member BEFORE merging: afterwards the master's column holds the whole
-            # group and would always look like the most detailed member
+            # Count nonzeros per member here; used later to pin the lump's scale to the member
+            # with the most coefficients.
             nnz = {r: sum(1 for _ in work.cmp.iter_column_fractions(r)) for r in group}
             self._combine_coupled(work, group, ratios)
 
@@ -1365,18 +1365,11 @@ class StoichMatrixCompressor:
                              ratios: List[Optional[Fraction]], nnz: Dict[int, int]) -> None:
         """Express a merged group in the units of one of its members.
 
-        A lumped group's ratios are fixed but its overall scale is free, and the scale that falls out
-        of merging into ``group[0]`` can be extreme -- on iML1515 the biomass lump comes out 4484x,
-        which turns ``biomass >= 0.001`` into a threshold below LP feasibility tolerance. So the merged
-        column is rescaled into the units of a chosen member. First choice: a member with a small
-        finite bound (an uptake limit, ATP maintenance, ...) whose bound is worth preserving, taken
-        only if re-expressing the lump in its units stays within one order of magnitude -- this skips
-        members that are stoichiometrically minor (e.g. a trace exchange in the biomass group, which
-        would reintroduce the 4484x). Otherwise the member with the most stoichiometric coefficients,
-        which is the biomass reaction wherever biomass is part of a group.
-
-        ``cmp`` (stoichiometry), ``post`` (the expansion map, and through it the module-constraint
-        coefficients) and the bounds are scaled together, so the change of units is exact.
+        A lump's ratios are fixed but its overall scale is free, and merging into ``group[0]`` can
+        yield an extreme scale (the iML1515 biomass lump comes out 4484x, pushing ``biomass >= 0.001``
+        below LP feasibility tolerance). Re-express the column so that reactions with many members or a
+        specific small finite bound (e.g. Biomass, ATP maintenance) keep their scale. ``cmp``, ``post``
+        and the bounds are scaled together, so the change of units is exact.
         """
         master = group[0]
 
@@ -1510,7 +1503,7 @@ def remove_conservation_relations(model) -> None:
             elif hasattr(coeff, 'numerator'):
                 frac = Fraction(coeff.numerator, coeff.denominator)
             else:
-                frac = float_to_rational(float(coeff))
+                frac = float_to_fraction(float(coeff))
             row_idx.append(j)  # reaction → row (transposed layout)
             col_idx.append(i)  # metabolite → column
             num_data.append(frac.numerator)
@@ -1799,14 +1792,14 @@ def remove_dummy_bounds(model) -> None:
                 rxn.upper_bound = np.inf
 
 
-def stoichmat_coeff2rational(model) -> None:
+def stoichmat_coeff_to_fraction(model) -> None:
     """Convert stoichiometric coefficients to exact fractions.Fraction."""
     for rxn in model.reactions:
         for met, coeff in rxn._metabolites.items():
             if isinstance(coeff, Fraction):
                 continue                                        # already exact
             elif isinstance(coeff, (float, int)):
-                rxn._metabolites[met] = float_to_rational(coeff)          # -> Fraction
+                rxn._metabolites[met] = float_to_fraction(coeff)          # -> Fraction
             elif hasattr(coeff, 'p'):                           # sympy.Rational -> Fraction
                 rxn._metabolites[met] = Fraction(int(coeff.p), int(coeff.q))
             elif hasattr(coeff, 'numerator'):                   # other Rational -> Fraction
@@ -1854,6 +1847,11 @@ def _gpr_ast_to_expr(node, op=None):
 
 def _expr_to_gpr_string(expr):
     """Render an expression as a GPR rule string, '' for None.
+
+    ``expr`` is one of the nested-expression forms produced by ``_gpr_ast_to_expr``: ``None`` (no
+    gene requirement, renders to ''), a gene-id string (e.g. ``'g1'``), or an ``(op, args)`` tuple
+    such as ``('and', ('g1', 'g2'))`` -> ``'g1 and g2'`` or, more nested,
+    ``('and', ('g1', ('or', ('g2', 'g3'))))``.
 
     Operands are sorted so equivalent inputs give identical rules, and a nested clause of the
     opposite operator is parenthesised.
@@ -1925,7 +1923,7 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
         LOG.info('  Removing blocked reactions.')
         remove_blocked_reactions(model)
         LOG.info('  Converting coefficients to rationals.')
-        stoichmat_coeff2rational(model)
+        stoichmat_coeff_to_fraction(model)
         coupled_changed = None  # None = not yet computed
         run = 1
         while True:
@@ -2096,8 +2094,8 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
         cols, vals = stoichmat_T.rows[i], stoichmat_T.data[i]
         if not vals:
             return ((), fwd[i], rev[i], inh[i])
-        f0 = float_to_rational(vals[0])
-        stoich = tuple((int(c), float_to_rational(v) / f0) for c, v in zip(cols, vals))
+        f0 = float_to_fraction(vals[0])
+        stoich = tuple((int(c), float_to_fraction(v) / f0) for c, v in zip(cols, vals))
         return (stoich, fwd[i], rev[i], inh[i])
 
     # Find parallel reactions by exact key comparison (hash pre-filter, then full compare)
@@ -2179,7 +2177,7 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
 __all__ = [
     # Rational matrix and utilities
     'RationalMatrix',
-    'float_to_rational',
+    'float_to_fraction',
     'detect_max_precision',
     'nullspace',
     'basic_columns',
@@ -2206,6 +2204,6 @@ __all__ = [
     'remove_ext_mets',
     'remove_conservation_relations',
     'remove_dummy_bounds',
-    'stoichmat_coeff2rational',
+    'stoichmat_coeff_to_fraction',
     'stoichmat_coeff2float',
 ]

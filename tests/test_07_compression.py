@@ -69,7 +69,7 @@ def test_python_compression_basic(model_gpr):
 
 def test_python_compression_coupled_function(model_small_example):
     """compress_model_coupled with compression_backend='sparse_rref' returns a dict."""
-    nt.stoichmat_coeff2rational(model_small_example)
+    nt.stoichmat_coeff_to_fraction(model_small_example)
     nt.remove_conservation_relations(model_small_example)
     reac_map = nt.compress_model_coupled(model_small_example, compression_backend='sparse_rref')
     assert isinstance(reac_map, dict)
@@ -77,7 +77,7 @@ def test_python_compression_coupled_function(model_small_example):
 
 def test_compression_coefficient_type(model_small_example):
     """Compression coefficients are exact rational number types."""
-    nt.stoichmat_coeff2rational(model_small_example)
+    nt.stoichmat_coeff_to_fraction(model_small_example)
     nt.remove_conservation_relations(model_small_example)
     reac_map = nt.compress_model_coupled(model_small_example, compression_backend='sparse_rref')
     for new_reac, old_reacs in reac_map.items():
@@ -85,9 +85,9 @@ def test_compression_coefficient_type(model_small_example):
             assert is_rational_type(coeff), (f"Coefficient for {old_reac} in {new_reac}: expected rational, got {type(coeff)}")
 
 
-def test_stoichmat_coeff2rational_uses_rational_type(model_small_example):
-    """stoichmat_coeff2rational converts all coefficients to rational types."""
-    nt.stoichmat_coeff2rational(model_small_example)
+def test_stoichmat_coeff_to_fraction_uses_rational_type(model_small_example):
+    """stoichmat_coeff_to_fraction converts all coefficients to rational types."""
+    nt.stoichmat_coeff_to_fraction(model_small_example)
     for reaction in model_small_example.reactions:
         for metabolite, coeff in reaction._metabolites.items():
             assert is_rational_type(coeff), (f"Coefficient for {metabolite.id} in {reaction.id}: expected rational, got {type(coeff)}")
