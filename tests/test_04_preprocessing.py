@@ -62,55 +62,42 @@ def test_gpr_extension_compression2(model_gpr):
 # ── GPR propagation helper unit tests ────────────────────────────────
 
 class TestGprAstToExpr:
+    # None is special-cased (identity check); the rest share one assertion shape.
     def test_none_returns_none(self):
         assert _gpr_ast_to_expr(None) is None
 
-    def test_single_gene(self):
-        assert _gpr_ast_to_expr(ast.Name(id='g1')) == 'g1'
-
-    def test_and_expression(self):
-        node = ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')])
-        assert _gpr_ast_to_expr(node) == ('and', ('g1', 'g2'))
-
-    def test_or_expression(self):
-        node = ast.BoolOp(op=ast.Or(), values=[ast.Name(id='g1'), ast.Name(id='g2')])
-        assert _gpr_ast_to_expr(node) == ('or', ('g1', 'g2'))
-
-    def test_nested(self):
+    @pytest.mark.parametrize("node,expected", [
+        (ast.Name(id='g1'), 'g1'),
+        (ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')]),
+         ('and', ('g1', 'g2'))),
+        (ast.BoolOp(op=ast.Or(), values=[ast.Name(id='g1'), ast.Name(id='g2')]),
+         ('or', ('g1', 'g2'))),
         # (g1 and g2) or g3
-        node = ast.BoolOp(op=ast.Or(), values=[
+        (ast.BoolOp(op=ast.Or(), values=[
             ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')]),
-            ast.Name(id='g3')
-        ])
-        assert _gpr_ast_to_expr(node) == ('or', (('and', ('g1', 'g2')), 'g3'))
-
-    def test_nested_same_op_is_flattened(self):
-        # g1 and (g2 and g3)
-        node = ast.BoolOp(op=ast.And(), values=[
+            ast.Name(id='g3')]),
+         ('or', (('and', ('g1', 'g2')), 'g3'))),
+        # g1 and (g2 and g3) -> flattened
+        (ast.BoolOp(op=ast.And(), values=[
             ast.Name(id='g1'),
-            ast.BoolOp(op=ast.And(), values=[ast.Name(id='g2'), ast.Name(id='g3')])
-        ])
-        assert _gpr_ast_to_expr(node) == ('and', ('g1', 'g2', 'g3'))
+            ast.BoolOp(op=ast.And(), values=[ast.Name(id='g2'), ast.Name(id='g3')])]),
+         ('and', ('g1', 'g2', 'g3'))),
+    ], ids=['single_gene', 'and', 'or', 'nested', 'nested_same_op_flattened'])
+    def test_gpr_ast_to_expr(self, node, expected):
+        assert _gpr_ast_to_expr(node) == expected
 
 
 class TestExprToGprString:
-    def test_none_returns_empty(self):
-        assert _expr_to_gpr_string(None) == ''
-
-    def test_single_gene(self):
-        assert _expr_to_gpr_string('g1') == 'g1'
-
-    def test_and(self):
-        assert _expr_to_gpr_string(('and', ['g1', 'g2'])) == 'g1 and g2'
-
-    def test_or(self):
-        assert _expr_to_gpr_string(('or', ['g1', 'g2'])) == 'g1 or g2'
-
-    def test_nested_and_in_or(self):
-        assert _expr_to_gpr_string(('or', [('and', ['g1', 'g2']), 'g3'])) == '(g1 and g2) or g3'
-
-    def test_nested_or_in_and(self):
-        assert _expr_to_gpr_string(('and', [('or', ['g1', 'g2']), 'g3'])) == '(g1 or g2) and g3'
+    @pytest.mark.parametrize("expr,expected", [
+        (None, ''),
+        ('g1', 'g1'),
+        (('and', ['g1', 'g2']), 'g1 and g2'),
+        (('or', ['g1', 'g2']), 'g1 or g2'),
+        (('or', [('and', ['g1', 'g2']), 'g3']), '(g1 and g2) or g3'),
+        (('and', [('or', ['g1', 'g2']), 'g3']), '(g1 or g2) and g3'),
+    ], ids=['none', 'single_gene', 'and', 'or', 'nested_and_in_or', 'nested_or_in_and'])
+    def test_expr_to_gpr_string(self, expr, expected):
+        assert _expr_to_gpr_string(expr) == expected
 
     def test_deterministic_sorting(self):
         result1 = _expr_to_gpr_string(('and', ['g2', 'g1', 'g3']))
@@ -125,61 +112,40 @@ class TestExprToGprString:
 
 
 class TestCombineGprAnd:
-    def test_all_empty(self):
-        assert _combine_gprs([None, None], 'and') == ''
-
-    def test_single_non_empty(self):
-        node = ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')])
-        result = _combine_gprs([node], 'and')
-        assert result == 'g1 and g2'
-
-    def test_skip_empty(self):
-        """Empty GPR (None) should be skipped in AND combination."""
-        node = ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')])
-        result = _combine_gprs([node, None, None], 'and')
-        assert result == 'g1 and g2'
-
-    def test_two_non_empty(self):
-        node1 = ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')])
-        node2 = ast.Name(id='g3')
-        result = _combine_gprs([node1, node2], 'and')
-        assert result == 'g1 and g2 and g3'
-
-    def test_simplification(self):
-        """AND of overlapping expressions should simplify."""
-        # (g1 and g2) AND (g1 and g3) -> g1 and g2 and g3
-        node1 = ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')])
-        node2 = ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g3')])
-        result = _combine_gprs([node1, node2], 'and')
-        assert result == 'g1 and g2 and g3'
-
-    def test_empty_list(self):
-        assert _combine_gprs([], 'and') == ''
+    @pytest.mark.parametrize("nodes,expected", [
+        ([None, None], ''),
+        ([ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')])],
+         'g1 and g2'),
+        # Empty GPR (None) should be skipped in AND combination.
+        ([ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')]), None, None],
+         'g1 and g2'),
+        ([ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')]),
+          ast.Name(id='g3')],
+         'g1 and g2 and g3'),
+        # AND of overlapping expressions should simplify: (g1 and g2) AND (g1 and g3).
+        ([ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')]),
+          ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g3')])],
+         'g1 and g2 and g3'),
+        ([], ''),
+    ], ids=['all_empty', 'single_non_empty', 'skip_empty', 'two_non_empty',
+            'simplification', 'empty_list'])
+    def test_combine_gprs_and(self, nodes, expected):
+        assert _combine_gprs(nodes, 'and') == expected
 
 
 class TestCombineGprOr:
-    def test_any_empty_returns_empty(self):
-        """If any reaction has empty GPR (always active), result is empty."""
-        node = ast.Name(id='g1')
-        result = _combine_gprs([node, None], 'or')
-        assert result == ''
-
-    def test_all_empty(self):
-        assert _combine_gprs([None, None], 'or') == ''
-
-    def test_two_non_empty(self):
-        node1 = ast.Name(id='g1')
-        node2 = ast.Name(id='g2')
-        result = _combine_gprs([node1, node2], 'or')
-        assert result == 'g1 or g2'
-
-    def test_deduplication(self):
-        """OR with duplicate terms should deduplicate."""
-        # g1 OR g1 -> g1
-        node1 = ast.Name(id='g1')
-        node2 = ast.Name(id='g1')
-        result = _combine_gprs([node1, node2], 'or')
-        assert result == 'g1'
+    @pytest.mark.parametrize("nodes,expected", [
+        # If any reaction has empty GPR (always active), result is empty.
+        ([ast.Name(id='g1'), None], ''),
+        ([None, None], ''),
+        ([ast.Name(id='g1'), ast.Name(id='g2')], 'g1 or g2'),
+        # OR with duplicate terms should deduplicate: g1 OR g1 -> g1.
+        ([ast.Name(id='g1'), ast.Name(id='g1')], 'g1'),
+        ([], ''),
+    ], ids=['any_empty_returns_empty', 'all_empty', 'two_non_empty',
+            'deduplication', 'empty_list'])
+    def test_combine_gprs_or(self, nodes, expected):
+        assert _combine_gprs(nodes, 'or') == expected
 
     def test_no_absorption(self):
         """OR does raw merge — absorption is deferred to reduce_gpr."""
@@ -188,9 +154,6 @@ class TestCombineGprOr:
         node2 = ast.Name(id='g1')
         result = _combine_gprs([node1, node2], 'or')
         assert 'g1 and g2' in result and 'or' in result
-
-    def test_empty_list(self):
-        assert _combine_gprs([], 'or') == ''
 
 
 # ── GPR propagation integration tests (model_gpr.xml) ────────────────
