@@ -400,21 +400,27 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     [cmp_ko_cost.pop(er) for er in essential_reacs if er in cmp_ko_cost]
     # --- GPR extension on (possibly compressed) model ---
     if kwargs['gene_kos']:
-        if kwargs['compress'] is True or kwargs['compress'] is None:
+        # GPR reduction has two leaf-minimizing, boolean-equivalent (designs unchanged) steps:
+        # reduce_gpr (compress-only; also drops irrelevant/essential genes) and the monotone
+        # simplify_model_gprs. simplify_model_gprs stays separate rather than folded into
+        # reduce_gpr because it must ALSO run on the no-compress path (below). Running both here,
+        # before the count log, lets that log reflect the fully reduced gene/gpr counts and the
+        # combined elapsed time.
+        t_gpr = time.time()
+        compress_gpr = kwargs['compress'] is True or kwargs['compress'] is None
+        if compress_gpr:
             num_genes = len(cmp_model.genes)
             num_gpr = len([True for r in cmp_model.reactions if r.gene_reaction_rule])
             logging.info('Preprocessing GPR rules (' + str(num_genes) + ' genes, ' + str(num_gpr) + ' gpr rules).')
             # removing irrelevant genes will also remove essential reactions from the list of knockable genes
             uncmp_gko_cost = reduce_gpr(cmp_model, essential_reacs, uncmp_gki_cost, uncmp_gko_cost)
-            if len(cmp_model.genes) < num_genes or len([True for r in cmp_model.reactions if r.gene_reaction_rule]) < num_gpr:
-                num_genes = len(cmp_model.genes)
-                num_gpr = len([True for r in cmp_model.reactions if r.gene_reaction_rule])
-                logging.info('  Simplified to ' + str(num_genes) + ' genes and ' +
-                    str(num_gpr) + ' gpr rules.')
-        # Leaf-minimize the GPR rules before building the pseudo-reaction gadget. Monotone
-        # boolean-equivalent rewrite (designs unchanged), so it always runs for gene-based
-        # (gMCS) computations to shrink the gadget extend_model_gpr generates.
         simplify_model_gprs(cmp_model)
+        if compress_gpr and (len(cmp_model.genes) < num_genes or
+                             len([True for r in cmp_model.reactions if r.gene_reaction_rule]) < num_gpr):
+            num_genes = len(cmp_model.genes)
+            num_gpr = len([True for r in cmp_model.reactions if r.gene_reaction_rule])
+            logging.info('  Simplified to ' + str(num_genes) + ' genes and ' +
+                str(num_gpr) + ' gpr rules (%.1fs).' % (time.time() - t_gpr))
         logging.info('  Extending metabolic network with gpr associations.')
         reac_map = extend_model_gpr(cmp_model, has_gene_names)
         for i, m in enumerate(sd_modules):
