@@ -816,9 +816,9 @@ model, with no error raised. Set `ε` tight and genuine couplings born from larg
 coefficients (see the 263-bit yeast-GEM case below) are missed. There is no safe `ε`, because the
 coefficients that arise mid-elimination span many orders of magnitude. The project constraint is
 therefore absolute: **the nullspace and rank computations are done in exact arithmetic — Python
-arbitrary-precision integers and `fractions.Fraction` — and never in float.** `stoichmat_coeff2rational`
+arbitrary-precision integers and `fractions.Fraction` — and never in float.** `stoichmat_coeff_to_fraction`
 (`compression.py`) converts every stoichiometric coefficient to an exact `Fraction`/`sympy.Rational`
-before any compression math runs, and `float_to_rational` (`compression.py`) is the one controlled
+before any compression math runs, and `float_to_fraction` (`compression.py`) is the one controlled
 place where a stray float coefficient is turned into a bounded-denominator rational (it first tries
 `Fraction(val).limit_denominator(100)` and accepts it only if it round-trips to `max_precision`
 decimals, else falls back to `round(val·10^p)/10^p`). Once inside the engine, no float ever appears.
@@ -831,7 +831,7 @@ The exact matrix type is `RationalMatrix` (`compression.py`). It stores a sparse
 matrices lets the common operations (column iteration, row/column deletion, submatrix extraction) stay
 in fast compiled sparse code, while every value remains an exact rational. Construction paths:
 `from_cobra_model` (`:175`) reads a model's coefficients straight into num/den arrays, preserving
-`Fraction`/sympy-`Rational` exactly and only calling `float_to_rational` for genuine floats;
+`Fraction`/sympy-`Rational` exactly and only calling `float_to_fraction` for genuine floats;
 `identity` (`:144`), `from_numpy` (`:155`), and `_from_sparse` (`:130`) cover the rest.
 
 Two features of `RationalMatrix` matter later:
@@ -1174,8 +1174,8 @@ It never computes a kernel — it groups reactions by an exact hashable key.
 
 **Scale-invariant, exact key.** The stoichiometry matrix is taken transposed (`stoichmat_T`, one row
 per reaction) and each reaction's key (`_parallel_key`, `:2058`) is its stoichiometry row **normalized
-by its first nonzero coefficient in exact rational arithmetic**: `f0 = float_to_rational(vals[0])`, then
-`stoich = tuple((col, float_to_rational(v)/f0) …)` (`:2062`–`:2064`). Normalizing by the first
+by its first nonzero coefficient in exact rational arithmetic**: `f0 = float_to_fraction(vals[0])`, then
+`stoich = tuple((col, float_to_fraction(v)/f0) …)` (`:2062`–`:2064`). Normalizing by the first
 coefficient makes the key **scale-invariant**: `−1 A → 2 B` and `−3 A → 6 B` both reduce to the tuple
 `((A,1),(B,−2))` and so share a key, but the division is exact (`Fraction`), so two rows that are only
 *nearly* proportional get *different* keys — no reaction is ever merged on a rounding coincidence.
@@ -1335,7 +1335,7 @@ marshalling lives. It mutates the cobra model in place and returns the same
 pipeline (module remapping, cost compression, decompression in [Ch 9](#ch9)) is backend-agnostic.
 
 **Into Java.**
-- `stoichmat_coeff2rational(model)` (`:387`) first converts every stoichiometric coefficient to an
+- `stoichmat_coeff_to_fraction(model)` (`:387`) first converts every stoichiometric coefficient to an
   exact `Fraction`/sympy-`Rational` — the same exactness discipline as §3.2.1, done *before* any Java
   call.
 - All gene rules are cleared, `r.gene_reaction_rule = ''` (`:389`), matching the Python coupled path
@@ -5496,7 +5496,7 @@ c[0][new_reac] = np.sum([c[0].pop(k) * old_reac_val[k] for k in lumped_reacs])
 `c[0]` is the coefficient dict; `old_reac_val` is `{old: factor}`; each merged term is popped and its
 coefficient times its factor is accumulated onto `new_reac`. Objectives (`INNER_OBJECTIVE`,
 `OUTER_OBJECTIVE`, `PROD_ID`) are linear expressions and get the identical treatment.
-Coefficients are first converted to exact rationals (`modules_coeff2rational`) so the
+Coefficients are first converted to exact rationals (`modules_coeff_to_fraction`) so the
 factor multiply-and-sum stays exact — the same integer/rational discipline compression itself insists on
 ([Ch 3](#ch3)): never let a merge introduce float drift into a constraint that the MILP will treat as hard.
 
