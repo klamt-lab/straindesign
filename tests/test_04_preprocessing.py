@@ -148,7 +148,7 @@ class TestCombineGprOr:
         assert _combine_gprs(nodes, 'or') == expected
 
     def test_no_absorption(self):
-        """OR does raw merge — absorption is deferred to reduce_gpr."""
+        """OR does raw merge — absorption is deferred to simplify_model_gprs."""
         # (g1 and g2) OR g1 -> kept as-is (not simplified to g1)
         node1 = ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')])
         node2 = ast.Name(id='g1')
