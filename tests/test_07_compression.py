@@ -161,21 +161,51 @@ def test_compression_parity_reaction_count(jpype_available):
         model_java.reactions), (f"Reaction count mismatch: sparse_rref={len(model_py.reactions)}, efmtool_rref={len(model_java.reactions)}")
 
 
+def _trace_lump(cmp_maps, orig_id):
+    """Follow an original reaction through the compression rounds.
+
+    Returns (compressed_id, factor) with orig_flux == factor * compressed_flux.
+    """
+    cur, factor = orig_id, 1.0
+    for rnd in cmp_maps:
+        for new_id, members in rnd["reac_map_exp"].items():
+            if cur in members:
+                factor *= float(members[cur])
+                cur = new_id
+                break
+    return cur, factor
+
+
 @pytest.mark.java
 def test_fba_equivalence(jpype_available):
-    """Both compression backends produce compressed models with the same optimal FBA value (straindesign FBA)."""
-    model_py = load_model("e_coli_core")
-    nt.compress_model(model_py, compression_backend='sparse_rref')
-    model_java = load_model("e_coli_core")
-    nt.compress_model(model_java, compression_backend='efmtool_rref')
+    """Both backends preserve the uncompressed optimum once the lump factor is applied.
 
-    biomass_py = next((r.id for r in model_py.reactions if 'biomass' in r.id.lower()), None)
-    biomass_java = next((r.id for r in model_java.reactions if 'biomass' in r.id.lower()), None)
-    assert biomass_py and biomass_java, "Could not find biomass reaction"
+    A lump's overall scale is free: only its ratios are fixed, so the raw objective value of a
+    lumped reaction is backend-specific and not a meaningful thing to compare. sparse_rref
+    re-expresses each lump in one member's units, efmtool_rref does not, so their biomass columns
+    differ by a constant factor. What must agree -- and what a caller actually relies on -- is the
+    flux recovered through the compression map.
+    """
+    base = load_model("e_coli_core")
+    biomass = next((r.id for r in base.reactions if 'biomass' in r.id.lower()), None)
+    assert biomass, "Could not find biomass reaction"
+    ref = sd.fba(base, obj={biomass: 1}, obj_sense='maximize').objective_value
 
-    val_py = sd.fba(model_py, obj={biomass_py: 1}, obj_sense='maximize').objective_value
-    val_java = sd.fba(model_java, obj={biomass_java: 1}, obj_sense='maximize').objective_value
-    assert abs(val_py - val_java) < 1e-6, (f"FBA objective mismatch: sparse_rref={val_py}, efmtool_rref={val_java}")
+    recovered = {}
+    for backend in ('sparse_rref', 'efmtool_rref'):
+        model = load_model("e_coli_core")
+        cmp_maps = nt.compress_model(model, compression_backend=backend)
+        cmp_id, factor = _trace_lump(cmp_maps, biomass)
+        assert cmp_id in [r.id for r in model.reactions], (
+            f"{backend}: compression map names {cmp_id}, which is not in the compressed model")
+        val = sd.fba(model, obj={cmp_id: 1}, obj_sense='maximize').objective_value
+        recovered[backend] = factor * val
+
+    for backend, val in recovered.items():
+        assert abs(val - ref) < 1e-6, (
+            f"{backend}: recovered optimum {val} != uncompressed {ref}")
+    assert abs(recovered['sparse_rref'] - recovered['efmtool_rref']) < 1e-6, (
+        f"Backend mismatch after mapping back: {recovered}")
 
 
 def test_cobra_optimize_after_compression():

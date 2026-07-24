@@ -13,6 +13,7 @@ def pytest_addoption(parser):
     for name, help_text in [
         ("--medium", "Run iMLcore genome-scale benchmarks (~4 min total)."),
         ("--large",  "Run iML1515 large-model benchmarks (several min/solver)."),
+        ("--java",   "Run JPype/JVM tests on Linux/macOS too (flaky, see jpype#934)."),
     ]:
         try:
             parser.addoption(name, action="store_true", default=False, help=help_text)
@@ -49,9 +50,12 @@ def pytest_collection_modifyitems(config, items):
     # CI runners due to a GC finalization race (jpype#934). Windows is unaffected.
     # Tested jpype1==1.5.0 pinning — no improvement (still segfaults, plus no
     # Python 3.13 wheel causing build failures on macOS ARM64).
-    if platform.system() != 'Windows':
+    # --java forces them on anyway, which is how a Java-backend change gets verified without
+    # round-tripping through the Windows CI leg.
+    if platform.system() != 'Windows' and not config.getoption("--java", default=False):
         skip_java = pytest.mark.skip(
-            reason="JPype JNI crashes non-deterministically on Linux/macOS (jpype#934)")
+            reason="JPype JNI crashes non-deterministically on Linux/macOS (jpype#934); "
+                   "pass --java to run anyway")
         for item in items:
             if "java" in item.keywords:
                 item.add_marker(skip_java)

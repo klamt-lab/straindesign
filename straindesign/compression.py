@@ -2127,6 +2127,15 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
     with suppress_lp_context(model):
         cmp_mapReac = []
         use_java = (compression_backend == 'efmtool_rref')
+        if use_java:
+            # The Python compressor re-expresses each lump in one member's units (see
+            # StoichMatrixCompressor._restore_group_scale); the legacy Java backend does not, so a
+            # lump can come out at an extreme scale. The returned map carries the factor, so
+            # expanding a design stays exact -- but a bound stated on a lumped reaction is read in
+            # the lump's units, which is how 'biomass >= 0.001' can end up below feasibility tolerance.
+            LOG.warning('  Compression backend "efmtool_rref" does not normalize lumped-reaction '
+                        'scales; bounds and constraints on lumped reactions are expressed in the '
+                        'lump\'s units. Use "sparse_rref" if you constrain lumped reactions.')
         LOG.info('  Removing blocked reactions.')
         remove_blocked_reactions(model)
         LOG.info('  Converting coefficients to rationals.')
