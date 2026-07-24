@@ -21,6 +21,7 @@
 
 from typing import Dict, List, Tuple
 import numpy as np
+import ast
 import logging
 import json
 import time
@@ -30,9 +31,10 @@ from cobra.manipulation import rename_genes
 from straindesign import SDModule, SDSolutions, select_solver, fva, DisableLogger, SDProblem, SDMILP
 from straindesign.names import *
 from straindesign.networktools import   remove_ext_mets, bound_blocked_or_irrevers_fva, \
-                                        reduce_gpr, extend_model_gpr, extend_model_regulatory, \
+                                        extend_model_gpr, extend_model_regulatory, evaluate_gpr_ast, \
                                         compress_model, compress_modules, compress_ki_ko_cost, expand_sd, filter_sd_maxcost, \
                                         estimate_expansion_size, with_suppressed_lp, _silent_io
+from straindesign.compression import simplify_model_gprs
 
 
 def _collect_no_par_compress_reacs(sd_modules):
@@ -52,7 +54,202 @@ def _collect_no_par_compress_reacs(sd_modules):
     return reacs
 
 
+# ── GPR reduction (pipeline-only: needs essential reactions + gene KO/KI costs) ──
+def reduce_model_gprs(model, essential_reacs, gkis, gkos):
+    """Simplify GPR rules by removing non-targetable genes and reducing boolean expressions
+
+    This function is used in preprocessing of computational strain design computations. Often,
+    certain reactions, for instance, reactions essential for microbial growth can/must not be
+    targeted by interventions. That can be exploited to reduce the set of genes in which
+    interventions need to be considered.
+
+    Given a set of essential reactions that is to be maintained operational, some genes can be
+    removed from a metabolic model, either because they only affect only blocked reactions or
+    essential reactions, or because they are essential reactions and must not be removed. As a
+    consequence, the GPR rules of a model can be simplified using AST parsing for both DNF and non-DNF rules.
+
+
+    Example:
+        reduce_model_gprs(model, essential_reacs, gkis, gkos):
+    
+    Args:
+        model (cobra.Model):
+            A metabolic model that is an instance of the cobra.Model class containing GPR rules
+            
+        essential_reacs (list of str):
+            A list of identifiers of essential reactions.
+            
+        gkis, gkos (dict):
+            Dictionaries that contain the costs for gene knockouts and additions. E.g.,
+            gkos={'adhE': 1.0, 'ldhA' : 1.0 ...}
+            
+    Returns:
+        (dict):
+        An updated dictionary of the knockout costs in which irrelevant genes are removed.
+    """
+
+    def ast_to_gene_reaction_rule(node):
+        """
+        Convert an AST node back to gene reaction rule string format.
+        """
+        if isinstance(node, ast.Name):
+            return node.id
+        elif isinstance(node, ast.BoolOp):
+            child_strings = [ast_to_gene_reaction_rule(child) for child in node.values]
+            if isinstance(node.op, ast.And):
+                return ' and '.join(f'({s})' if ' or ' in s else s for s in child_strings)
+            elif isinstance(node.op, ast.Or):
+                return ' or '.join(f'({s})' if ' and ' in s else s for s in child_strings)
+        else:
+            raise ValueError(f"Unsupported AST node type: {type(node)}")
+
+    def simplify_gpr_ast(node, protected_genes_dict):
+        """
+        Simplify GPR AST by setting protected genes to True and applying boolean simplification.
+        This is equivalent to the original string-based approach but operates purely on AST.
+        """
+        return apply_gene_protection_to_ast(node, protected_genes_dict)
+
+    def apply_gene_protection_to_ast(node, protected_genes_dict):
+        """
+        Apply gene protection to AST by setting protected genes to True and simplifying boolean expressions.
+        Returns a simplified AST node with redundant terms removed and consistent gene ordering.
+        """
+        if isinstance(node, ast.Name):
+            if node.id in protected_genes_dict:
+                return True
+            else:
+                return node
+        elif isinstance(node, ast.BoolOp):
+            # Recursively apply to children
+            new_children = []
+            for child in node.values:
+                simplified_child = apply_gene_protection_to_ast(child, protected_genes_dict)
+
+                if isinstance(node.op, ast.And):
+                    if simplified_child is False:
+                        return False
+                    elif simplified_child is not True:
+                        new_children.append(simplified_child)
+                elif isinstance(node.op, ast.Or):
+                    if simplified_child is True:
+                        return True
+                    elif simplified_child is not False:
+                        new_children.append(simplified_child)
+
+            # Handle results
+            if not new_children:
+                return True if isinstance(node.op, ast.And) else False
+            elif len(new_children) == 1:
+                return new_children[0]
+            else:
+                # (b) De-dup: boolean simplification (absorption/dedup of OR terms) is delegated to
+                # simplify_model_gprs, which runs right after reduce_model_gprs on every path that
+                # runs reduce. Here we only apply the protected-gene substitution + True/False
+                # elimination and keep a stable child ordering.
+                sorted_children = sort_ast_nodes(new_children)
+                new_node = ast.BoolOp(op=node.op, values=sorted_children)
+                return new_node
+        else:
+            raise ValueError(f"Unsupported AST node type: {type(node)}")
+
+    def sort_ast_nodes(nodes):
+        """Sort AST nodes for consistent ordering"""
+
+        def node_sort_key(node):
+            if isinstance(node, ast.Name):
+                return (0, node.id)
+            elif isinstance(node, ast.BoolOp):
+                return (1, len(node.values), str(type(node.op)))
+            return (2, str(node))
+
+        return sorted(nodes, key=node_sort_key)
+
+    def is_gene_essential_to_reaction_ast(reaction, gene_id):
+        """
+        Determine if a gene is essential for a reaction using AST-based GPR analysis.
+        A gene is considered essential if removing it (setting it to False) makes 
+        the entire GPR expression evaluate to False, rendering the reaction impossible.
+        """
+        if not reaction.gene_reaction_rule:
+            return False
+
+        # Skip reactions without gene associations
+        if not reaction.gpr or not reaction.gpr.body:
+            return False
+
+        try:
+            # Test what happens if we knock out this gene using AST
+            gene_states = {gene_id: False}
+            result = evaluate_gpr_ast(reaction.gpr.body, gene_states)
+            return result is False
+        except Exception as e:
+            # Catch unsupported AST node types but don't fall back to string parsing
+            logging.warning(f'Unsupported AST node type in reaction {reaction.id} for gene {gene_id}: {e}')
+            return False
+
+    # 1) Remove gpr rules from blocked reactions
+    blocked_reactions = [reac.id for reac in model.reactions if reac.bounds == (0, 0)]
+    for rid in blocked_reactions:
+        model.reactions.get_by_id(rid).gene_reaction_rule = ''
+    for g in model.genes[::-1]:  # iterate in reverse order to avoid mixing up the order of the list when removing genes
+        if not g.reactions:
+            model.genes.remove(g)
+
+    protected_genes = set()
+
+    # 2. Protect genes that only occur in essential reactions
+    for g in model.genes:
+        if not g.reactions or {r.id for r in g.reactions}.issubset(essential_reacs):
+            protected_genes.add(g)
+
+    # 3. Protect genes that are essential to essential reactions (AST-based analysis)
+    for r in [model.reactions.get_by_id(s) for s in essential_reacs]:
+        for g in r.genes:
+            if is_gene_essential_to_reaction_ast(r, g.id):
+                protected_genes.add(g)
+
+    # 4. Remove essential genes, and knockouts without impact from gko_costs
+    [gkos.pop(pg.id) for pg in protected_genes if pg.id in gkos]
+
+    # 5. Add all not-knockable genes to the protected list
+    [protected_genes.add(g) for g in model.genes if (g.id not in gkos) and (g.name not in gkos)]  # support names or ids in gkos
+
+    # 6. genes with kiCosts are kept (remove from protected list so they can be targeted)
+    gki_ids = [g.id for g in model.genes if (g.id in gkis) or (g.name in gkis)]  # support names or ids in gkis
+    protected_genes = protected_genes.difference({model.genes.get_by_id(g) for g in gki_ids})
+    protected_genes_dict = {pg.id: True for pg in protected_genes}
+
+    # 7. Simplify GPR rules using AST-based boolean logic and remove non-targetable rules
+    for r in model.reactions:
+        if r.gene_reaction_rule and r.gpr and r.gpr.body:
+            try:
+                simplified = simplify_gpr_ast(r.gpr.body, protected_genes_dict)
+
+                if simplified is True:
+                    # Rule is always satisfied (cannot be knocked out)
+                    model.reactions.get_by_id(r.id).gene_reaction_rule = ''
+                elif simplified is False:
+                    # Rule is impossible - should not happen with proper protection
+                    logging.error(f'Something went wrong during gpr rule simplification for {r.id}.')
+                elif isinstance(simplified, (ast.Name, ast.BoolOp)):
+                    # Convert simplified AST back to string
+                    new_rule = ast_to_gene_reaction_rule(simplified)
+                    model.reactions.get_by_id(r.id).gene_reaction_rule = new_rule
+                # If simplified is the original node, keep original rule
+            except Exception as e:
+                logging.warning(f'Failed to simplify GPR rule for reaction {r.id}: {e}')
+
+    # 8. Remove obsolete genes and protected genes
+    for g in model.genes[::-1]:
+        if not g.reactions or g in protected_genes:
+            model.genes.remove(g)
+
+    return gkos
+
+
 @with_suppressed_lp
+
 def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """Computes strain designs for a user-defined strain design problem
 
@@ -352,6 +549,24 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             # compression passes (keeps the coupled-exemption matching them by name)
             no_par_compress_reacs.update(no_coupled_compress_reacs)
         compression_backend = kwargs.get('compression_backend', 'sparse_rref')
+        # --- Reversibility pre-tightening (BEFORE compress #1) ---
+        # Sign-only FVA (cheaper than full FVA): fix lb/ub to 0 for directions carrying no flux in the
+        # base polytope. Design-neutral (a base-infeasible direction stays infeasible under any module
+        # constraint) -- the same tightening SD applies after compress #2, just moved up. Doing it here
+        # lets compress #1 fuse the now one-directional reactions and spares genuinely irreversible ones
+        # from the GPR fwd/rev split (which fires on lb<0).
+        from straindesign.speedy_fva import fast_reversibility
+        t0 = time.time()
+        _rev = fast_reversibility(cmp_model, solver=kwargs[SOLVER])
+        _n_tight = 0
+        for r in cmp_model.reactions:
+            can_fwd, can_rev = _rev[r.id]
+            if not can_fwd and float(r._upper_bound) > 0.0:
+                r._upper_bound = min(0.0, float(r._upper_bound)); _n_tight += 1
+            if not can_rev and float(r._lower_bound) < 0.0:
+                r._lower_bound = max(0.0, float(r._lower_bound)); _n_tight += 1
+        logging.info('  Reversibility pre-tightening fixed %d reaction directions (%.1fs).'
+                     % (_n_tight, time.time() - t0))
         logging.info('Compressing Network (' + str(len(cmp_model.reactions)) + ' reactions).')
         t0 = time.time()
         cmp_mapReac_1 = compress_model(cmp_model, no_par_compress_reacs,
@@ -381,17 +596,27 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     [cmp_ko_cost.pop(er) for er in essential_reacs if er in cmp_ko_cost]
     # --- GPR extension on (possibly compressed) model ---
     if kwargs['gene_kos']:
-        if kwargs['compress'] is True or kwargs['compress'] is None:
+        # GPR reduction has two leaf-minimizing, boolean-equivalent (designs unchanged) steps:
+        # reduce_model_gprs (compress-only; also drops irrelevant/essential genes) and the monotone
+        # simplify_model_gprs. simplify_model_gprs stays separate rather than folded into
+        # reduce_model_gprs because it must ALSO run on the no-compress path (below). Running both here,
+        # before the count log, lets that log reflect the fully reduced gene/gpr counts and the
+        # combined elapsed time.
+        t_gpr = time.time()
+        compress_gpr = kwargs['compress'] is True or kwargs['compress'] is None
+        if compress_gpr:
             num_genes = len(cmp_model.genes)
             num_gpr = len([True for r in cmp_model.reactions if r.gene_reaction_rule])
             logging.info('Preprocessing GPR rules (' + str(num_genes) + ' genes, ' + str(num_gpr) + ' gpr rules).')
             # removing irrelevant genes will also remove essential reactions from the list of knockable genes
-            uncmp_gko_cost = reduce_gpr(cmp_model, essential_reacs, uncmp_gki_cost, uncmp_gko_cost)
-            if len(cmp_model.genes) < num_genes or len([True for r in cmp_model.reactions if r.gene_reaction_rule]) < num_gpr:
-                num_genes = len(cmp_model.genes)
-                num_gpr = len([True for r in cmp_model.reactions if r.gene_reaction_rule])
-                logging.info('  Simplified to ' + str(num_genes) + ' genes and ' +
-                    str(num_gpr) + ' gpr rules.')
+            uncmp_gko_cost = reduce_model_gprs(cmp_model, essential_reacs, uncmp_gki_cost, uncmp_gko_cost)
+        simplify_model_gprs(cmp_model)
+        if compress_gpr and (len(cmp_model.genes) < num_genes or
+                             len([True for r in cmp_model.reactions if r.gene_reaction_rule]) < num_gpr):
+            num_genes = len(cmp_model.genes)
+            num_gpr = len([True for r in cmp_model.reactions if r.gene_reaction_rule])
+            logging.info('  Simplified to ' + str(num_genes) + ' genes and ' +
+                str(num_gpr) + ' gpr rules (%.1fs).' % (time.time() - t_gpr))
         logging.info('  Extending metabolic network with gpr associations.')
         reac_map = extend_model_gpr(cmp_model, has_gene_names)
         for i, m in enumerate(sd_modules):
@@ -455,28 +680,61 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                   if not (float(r.lower_bound) == 0.0
                           and np.isinf(float(r.upper_bound))
                           and float(r.upper_bound) > 0)]
-    bound_blocked_or_irrevers_fva(cmp_model, solver=kwargs[SOLVER], compress=False,
-                                  reaction_list=_fva_scope)
-    logging.info('  FVA done (%.1fs).' % (time.time() - t0))
-
-    # FVA to identify essential reactions and size-1 MCS before building MILP
-    logging.info('  FVA(s) in compressed model to identify essential reactions.')
     essential_reacs = set()
     suppress_essential = set()
     cmp_size1_mcs = []
-    # Scope FVA to knockable reactions only (essentiality of non-knockable reactions is irrelevant)
     knockable_ids = list(set(cmp_ko_cost.keys()) | set(cmp_ki_cost.keys()))
-    for m in sd_modules:
-        flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS],
-                          compress=False, reaction_list=knockable_ids)
-        essentials_in_module = set()
-        for (reac_id, limits) in flux_limits.iterrows():
-            if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0:
-                essentials_in_module.add(reac_id)
-        if m[MODULE_TYPE] != SUPPRESS:
-            essential_reacs.update(essentials_in_module)
-        else:
+
+    # With exactly one classical module, one FVA over the constrained module polytope can serve both
+    # model-bound tightening and module essentiality. This is only sound for a single module: applying
+    # one module's tighter ranges to the shared model could otherwise alter another module's polytope.
+    fold_module_fva = (
+        len(sd_modules) == 1
+        and sd_modules[0][MODULE_TYPE] in [SUPPRESS, PROTECT]
+        and sd_modules[0][INNER_OBJECTIVE] is None
+    )
+    if fold_module_fva:
+        module = sd_modules[0]
+        fold_scope = sorted(set(_fva_scope) | set(knockable_ids))
+        flux_limits = bound_blocked_or_irrevers_fva(
+            cmp_model, solver=kwargs[SOLVER], constraints=module[CONSTRAINTS],
+            compress=False, reaction_list=fold_scope)
+        module_limits = flux_limits.loc[
+            [reac_id for reac_id in knockable_ids if reac_id in flux_limits.index]]
+        module['fva_bounds'] = module_limits
+        essentials_in_module = {
+            reac_id for reac_id, limits in module_limits.iterrows()
+            if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0
+        }
+        if module[MODULE_TYPE] == SUPPRESS:
             suppress_essential.update(essentials_in_module)
+        else:
+            essential_reacs.update(essentials_in_module)
+        logging.info('  Folded model/module FVA done (%.1fs).' % (time.time() - t0))
+    else:
+        bound_blocked_or_irrevers_fva(
+            cmp_model, solver=kwargs[SOLVER], compress=False, reaction_list=_fva_scope)
+        logging.info('  FVA done (%.1fs).' % (time.time() - t0))
+
+        # FVA to identify essential reactions and size-1 MCS before building MILP
+        logging.info('  FVA(s) in compressed model to identify essential reactions.')
+        # FVA over each module's region, scoped to knockable reactions. The ranges serve two purposes:
+        # (1) essentiality for size-1 MCS detection, and (2) region-FVA subproblem tightening, read back
+        # in SDMILP, which is why SDProblem runs no region FVA of its own. flux_limits is stored on the
+        # module and flows to SDMILP via sd_modules. Scoping to knockable reactions keeps
+        # the LP count down (and only knockable reactions carry z-links to tighten anyway).
+        for module in sd_modules:
+            flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=module[CONSTRAINTS],
+                              compress=False, reaction_list=knockable_ids)
+            module['fva_bounds'] = flux_limits
+            essentials_in_module = {
+                reac_id for reac_id, limits in flux_limits.iterrows()
+                if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0
+            }
+            if module[MODULE_TYPE] == SUPPRESS:
+                suppress_essential.update(essentials_in_module)
+            else:
+                essential_reacs.update(essentials_in_module)
 
     # Size-1 MCS detection: only for classical MCS problems (one SUPPRESS + any PROTECT)
     is_classical_mcs = (len([m for m in sd_modules if m[MODULE_TYPE] == SUPPRESS]) == 1 and
@@ -539,6 +797,10 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         solution_approach = kwargs.pop(SOLUTION_APPROACH)
     else:
         solution_approach = BEST
+
+    # SDMILP.enumerate_ksweep is an alternative POPULATE loop, disabled for now. It is complete only
+    # for integer-valued intervention costs, and was faster on CPLEX gene-MCS but slower on gurobi.
+    # enum_method = kwargs.pop('enum_method', 'populate')
 
     dump_preprocessed = kwargs.pop('dump_preprocessed', None)
 

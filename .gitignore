@@ -145,3 +145,5 @@ benchmark_compression.py
 benchmark_simple.py
 profile_compression.py
 compression_benchmark.png
+# perf-test artefacts
+tests/perf_results/

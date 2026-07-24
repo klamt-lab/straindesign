@@ -228,12 +228,59 @@ class SDProblem:
         # np.savetxt("Ab_py.tsv", Ab.todense(), delimiter='\t')
         self.vtype = 'B' * self.num_z + 'C' * (self.z_map_vars.shape[1] - self.num_z)
 
+    def _module_bound_override(self, sd_module):
+        """Per-module bound override for a classical-MCS module (PROTECT or SUPPRESS).
+
+        Returns a TARGETED SUBSET dict ``{rxn_id: (lo, hi)}`` of per-reaction bound overrides for this
+        module's block only (never written into the shared model). The bounds need NOT come from FVA --
+        any source of a proven per-module bound works. Currently the source is the module's flux limits
+        (``sd_module['fva_bounds']``), computed once in compute_strain_designs' preprocessing. Only two
+        structural facts are carried (sign-only, never a magnitude):
+          - blocked in the module (min == max == 0)     -> (0.0, 0.0)
+          - one-sided in the module (min >= 0)          -> lo = 0.0   (never negative here)
+          - one-sided in the module (max <= 0)          -> hi = 0.0   (never positive here)
+        Magnitudes are NOT touched (no non-binding-bound -> +/-inf relaxation -- that is the
+        fva_tighten behaviour a benchmark flagged as a regression). Values are returned as an override,
+        NOT written into the model, so this is scoped to the module's block only and cannot make a
+        reaction non-targetable for another module (the shared-z pitfall). If the limits are absent (a
+        bare SDProblem, not going through preprocessing), this returns no override -- it does NOT run a
+        fresh full-model FVA (that cost belongs in preprocessing, not the MILP constructor).
+
+        Soundness: a reaction blocked within the module's block is already 0 across that whole block, so
+        fixing its bound to 0 (or fixing the sign of a one-sided reaction) does not remove any point of
+        it. For PROTECT it is the protected/desired set; for SUPPRESS it is the undesired set the primal
+        describes before farkas_dualize. In both cases the block is unchanged, so which knockout sets
+        keep it feasible (PROTECT) / make it infeasible (SUPPRESS) is unchanged -> the design set is
+        identical.
+        """
+        limits = sd_module.get('fva_bounds')
+        if limits is None:
+            # Per-module flux limits are precomputed in compute_strain_designs' preprocessing and
+            # passed on the module. A bare SDProblem (a test, or a direct caller) supplies none and
+            # gets no override: that FVA belongs in preprocessing, not in the MILP constructor. The
+            # override only tightens bounds, so omitting it is design-neutral.
+            return {}
+        solver = getattr(self, SOLVER, None)
+        tol = 1e-10 if select_solver(solver) in [SCIP, GLPK] else 0.0
+        override = {}
+        for rid, lim in limits.iterrows():
+            lo = hi = None
+            if lim.minimum >= tol:
+                lo = 0.0
+            if lim.maximum <= -tol:
+                hi = 0.0
+            if lim.minimum >= tol and lim.maximum <= tol:   # blocked in-region
+                lo, hi = 0.0, 0.0
+            if lo is not None or hi is not None:
+                override[rid] = (lo, hi)
+        return override
+
     def addModule(self, sd_module):
         """Generate module LP and z-linking-matrix for each module and add them to the strain design MILP
-        
+
         Args:
             sd_module (straindesign.SDModule):
-                Modules to describe strain design problems like protected or suppressed flux states for 
+                Modules to describe strain design problems like protected or suppressed flux states for
                 MCS strain design or inner and outer objective functions for OptKnock. See description
                 of SDModule for more information on how to set up modules.
         """
@@ -246,8 +293,15 @@ class SDProblem:
         # 2. Construct LP for module
         if sd_module[MODULE_TYPE] in [PROTECT, SUPPRESS] and sd_module[INNER_OBJECTIVE] is None:
             # Classical MCS
+            # Tighten THIS block's bounds with region-FVA (blocked + reversibility). Sign-only, so it
+            # never over-tightens: it only fixes bounds the region already forces (a reaction
+            # blocked/one-sided in the region is already 0/one-sided there), leaving the region -- and
+            # hence the design set -- unchanged, while making the vacuous z-links droppable. Applied to
+            # both PROTECT and SUPPRESS: for SUPPRESS the undesired-region primal is bounded the same
+            # way before farkas_dualize, so the certificate is unchanged.
+            bound_override = self._module_bound_override(sd_module)
             A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p \
-                = build_primal_from_cbm(self.model, V_ineq, v_ineq, V_eq, v_eq)
+                = build_primal_from_cbm(self.model, V_ineq, v_ineq, V_eq, v_eq, bound_override=bound_override)
         elif sd_module[MODULE_TYPE] in [PROTECT, SUPPRESS, OPTKNOCK, OPTCOUPLE]:
             c_in = linexprdict2mat(sd_module[INNER_OBJECTIVE], self.model.reactions.list_attr('id'))
             # by default, assume maximization of the inner objective
@@ -691,11 +745,13 @@ class SDProblem:
         
         (1) Translate equality-KOs/KIs to two inequality-KOs/KIs
         (2) Translate variable-KOs/KIs to inequality-KIs/KOs
-        (3) Try to bound the problem with LPs
-        (4) Use LP-determined bounds to link z-variables, where such bounds were found
+        (3) Determine big-M values from variable bounds: zero/single-variable rows get a finite M
+            from the bounds; multi-variable rows are left unbounded (M=inf)
+        (4) Link z-variables via big-M for the rows that got a finite M
         (5) Translate remaining inequalities back to equalities when possible and link z via indicator constraints.
         If necessary, the solver interface will translate them to big-M constraints.
         (6) Remove redundant equalities from static problem
+        (7) Fix intervention binaries the linked MILP leaves free
         """
 
         # 1. Split knockable equality constraints into foward and reverse direction
@@ -707,11 +763,13 @@ class SDProblem:
         self.A_ineq = sparse.vstack((self.A_ineq, eq_constr_A)).tocsr()
         self.b_ineq += eq_constr_b
         self.z_map_constr_ineq = sparse.hstack((self.z_map_constr_ineq, z_eq)).tocsc()
-        # Remove knockable equalities from A_eq
+        # Remove knockable equalities from A_eq; the set keeps membership O(1) per row
         n_rows_eq = self.A_eq.shape[0]
-        self.A_eq = self.A_eq[[False if i in knockable_constr_eq else True for i in range(0, n_rows_eq)]]
-        self.b_eq = [self.b_eq[i] for i in range(0, len(self.b_eq)) if i not in knockable_constr_eq]
-        self.z_map_constr_eq = self.z_map_constr_eq[:, [False if i in knockable_constr_eq else True for i in range(0, n_rows_eq)]]
+        _kc_eq = set(int(i) for i in knockable_constr_eq)
+        keep_eq = [i not in _kc_eq for i in range(0, n_rows_eq)]
+        self.A_eq = self.A_eq[keep_eq]
+        self.b_eq = [self.b_eq[i] for i in range(0, len(self.b_eq)) if i not in _kc_eq]
+        self.z_map_constr_eq = self.z_map_constr_eq[:, keep_eq]
 
         # 2. Translate all variable knockouts to inequality knockouts
         numvars = self.A_ineq.shape[1]
@@ -726,67 +784,70 @@ class SDProblem:
         lb_constr_b = [0 for _ in knockable_vars_leq0]
         bnd_constr_A = sparse.vstack((ub_constr_A, lb_constr_A)).tocsr()
         bnd_constr_b = ub_constr_b + lb_constr_b
-        var_kos = [knockable_vars[0][(knockable_vars[1] == i).nonzero()[0][0]] for i in knockable_vars_geq0 + knockable_vars_leq0]
+        # map each knockable var -> its first z in one pass, so the lookup below is O(1)
+        _vz = {}
+        for _z, _v in zip(knockable_vars[0].tolist(), knockable_vars[1].tolist()):
+            _vz.setdefault(_v, _z)
+        var_kos = [_vz[int(i)] for i in knockable_vars_geq0 + knockable_vars_leq0]
         z_lb_ub = -self.z_map_vars[:, knockable_vars_geq0 + knockable_vars_leq0]
         # add constraints to main problem
         self.A_ineq = sparse.vstack((self.A_ineq, bnd_constr_A)).tocsr()
         self.b_ineq += bnd_constr_b
         self.z_map_constr_ineq = sparse.hstack((self.z_map_constr_ineq, z_lb_ub)).tocsc()
 
-        # 3. Use LP to identify M-values for knockable constraints
-        #    For this purpose, first construct a most relaxed LP-model (use all possible constraint-KOs, no possible var-KOs)
-        knockable_constr_ineq = np.sort(self.z_map_constr_ineq.nonzero()[1])
+        # 3. Big-M values for knockable constraints, read directly from the variable bounds.
+        #    A knockable constraint a_ineq*x <= b relaxes via M = max(a_ineq*x) over the polytope;
+        #    the z-coefficient carries the b offset so the knocked-out state relaxes to the tight
+        #    bound a_ineq*x <= M (not b+M):
+        #      sense > 0 (z=1 knocks out): z-coeff = (b - M)  ->  a_ineq*x + (b-M)*z <= b
+        #          z=0: a_ineq*x <= b (active);   z=1: a_ineq*x <= M (relaxed)
+        #      sense < 0 (z=0 knocks out): z-coeff = (M - b), RHS := M  ->  a_ineq*x + (M-b)*z <= M
+        #          z=1: a_ineq*x <= b (active);   z=0: a_ineq*x <= M (relaxed)
+        #    Zero/single-variable rows take a finite M from the bounds; multi-variable rows are
+        #    unbounded on the polytope (M = +inf), which the linker realizes as an indicator
+        #    constraint (gurobi/cplex) or the constant self.M (glpk/user-M).
+        knockable_constr_ineq = np.unique(self.z_map_constr_ineq.nonzero()[1])
 
-        cont_vars = [False if i in self.idx_z else True for i in range(0, numvars)]
-        M_A_ineq = self.A_ineq[[False if i in knockable_constr_ineq else True for i in range(0, self.A_ineq.shape[0])], :][:, cont_vars]
-        M_b_ineq = [self.b_ineq[i] for i in range(0, self.A_ineq.shape[0]) if i not in knockable_constr_ineq]
-        M_A_eq = self.A_eq[:, cont_vars]
-        M_b_eq = self.b_eq.copy()
+        _idxz = set(self.idx_z)                                          # O(1) membership in the scan below
+        cont_vars = [i not in _idxz for i in range(0, numvars)]
         M_lb = [self.lb[i] for i in np.nonzero(cont_vars)[0]]
         M_ub = [self.ub[i] for i in np.nonzero(cont_vars)[0]]
-        # M_A contains a list of all knockable constraints. We need to maximize their value (M_A(i)*x) to get a good M
-        # Big-M knockout of a constraint a_ineq*x <= b, with M = max(a_ineq*x) over the relaxed
-        # polytope (b is the right-hand-side value). The z-coefficient carries the b offset so the
-        # knocked-out state relaxes to the TIGHT bound a_ineq*x <= M (not b+M):
-        #   sense > 0 (z=1 knocks out): z-coeff = (b - M)  ->  a_ineq*x + (b-M)*z <= b
-        #       z=0: a_ineq*x <= b (active);   z=1: a_ineq*x <= M (relaxed)
-        #   sense < 0 (z=0 knocks out): z-coeff = (M - b), RHS := M  ->  a_ineq*x + (M-b)*z <= M
-        #       z=1: a_ineq*x <= b (active);   z=0: a_ineq*x <= M (relaxed)
-        M_A = self.A_ineq[[True if i in knockable_constr_ineq else False for i in range(0, self.A_ineq.shape[0])], :][:, cont_vars]
-        M_A = list(M_A.toarray())
-        M_b = [self.b_ineq[i] for i in range(0, self.A_ineq.shape[0]) if i in knockable_constr_ineq]
+        M_A = self.A_ineq[knockable_constr_ineq, :][:, cont_vars].tocsr()
 
-        processes = Configuration().processes
-        num_Ms = len(M_A)
-        processes = min(processes, num_Ms)
-
+        num_Ms = M_A.shape[0]
         max_Ax = [np.nan] * num_Ms
 
-        # Dummy to check if optimization runs
-        # worker_init(M_A,M_A_ineq,M_b_ineq,M_A_eq,M_b_eq,M_lb,M_ub,list(solvers.keys())[0])
-        # worker_compute(1)
-
-        logging.info('  Bounding MILP.')
-        if processes > 1 and num_Ms > 1000:
-            with SDPool(processes,
-                        initializer=worker_init,
-                        initargs=(M_A, M_A_ineq, M_b_ineq, M_A_eq, M_b_eq, M_lb, M_ub, getattr(self, SOLVER), getattr(self, SEED))) as pool:
-                chunk_size = num_Ms // processes
-                for i, value in pool.imap_unordered(worker_compute, range(num_Ms), chunksize=chunk_size):
-                    max_Ax[i] = value
-        else:
-            worker_init(M_A, M_A_ineq, M_b_ineq, M_A_eq, M_b_eq, M_lb, M_ub, getattr(self, SOLVER), getattr(self, SEED))
-            for i in range(num_Ms):
-                _, max_Ax[i] = worker_compute(i)
+        # max(a*x) from bounds: zero rows -> 0; single-variable rows -> coeff*(ub if coeff>0 else lb),
+        # or +inf if that bound is infinite; multi-variable rows -> +inf (unbounded dual constraint).
+        n_zero = 0
+        n_single = 0
+        n_multi = 0
+        for i in range(num_Ms):
+            row = M_A.getrow(i)
+            nnz = row.nnz
+            if nnz == 0:
+                max_Ax[i] = 0.0
+                n_zero += 1
+            elif nnz == 1:
+                col_idx = row.indices[0]
+                coeff = row.data[0]
+                if coeff > 0:
+                    max_Ax[i] = coeff * M_ub[col_idx] if not isinf(M_ub[col_idx]) else np.inf
+                else:
+                    max_Ax[i] = coeff * M_lb[col_idx] if not isinf(M_lb[col_idx]) else np.inf
+                n_single += 1
+            else:
+                max_Ax[i] = np.inf
+                n_multi += 1
+        logging.info('  Bounding MILP: %d constraints (%d zero, %d single-var, %d multi-var->indicator/M).' %
+                      (num_Ms, n_zero, n_single, n_multi))
 
         # round Ms up to 5 digits
         Ms = [np.ceil(M * 1e5) / 1e5 if not isinf(M) else self.M for M in max_Ax]
         # fill up M-vector also for notknockable reactions
-        Ms = [
-            Ms[np.array([i == j
-                         for j in knockable_constr_ineq]).nonzero()[0][0]] if i in knockable_constr_ineq else np.nan
-            for i in range(self.A_ineq.shape[0])
-        ]
+        _Ms_full = np.full(self.A_ineq.shape[0], np.nan)
+        _Ms_full[knockable_constr_ineq] = np.array(Ms, dtype=float)
+        Ms = _Ms_full
 
         # 4. Link constraints to z-variables for available upper bounds
         self.z_map_constr_ineq = self.z_map_constr_ineq.tocsc()
@@ -804,6 +865,63 @@ class SDProblem:
                     self.A_ineq[row, z_i] = Ms[row] - self.b_ineq[row]
                     self.b_ineq[row] = Ms[row]
         self.z_map_constr_ineq = self.z_map_constr_ineq.tocsc()
+
+        # 4b. (NOT ENABLED -- kept as a design note for the FVA-bounds work.)
+        #
+        # Consolidation counterpart to the ineq->eq lumping in step 5: an arity-1 row IS a bound,
+        # so carrying it as a row makes the MILP state the same restriction twice. Folding the
+        # tightest single-variable inequality per variable into lb/ub is safe HERE (and only here):
+        #   - z-mapped rows are excluded, so no knockout link is folded away;
+        #   - step 4 baked finite M's in as a z-coefficient, raising those rows to arity 2, so
+        #     they are excluded automatically;
+        #   - dualization is long done (prevent_boundary_knockouts runs pre-dualize inside
+        #     build_primal_from_cbm), so an unconditional row and an unconditional bound are
+        #     equivalent from here on. The same fold BEFORE dualization would NOT be safe: a
+        #     positive lb on a knockable variable picks up a z-mapping when dualized, letting a
+        #     KO relax it -- which is exactly what prevent_boundary_knockouts exists to prevent,
+        #     and why reassign_lb_ub_from_ineq() guards on z_map_vars at its call site in
+        #     addModule().
+        #
+        # It is OFF because at this point A_ineq holds no arity-1 rows: step 4 lifts every
+        # single-variable knockable row to arity 2, and the rest are multi-variable, so the fold is
+        # a no-op. It becomes useful once non-knockable single-variable rows exist -- e.g. when
+        # per-module FVA ranges are folded in as bounds.
+        #
+        # If enabled, note two things about reusing reassign_lb_ub_from_ineq() here verbatim:
+        #   (1) its arity scan is O(nnz^2) (`list(row_ineq).count(i)` per nonzero) and must be
+        #       rewritten with np.bincount before it can run at genome scale -- it would dwarf
+        #       the per-row LP this step already replaced;
+        #   (2) it RAISES on lb > ub; at this stage a contradictory system is a legitimate
+        #       INFEASIBLE and should be reported, not raised out of the MILP build.
+        #
+        # self.A_ineq = self.A_ineq.tocsr()
+        # self.A_ineq.eliminate_zeros()
+        # nnz_per_row = np.diff(self.A_ineq.indptr)
+        # z_rows = set(self.z_map_constr_ineq.nonzero()[1].tolist())
+        # fold_rows = [i for i in np.nonzero(nnz_per_row == 1)[0].tolist() if i not in z_rows]
+        # if fold_rows:
+        #     new_lb, new_ub = list(self.lb), list(self.ub)
+        #     for i in fold_rows:
+        #         j = int(self.A_ineq.indices[self.A_ineq.indptr[i]])
+        #         coef = float(self.A_ineq.data[self.A_ineq.indptr[i]])
+        #         val = float(self.b_ineq[i]) / coef
+        #         if coef > 0:                 # coef*x <= b  ->  x <= b/coef   (tightest ub = min)
+        #             new_ub[j] = min(new_ub[j], val)
+        #         else:                        # coef*x <= b  ->  x >= b/coef   (tightest lb = max)
+        #             new_lb[j] = max(new_lb[j], val)
+        #     if any(l > u for l, u in zip(new_lb, new_ub)):
+        #         logging.warning('  Bound folding produced lb > ub (infeasible static problem); '
+        #                         'keeping the rows and leaving it to the solver.')
+        #     else:
+        #         self.lb, self.ub = new_lb, new_ub
+        #         keep = np.ones(self.A_ineq.shape[0], dtype=bool)
+        #         keep[fold_rows] = False
+        #         self.A_ineq = self.A_ineq[keep, :]
+        #         self.b_ineq = [self.b_ineq[i] for i in range(len(keep)) if keep[i]]
+        #         self.z_map_constr_ineq = self.z_map_constr_ineq.tocsc()[:, keep]
+        #         Ms = [Ms[i] for i in range(len(keep)) if keep[i]]   # Ms is indexed by A_ineq row
+        # NB knockable_constr_ineq holds pre-fold row indices but is dead after step 5's
+        #    `tuple(...)` rebind, so the index shift above is harmless.
 
         # 5. Translate back remaining inequalities to equations if applicable and link via indicator constraints
         knockable_constr_ineq = tuple(knockable_constr_ineq)
@@ -886,6 +1004,39 @@ class SDProblem:
         self.A_eq = self.A_eq[keep_eq, :]
         self.b_eq = [self.b_eq[i] for i in range(len(keep_eq)) if keep_eq[i]]
 
+        # 7. Fix intervention binaries the linked MILP leaves FREE.
+        #    After ALL linking, a targetable KO z that gates no indicator and appears in no finite-M
+        #    row controls nothing -- its only footprint is its own cost in the budget/objective rows
+        #    (idx_row_maxcost/mincost/obj). Toggling it changes no constraint, so it is in no minimal
+        #    cut; fix it to 0. Running this at the END of link_z (rather than up front on the z-maps)
+        #    catches a strictly larger set: z's whose rows were lumped/removed by steps 5/b6 end up
+        #    free here too (measured 8 vs 0 on e_coli, 6 vs 3 on iMLcore). Done explicitly rather than
+        #    relying on solver presolve to spot the dominated column.
+        #    NB indicators are exactly the rows whose box-bound big-M was infinite (arity >= 2). Step 7
+        #    does NOT inspect their feasible-region redundancy -- that is deferred to the region-FVA
+        #    override and the upstream essentiality scans; here a fixable z simply carries no indicator,
+        #    so ub=0 is the whole operation. Skip non-targetable (already fixed), inverted/KI z's, and
+        #    lb>0 (essential KI) where ub=0 would give lb>ub.
+        Aic = self.A_ineq.tocsc()
+        Aec = self.A_eq.tocsc() if self.A_eq.shape[0] else None
+        budget_rows = {self.idx_row_maxcost, self.idx_row_mincost, self.idx_row_obj}
+        z_with_ind = set(int(b) for b in self.indic_constr.binv) if self.indic_constr is not None else set()
+        n_free = 0
+        for z in range(self.num_z):
+            if self.z_non_targetable[z] or self.z_inverted[z] or self.lb[z] > 0 or self.ub[z] == 0:
+                continue
+            if z in z_with_ind:
+                continue
+            col = Aic.getcol(z).tocoo()
+            if any((r not in budget_rows) and v != 0 for r, v in zip(col.row.tolist(), col.data.tolist())):
+                continue                       # finite-M z-link -> controls a row
+            if Aec is not None and Aec.getcol(z).nnz:
+                continue                       # equality z-link
+            self.ub[z] = 0.0
+            n_free += 1
+        if n_free:
+            logging.info('  Fixed %d free intervention binaries to zero (no indicator or z-link).' % n_free)
+
 
 class ContMILP:
     """Continuous representation of the strain design MILP.
@@ -906,7 +1057,8 @@ class ContMILP:
         self.z_map_constr_eq = z_map_constr_eq
         self.z_map_vars = z_map_vars
 
-def build_primal_from_cbm(model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None, c=None) -> \
+def build_primal_from_cbm(model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None, c=None,
+                          bound_override=None) -> \
         Tuple[sparse.csr_matrix, Tuple, sparse.csr_matrix, Tuple, Tuple, Tuple, sparse.csr_matrix, sparse.csr_matrix, sparse.csr_matrix]:
     """Builds primal LP from constraint-based model and (optionally) additional constraints.
     
@@ -947,7 +1099,7 @@ def build_primal_from_cbm(model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None,
         V_eq = sparse.csr_matrix((0, numr))
         v_eq = []
     if c is None:
-        c = [i.objective_coefficient for i in model.reactions]
+        c = [0.0] * numr
     S = sparse.csr_matrix(create_stoichiometric_matrix(model))
     # fill matrices
     A_eq = sparse.vstack((S, V_eq))
@@ -956,6 +1108,17 @@ def build_primal_from_cbm(model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None,
     b_ineq = v_ineq.copy()
     lb = [float(v.lower_bound) for v in model.reactions]
     ub = [float(v.upper_bound) for v in model.reactions]
+    if bound_override:
+        for i, r in enumerate(model.reactions):
+            ov = bound_override.get(r.id)
+            if ov is not None:
+                lo, hi = ov
+                if lo is not None:
+                    lb[i] = max(lb[i], float(lo))
+                if hi is not None:
+                    ub[i] = min(ub[i], float(hi))
+                if lb[i] > ub[i]:            # numeric guard: never emit an inconsistent block
+                    lb[i], ub[i] = float(lo), float(hi)
     z_map_vars = sparse.identity(numr, 'd', format="csc")
     z_map_constr_eq = sparse.csc_matrix((numr, A_eq.shape[0]))
     z_map_constr_ineq = sparse.csc_matrix((numr, A_ineq.shape[0]))
@@ -1191,50 +1354,70 @@ def reassign_lb_ub_from_ineq(A_ineq, b_ineq, A_eq, b_eq, lb, ub,
     if z_map_vars is None:
         z_map_vars = sparse.csc_matrix((numz, numr))
 
+    # Rows carrying exactly one entry ARE bounds. A bincount over the nonzero row indices finds
+    # them and the single (column, value) is read straight off the COO, which keeps the scan
+    # linear in nnz -- necessary for this to be usable at genome scale.
+    def _single_entry_rows(A, z_map_constr):
+        """Ascending indices of rows with exactly one nonzero, excluding knockable rows,
+        plus row->column and row->value lookups for those rows."""
+        rows, cols = A.nonzero()  # scipy .nonzero() already drops explicit zeros
+        counts = np.bincount(rows, minlength=A.shape[0])
+        single = np.nonzero(counts == 1)[0]
+        knockable = set(z_map_constr.nonzero()[1].tolist())
+        keep = np.array([i for i in single.tolist() if i not in knockable], dtype=int)
+        row2col = np.full(A.shape[0], -1, dtype=int)
+        row2val = np.zeros(A.shape[0], dtype=float)
+        if len(single):
+            sel = np.isin(rows, single)
+            row2col[rows[sel]] = cols[sel]
+            data = np.asarray(A.tocsr()[rows[sel], cols[sel]]).ravel()
+            row2val[rows[sel]] = data
+        return keep, row2col, row2val
+
     # translate entries to lb or ub
-    # find all entries in A_ineq
-    row_ineq = A_ineq.nonzero()[0]
-    # filter for rows with only one entry
-    var_bound_constraint_ineq = [i for i in row_ineq if list(row_ineq).count(i) == 1]
-    # exclude knockable constraints
-    var_bound_constraint_ineq = [i for i in var_bound_constraint_ineq if i not in z_map_constr_ineq.nonzero()[1]]
+    var_bound_constraint_ineq, ineq_row2col, ineq_row2val = _single_entry_rows(A_ineq, z_map_constr_ineq)
     # retrieve all bounds from inequality constraints
     for i in var_bound_constraint_ineq:
-        idx_r = A_ineq[i, :].nonzero()[1][0]  # get reaction from constraint (column of entry)
-        if A_ineq[i, idx_r] > 0:  # upper bound constraint
-            ub[idx_r] += [b_ineq[i] / A_ineq[i, idx_r]]
+        idx_r = int(ineq_row2col[i])  # get reaction from constraint (column of entry)
+        coef = ineq_row2val[i]
+        if coef > 0:  # upper bound constraint
+            ub[idx_r] += [b_ineq[i] / coef]
         else:  # lower bound constraint
-            lb[idx_r] += [b_ineq[i] / A_ineq[i, idx_r]]
+            lb[idx_r] += [b_ineq[i] / coef]
 
-    # find all entries in A_eq
-    row_eq = A_eq.nonzero()[0]
-    # filter for rows with only one entry
-    var_bound_constraint_eq = [i for i in row_eq if list(row_eq).count(i) == 1]
-    # exclude knockable constraints
-    var_bound_constraint_eq = [i for i in var_bound_constraint_eq if i not in z_map_constr_eq.nonzero()[1]]
+    var_bound_constraint_eq, eq_row2col, eq_row2val = _single_entry_rows(A_eq, z_map_constr_eq)
+    # knockability is a property of the VARIABLE here, so precompute it per column once instead
+    # of slicing z_map_vars inside the loop
+    col_has_z = np.asarray((z_map_vars != 0).sum(axis=0)).ravel() > 0
     # retrieve all bounds from equality constraints
     # and partly set lb or ub derived from equality constraints, for instance:
     # If x =  5, set ub = 5 and keep the inequality constraint -x <= -5.
     # If x = -5, set lb =-5 and keep the inequality constraint  x <= -5.
     A_ineq_new = sparse.csr_matrix((0, numr))
     b_ineq_new = []
+    eq_rows_to_keep_as_ineq = []
     for i in var_bound_constraint_eq:
-        idx_r = A_eq[i, :].nonzero()[1][0]  # get reaction from constraint (column of entry)
-        if any(z_map_vars[:, idx_r]):  # if reaction is knockable
-            if A_eq[i, idx_r] * b_eq[i] > 0:  # upper bound constraint
-                ub[idx_r] += [b_eq[i] / A_eq[i, idx_r]]
-                A_ineq_new = sparse.vstack((A_ineq_new, -A_eq[i, :]))
-                b_ineq_new += [-b_eq[i]]
-            elif A_eq[i, idx_r] * b_eq[i] < 0:  # lower bound constraint
-                lb[idx_r] += [b_eq[i] / A_eq[i, idx_r]]
-                A_ineq_new = sparse.vstack((A_ineq_new, A_eq[i, :]))
-                b_ineq_new += [b_eq[i]]
+        idx_r = int(eq_row2col[i])  # get reaction from constraint (column of entry)
+        coef = eq_row2val[i]
+        if col_has_z[idx_r]:  # if reaction is knockable
+            if coef * b_eq[i] > 0:  # upper bound constraint
+                ub[idx_r] += [b_eq[i] / coef]
+                eq_rows_to_keep_as_ineq += [(i, -1.0)]
+            elif coef * b_eq[i] < 0:  # lower bound constraint
+                lb[idx_r] += [b_eq[i] / coef]
+                eq_rows_to_keep_as_ineq += [(i, 1.0)]
             else:
                 ub[idx_r] += [0.0]
                 lb[idx_r] += [0.0]
         else:
-            lb[idx_r] += [b_eq[i] / A_eq[i, idx_r]]
-            ub[idx_r] += [b_eq[i] / A_eq[i, idx_r]]
+            lb[idx_r] += [b_eq[i] / coef]
+            ub[idx_r] += [b_eq[i] / coef]
+    # build the retained direction(s) in ONE vstack instead of growing the matrix per row
+    if eq_rows_to_keep_as_ineq:
+        idx = [i for i, _ in eq_rows_to_keep_as_ineq]
+        sgn = np.array([s for _, s in eq_rows_to_keep_as_ineq])
+        A_ineq_new = sparse.diags(sgn) @ A_eq.tocsr()[idx, :]
+        b_ineq_new = [s * b_eq[i] for i, s in eq_rows_to_keep_as_ineq]
     # set tightest bounds (avoid inf)
     lb = [max([i for i in l if not isinf(i)] + [np.nan]) for l in lb]
     ub = [min([i for i in u if not isinf(i)] + [np.nan]) for u in ub]
@@ -1246,19 +1429,23 @@ def reassign_lb_ub_from_ineq(A_ineq, b_ineq, A_eq, b_eq, lb, ub,
     if any(np.greater(lb, ub)):
         raise Exception("There is a lower bound that is greater than its upper bound counterpart.")
 
-    # remove constraints that became redundant
+    # remove constraints that became redundant (boolean masks keep this linear in the row count)
     numineq = A_ineq.shape[0]
-    A_ineq = A_ineq[[False if i in var_bound_constraint_ineq else True for i in range(0, numineq)]]
-    b_ineq = [b_ineq[i] for i in range(0, len(b_ineq)) if i not in var_bound_constraint_ineq]
-    z_map_constr_ineq = z_map_constr_ineq[:, [False if i in var_bound_constraint_ineq else True for i in range(0, numineq)]]
+    keep_ineq = np.ones(numineq, dtype=bool)
+    keep_ineq[var_bound_constraint_ineq] = False
+    A_ineq = A_ineq[keep_ineq]
+    b_ineq = [b_ineq[i] for i in range(0, len(b_ineq)) if keep_ineq[i]]
+    z_map_constr_ineq = z_map_constr_ineq[:, keep_ineq]
     numeq = A_eq.shape[0]
-    A_eq = A_eq[[False if i in var_bound_constraint_eq else True for i in range(0, numeq)]]
-    b_eq = [b_eq[i] for i in range(0, len(b_eq)) if i not in var_bound_constraint_eq]
+    keep_eq = np.ones(numeq, dtype=bool)
+    keep_eq[var_bound_constraint_eq] = False
+    A_eq = A_eq[keep_eq]
+    b_eq = [b_eq[i] for i in range(0, len(b_eq)) if keep_eq[i]]
     # add equality constraints that transformed to inequality constraints
     A_ineq = sparse.vstack((A_ineq, A_ineq_new))
     b_ineq += b_ineq_new
     if numz:
-        z_map_constr_eq = z_map_constr_eq[:, [False if i in var_bound_constraint_eq else True for i in range(0, numeq)]]
+        z_map_constr_eq = z_map_constr_eq[:, keep_eq]
         z_map_constr_ineq = sparse.hstack((z_map_constr_ineq, sparse.csc_matrix((numz, A_ineq_new.shape[0]))))
         return A_ineq, b_ineq, A_eq, b_eq, lb, ub, z_map_constr_ineq, z_map_constr_eq
     else:
@@ -1322,47 +1509,3 @@ def prevent_boundary_knockouts(A_ineq, b_ineq, lb, ub, z_map_constr_ineq, z_map_
         z_map_constr_ineq = sparse.hstack([z_map_constr_ineq, sparse.csc_matrix((numz, new_z_cols))])
 
     return A_ineq, b_ineq, lb, ub, z_map_constr_ineq
-
-
-def _worker_cleanup():
-    """Dispose the global LP and solver environment on worker exit."""
-    global lp_glob
-    try:
-        if lp_glob is not None and hasattr(lp_glob, 'solver'):
-            from io import StringIO
-            from contextlib import redirect_stdout, redirect_stderr
-            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
-                if lp_glob.solver == 'gurobi':
-                    lp_glob.backend.dispose()
-                    import gurobipy as gp
-                    gp.disposeDefaultEnv()
-                elif lp_glob.solver == 'cplex':
-                    lp_glob.backend.end()
-        lp_glob = None
-    except Exception:
-        pass
-
-
-def worker_init(A, A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver, seed):
-    """Helper function for determining bounds on linear expressions"""
-    global lp_glob
-    lp_glob = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb, ub=ub, solver=solver, seed=seed)
-    if lp_glob == CPLEX:
-        lp_glob.backend.parameters.lpmethod.set(1)
-        lp_glob.backend.parameters.threads.set(1)
-    elif solver == 'gurobi':
-        lp_glob.backend.params.Threads = 1
-    lp_glob.solver = solver
-    lp_glob.A = A
-    if solver in ('gurobi', 'cplex'):
-        import atexit
-        atexit.register(_worker_cleanup)
-
-
-def worker_compute(i) -> Tuple[int, float]:
-    """Helper function for determining bounds on linear expressions"""
-    global lp_glob
-    # maximize by minimizing negative objective and negating result
-    lp_glob.set_objective(-lp_glob.A[i])
-    min_cx = -lp_glob.slim_solve()
-    return i, min_cx

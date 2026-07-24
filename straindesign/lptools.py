@@ -547,7 +547,7 @@ def fba(model, **kwargs) -> Solution:
         if min_cx <= 0 or isnan(min_cx):
             num_prob.add_eq_constraints(c, [-1.0])
         else:
-            num_prob.add_eq_constraints(c, min_cx)
+            num_prob.add_eq_constraints(c, [-min_cx])
         x, _, _ = num_prob.solve()
     elif status not in [OPTIMAL, UNBOUNDED]:
         status = INFEASIBLE

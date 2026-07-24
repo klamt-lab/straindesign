@@ -18,6 +18,7 @@ automatic preprocessing.
 import ast
 import copy
 import logging
+import re
 import numpy as np
 from enum import Enum
 from functools import reduce
@@ -28,7 +29,6 @@ from collections import namedtuple
 from fractions import Fraction
 from scipy import sparse
 from scipy.sparse import csr_matrix, csc_matrix
-from sympy import Rational, Symbol as SympySymbol, And as SympyAnd, Or as SympyOr
 from cobra import Configuration
 from cobra.util.array import create_stoichiometric_matrix
 
@@ -43,7 +43,7 @@ LOG = logging.getLogger(__name__)
 # =============================================================================
 
 
-def float_to_rational(val, max_precision: int = 6, max_denom: int = 100) -> Fraction:
+def float_to_fraction(val, max_precision: int = 6, max_denom: int = 100) -> Fraction:
     """Convert float to Fraction with bounded denominators."""
     if isinstance(val, Fraction):
         return val
@@ -160,7 +160,7 @@ class RationalMatrix:
             for c in range(cols):
                 val = arr[r, c]
                 if val != 0:
-                    frac = float_to_rational(val, max_precision, max_denom)
+                    frac = float_to_fraction(val, max_precision, max_denom)
                     row_idx.append(r)
                     col_idx.append(c)
                     num_data.append(frac.numerator)
@@ -190,7 +190,7 @@ class RationalMatrix:
                     elif hasattr(coeff, 'numerator'):
                         frac = Fraction(coeff.numerator, coeff.denominator)
                     else:
-                        frac = float_to_rational(coeff, max_precision, max_denom)
+                        frac = float_to_fraction(coeff, max_precision, max_denom)
 
                     row_idx.append(i)
                     col_idx.append(j)
@@ -361,6 +361,29 @@ class RationalMatrix:
             num_lil[row, dst_col] = new_num
             den_lil[row, dst_col] = new_den if new_num != 0 else 0
 
+        self._invalidate_cache()
+
+    def scale_column(self, col: int, scalar_num: int, scalar_den: int) -> None:
+        """Multiply a column by a scalar: col[i] *= scalar_num/scalar_den."""
+        if scalar_num == 0 or scalar_num == scalar_den:
+            return
+        num_lil, den_lil = self._num_sparse, self._den_sparse
+        num_csc = num_lil.tocsc() if num_lil.format != 'csc' else num_lil
+        den_csc = den_lil.tocsc() if den_lil.format != 'csc' else den_lil
+        entries = [(num_csc.indices[i], int(num_csc.data[i]), int(den_csc.data[i]))
+                   for i in range(num_csc.indptr[col], num_csc.indptr[col + 1])]
+        for row, cur_num, cur_den in entries:
+            if cur_num == 0:
+                continue
+            new_num, new_den = cur_num * scalar_num, cur_den * scalar_den
+            if new_den < 0:
+                new_num, new_den = -new_num, -new_den
+            g = gcd(abs(new_num), new_den)
+            if g:
+                new_num //= g
+                new_den //= g
+            num_lil[row, col] = new_num
+            den_lil[row, col] = new_den if new_num != 0 else 0
         self._invalidate_cache()
 
     # -------------------------------------------------------------------------
@@ -1283,6 +1306,9 @@ class StoichMatrixCompressor:
         work.post.begin_batch_edit()
 
         for group in groups:
+            # Count nonzeros per member here; used later to pin the lump's scale to the member
+            # with the most coefficients.
+            nnz = {r: sum(1 for _ in work.cmp.iter_column_fractions(r)) for r in group}
             self._combine_coupled(work, group, ratios)
 
             # Check bounds intersection to detect contradicting groups.
@@ -1324,6 +1350,22 @@ class StoichMatrixCompressor:
                 # Consistent: only remove slaves (merged into master)
                 for idx in group[1:]:
                     reactions_to_remove.add(idx)
+                # Pick the member whose units the lump keeps. nnz was counted pre-merge above;
+                # co-locate the small-bound test with it here so the whole decision reads in one
+                # place. Prefer a reaction with a small finite bound (e.g. Biomass, ATP
+                # maintenance) whose own ratio is near 1; else the member with the most
+                # coefficients. Master bounds are already intersected at this point.
+                def _small_bound(r):
+                    fin = [abs(x) for x in work.bounds[r] if not isinf(x) and x != 0 and abs(x) < 100]
+                    return min(fin) if fin else None
+
+                def _lam(r):
+                    return 1.0 if ratios[r] is None else float(abs(ratios[r]))   # master's own ratio is 1
+
+                bounded = [(b, r) for r in group for b in [_small_bound(r)]
+                           if b is not None and 0.1 <= _lam(r) <= 10]
+                keep = min(bounded)[1] if bounded else max(group, key=lambda r: nnz[r])
+                self._restore_group_scale(work, group, ratios, keep)
 
         # End batch edit mode
         work.cmp.end_batch_edit()
@@ -1334,6 +1376,30 @@ class StoichMatrixCompressor:
         work.remove_reactions_by_indices(reactions_to_remove)
 
         return contradicting_removed
+
+    def _restore_group_scale(self, work: _WorkRecord, group: List[int],
+                             ratios: List[Optional[Fraction]], keep: int) -> None:
+        """Express a merged group in the units of one of its members.
+
+        A lump's ratios are fixed but its overall scale is free, and merging into ``group[0]`` can
+        yield an extreme scale (the iML1515 biomass lump comes out 4484x, pushing ``biomass >= 0.001``
+        below LP feasibility tolerance). ``keep`` names the member whose units to re-express in
+        (chosen by the caller from the nnz / small-bound criteria); ``cmp``, ``post`` and the bounds
+        are scaled together, so the change of units is exact.
+        """
+        master = group[0]
+        if keep == master:
+            return
+        lam = abs(ratios[keep])                     # |.| so the reaction keeps its orientation
+        if lam == 0 or lam == 1:
+            return
+        # v_master = ratios[keep] * v_keep, so re-expressing the lump in v_keep multiplies the
+        # column by that ratio and divides the bounds by it.
+        work.cmp.scale_column(master, lam.numerator, lam.denominator)
+        work.post.scale_column(master, lam.numerator, lam.denominator)
+        lb, ub = work.bounds[master]
+        f = float(lam)
+        work.bounds[master] = (lb if isinf(lb) else lb / f, ub if isinf(ub) else ub / f)
 
     def _combine_coupled(self, work: _WorkRecord, group: List[int], ratios: List[Optional[Fraction]]) -> None:
         """Combine coupled reactions into master reaction.
@@ -1442,7 +1508,7 @@ def remove_conservation_relations(model) -> None:
             elif hasattr(coeff, 'numerator'):
                 frac = Fraction(coeff.numerator, coeff.denominator)
             else:
-                frac = float_to_rational(float(coeff))
+                frac = float_to_fraction(float(coeff))
             row_idx.append(j)  # reaction → row (transposed layout)
             col_idx.append(i)  # metabolite → column
             num_data.append(frac.numerator)
@@ -1731,17 +1797,20 @@ def remove_dummy_bounds(model) -> None:
                 rxn.upper_bound = np.inf
 
 
-def stoichmat_coeff2rational(model) -> None:
-    """Convert stoichiometric coefficients to rational numbers."""
+def stoichmat_coeff_to_fraction(model) -> None:
+    """Convert stoichiometric coefficients to exact fractions.Fraction."""
     for rxn in model.reactions:
         for met, coeff in rxn._metabolites.items():
-            if isinstance(coeff, (float, int)):
-                rxn._metabolites[met] = float_to_rational(coeff)
-            elif not hasattr(coeff, 'p'):  # Not sympy.Rational
-                if hasattr(coeff, 'numerator'):  # fractions.Fraction
-                    rxn._metabolites[met] = Rational(coeff.numerator, coeff.denominator)
-                else:
-                    raise TypeError(f"Unsupported coefficient type: {type(coeff)}")
+            if isinstance(coeff, Fraction):
+                continue                                        # already exact
+            elif isinstance(coeff, (float, int)):
+                rxn._metabolites[met] = float_to_fraction(coeff)          # -> Fraction
+            elif hasattr(coeff, 'p'):                           # sympy.Rational -> Fraction
+                rxn._metabolites[met] = Fraction(int(coeff.p), int(coeff.q))
+            elif hasattr(coeff, 'numerator'):                   # other Rational -> Fraction
+                rxn._metabolites[met] = Fraction(coeff.numerator, coeff.denominator)
+            else:
+                raise TypeError(f"Unsupported coefficient type: {type(coeff)}")
 
 
 def stoichmat_coeff2float(model) -> None:
@@ -1756,103 +1825,311 @@ def stoichmat_coeff2float(model) -> None:
 # =============================================================================
 
 
-def _gpr_ast_to_sympy(node):
-    """Convert a cobra GPR AST node to a sympy boolean expression.
+def _gpr_ast_to_expr(node, op=None):
+    """Convert a cobra GPR AST node to a nested expression, or join expressions under ``op``.
 
-    Returns None for empty GPR (node is None), meaning the reaction has
-    no gene requirement and is always active.
+    A gene is its name (str) and a boolean node is ``(op, (children...))``; None means no gene
+    requirement (always active). Passing ``op`` joins the given expressions instead of
+    converting a node, applying only associativity (same-op children are flattened) and
+    idempotence (duplicates dropped) -- real simplification is done by simplify_model_gprs, which
+    compress_model runs at the end of a propagate_gpr pass.
     """
-    if node is None:
-        return None
-    if isinstance(node, ast.BoolOp):
-        children = [_gpr_ast_to_sympy(v) for v in node.values]
-        if isinstance(node.op, ast.And):
-            return SympyAnd(*children)
+    if op is None:
+        if isinstance(node, ast.BoolOp):
+            op = 'and' if isinstance(node.op, ast.And) else 'or'
+            node = [_gpr_ast_to_expr(v) for v in node.values]
+        elif isinstance(node, ast.Name):
+            return node.id
         else:
-            return SympyOr(*children)
-    elif isinstance(node, ast.Name):
-        return SympySymbol(node.id)
-    return None
+            return None
+    flat = []
+    for e in node:
+        if e is None:
+            continue
+        flat.extend(e[1] if isinstance(e, tuple) and e[0] == op else [e])
+    uniq = list(dict.fromkeys(flat))
+    return (op, tuple(uniq)) if len(uniq) > 1 else (uniq[0] if uniq else None)
 
 
-def _sympy_to_gpr_string(expr):
-    """Convert a sympy boolean expression to a GPR rule string.
+def _expr_to_gpr_string(expr):
+    """Render an expression as a GPR rule string, '' for None.
 
-    Produces correctly parenthesised output with sorted gene names for
-    deterministic results.  Returns '' for None input.
+    ``expr`` is one of the nested-expression forms produced by ``_gpr_ast_to_expr``: ``None`` (no
+    gene requirement, renders to ''), a gene-id string (e.g. ``'g1'``), or an ``(op, args)`` tuple
+    such as ``('and', ('g1', 'g2'))`` -> ``'g1 and g2'`` or, more nested,
+    ``('and', ('g1', ('or', ('g2', 'g3'))))``.
+
+    Operands are sorted so equivalent inputs give identical rules, and a nested clause of the
+    opposite operator is parenthesised.
     """
     if expr is None:
         return ''
-    if isinstance(expr, SympySymbol):
-        return str(expr)
-    if expr.func == SympyAnd:
-        parts = []
-        for arg in sorted(expr.args, key=str):
-            s = _sympy_to_gpr_string(arg)
-            if hasattr(arg, 'func') and arg.func == SympyOr:
-                s = f'({s})'
-            parts.append(s)
-        return ' and '.join(parts)
-    if expr.func == SympyOr:
-        parts = []
-        for arg in sorted(expr.args, key=str):
-            s = _sympy_to_gpr_string(arg)
-            if hasattr(arg, 'func') and arg.func == SympyAnd:
-                s = f'({s})'
-            parts.append(s)
-        return ' or '.join(parts)
-    return str(expr)
+    if isinstance(expr, str):
+        return expr
+    op, args = expr
+    other = 'or' if op == 'and' else 'and'
+    parts = [f'({s})' if isinstance(a, tuple) and a[0] == other else s
+             for a, s in sorted(((a, _expr_to_gpr_string(a)) for a in args), key=lambda p: p[1])]
+    return f' {op} '.join(parts)
 
 
-def _combine_gpr_and(gpr_bodies):
-    """Combine GPR AST bodies with AND logic (for coupled/serial reaction merge).
+def _combine_gprs(gpr_bodies, op):
+    """Combine GPR AST bodies (reaction.gpr.body, may include None) under ``op``, as a rule string.
 
-    Args:
-        gpr_bodies: list of AST nodes (reaction.gpr.body), may include None
-
-    An empty/None GPR means the reaction has no gene requirement (always active),
-    which acts as True in boolean logic.  AND with True is a no-op, so empty GPRs
-    are skipped.  Returns '' if all inputs are empty (no gene restriction).
-
-    Uses sympy And constructor which automatically flattens nested ANDs and
-    deduplicates terms.  Full simplification is deferred to reduce_gpr downstream.
+    An empty GPR is True: under 'and' it is dropped, under 'or' it makes the whole rule
+    unrestricted (''). Used to merge the GPRs of reactions that compression lumps together --
+    'and' for coupled/serial merges, 'or' for parallel ones.
     """
-    sympy_exprs = [_gpr_ast_to_sympy(b) for b in gpr_bodies]
-    non_empty = [s for s in sympy_exprs if s is not None]
-    if not non_empty:
+    exprs = [_gpr_ast_to_expr(b) for b in gpr_bodies]
+    if op == 'or' and (not exprs or any(e is None for e in exprs)):
         return ''
-    if len(non_empty) == 1:
-        return _sympy_to_gpr_string(non_empty[0])
-    combined = SympyAnd(*non_empty)
-    return _sympy_to_gpr_string(combined)
-
-
-def _combine_gpr_or(gpr_bodies):
-    """Combine GPR AST bodies with OR logic (for parallel reaction merge).
-
-    Args:
-        gpr_bodies: list of AST nodes (reaction.gpr.body), may include None
-
-    If any input is None (reaction always active regardless of genes), the
-    combined reaction is also always active, so the result is '' (no restriction).
-
-    Uses sympy Or constructor which automatically flattens nested ORs and
-    deduplicates terms.  Full simplification is deferred to reduce_gpr downstream.
-    """
-    sympy_exprs = [_gpr_ast_to_sympy(b) for b in gpr_bodies]
-    if any(s is None for s in sympy_exprs):
-        return ''
-    if not sympy_exprs:
-        return ''
-    if len(sympy_exprs) == 1:
-        return _sympy_to_gpr_string(sympy_exprs[0])
-    combined = SympyOr(*sympy_exprs)
-    return _sympy_to_gpr_string(combined)
+    return _expr_to_gpr_string(_gpr_ast_to_expr(exprs, op))
 
 
 # =============================================================================
 # High-Level Compression API
 # =============================================================================
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Monotone (positive-unate) GPR-rule simplification
+#
+# Pipeline:  parse -> minimal SOP (DNF + absorption) -> algebraic factoring.
+# Cubes are int bitmasks (bit i == variable i): subset = (a & b) == a, union = a | b.
+# Output is inverter-free by construction and boolean-EQUIVALENT to the input, so replacing a
+# reaction's GPR with its factored form leaves flux/knockout semantics -- and strain designs --
+# unchanged, while shrinking the GPR gadget built by extend_model_gpr. `factor_auto(node, budget)`
+# guards the only source of DNF blow-up (an AND of large ORs) by AND-splitting over-budget
+# conjuncts (exact, near-optimal since complexes sit on ~disjoint genes). `simplify_model_gprs(model)`
+# is the entry point; compress_model calls it when propagate_gpr is set so standalone compression
+# emits already-simplified rules.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# popcount: C-level int.bit_count() on Python 3.10+, else the bin().count fallback
+_popcount = getattr(int, 'bit_count', None) or (lambda c: bin(c).count('1'))
+
+
+def _gpr_tokenize(s):
+    for m in re.finditer(r'\(|\)|\*|\+|[^\s()*+]+', s):
+        yield m.group()
+
+
+def _gpr_parse(s):
+    """Parse a GPR string into an AST.
+
+    Accepts both ``and``/``or`` and ``*``/``+`` operators, and is robust to any gene id,
+    including digit-leading or dotted names.
+    """
+    toks = list(_gpr_tokenize(s)); pos = 0
+    def peek(): return toks[pos] if pos < len(toks) else None
+    def eat():
+        nonlocal pos; t = toks[pos]; pos += 1; return t
+    def p_or():
+        n = [p_and()]
+        while peek() in ('or', '+'): eat(); n.append(p_and())
+        return ('OR', n) if len(n) > 1 else n[0]
+    def p_and():
+        n = [p_atom()]
+        while peek() in ('and', '*'): eat(); n.append(p_atom())
+        return ('AND', n) if len(n) > 1 else n[0]
+    def p_atom():
+        if peek() == '(': eat(); e = p_or(); eat(); return e
+        return ('VAR', eat())
+    return p_or()
+
+
+# ---- variable <-> bit mapping (reset per rule via simplify_gpr_string) ----
+_GPR_VMAP = {}; _GPR_VINV = []
+def _gpr_bit(v):
+    i = _GPR_VMAP.get(v)
+    if i is None:
+        i = len(_GPR_VINV); _GPR_VMAP[v] = i; _GPR_VINV.append(v)
+    return 1 << i
+def _gpr_lits_of(mask):
+    out = []
+    while mask:
+        l = mask & -mask; out.append(('VAR', _GPR_VINV[l.bit_length() - 1])); mask ^= l
+    return out
+
+
+# ---- cover algebra (cubes = ints) ----
+def _gpr_absorb(cubes):
+    uniq = set(cubes)
+    buckets = {}
+    for c in uniq:
+        buckets.setdefault(_popcount(c), []).append(c)
+    keep = []
+    for pc in sorted(buckets):
+        smaller = keep[:]
+        for c in buckets[pc]:
+            if not any((k & c) == k for k in smaller):
+                keep.append(c)
+    return keep
+
+
+def _gpr_to_dnf(node):
+    t = node[0]
+    if t == 'VAR':   return [_gpr_bit(node[1])]
+    if t == 'CONST': return [] if not node[1] else [0]
+    if t == 'OR':
+        cov = []
+        for ch in node[1]: cov += _gpr_to_dnf(ch)
+        return _gpr_absorb(cov)
+    if t == 'AND':
+        cov = [0]
+        for ch in node[1]:
+            sub = _gpr_to_dnf(ch)
+            cov = _gpr_absorb([a | b for a in cov for b in sub])
+        return cov
+    raise ValueError(t)
+
+
+def _gpr_common(cubes):
+    it = iter(cubes); c = next(it)
+    for x in it: c &= x
+    return c
+
+
+def _gpr_lit_counts(F):
+    cnt = {}
+    for c in F:
+        m = c
+        while m:
+            l = m & -m; cnt[l] = cnt.get(l, 0) + 1; m ^= l
+    return cnt
+
+
+def _gpr_one_kernel(F, l):
+    Q = [c & ~l for c in F if c & l]
+    cc = _gpr_common(Q)
+    if cc: Q = [c & ~cc for c in Q]
+    Q = _gpr_absorb(Q)
+    cnt = _gpr_lit_counts(Q)
+    reps = [x for x, n in cnt.items() if n >= 2]
+    if not reps: return Q
+    return _gpr_one_kernel(Q, max(reps, key=lambda x: cnt[x]))
+
+
+def _gpr_candidate_divisors(F):
+    F = _gpr_absorb(F)
+    if len(F) < 2: return []
+    cnt = _gpr_lit_counts(F)
+    reps = sorted((x for x, n in cnt.items() if n >= 2), key=lambda x: -cnt[x])
+    seen = set(); out = []
+    for l in reps:
+        K = tuple(sorted(_gpr_one_kernel(F, l)))
+        if len(K) >= 2 and K not in seen:
+            seen.add(K); out.append(list(K))
+    return out
+
+
+def _gpr_divide(F, D):
+    """Exact algebraic division: (Q, R) with D*Q disjoint-union R == F (correctness guaranteed
+    regardless of divisor quality -- a quotient cube is accepted only if D*Q stays inside F)."""
+    Fs = set(F); quo = None
+    for d in D:
+        vd = {c & ~d for c in F if (c & d) == d}
+        quo = vd if quo is None else (quo & vd)
+        if not quo: return [], list(F)
+    Q = list(quo)
+    DQ = {dc | qc for dc in D for qc in Q}
+    if not DQ <= Fs: return [], list(F)
+    return Q, list(Fs - DQ)
+
+
+def _gpr_factor(F):
+    F = _gpr_absorb(F)
+    if not F:     return ('CONST', False)
+    if F == [0]:  return ('CONST', True)
+    if len(F) == 1:
+        lits = _gpr_lits_of(F[0])
+        return lits[0] if len(lits) == 1 else ('AND', lits)
+    cc = _gpr_common(F)
+    if cc:
+        rem = [c & ~cc for c in F]
+        return ('AND', _gpr_lits_of(cc) + [_gpr_factor(rem)])
+    best = None
+    for D in _gpr_candidate_divisors(F):
+        Q, R = _gpr_divide(F, D)
+        if not Q or len(D) >= len(F) or len(Q) >= len(F):
+            continue
+        clean = 1 if not R else 0
+        pulled = sum(_popcount(c) for c in D)
+        cand = (clean, pulled, D, Q, R)
+        if best is None or cand[:2] > best[:2]:
+            best = cand
+    if best is None:
+        return ('OR', [_gpr_factor([c]) for c in F])
+    _, _, D, Q, R = best
+    dq = ('AND', [_gpr_factor(D), _gpr_factor(Q)])
+    return dq if not R else ('OR', [dq, _gpr_factor(R)])
+
+
+def _gpr_est_cubes(node):
+    """Upper bound on DNF cube count (product across ANDs, sum across ORs); cheap, no expansion."""
+    t = node[0]
+    if t == 'VAR':   return 1
+    if t == 'CONST': return 1
+    if t == 'OR':    return sum(_gpr_est_cubes(c) for c in node[1])
+    if t == 'AND':
+        p = 1
+        for c in node[1]:
+            p *= _gpr_est_cubes(c)
+            if p > 1 << 62: return p
+        return p
+
+
+_GPR_WARN = []
+def _gpr_factor_auto(node, budget=50000):
+    """Global factoring within budget; AND-split above it. Never splits an OR unless one single
+    OR-block alone exceeds budget (logged as a last resort -- raise the budget to avoid)."""
+    if node[0] == 'VAR':
+        return node
+    if _gpr_est_cubes(node) <= budget:
+        return _gpr_factor(_gpr_to_dnf(node))
+    if node[0] == 'AND':
+        return ('AND', [_gpr_factor_auto(c, budget) for c in node[1]])
+    _GPR_WARN.append("OR-block of ~%d cubes exceeds budget %d; split anyway." % (_gpr_est_cubes(node), budget))
+    return ('OR', [_gpr_factor_auto(c, budget) for c in node[1]])
+
+
+def _gpr_to_string(n):
+    if n[0] == 'VAR':
+        return n[1]
+    if n[0] == 'CONST':
+        return ''  # tautology -> no gene requirement
+    if n[0] == 'AND':
+        return ' and '.join(('(%s)' % _gpr_to_string(c)) if c[0] == 'OR' else _gpr_to_string(c) for c in n[1])
+    return ' or '.join(('(%s)' % _gpr_to_string(c)) if c[0] == 'AND' else _gpr_to_string(c) for c in n[1])
+
+
+def simplify_gpr_string(rule, budget=50000):
+    """Return a leaf-minimized, boolean-equivalent monotone GPR string ('' passes through)."""
+    if not rule or not rule.strip():
+        return rule
+    _GPR_VMAP.clear(); _GPR_VINV.clear(); _GPR_WARN.clear()
+    return _gpr_to_string(_gpr_factor_auto(_gpr_parse(rule), budget))
+
+
+def simplify_model_gprs(model, budget=50000):
+    """In place: replace each reaction's gene_reaction_rule with a leaf-minimized equivalent.
+
+    Monotone AND/OR boolean-equivalence => flux/knockout semantics (and strain designs) unchanged;
+    only the GPR gadget built by extend_model_gpr shrinks. Any per-rule failure keeps the original.
+    """
+    n = nchg = 0
+    for r in model.reactions:
+        s = r.gene_reaction_rule
+        if not s:
+            continue
+        n += 1
+        try:
+            new = simplify_gpr_string(s, budget)
+            if new and new != s:
+                r.gene_reaction_rule = new; nchg += 1
+        except Exception as e:
+            logging.warning('gpr_simplify: kept original GPR for %s (%s)' % (r.id, type(e).__name__))
+    logging.info('  GPR rule simplification: %d rules, %d rewritten.' % (n, nchg))
 
 
 def compress_model(model, no_par_compress_reacs=set(), compression_backend='sparse_rref', propagate_gpr=False,
@@ -1893,7 +2170,7 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
         LOG.info('  Removing blocked reactions.')
         remove_blocked_reactions(model)
         LOG.info('  Converting coefficients to rationals.')
-        stoichmat_coeff2rational(model)
+        stoichmat_coeff_to_fraction(model)
         coupled_changed = None  # None = not yet computed
         run = 1
         while True:
@@ -1941,7 +2218,14 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
 
             run += 1
 
-    # suppress_lp_context handles solver rebuild and objective restoration on exit
+    # suppress_lp_context handles solver rebuild, objective restoration and stale-group pruning
+    # on exit
+    if propagate_gpr:
+        # Leaf-minimize the propagated rules so any caller (incl. standalone compression, not just
+        # the SD pipeline) gets simplified GPRs. Monotone/boolean-equivalent -> designs unchanged;
+        # only the extend_model_gpr gadget shrinks. In the pipeline this runs again after reduce, but
+        # simplification is cheap and idempotent.
+        simplify_model_gprs(model)
     return cmp_mapReac
 
 
@@ -1983,41 +2267,40 @@ def compress_model_coupled(model, compression_backend='sparse_rref', propagate_g
     Returns:
         dict: Mapping {compressed_id: {orig_id: factor, ...}}
     """
-    # Save GPR AST bodies before either backend clears them
-    if propagate_gpr:
-        saved_gpr_bodies = {r.id: r.gpr.body for r in model.reactions}
+    # Compression is pure linear algebra; keep it off the optlang solver.
+    from straindesign.networktools import suppress_lp_context
+    with suppress_lp_context(model):
+        # Save GPR AST bodies before either backend clears them
+        if propagate_gpr:
+            saved_gpr_bodies = {r.id: r.gpr.body for r in model.reactions}
 
-    if compression_backend == 'efmtool_rref':
-        from .efmtool_cmp_interface import compress_model_java
-        reaction_map = compress_model_java(model, suppressed_reactions=suppressed_reactions)
-        # Java backend handles contradicting groups internally (CoupledContradicting).
-        # Clean up any remaining zero-flux reactions that the Java compressor created.
-        zero_flux = {r for r in model.reactions if r.lower_bound == 0 and r.upper_bound == 0}
-        for r in zero_flux:
-            reaction_map.pop(r.id, None)
-        if zero_flux:
-            model.remove_reactions(list(zero_flux), remove_orphans=True)
-    else:
-        # Clear gene rules to match Java behavior
-        for r in model.reactions:
-            r.gene_reaction_rule = ''
+        if compression_backend == 'efmtool_rref':
+            from .efmtool_cmp_interface import compress_model_java
+            reaction_map = compress_model_java(model, suppressed_reactions=suppressed_reactions)
+            # Clean up any remaining zero-flux reactions that the Java compressor created.
+            zero_flux = {r for r in model.reactions if r.lower_bound == 0 and r.upper_bound == 0}
+            for r in zero_flux:
+                reaction_map.pop(r.id, None)
+            if zero_flux:
+                model.remove_reactions(list(zero_flux), remove_orphans=True)
+        else:
+            # Clear gene rules to match Java behavior
+            for r in model.reactions:
+                r.gene_reaction_rule = ''
 
-        result = compress_cobra_model(model, methods=CompressionMethod.standard(), in_place=True,
-                                      protected_reactions=protected_reactions)
-        reaction_map = result.reaction_map
-        # Python compressor handles contradicting groups internally via bounds
-        # intersection in _handle_compress (removes zero-flux groups and
-        # re-iterates to find new couplings).
+            result = compress_cobra_model(model, methods=CompressionMethod.standard(), in_place=True,
+                                          protected_reactions=protected_reactions)
+            reaction_map = result.reaction_map
 
-    # Propagate GPR rules: AND-combine contributing reactions' GPR ASTs
-    if propagate_gpr:
-        for cmp_id, orig_map in reaction_map.items():
-            try:
-                rxn = model.reactions.get_by_id(cmp_id)
-            except KeyError:
-                continue
-            gpr_bodies = [saved_gpr_bodies.get(orig_id) for orig_id in orig_map]
-            rxn.gene_reaction_rule = _combine_gpr_and(gpr_bodies)
+        # Propagate GPR rules: AND-combine contributing reactions' GPR ASTs
+        if propagate_gpr:
+            for cmp_id, orig_map in reaction_map.items():
+                try:
+                    rxn = model.reactions.get_by_id(cmp_id)
+                except KeyError:
+                    continue
+                gpr_bodies = [saved_gpr_bodies.get(orig_id) for orig_id in orig_map]
+                rxn.gene_reaction_rule = _combine_gprs(gpr_bodies, 'and')
 
     return reaction_map
 
@@ -2064,30 +2347,22 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
         cols, vals = stoichmat_T.rows[i], stoichmat_T.data[i]
         if not vals:
             return ((), fwd[i], rev[i], inh[i])
-        f0 = float_to_rational(vals[0])
-        stoich = tuple((int(c), float_to_rational(v) / f0) for c, v in zip(cols, vals))
+        f0 = float_to_fraction(vals[0])
+        stoich = tuple((int(c), float_to_fraction(v) / f0) for c, v in zip(cols, vals))
         return (stoich, fwd[i], rev[i], inh[i])
 
     # Find parallel reactions by exact key comparison (hash pre-filter, then full compare)
-    subset_list = []
-    prev_found = set()
     protected = [r.id in protected_rxns for r in model.reactions]
     keys = [_parallel_key(i) for i in range(len(model.reactions))]
-    key_hashes = [hash(k) for k in keys]
 
-    for i in range(len(model.reactions)):
-        if i in prev_found:
-            continue
-        if protected[i]:
-            subset_list.append([i])
-            continue
-        subset_i = [i]
-        for j in range(i + 1, len(model.reactions)):
-            if (not protected[j] and j not in prev_found
-                    and key_hashes[i] == key_hashes[j] and keys[i] == keys[j]):
-                subset_i.append(j)
-                prev_found.add(j)
-        subset_list.append(subset_i)
+    # Group reactions that share an exact key in a single O(n) pass. dict preserves first-occurrence
+    # order, so each group's representative is its smallest index and subset_list stays ordered by
+    # ascending representative -- matching the surviving-reaction order after remove_reactions below.
+    # Protected reactions get a unique 2-tuple key (real keys are 4-tuples) so they never merge.
+    groups = {}
+    for i, key in enumerate(keys):
+        groups.setdefault(('\0protected', i) if protected[i] else key, []).append(i)
+    subset_list = list(groups.values())
 
     # Lump parallel reactions
     del_rxns = [False] * len(model.reactions)
@@ -2114,7 +2389,7 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
         for rxn_idx_group in subset_list:
             main_rxn = model.reactions[rxn_idx_group[0]]
             gpr_bodies = [old_gpr_bodies.get(old_reac_ids[j]) for j in rxn_idx_group]
-            group_gpr.append((main_rxn, _combine_gpr_or(gpr_bodies)))
+            group_gpr.append((main_rxn, _combine_gprs(gpr_bodies, 'or')))
 
     remove_list = [model.reactions[i] for i in np.where(del_rxns)[0]]
     if remove_list:
@@ -2155,7 +2430,7 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
 __all__ = [
     # Rational matrix and utilities
     'RationalMatrix',
-    'float_to_rational',
+    'float_to_fraction',
     'detect_max_precision',
     'nullspace',
     'basic_columns',
@@ -2174,15 +2449,17 @@ __all__ = [
     'compress_model_efmtool',  # backward-compat alias
     'compress_model_parallel',
     # GPR propagation helpers
-    '_gpr_ast_to_sympy',
-    '_sympy_to_gpr_string',
-    '_combine_gpr_and',
-    '_combine_gpr_or',
+    '_gpr_ast_to_expr',
+    '_expr_to_gpr_string',
+    '_combine_gprs',
+    # GPR rule simplification
+    'simplify_model_gprs',
+    'simplify_gpr_string',
     # Preprocessing
     'remove_blocked_reactions',
     'remove_ext_mets',
     'remove_conservation_relations',
     'remove_dummy_bounds',
-    'stoichmat_coeff2rational',
+    'stoichmat_coeff_to_fraction',
     'stoichmat_coeff2float',
 ]

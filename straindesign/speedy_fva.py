@@ -41,7 +41,7 @@ from straindesign.names import CONSTRAINTS, SOLVER, OPTIMAL, UNBOUNDED, GLPK, LP
 from straindesign.networktools import suppress_lp_context
 from straindesign.compression import (
     compress_cobra_model, CompressionMethod, remove_conservation_relations,
-    stoichmat_coeff2rational, remove_blocked_reactions,
+    stoichmat_coeff_to_fraction, stoichmat_coeff2float, remove_blocked_reactions,
 )
 
 
@@ -69,17 +69,12 @@ def _compress_for_fva(model):
     """
     cmp_maps = []
     with suppress_lp_context(model):
-        # Fast copy: swap solver with empty stub so deepcopy(solver) is cheap
-        # (~0.3s vs ~3.3s on iML1515).  Safe because speedy_fva builds its own
+        # Fast copy: the suppressed Model.copy skips the solver deepcopy (~0.3s vs ~3.3s on
+        # iML1515) and attaches a backend-free carrier.  Safe because speedy_fva builds its own
         # MILP_LP and the compression pipeline is solver-independent.
-        saved_solver = model._solver
-        model._solver = model.problem.Model()
-        try:
-            cmp_model = model.copy()
-        finally:
-            model._solver = saved_solver
+        cmp_model = model.copy()
         remove_blocked_reactions(cmp_model)
-        stoichmat_coeff2rational(cmp_model)
+        stoichmat_coeff_to_fraction(cmp_model)
         n_before = len(cmp_model.reactions)
         # Single-pass coupled compression (NULLSPACE only, no RECURSIVE iteration)
         for r in cmp_model.reactions:
@@ -680,10 +675,10 @@ def speedy_fva(model, **kwargs):
                 # Guard: LP optimum must not be worse than incumbent
                 if direction == 1:
                     val, inc = -obj_val, incumbent_max[j]
-                    bad = np.isfinite(inc) and val < inc - 1e-6 * (1 + abs(inc))
+                    bad = np.isfinite(inc) and val < inc - _DEGEN_TOL * (1 + abs(inc))
                 else:
                     val, inc = obj_val, incumbent_min[j]
-                    bad = np.isfinite(inc) and val > inc + 1e-6 * (1 + abs(inc))
+                    bad = np.isfinite(inc) and val > inc + _DEGEN_TOL * (1 + abs(inc))
                 if bad:
                     _rebuild_lp()
                     C = [[j, float(sig)]]
@@ -760,3 +755,169 @@ def speedy_fva(model, **kwargs):
         fva_result = expanded
 
     return fva_result
+
+
+# ---------------------------------------------------------------------------
+# Fast exact reversibility (sign-only FVA) for pre-compression tightening
+# ---------------------------------------------------------------------------
+
+_REV_TOL = 1e-7          # own max/min threshold (== FVA's directionality threshold)
+_REV_SCAN_TOL = 1e-3     # co-option certifies only on flux comfortably above solver noise
+_REV_REBUILD_EVERY = 200
+_FINAL_SWEEP_TOL = 1e-11  # final-sweep threshold: snap near-zero min/max to exactly 0
+_DEGEN_TOL = 1e-6         # warm-start guard: fresh optimum must not fall below a known-achievable incumbent
+
+
+def _rev_structural_sweep(model):
+    """Sound over-approximation of achievable directions via single-producer/consumer +
+    dead-end propagation (0 LP, sign-only). Returns (af, ar): af[id]=fwd not proven blocked,
+    ar[id]=rev not proven blocked. Every direction it kills is infeasible in ANY steady state,
+    hence also in the flux polytope, so tightening on it is lossless."""
+    af = {r.id: r.upper_bound > 0 for r in model.reactions}
+    ar = {r.id: r.lower_bound < 0 for r in model.reactions}
+    met_rx = {mm.id: [(r.id, r.metabolites[mm]) for r in mm.reactions] for mm in model.metabolites}
+    changed = True
+    while changed:
+        changed = False
+        for e in met_rx.values():
+            prod = [(i, 'f') for i, c in e if c > 0 and af[i]] + [(i, 'r') for i, c in e if c < 0 and ar[i]]
+            cons = [(i, 'f') for i, c in e if c < 0 and af[i]] + [(i, 'r') for i, c in e if c > 0 and ar[i]]
+            prx = {i for i, _ in prod}; crx = {i for i, _ in cons}
+
+            def kill(i, d):
+                nonlocal changed
+                if d == 'f' and af[i]:
+                    af[i] = False; changed = True
+                if d == 'r' and ar[i]:
+                    ar[i] = False; changed = True
+            if not prod:
+                for i, d in cons: kill(i, d)
+            elif len(prx) == 1:
+                s = next(iter(prx))
+                for i, d in cons:
+                    if i == s: kill(i, d)
+            if not cons:
+                for i, d in prod: kill(i, d)
+            elif len(crx) == 1:
+                s = next(iter(crx))
+                for i, d in prod:
+                    if i == s: kill(i, d)
+    return af, ar
+
+
+def fast_reversibility(model, solver=None, compress=True):
+    """Exact per-reaction reversibility on the ORIGINAL flux polytope, faster than full FVA.
+
+    Returns {reaction_id: (can_fwd, can_rev)} for every reaction of ``model`` -- identical
+    directionality to FVA (a blocked reaction is (False, False)), used to fix lb/ub to 0
+    BEFORE compression so genuinely one-directional reactions fuse (and avoid the GPR
+    fwd/rev split, which fires on lb<0).
+
+    Method: (1) structural single-producer/consumer sweep tightens a copy's bounds (0 LP,
+    sound); (2) a single coupled compression of the tightened copy shrinks the LP (default
+    on -- the uncompressed matrix is per-LP pathological on some genome-scale models, e.g.
+    yeast-GEM: ~68 vs ~4 ms/LP compressed); (3) warm-started per-reaction max/min on the
+    compressed model (objective-only change) with a co-option scan that certifies other
+    reactions carrying flux; (4) map compressed min/max back to the original reactions.
+    Sign of the achieved min/max gives reversibility."""
+    solver = select_solver(solver, model)
+    orig_rid = [r.id for r in model.reactions]
+
+    # (1) structural sweep on the ORIGINAL model + tighten a copy's bounds (lossless)
+    af, ar = _rev_structural_sweep(model)
+    m = model.copy()
+    for r in m.reactions:
+        if not af[r.id]:
+            r.upper_bound = min(float(r.upper_bound), 0.0)
+        if not ar[r.id]:
+            r.lower_bound = max(float(r.lower_bound), 0.0)
+
+    # (2) single coupled compress of the tightened model (default on)
+    if compress:
+        m, cmp_maps = _compress_for_fva(m)
+        stoichmat_coeff2float(m)
+    else:
+        cmp_maps = []
+
+    # (3) LP phase on the (compressed) model
+    cmp_rid = [r.id for r in m.reactions]
+    n = len(cmp_rid)
+    lb = np.array([float(r.lower_bound) for r in m.reactions])
+    ub = np.array([float(r.upper_bound) for r in m.reactions])
+    S = sparse.csr_matrix(create_stoichiometric_matrix(m))
+    A_ineq = sparse.csr_matrix((0, n)); b_ineq = []
+    A_eq = S; b_eq = [0.0] * S.shape[0]
+
+    def build():
+        return MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
+                       lb=lb.tolist(), ub=ub.tolist(), solver=solver)
+    lp = build()
+
+    incumbent_max = np.full(n, -np.inf); incumbent_min = np.full(n, np.inf)
+    res_max = ub <= _REV_TOL              # fwd already blocked by bounds (sweep/original)
+    res_min = lb >= -_REV_TOL
+    incumbent_max[res_max] = np.minimum(ub[res_max], 0.0)
+    incumbent_min[res_min] = np.maximum(lb[res_min], 0.0)
+    fixed = np.abs(ub - lb) < 1e-12
+    res_max[fixed] = True; res_min[fixed] = True
+    incumbent_max[fixed] = ub[fixed]; incumbent_min[fixed] = lb[fixed]
+
+    def scan(x):
+        nm = (~res_max) & (x > _REV_SCAN_TOL); res_max[nm] = True
+        np.maximum(incumbent_max, x, out=incumbent_max)
+        nn = (~res_min) & (x < -_REV_SCAN_TOL); res_min[nn] = True
+        np.minimum(incumbent_min, x, out=incumbent_min)
+
+    n_lp = 0; prev_col = -1; seq = 0
+
+    def solve_dir(j, direction):
+        nonlocal prev_col, seq, n_lp
+        sig = -float(direction)
+        C = [[j, sig]] if (prev_col < 0 or prev_col == j) else [[j, sig], [prev_col, 0.0]]
+        if solver in ('cplex', 'gurobi'):
+            lp.backend.set_objective_idx(C)
+        else:
+            lp.set_objective_idx(C)
+        prev_col = j
+        r = lp.solve(); n_lp += 1; seq += 1
+        return r
+
+    for j in range(n):
+        for direction in (1, -1):
+            if (direction == 1 and res_max[j]) or (direction == -1 and res_min[j]):
+                continue
+            if seq > 0 and seq % _REV_REBUILD_EVERY == 0:
+                lp = build(); prev_col = -1
+            x_list, obj_val, status = solve_dir(j, direction)
+            if status == UNBOUNDED:
+                if direction == 1: res_max[j] = True; incumbent_max[j] = np.inf
+                else: res_min[j] = True; incumbent_min[j] = -np.inf
+                continue
+            if status != OPTIMAL:
+                if direction == 1: res_max[j] = True; incumbent_max[j] = max(incumbent_max[j], 0.0)
+                else: res_min[j] = True; incumbent_min[j] = min(incumbent_min[j], 0.0)
+                continue
+            val = -obj_val if direction == 1 else obj_val
+            inc = incumbent_max[j] if direction == 1 else incumbent_min[j]
+            degen = (direction == 1 and np.isfinite(inc) and val < inc - _DEGEN_TOL * (1 + abs(inc))) or \
+                    (direction == -1 and np.isfinite(inc) and val > inc + _DEGEN_TOL * (1 + abs(inc)))
+            if degen:
+                lp = build(); prev_col = -1
+                x_list, obj_val, status = solve_dir(j, direction)
+                if status == UNBOUNDED:
+                    if direction == 1: res_max[j] = True; incumbent_max[j] = np.inf
+                    else: res_min[j] = True; incumbent_min[j] = -np.inf
+                    continue
+                val = -obj_val if direction == 1 else obj_val
+            if direction == 1: res_max[j] = True; incumbent_max[j] = max(incumbent_max[j], val)
+            else: res_min[j] = True; incumbent_min[j] = min(incumbent_min[j], val)
+            scan(np.array(x_list[:n], dtype=np.float64))
+
+    # (4) expand compressed min/max back to original reactions
+    incumbent_max[np.abs(incumbent_max) < _FINAL_SWEEP_TOL] = 0.0
+    incumbent_min[np.abs(incumbent_min) < _FINAL_SWEEP_TOL] = 0.0
+    df = DataFrame({"minimum": incumbent_min, "maximum": incumbent_max}, index=cmp_rid)
+    if cmp_maps:
+        df = _expand_fva(df, cmp_maps, orig_rid)
+    return {r: (float(df.at[r, 'maximum']) > _REV_TOL, float(df.at[r, 'minimum']) < -_REV_TOL)
+            for r in orig_rid}
