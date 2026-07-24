@@ -55,7 +55,10 @@ def _collect_no_par_compress_reacs(sd_modules):
 
 
 # ── GPR reduction (pipeline-only: needs essential reactions + gene KO/KI costs) ──
-_ESSENTIALITY_TOL = 1e-10  # a module's flux range must exclude zero by more than this to be essential
+# A module's flux range must exclude zero by more than this to count as essential. Ten times the
+# backends' 1e-9 feasibility tolerance: below that a reported range is indistinguishable from one
+# that touches zero. Erring high only leaves reactions knockable, which cannot lose a design.
+_ESSENTIALITY_TOL = 1e-8
 
 
 def _essentials_from_limits(flux_limits):
