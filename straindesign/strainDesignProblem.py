@@ -228,11 +228,17 @@ class SDProblem:
         # np.savetxt("Ab_py.tsv", Ab.todense(), delimiter='\t')
         self.vtype = 'B' * self.num_z + 'C' * (self.z_map_vars.shape[1] - self.num_z)
 
-    def _region_fva_override(self, sd_module):
-        """Per-BLOCK bound override for a classical-MCS module (PROTECT or SUPPRESS): blocked +
-        reversibility only.
+    def _region_bound_override(self, sd_module):
+        """Per-BLOCK module-specific bound override for a classical-MCS module (PROTECT or SUPPRESS).
 
-        Derives {rxn_id: (lo, hi)} from the module's region-FVA ranges, carrying ONLY two structural
+        General mechanism: returns a TARGETED SUBSET dict ``{rxn_id: (lo, hi)}`` of per-reaction bound
+        overrides for this module's block only (never written into the shared model). The bounds need
+        NOT come from FVA -- any source of a proven regional bound works. Currently the source is the
+        module's ``fva_bounds`` DataFrame, populated in preprocessing either by the region FVA or, under
+        SD_REV_OVERRIDE=1, by ``fast_reversibility_ranges`` (same minimum/maximum contract). Only two
+        structural facts are carried (sign-only, never a magnitude), which both sources report soundly:
+
+        Derives {rxn_id: (lo, hi)} from the module's region ranges, carrying ONLY two structural
         facts:
           - blocked in-region (min == max == 0)     -> (0.0, 0.0)
           - one-sided in-region (min >= 0)          -> lo = 0.0   (never negative in the region)
@@ -276,6 +282,10 @@ class SDProblem:
                 override[rid] = (lo, hi)
         return override
 
+    # Back-compat alias: the override is a general module-specific bound override now (bounds needn't
+    # come from FVA), but callers/tests may still reference the old FVA-specific name.
+    _region_fva_override = _region_bound_override
+
     def addModule(self, sd_module):
         """Generate module LP and z-linking-matrix for each module and add them to the strain design MILP
 
@@ -300,7 +310,7 @@ class SDProblem:
             # hence the design set -- unchanged, while making the vacuous z-links droppable. Applied to
             # both PROTECT and SUPPRESS: for SUPPRESS the undesired-region primal is bounded the same
             # way before farkas_dualize, so the certificate is unchanged.
-            bound_override = self._region_fva_override(sd_module)
+            bound_override = self._region_bound_override(sd_module)
             A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p \
                 = build_primal_from_cbm(self.model, V_ineq, v_ineq, V_eq, v_eq, bound_override=bound_override)
         elif sd_module[MODULE_TYPE] in [PROTECT, SUPPRESS, OPTKNOCK, OPTCOUPLE]:
