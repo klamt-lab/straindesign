@@ -680,10 +680,10 @@ def speedy_fva(model, **kwargs):
                 # Guard: LP optimum must not be worse than incumbent
                 if direction == 1:
                     val, inc = -obj_val, incumbent_max[j]
-                    bad = np.isfinite(inc) and val < inc - 1e-6 * (1 + abs(inc))
+                    bad = np.isfinite(inc) and val < inc - _DEGEN_TOL * (1 + abs(inc))
                 else:
                     val, inc = obj_val, incumbent_min[j]
-                    bad = np.isfinite(inc) and val > inc + 1e-6 * (1 + abs(inc))
+                    bad = np.isfinite(inc) and val > inc + _DEGEN_TOL * (1 + abs(inc))
                 if bad:
                     _rebuild_lp()
                     C = [[j, float(sig)]]
@@ -770,6 +770,7 @@ _REV_TOL = 1e-7          # own max/min threshold (== FVA's directionality thresh
 _REV_SCAN_TOL = 1e-3     # co-option certifies only on flux comfortably above solver noise
 _REV_REBUILD_EVERY = 200
 _FINAL_SWEEP_TOL = 1e-11  # final-sweep threshold: snap near-zero min/max to exactly 0
+_DEGEN_TOL = 1e-6         # warm-start guard: fresh optimum must not fall below a known-achievable incumbent
 
 
 def _rev_structural_sweep(model):
@@ -903,8 +904,8 @@ def fast_reversibility(model, solver=None, compress=True):
                 continue
             val = -obj_val if direction == 1 else obj_val
             inc = incumbent_max[j] if direction == 1 else incumbent_min[j]
-            degen = (direction == 1 and np.isfinite(inc) and val < inc - 1e-6 * (1 + abs(inc))) or \
-                    (direction == -1 and np.isfinite(inc) and val > inc + 1e-6 * (1 + abs(inc)))
+            degen = (direction == 1 and np.isfinite(inc) and val < inc - _DEGEN_TOL * (1 + abs(inc))) or \
+                    (direction == -1 and np.isfinite(inc) and val > inc + _DEGEN_TOL * (1 + abs(inc)))
             if degen:
                 lp = build(); prev_col = -1
                 x_list, obj_val, status = solve_dir(j, direction)
