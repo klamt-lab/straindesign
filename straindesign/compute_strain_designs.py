@@ -55,6 +55,19 @@ def _collect_no_par_compress_reacs(sd_modules):
 
 
 # ── GPR reduction (pipeline-only: needs essential reactions + gene KO/KI costs) ──
+_ESSENTIALITY_TOL = 1e-10  # a module's flux range must exclude zero by more than this to be essential
+
+
+def _essentials_from_limits(flux_limits):
+    """Reactions whose flux range inside a module excludes zero, i.e. essential to that module.
+
+    ``flux_limits`` is an FVA result over the module's constrained polytope. Both bounds must share
+    a sign and stay clear of zero, so the reaction carries flux in every point of the module.
+    """
+    return {reac_id for reac_id, limits in flux_limits.iterrows()
+            if np.min(abs(limits)) > _ESSENTIALITY_TOL and np.prod(np.sign(limits)) > 0}
+
+
 def reduce_model_gprs(model, essential_reacs, gkis, gkos):
     """Simplify GPR rules by removing non-targetable genes and reducing boolean expressions
 
@@ -589,9 +602,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         if m[MODULE_TYPE] != SUPPRESS:  # Essential reactions can only be determined from desired
             # or opt-/robustknock modules
             flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS], compress=False)
-            for (reac_id, limits) in flux_limits.iterrows():
-                if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0:  # find essential
-                    essential_reacs.add(reac_id)
+            essential_reacs.update(_essentials_from_limits(flux_limits))
     # remove ko-costs (and thus knockability) of essential reactions
     [cmp_ko_cost.pop(er) for er in essential_reacs if er in cmp_ko_cost]
     # --- GPR extension on (possibly compressed) model ---
@@ -702,10 +713,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         module_limits = flux_limits.loc[
             [reac_id for reac_id in knockable_ids if reac_id in flux_limits.index]]
         module['fva_bounds'] = module_limits
-        essentials_in_module = {
-            reac_id for reac_id, limits in module_limits.iterrows()
-            if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0
-        }
+        essentials_in_module = _essentials_from_limits(module_limits)
         if module[MODULE_TYPE] == SUPPRESS:
             suppress_essential.update(essentials_in_module)
         else:
@@ -727,10 +735,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=module[CONSTRAINTS],
                               compress=False, reaction_list=knockable_ids)
             module['fva_bounds'] = flux_limits
-            essentials_in_module = {
-                reac_id for reac_id, limits in flux_limits.iterrows()
-                if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0
-            }
+            essentials_in_module = _essentials_from_limits(flux_limits)
             if module[MODULE_TYPE] == SUPPRESS:
                 suppress_essential.update(essentials_in_module)
             else:
