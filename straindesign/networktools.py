@@ -105,14 +105,58 @@ class _SolverStub:
 _SOLVER_STUB = _SolverStub('__stub__')
 
 
+class _CarrierSolver:
+    """Backend-free stand-in solver attached to suppressed model copies.
+
+    Reports the real optlang interface (so ``model.problem`` / ``select_solver`` resolve) and
+    exposes empty constraint/variable containers so cobra's ``add_metabolites`` /
+    ``Reaction.add_metabolites`` run without a live backend: constraint/variable lookups fall
+    through the permissive ``Container.__getitem__`` to ``_SOLVER_STUB`` (no-op coefficient/bound
+    setters) and ``add`` is a no-op. The copy is never solved -- FVA/FBA build their own MILP_LP
+    from the stoichiometry -- so no real backend is needed. Building an empty ``iface.Model()``
+    instead (the previous behaviour) forced ``add_cons_vars`` to push every gadget metabolite into
+    a live Gurobi/CPLEX model during ``extend_model_gpr`` (~0.5s wasted per copy on iML1515).
+    """
+    __slots__ = ('interface', 'constraints', 'variables')
+
+    def __init__(self, interface):
+        from optlang.container import Container
+        self.interface = interface
+        self.constraints = Container()
+        self.variables = Container()
+
+    def add(self, *a, **kw):
+        pass
+
+    def remove(self, *a, **kw):
+        pass
+
+    def update(self, *a, **kw):
+        pass
+
+    # Picklable (dump_preprocessed pickles cmp_model): store the interface by module name and
+    # rebuild empty containers on load -- the carrier is never solved, so this suffices.
+    def __getstate__(self):
+        return self.interface.__name__
+
+    def __setstate__(self, name):
+        import importlib
+        from optlang.container import Container
+        self.interface = importlib.import_module(name)
+        self.constraints = Container()
+        self.variables = Container()
+
+
 def _suppressed_copy(model):
     """``Model.copy`` while LP updates are suppressed: no deep copy of the optlang backend.
 
     A plain copy deepcopies the live solver, which rebuilds the whole Gurobi/CPLEX model (~3s per
     copy on iML1515). Under suppression nothing reads that solver -- FVA builds its own LP and
     compression manipulates the stoichiometry directly -- so the solver is swapped for a stub while
-    copying (~0.3s) and the copy is given a fresh empty solver of the same interface. The empty
-    solver still exposes ``.interface`` and accepts reactions added by the GPR extension.
+    copying (~0.3s) and the copy is given a backend-free ``_CarrierSolver`` of the same interface.
+    The carrier exposes ``.interface`` and empty constraint/variable containers, so the GPR
+    extension's ``add_metabolites`` calls run without building (or pushing constraints into) a live
+    solver.
     """
     iface = model.solver.interface          # captured before stubbing
     saved = model._solver
@@ -122,7 +166,7 @@ def _suppressed_copy(model):
         new = orig_copy(model)
     finally:
         model._solver = saved
-    new._solver = iface.Model()
+    new._solver = _CarrierSolver(iface)
     return new
 
 _ORIG_CONTAINER_GETITEM = None  # saved Container.__getitem__
@@ -207,6 +251,25 @@ def _suppressed_remove_metabolites(self, metabolite_list, destructive=False):
         _remove_metabolites_direct(self, remove_set)
 
 
+def _suppressed_add_metabolites(self, metabolite_list):
+    """Bypass solver constraint creation: direct DictList manipulation.
+
+    Mirrors ``cobra.Model.add_metabolites`` dedup + ``_model`` wiring but skips the optlang
+    ``Constraint`` construction and ``add_cons_vars`` -- both need a live backend and, on the
+    suppressed copy, only build a throwaway solver the code never reads (FVA/FBA construct their
+    own MILP_LP; the original model's solver is rebuilt on suppress-exit via ``_populate_solver``).
+    Safe under ``extend_model_gpr`` because it de-dupes gadget metabolites before calling this.
+    """
+    if not hasattr(metabolite_list, '__iter__'):
+        metabolite_list = [metabolite_list]
+    metabolite_list = [x for x in metabolite_list if x.id not in self.metabolites]
+    if not metabolite_list:
+        return
+    for x in metabolite_list:
+        x._model = self
+    self.metabolites += metabolite_list
+
+
 # -- Saved originals (None = not suppressed) ----------------------------------
 
 _ORIG_SLC = None   # (cls, method) for Constraint.set_linear_coefficients
@@ -231,6 +294,7 @@ def _suppress_lp_updates(model):
       - Model._populate_solver → no-op (rebuild on context exit)
       - Model.remove_reactions → direct list manipulation
       - Model.remove_metabolites → direct list manipulation
+      - Model.add_metabolites → direct list manipulation (no backend constraints)
       - Container.__getitem__ → return stub for missing keys
 
     Safe to call when already suppressed (idempotent).  The real methods
@@ -288,6 +352,9 @@ def _suppress_lp_updates(model):
     if Model.remove_metabolites is not _suppressed_remove_metabolites:
         _ORIG_COBRA.append((Model, 'remove_metabolites', Model.remove_metabolites))
         Model.remove_metabolites = _suppressed_remove_metabolites
+    if Model.add_metabolites is not _suppressed_add_metabolites:
+        _ORIG_COBRA.append((Model, 'add_metabolites', Model.add_metabolites))
+        Model.add_metabolites = _suppressed_add_metabolites
     if Model.copy is not _suppressed_copy:
         _ORIG_COBRA.append((Model, 'copy', Model.copy))
         Model.copy = _suppressed_copy
