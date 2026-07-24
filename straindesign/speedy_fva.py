@@ -37,7 +37,7 @@ from straindesign.lptools import (
 from straindesign.solver_interface import MILP_LP
 from straindesign.pool import SDPool
 from straindesign.parse_constr import parse_constraints, lineqlist2mat
-from straindesign.names import CONSTRAINTS, SOLVER, OPTIMAL, UNBOUNDED, GLPK, LP_METHOD_DUAL
+from straindesign.names import CONSTRAINTS, SOLVER, OPTIMAL, UNBOUNDED, INFEASIBLE, GLPK, LP_METHOD_DUAL
 from straindesign.networktools import suppress_lp_context
 from straindesign.compression import (
     compress_cobra_model, CompressionMethod, remove_conservation_relations,
@@ -761,10 +761,9 @@ def speedy_fva(model, **kwargs):
 # Fast exact reversibility (sign-only FVA) for pre-compression tightening
 # ---------------------------------------------------------------------------
 
-_REV_TOL = 1e-7          # own max/min threshold (== FVA's directionality threshold)
 _REV_SCAN_TOL = 1e-3     # co-option certifies only on flux comfortably above solver noise
 _REV_REBUILD_EVERY = 200
-_FINAL_SWEEP_TOL = 1e-11  # final-sweep threshold: snap near-zero min/max to exactly 0
+_ZERO_SNAP = 1e-11        # |flux| below this is solver noise, not a direction; 0 disables snapping
 _DEGEN_TOL = 1e-6         # warm-start guard: fresh optimum must not fall below a known-achievable incumbent
 
 
@@ -854,11 +853,14 @@ def fast_reversibility(model, solver=None, compress=True):
     lp = build()
 
     incumbent_max = np.full(n, -np.inf); incumbent_min = np.full(n, np.inf)
-    res_max = ub <= _REV_TOL              # fwd already blocked by bounds (sweep/original)
-    res_min = lb >= -_REV_TOL
-    incumbent_max[res_max] = np.minimum(ub[res_max], 0.0)
-    incumbent_min[res_min] = np.maximum(lb[res_min], 0.0)
-    fixed = np.abs(ub - lb) < 1e-12
+    # Bound signs are exact model data, not solver output, so they decide on the exact sign: a
+    # direction counts as blocked only if the bound itself forbids it. A tolerance here would
+    # discard a direction whose achievable flux is merely small (a max of 1e-8 is still forward).
+    res_max = ub <= 0.0                   # fwd already blocked by bounds (sweep/original)
+    res_min = lb >= 0.0
+    incumbent_max[res_max] = ub[res_max]
+    incumbent_min[res_min] = lb[res_min]
+    fixed = ub == lb
     res_max[fixed] = True; res_min[fixed] = True
     incumbent_max[fixed] = ub[fixed]; incumbent_min[fixed] = lb[fixed]
 
@@ -882,6 +884,23 @@ def fast_reversibility(model, solver=None, compress=True):
         r = lp.solve(); n_lp += 1; seq += 1
         return r
 
+    # Feasibility preflight: one zero-objective solve proves the polytope is non-empty (so a later
+    # infeasible status can only come from the objective change, not the model) and its flux vector
+    # seeds every incumbent, so no subsequent warm-start optimum can silently contradict a flux
+    # already witnessed as achievable.
+    x_feas, _, status_feas = lp.solve(); n_lp += 1
+    if status_feas == INFEASIBLE:
+        raise ValueError('fast_reversibility: the model has no steady-state flux distribution.')
+    if status_feas == OPTIMAL and x_feas:
+        scan(np.array(x_feas[:n], dtype=np.float64))
+
+    def unknown(j, direction):
+        """Record 'direction not determined': the incumbent goes to +/-inf so the direction is
+        reported as achievable. Tightening on an unproven bound could delete a feasible pathway;
+        reporting a spurious direction only forgoes tightening."""
+        if direction == 1: res_max[j] = True; incumbent_max[j] = np.inf
+        else: res_min[j] = True; incumbent_min[j] = -np.inf
+
     for j in range(n):
         for direction in (1, -1):
             if (direction == 1 and res_max[j]) or (direction == -1 and res_min[j]):
@@ -889,13 +908,10 @@ def fast_reversibility(model, solver=None, compress=True):
             if seq > 0 and seq % _REV_REBUILD_EVERY == 0:
                 lp = build(); prev_col = -1
             x_list, obj_val, status = solve_dir(j, direction)
-            if status == UNBOUNDED:
-                if direction == 1: res_max[j] = True; incumbent_max[j] = np.inf
-                else: res_min[j] = True; incumbent_min[j] = -np.inf
-                continue
             if status != OPTIMAL:
-                if direction == 1: res_max[j] = True; incumbent_max[j] = max(incumbent_max[j], 0.0)
-                else: res_min[j] = True; incumbent_min[j] = min(incumbent_min[j], 0.0)
+                # UNBOUNDED is a proven infinite direction, every other nonoptimal status (time
+                # limit, numerical trouble) is simply unknown; both must not tighten.
+                unknown(j, direction)
                 continue
             val = -obj_val if direction == 1 else obj_val
             inc = incumbent_max[j] if direction == 1 else incumbent_min[j]
@@ -904,9 +920,8 @@ def fast_reversibility(model, solver=None, compress=True):
             if degen:
                 lp = build(); prev_col = -1
                 x_list, obj_val, status = solve_dir(j, direction)
-                if status == UNBOUNDED:
-                    if direction == 1: res_max[j] = True; incumbent_max[j] = np.inf
-                    else: res_min[j] = True; incumbent_min[j] = -np.inf
+                if status != OPTIMAL:
+                    unknown(j, direction)
                     continue
                 val = -obj_val if direction == 1 else obj_val
             if direction == 1: res_max[j] = True; incumbent_max[j] = max(incumbent_max[j], val)
@@ -914,10 +929,12 @@ def fast_reversibility(model, solver=None, compress=True):
             scan(np.array(x_list[:n], dtype=np.float64))
 
     # (4) expand compressed min/max back to original reactions
-    incumbent_max[np.abs(incumbent_max) < _FINAL_SWEEP_TOL] = 0.0
-    incumbent_min[np.abs(incumbent_min) < _FINAL_SWEEP_TOL] = 0.0
+    # Snapping only removes flux the solver cannot distinguish from zero; the direction decision
+    # itself is then the exact sign, so a small-but-real flux (1e-8) keeps its direction.
+    incumbent_max[np.abs(incumbent_max) < _ZERO_SNAP] = 0.0
+    incumbent_min[np.abs(incumbent_min) < _ZERO_SNAP] = 0.0
     df = DataFrame({"minimum": incumbent_min, "maximum": incumbent_max}, index=cmp_rid)
     if cmp_maps:
         df = _expand_fva(df, cmp_maps, orig_rid)
-    return {r: (float(df.at[r, 'maximum']) > _REV_TOL, float(df.at[r, 'minimum']) < -_REV_TOL)
+    return {r: (float(df.at[r, 'maximum']) > 0.0, float(df.at[r, 'minimum']) < 0.0)
             for r in orig_rid}
