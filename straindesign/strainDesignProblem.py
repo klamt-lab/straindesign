@@ -38,6 +38,10 @@ from straindesign import SDModule, IndicatorConstraints, lineqlist2mat, linexprd
 from straindesign.names import *
 import logging
 
+# Margin a module flux range must clear on solvers whose reported ranges are only as tight as their
+# own feasibility tolerance (1e-9): ten times that tolerance.
+_MODULE_OVERRIDE_TOL = 1e-8
+
 
 class SDProblem:
     """Strain design MILP
@@ -261,17 +265,22 @@ class SDProblem:
             # override only tightens bounds, so omitting it is design-neutral.
             return {}
         solver = getattr(self, SOLVER, None)
-        tol = 1e-10 if select_solver(solver) in [SCIP, GLPK] else 0.0
+        # SCIP and GLPK report flux ranges no tighter than their own feasibility tolerance (1e-9), so a
+        # reported zero there does not certify a zero. They therefore act only on a range that clears
+        # that tolerance with a safety factor; the exact solvers act on the exact sign. Either way the
+        # override only fixes a sign the module already forces, so a range too weak to act on merely
+        # forgoes tightening.
+        tol = _MODULE_OVERRIDE_TOL if select_solver(solver) in [SCIP, GLPK] else 0.0
         override = {}
         for rid, lim in limits.iterrows():
-            lo = hi = None
-            if lim.minimum >= tol:
-                lo = 0.0
-            if lim.maximum <= -tol:
-                hi = 0.0
-            if lim.minimum >= tol and lim.maximum <= tol:   # blocked in-region
-                lo, hi = 0.0, 0.0
-            if lo is not None or hi is not None:
+            if lim.minimum > lim.maximum + tol:
+                # Numerically inconsistent range: neither sign is trustworthy, so act on neither.
+                logging.warning('  Module FVA range for %s is inconsistent (min %g > max %g), no bound '
+                                'override applied.' % (rid, lim.minimum, lim.maximum))
+                continue
+            lo = 0.0 if lim.minimum >= tol else None       # convincingly non-negative in-module
+            hi = 0.0 if lim.maximum <= -tol else None      # convincingly non-positive in-module
+            if lo is not None or hi is not None:           # both sides fixed == blocked in-module
                 override[rid] = (lo, hi)
         return override
 
