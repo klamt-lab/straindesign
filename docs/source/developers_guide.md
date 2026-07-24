@@ -29,11 +29,11 @@ not addresses.
 
 1. [**Orientation & the strain-design problem**](#ch1) — the MCS problem, SUPPRESS/PROTECT/bilevel semantics, interventions & cost, the binary `z` vector, invocation, and the master notation table.
 2. [**The constraint-based foundation**](#ch2) — `Sv=0`, the flux polytope/cone, FBA & FVA as LPs, the internal standard form, and the convex geometry needed for duality.
-3. [**Network compression**](#ch3) — why compress; the exact integer/rational nullspace (fraction-free RREF, big-int path); parallel, coupled (kernel-proportionality + bound intersection), conservation-relation, and blocked/zero-flux reductions; the alternating fixpoint; GPR AND/OR propagation; the compression map; and the legacy efmtool Java backend.
-4. [**GPR integration**](#ch4) — why gene KOs are encoded as flux structure; `extend_model_gpr` pseudo-metabolite construction (AND/OR), the flux-space-invariance argument, reversible split & `reac_map`; `reduce_gpr`; the two-pass boundary and the regulatory-gene exemption.
-5. [**FVA in preprocessing**](#ch5) — the three FVA uses and their rationale; `bound_blocked_or_irrevers_fva` bound relaxation and its MILP effect; size-1 MCS extraction; the `speedy_fva` acceleration algorithm.
-6. [**Dualization (the mathematical core)**](#ch6) — LP duality & complementary slackness; Farkas' lemma and the SUPPRESS infeasibility certificate (why the dual ray is unbounded); strong-duality encoding of bilevel problems and *why the one `LP_dualize` operation is reusable* across OptKnock/RobustKnock/OptCouple/DoubleOpt.
-7. [**MILP construction & the z-linking**](#ch7) — the seed cost rows, `num_z`, block-diagonal module assembly, `prevent_boundary_knockouts`; `link_z`: per-constraint big-M from a bounding LP vs native indicator constraints, the bound-driven fork, and why indicators give a tighter relaxation.
+3. [**Network compression**](#ch3) — exact rational nullspace compression; parallel, coupled, conservation and blocked reductions; lump scaling; GPR propagation and simplification; compression maps; and the legacy efmtool backend.
+4. [**GPR integration**](#ch4) — GPR reduction and Boolean simplification, `extend_model_gpr`, reversible splitting, module remapping, and the two-compression-pass boundary.
+5. [**FVA in preprocessing**](#ch5) — pre-compression sign classification, desired-region essentiality, final bound/module FVA, the single-classical-module fold, and size-1 MCS extraction.
+6. [**Dualization (the mathematical core)**](#ch6) — LP duality, Farkas certificates, and the strong-duality encodings shared by the supported module types.
+7. [**MILP construction & the z-linking**](#ch7) — block assembly, per-module sign overrides, bound-derived single-row big-M values, native indicators or the intentional blanket M for multi-variable rows, and free-binary elimination.
 8. [**Solving & enumeration**](#ch8) — ANY/BEST/POPULATE objective setups; the iterative loop and superset-excluding integer cuts; solver parameters; the CPLEX-vs-Gurobi gap.
 9. [**Decompression & solution semantics**](#ch9) — reverse-map expansion of compressed interventions; size-1 MCS re-injection; `filter_sd_maxcost`; the KI value-0/`(nan,nan)` & `strip_non_ki` encoding; gene↔reaction translation.
 10. [**Known issues, gotchas & failure modes**](#ch10) — neutral-gene-KO paths and superset artifacts with mechanism; the in-place dict-mutation footgun; name truncation; numeric-status robustness.
@@ -319,48 +319,44 @@ lever that keeps the enumeration tractable (the canonical benchmarks all cap it 
 
 ### 1.6 The end-to-end pipeline at a glance
 
-`compute_strain_designs(model, **kwargs)` (`compute_strain_designs.py`) is the orchestrator.
-Its stages, in order, with the chapter that details each:
+`compute_strain_designs(model, **kwargs)` is the orchestrator. The current order is:
 
-1. **Parse & validate** (`:178-304`) — resolve `sd_setup` vs. explicit kwargs, select the
-   solver, seed the RNG, normalize cost dicts, reject overlapping gene/reaction candidates,
-   rename genes whose IDs start with a digit, and re-validate each module's constraints against
-   the chosen solver. (This chapter, §1.7.)
-2. **Preprocess** — the bulk of wall-time (measured ~117 s of blocked/irreversible FVA on the
-   iML1515 gene-MCS benchmark). It interleaves several transformations:
-   - `remove_ext_mets` and reaction-based regulatory constraints (`:310-330`).
-   - **Compression pass #1** (`compress_model(..., propagate_gpr=True)`, `:357`): lossless,
-     *exact integer/rational* network compression on the metabolic model *before* gene
-     pseudo-reactions exist — [Ch 3](#ch3).
-   - **FVA #1** (`:373-381`): flux-variability analysis on each desired/PROTECT module to find
-     reactions essential to those behaviors, and drop them from the knockable set — [Ch 5](#ch5).
-   - **GPR integration** (`:383-422`, only if `gene_kos`): `reduce_gpr` prunes irrelevant genes,
-     then `extend_model_gpr` encodes the Boolean gene–protein–reaction rules as *flux structure*
-     (gene pseudo-metabolites / pseudo-reactions) so that a gene knockout becomes an ordinary
-     reaction-level constraint in the same MILP; module references are remapped through
-     `reac_map` — [Ch 4](#ch4).
-   - **Compression pass #2** (`compress_model(...)`, `propagate_gpr` default, `:434`): compress
-     the now GPR-extended network — [Ch 3](#ch3)/4.
-   - **FVA #2** (`bound_blocked_or_irrevers_fva`, `:450`): relax non-binding bounds to ±∞ and pin
-     blocked/irreversible reactions to 0, which tightens the downstream big-M/indicator
-     linearization — [Ch 5](#ch5).
-   - **FVA #3** (knockable-scoped, `:454-494`): find reactions essential to SUPPRESS vs. PROTECT
-     and, for a classical MCS problem, extract **size-1 MCS** (single reactions whose removal
-     alone blocks the SUPPRESS region) so they need not be re-discovered by the MILP — [Ch 5](#ch5).
-3. **Build the MILP** (`SDMILP(cmp_model, sd_modules, **kwargs_milp)`, `:518`; [Ch 7](#ch7)). Each
-   module is appended by `addModule` as a block: **SUPPRESS → dualized Farkas infeasibility
-   rows, PROTECT → raw primal feasibility rows**, bilevel → strong-duality rows ([Ch 6](#ch6)). Then
-   `link_z` wires the binary `z` to those continuous rows, as **native indicator constraints or
-   big-M** depending on bound structure ([Ch 7](#ch7)).
-4. **Solve / enumerate** ([Ch 8](#ch8)): `compute` (ANY), `compute_optimal` (BEST), or `enumerate`
-   (POPULATE). Found designs are excluded by iterative **integer cuts** so the next solve returns
-   a genuinely new design.
-5. **Decompress** (`_decompress_solutions`, `:589`; [Ch 9](#ch9)): `expand_sd` reverses the two
-   compression maps to recover interventions on original reactions, re-injects the size-1 MCS,
-   filters by `max_cost`, and translates reaction designs to gene designs via the cobra GPR AST.
+1. **Parse and validate.** Normalize the setup, costs, solver, seed and module list; reject
+   incompatible intervention dictionaries; and validate each module's constraints with the selected
+   solver.
+2. **Enter solver-suppressed preprocessing.** Model copies receive a backend-free
+   `_CarrierSolver`. Compression, FVA and MILP construction read the cobra model's stoichiometry and
+   bounds but build their own solver objects, so copying or extending a model does not repeatedly
+   populate an optlang backend.
+3. **Prepare the metabolic model.** Remove external metabolites and apply reaction-based regulatory
+   interventions. Gene-based regulatory constraints are deferred until the gene pseudo-network
+   exists.
+4. **Reversibility pre-tightening and COMPRESS #1** when compression is enabled.
+   `fast_reversibility` determines which directions are unavailable in the base flux polytope before
+   compression. Fixing those directions to zero exposes additional exact couplings and avoids
+   unnecessary reversible GPR splits. `compress_model(..., propagate_gpr=True)` then compresses the
+   metabolic model while carrying GPR logic through coupled (AND) and parallel (OR) merges.
+5. **Pre-GPR desired-region essentiality.** For each non-SUPPRESS module, FVA identifies reactions
+   that must remain active. Those reactions are removed from the KO candidates and inform
+   `reduce_model_gprs`.
+6. **GPR preprocessing and extension.** `reduce_model_gprs` removes irrelevant/protected genes on the
+   compressed path; `simplify_model_gprs` performs Boolean-equivalent monotone simplification on both
+   compressed and uncompressed paths; `extend_model_gpr` translates the remaining rules into flux
+   gadgets. Deferred gene-regulatory constraints are then attached.
+7. **COMPRESS #2.** The GPR-extended model is compressed again and modules and costs are remapped.
+8. **Final FVA preprocessing.** Normally, one scoped FVA relaxes non-binding model bounds and a
+   knockable-scoped FVA for each module supplies essentiality and per-module sign information. If
+   there is exactly one classical SUPPRESS or PROTECT module and no inner objective, these two jobs
+   are folded into one constrained FVA over the union of the required scopes.
+9. **Build the MILP.** Each module becomes a continuous block. Classical module blocks consume the
+   stored FVA ranges as sign-only bound overrides. `link_z` connects intervention binaries using
+   finite bound-derived rows where available and indicators (or the configured blanket M) otherwise.
+10. **Solve and decompress.** ANY, BEST or POPULATE finds compressed designs; compression maps,
+    size-1 MCS and gene/reaction translations restore the original problem space.
 
-Chapters 2–5 cover preprocessing, 6–7 the MILP construction, 8 the solve loop, 9 decompression,
-10 known gotchas, and 11 performance and roadmap.
+The `dump_preprocessed` path stops between steps 9 and 10 and serializes everything needed to rebuild
+and solve the MILP without repeating steps 2–8.
+
 
 ### 1.7 How the package is invoked
 
@@ -427,13 +423,12 @@ A `dummy` object with just an `id` may stand in for the model if `skip_checks=Tr
 | `time_limit` | MILP solver time limit (s) | `inf` |
 
 `M` deserves a note because it silently changes the MILP encoding. With the default `M = None`,
-`SDProblem.__init__` sets `self.M = np.inf` (`strainDesignProblem.py`), and `link_z`
-attaches each `z` to its continuous rows as a **native indicator constraint** — except GLPK,
-which cannot express indicators and is forced to `M = 1000` (`:120-124`). Because SUPPRESS's
-dualized rows are unbounded (the Farkas ray) while PROTECT's primal rows are finite-flux, the
-*emergent* behavior under `M = inf` is that SUPPRESS rows become indicators and PROTECT rows
-become big-M — but this is a consequence of bound structure inside `link_z`, not a hard-coded
-per-module switch ([Ch 7](#ch7)). No MIP optimality gap is set anywhere, so both CPLEX and Gurobi run at
+`SDProblem.__init__` sets `self.M = np.inf` (`strainDesignProblem.py`). `link_z` derives a
+finite relaxation directly for zero- and single-continuous-variable rows; rows with two or more
+continuous variables become native indicator constraints. GLPK, which cannot express indicators,
+uses the blanket `M = 1000` for those otherwise-indicator rows (`:120-124`), and an explicitly
+supplied finite M requests the same replacement on other backends. This is a row-structure rule,
+not a hard-coded per-module switch ([Ch 7](#ch7)). No MIP optimality gap is set anywhere, so both CPLEX and Gurobi run at
 their default 1e-4 relative gap ([Ch 8](#ch8), [Ch 11](#ch11)).
 
 The call returns an `SDSolutions` object exposing `reaction_sd` (reaction-level designs) and,
@@ -1221,34 +1216,29 @@ flux-split map `{r1: ½, r2: ½}` (equal `|factor|`). A knockout of the lump mea
 knocked out, so its KO cost is the sum — correctly capturing that either isozyme alone still runs the
 reaction.
 
-### 3.9 GPR propagation through compression
+### 3.9 GPR propagation and simplification
 
-When compression runs with `propagate_gpr=True` (COMPRESS #1, before gene pseudoreactions exist), each
-merge must carry the Boolean gene–protein–reaction (GPR) rules of its members onto the surviving
-reaction, so the compressed model still knows which genes control the lumped reaction. This chapter
-covers *only the propagation through a merge*; the semantics of encoding GPR as flux structure belongs
-to [Ch 4](#ch4) (`extend_model_gpr`), cross-referenced there.
+When COMPRESS #1 runs with `propagate_gpr=True`, the Boolean rule of every merged reaction must be
+carried to the survivor:
 
-The rule follows the flux logic of each merge type:
+- Coupled/serial members are joined with **AND** because every member must carry its fixed share.
+- Parallel alternatives are joined with **OR** because any member can supply the lumped flux.
 
-- **Serial / coupled merges → AND.** A coupled group is an unbranched chain that must run as a unit —
-  every member's genes are required for the lumped reaction to carry flux — so their GPRs are combined
-  with **AND**. `_combine_gpr_and` (`compression.py`) is invoked from `compress_model_coupled`
-  (`:2007`–`:2015`) over the saved GPR ASTs of the contributing reactions.
-- **Parallel merges → OR.** Parallel members are alternative routes for the same conversion — *any* of
-  them suffices — so their GPRs are combined with **OR**. `_combine_gpr_or` (`compression.py`) is
-  invoked from `compress_model_parallel` (`:2107`–`:2121`).
+Both paths call `_combine_gprs(gpr_bodies, op)`. Cobra AST nodes are converted into a small nested
+expression representation, same-operator children are flattened, duplicates are removed, and the
+result is rendered back to a deterministic GPR string. This combination step deliberately avoids
+SymPy and does not attempt global minimization.
 
-Both combiners lift the cobra GPR AST to sympy Boolean expressions (`_gpr_ast_to_sympy`, `:1754`),
-combine with `sympy.And`/`sympy.Or` (which auto-flatten and dedupe), and render back to a rule string
-(`_sympy_to_gpr_string`, `:1773`). The subtlety is the treatment of an **empty GPR** (a reaction with
-no gene requirement, "always active", logically `True`): in an AND-combine an empty GPR is a no-op and
-is skipped, and if *all* members are empty the result is empty (`:1815`–`:1822`); in an OR-combine a
-single empty member makes the whole lump always-active, so the result is empty (`:1837`–`:1839`). Full
-Boolean simplification is deferred to `reduce_gpr` downstream ([Ch 4](#ch4)). Note also that the coupled Python
-backend clears gene rules on the raw reactions before the merge (`compress_model_coupled`, `:1996`–
-`:1998`) and reinstates the combined rule afterward from the *saved* ASTs (`:1982`–`:1983`,
-`:2007`–`:2015`), so the propagation is driven off a clean snapshot rather than the mutated model.
+An empty GPR means “always active.” It is therefore the identity for an AND merge and absorbing for
+an OR merge. Saved AST bodies are used because the compression backend clears the reaction rules while
+performing its linear-algebra work.
+
+After a GPR-propagating compression, `simplify_model_gprs` applies the monotone simplifier in
+`compression.py`. It parses the rule, constructs an absorbed sum-of-products representation within a
+bounded expansion budget, algebraically factors it, and writes a Boolean-equivalent rule with fewer
+gene leaves where possible. The simplifier is also called explicitly by the strain-design pipeline so
+the no-compression path receives the same rule minimization.
+
 
 ### 3.10 The compression map `cmp_mapReac` and back-expansion
 
@@ -1494,7 +1484,7 @@ Boolean logic. After extension, "gene *g* is knocked out" becomes the purely lin
 flux of pseudoreaction *g* to zero," and the MILP's existing reaction-knockout machinery handles it
 with no separate Boolean-logic layer. We then cover the reversible-reaction split that GPR extension
 forces (`extend_model_gpr` + the `reac_map` remap in `compute_strain_designs.py`), the
-pre-pruning pass `reduce_gpr` (`networktools.py`) that shrinks the work, the delicate ordering of
+pre-pruning pass `reduce_model_gprs` (`networktools.py`) that shrinks the work, the delicate ordering of
 the two compression passes around extension (`compute_strain_designs.py`), and the sha256 name
 truncation that only fires for Gurobi/GLPK.
 
@@ -1794,65 +1784,27 @@ and remapped the same way (`compute_strain_designs.py`). Because `reac_map` cont
 for *every* reaction (`{r.id: 1.0}` for the untouched ones, `networktools.py, 1149`), the loop
 can blindly remap every key without special-casing which reactions were split.
 
-### 4.5 `reduce_gpr`: pruning before extension
+### 4.5 `reduce_model_gprs` and `simplify_model_gprs`
 
-Extension cost scales with the number of surviving genes and Boolean operators: each gene adds a
-pseudoreaction + metabolite, each operator a gadget. Many genes can be proven irrelevant *before* any
-of that structure is built, which both shrinks `S` and removes useless binary candidates from the MILP.
-`reduce_gpr(model, essential_reacs, gkis, gkos)` (`networktools.py`) does this pruning, returning a
-trimmed `gkos` (gene-KO-cost dict); it runs just before `extend_model_gpr`
-(`compute_strain_designs.py`). Its steps:
+There are two distinct GPR reductions before extension:
 
-1. **Blocked reactions lose their GPR** (`networktools.py`). Any reaction with bounds `(0,0)`
-   is dead anyway; its rule is cleared and genes that end up in no reaction are dropped. No point
-   encoding logic for a reaction that can never carry flux.
+1. `reduce_model_gprs` in `compute_strain_designs.py` is pipeline-only. It needs the desired-region
+   essential reactions and the gene KO/KI cost dictionaries. It clears rules on blocked reactions,
+   protects genes that cannot be valid targets, substitutes protected genes with `True`, removes
+   obsolete genes and returns the reduced gene-KO cost dictionary.
+2. `simplify_model_gprs` in `compression.py` is a model-level Boolean simplifier. It does not know
+   intervention costs or essential reactions; it only replaces each monotone GPR with a
+   Boolean-equivalent, leaf-minimized expression.
 
-2. **Protect genes that touch only essential reactions** (`networktools.py`). A gene whose
-   reaction set is a subset of `essential_reacs` (reactions that *must* stay operational — from the FVA
-   over PROTECT/desired modules, [Ch 5](#ch5)) can never be a useful KO: knocking it out could only threaten an
-   essential reaction. It is added to `protected_genes`.
+Keeping these jobs separate is important. The first is meaningful only inside strain-design
+preprocessing, while the second is useful to standalone compression and must also run when
+`compress=False`. On the compressed pipeline they run consecutively before `extend_model_gpr`;
+re-running the Boolean simplifier is cheap and idempotent.
 
-3. **Protect genes that are individually essential *to* an essential reaction** (`networktools.py`).
-   Using `is_gene_essential_to_reaction_ast`, which evaluates the reaction's GPR AST with that one gene
-   set to `False` and checks whether the whole rule collapses to `False`: if deleting the gene alone
-   would kill an essential reaction, the gene must be protected. (A gene inside an `or` of an essential
-   reaction is *not* caught here — deleting it leaves the reaction alive — so it stays knockable.)
+Genes may be referenced by ID or name in the intervention dictionaries. The reduction checks both,
+while `extend_model_gpr(use_names=...)` commits to one namespace for pseudo-reaction identifiers.
+That namespace choice must remain consistent with the compressed cost dictionaries.
 
-4. **Drop protected genes from the KO-cost dict** (`networktools.py`): `[gkos.pop(pg.id) …]` — they
-   are no longer intervention candidates.
-
-5. **Everything the user did not list as knockable is also protected** (`networktools.py`): genes
-   whose id *and* name are absent from `gkos` cannot be knocked out, so they are protected too.
-
-6. **Genes with knock-in costs are un-protected** (`networktools.py`): a gene in `gkis` is a
-   *target* (it can be added), so it is removed from the protected set even if the above rules caught it.
-
-7. **Simplify each GPR rule with protected genes pinned TRUE** (`networktools.py`).
-   `simplify_gpr_ast` walks the AST setting every protected gene to `True` and applies Boolean
-   simplification (`apply_gene_protection_to_ast`, `networktools.py`): `True and X → X`,
-   `True or X → True`, plus absorption (`A or (A and B) → A`, `networktools.py`). If the rule
-   collapses to `True`, the reaction is no longer knockable-by-gene and its rule is cleared (so it gets
-   no gadget at all); otherwise the simplified, *smaller* rule replaces the original — fewer operators,
-   hence fewer gadgets at extension.
-
-8. **Remove obsolete and protected genes** from the model (`networktools.py`), so
-   `extend_model_gpr` never sees them.
-
-The net effect: `extend_model_gpr` is handed a model whose GPR rules mention only genes that are (a)
-user-declared knockable or knock-in-able and (b) capable of affecting a non-essential reaction, with
-the rules already Boolean-minimized. On genome-scale models this removes a large fraction of genes and
-operators before the expensive structure is built.
-
-**The id-vs-name subtlety.** Genes can be referenced by *either* their id or their (human-readable)
-name, and models are inconsistent about which the user supplies in `gkos`/`gkis`. `reduce_gpr` therefore
-checks **both**: the protection rule at `networktools.py` protects a gene only if *neither*
-`g.id in gkos` *nor* `g.name in gkos`, and the KI un-protection at `networktools.py` collects
-`g.id for g in model.genes if (g.id in gkis) or (g.name in gkis)`. Note the asymmetry that this matching
-introduces downstream: `extend_model_gpr` names each gene pseudoreaction by id *or* name depending on
-the global `has_gene_names` flag (`use_names`, decided at `compute_strain_designs.py` and passed in),
-so the id-vs-name choice must stay consistent between the cost dicts and the pseudoreaction ids or the
-later cost lookup silently misses (see [Ch 10](#ch10) for the fragility this creates). `reduce_gpr` hedges by
-accepting both spellings; the pseudoreaction naming commits to one.
 
 ### 4.6 The two-compression-pass boundary and why regulatory genes are exempt from pass #1
 
@@ -1873,7 +1825,7 @@ compression too.
 
 **Why `propagate_gpr` differs.** In pass #1 the metabolic reactions still carry Boolean GPR *strings*.
 When two reactions are merged, their rules must be combined correctly — an AND-merge for flux-coupled
-reactions, an OR-merge for parallel ones (`compression.py, 2040`, the `_combine_gpr_and/or` helpers,
+reactions, an OR-merge for parallel ones (`compression.py`, the `_combine_gprs` helper,
 [Ch 3](#ch3)) — so that after extension the merged reaction's rule still reflects both originals. Hence
 `propagate_gpr=True`. In pass #2 the rules have *already been consumed* by `extend_model_gpr` (converted
 to flux structure) and the reactions' `gene_reaction_rule` strings are no longer the source of truth —
@@ -1907,510 +1859,121 @@ only *regulatory* genes, whose bound is a finite scaled quantity, are sensitive 
 rescaling. (This exemption logic is the fix for closed issue #44's class of bound-scaling bugs; see
 [Ch 3](#ch3) for the compression bound-intersection mechanics and [Ch 10](#ch10) for the cautionary history.)
 
-### 4.7 Name truncation (sha256), Gurobi/GLPK only
+### 4.7 Deterministic name truncation
 
-Extension generates pseudo-metabolite and pseudoreaction ids by *concatenating* child ids with `_and_`
-/ `_or_` separators. Nested rules over long gene ids can produce names hundreds of characters long.
-**Gurobi and GLPK impose a 255-character limit on variable/constraint names**; CPLEX and SCIP do not.
-The code sets `MAX_NAME_LEN = 230` (`networktools.py`) and, *only when the active solver is in
-`{GUROBI, GLPK}`* (checked at every id-construction site, e.g. `networktools.py, 1043, 1059, 1072,
-1088, 1103, 1144`), truncates:
+GPR gadgets construct identifiers by combining gene and child-metabolite names. Any generated
+identifier longer than `MAX_NAME_LEN` is shortened for every solver, not only Gurobi or GLPK. The
+short form keeps a readable prefix and appends the first 20 hexadecimal digits of a SHA-256 digest.
+Applying one deterministic rule across all backends keeps cost lookup, module remapping,
+decompression and cross-solver comparisons in the same identifier space.
 
-```python
-def truncate(id):
-    h = hashlib.sha256(id.encode()).hexdigest()[:20]
-    return id[0:MAX_NAME_LEN - 21] + "_" + h
-```
-
-i.e. it keeps the first `209` characters and appends `_` + a 20-hex-char sha256 digest of the full id,
-yielding a ≤230-char name. The digest suffix preserves uniqueness (two long ids sharing a 209-char
-prefix still differ in hash) so distinct pseudo-metabolites do not accidentally collide after
-truncation. A `warning_name_too_long` message (`networktools.py`) is logged once per truncated
-name, suggesting the user switch to CPLEX or simplify gene names to avoid it.
-
-Two properties matter for a maintainer. First, **truncation is solver-conditional**: the *same model*
-produces different pseudoreaction ids under Gurobi/GLPK than under CPLEX/SCIP. Any code that matches
-these ids by string (cost-dict lookups, module remapping, decompression) must therefore see the *same*
-truncated names — which is why the id is truncated at the single point of creation and reused, not
-re-derived elsewhere. Second, the sha256 rewrite is a **known fragility, adjacent to open issue #43**:
-because the truncated name is not human-meaningful and because the truncation depends on solver
-identity, a mismatch between where a name is generated and where it is later looked up can silently drop
-a gene knockout from the reported solution. The mechanism and the concrete failure are owned by **[Ch 10](#ch10)**;
-here we only flag that the `{GUROBI, GLPK}`-gated sha256 truncation is the code path involved.
+The warning recommends simplifying GPR rules or source identifiers. Switching solver does not change
+the truncation policy.
 
 
 (ch5)=
 ## 5. FVA in preprocessing
 
-Flux Variability Analysis (FVA) — the pair of LPs that, for every reaction *j*, compute
-`min v_j` and `max v_j` over the steady-state polytope `{v : Sv = 0, lb ≤ v ≤ ub}` (see
-[Ch 2](#ch2) for the LP formulation) — appears **three times** in `compute_strain_designs`'s
-preprocessing, at three different points in the pipeline, on three different versions of the
-model, each time answering a different question and feeding a different downstream consumer.
-None of the three is "just diagnostics": each one *removes work from the MILP* that the solver
-would otherwise have to do, and one of them (the second) is the single largest slice of
-genome-scale wall-time. This chapter dissects all three, then the accelerated FVA engine
-(`speedy_fva`) that all of them call, and closes by explaining why FVA #2 costs ~117 s.
+FVA-related work now occurs at several deliberately different points. Counting only calls named
+`fva` is misleading because the pre-compression pass is a specialized sign-only implementation and
+the final two jobs can be folded.
 
-The three uses, at a glance:
+### 5.1 Reversibility pre-tightening before COMPRESS #1
 
-| # | Call site (`compute_strain_designs.py`) | Model state | Scope | Question answered | Consumer |
-|---|------------------------------------------|-------------|-------|-------------------|----------|
-| 1 | ~L373–381 | after COMPRESS #1, **pre-GPR** | whole model | Which reactions are *essential* for a PROTECT/desired behaviour? | drop from `ko_cost`; feed `reduce_gpr` |
-| 2 | `bound_blocked_or_irrevers_fva`, ~L450 (→ `networktools.py`) | after GPR extension + COMPRESS #2 | whole model | Which bounds never bind? Which reactions are blocked/irreversible? | rewrite model bounds → shrink/condition the MILP |
-| 3 | ~L460–491 | after COMPRESS #2 | **knockable only** (`reaction_list`) | Which knockable reactions are essential per module? Which are size-1 cut sets? | drop essentials + size-1 MCS from `ko_cost`; re-inject MCS at decompression |
+When compression is enabled, `fast_reversibility` runs on the metabolic model before COMPRESS #1. It
+asks only whether each reaction can carry positive and negative flux; magnitudes are not retained.
+Directions classified unavailable are fixed to zero before compression. This is what lets
+one-directional reactions form larger coupled groups and prevents unnecessary forward/reverse GPR
+splits.
 
-All three ultimately dispatch to `fva` in `lptools.py`, which is a thin wrapper that
-immediately calls `speedy_fva` (`lptools.py`). The legacy brute-force implementation
-`fva_legacy` (`lptools.py`) is retained only as a debugging fallback.
+The implementation combines:
 
-### 5.1 The essentiality test — geometry of `min(abs(range)) > 1e-10 and prod(sign(range)) > 0`
+1. a sound structural producer/consumer and dead-end sweep;
+2. one temporary coupled compression;
+3. warm-started per-direction LPs on the compressed model;
+4. co-option scans that use a feasible optimum to witness directions of other reactions; and
+5. exact expansion of the sign results through the compression map.
 
-Both FVA #1 and FVA #3 classify a reaction as *essential* (for a given module's constraint
-set) using the identical predicate, at `compute_strain_designs.py` and again at `:465`:
+The scan threshold is only a shortcut for a clear *witness* of nonzero flux. It must not be interpreted
+as proof that smaller fluxes are zero. Likewise, a nonoptimal solve is numerical uncertainty, not a
+blockedness certificate. These distinctions are important because the result changes model bounds.
 
-```python
-if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0:  # find essential
-    essential_reacs.add(reac_id)
-```
+### 5.2 Desired-region essentiality before GPR extension
 
-Here `limits` is the two-element vector `[v_min, v_max]` returned by FVA for reaction *j*,
-i.e. the endpoints of the attainable flux interval `[v_min^j, v_max^j]` under that module's
-constraints. Read the predicate geometrically:
-
-- **`np.prod(np.sign(limits)) > 0`** — `sign(v_min)·sign(v_max) > 0` — is true iff `v_min`
-  and `v_max` have the **same, nonzero sign**. That is exactly the statement *the interval
-  `[v_min, v_max]` does not contain 0*. (If either endpoint were 0 the product would be 0;
-  if the interval straddled 0 the signs would differ and the product would be negative.)
-- **`np.min(abs(limits)) > 1e-10`** — `min(|v_min|, |v_max|) > 10⁻¹⁰` — is the *numerical
-  guard* that the endpoint closest to zero is a strict, non-noise distance away from it, so
-  the "does not contain 0" conclusion is not an artifact of solver tolerance.
-
-Together they assert: **every feasible flux state that satisfies the module's constraints
-routes a strictly nonzero, sign-definite flux through reaction *j*.** Geometrically, the flux
-polytope of that module lies entirely on one side of the hyperplane `v_j = 0` and does not
-touch it. Consequently, the constraint `v_j = 0` (which is precisely what a knockout imposes)
-is *inconsistent* with the module: **knocking out *j* makes the module infeasible.**
-
-Why that matters depends on the module type, and this is the whole point of running FVA #1/#3
-separately per module (`for m in sd_modules:`):
-
-- If the module is **PROTECT/desired** (a behaviour that must remain *possible*), a reaction
-  essential to it can never appear in a valid design — knocking it out would violate the
-  PROTECT requirement. Such a reaction is therefore useless as a knockout candidate and is
-  stripped from `ko_cost` (removing its binary `z_j` from the MILP entirely).
-- If the module is **SUPPRESS** (a behaviour that must be made *impossible*), a reaction
-  essential to it is, by itself, a valid intervention: deleting it kills the behaviour. That
-  is the size-1 MCS observation exploited by FVA #3 (§5.4).
-
-A tiny worked example. Two reactions, `R1: A→B`, `R2: B→C`, sink `EX_C`, with a PROTECT
-module requiring `EX_C ≥ 1`. FVA over `{Sv=0, v≥0, EX_C≥1}` yields `v_R1 ∈ [1, 1000]`,
-`v_R2 ∈ [1, 1000]`: both intervals sit strictly above 0, `sign(1)·sign(1000)=+1`, and
-`min(|1|,|1000|)=1 > 10⁻¹⁰`. Both are flagged essential — correctly, since either KO drops
-`EX_C` to 0 and breaks the PROTECT.
-
-### 5.2 FVA #1 — essential reactions in PROTECT/desired modules (pre-GPR)
-
-FVA #1 runs immediately after COMPRESS #1 and *before* GPR integration
-(`compute_strain_designs.py`), so it sees a purely metabolic, compressed network with
-no gene pseudoreactions yet (see [Ch 4](#ch4) for the COMPRESS #1/GPR boundary). It iterates only over
-non-SUPPRESS modules:
+After COMPRESS #1, every non-SUPPRESS module is analyzed with its constraints. A reaction is treated
+as essential when its FVA interval stays strictly on one side of zero:
 
 ```python
-for m in sd_modules:
-    if m[MODULE_TYPE] != SUPPRESS:      # essentiality only meaningful for desired / opt-/robustknock
-        flux_limits = fva(cmp_model, solver=..., constraints=m[CONSTRAINTS], compress=False)
-        for (reac_id, limits) in flux_limits.iterrows():
-            if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0:
-                essential_reacs.add(reac_id)
-[cmp_ko_cost.pop(er) for er in essential_reacs if er in cmp_ko_cost]
+np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0
 ```
 
-**Rationale (why drop from `ko_cost`).** As argued in §5.1, a reaction essential for a
-required (PROTECT/desired) behaviour can *never* be part of any feasible design — its knockout
-would violate a PROTECT constraint that the MILP is required to keep feasible. Every candidate
-design that includes it is infeasible *a priori*. Popping it from `cmp_ko_cost`
-removes its binary variable `z_j` from the intervention set the MILP will branch over: the
-solver never even considers it, and no infeasible node is generated to reject it. This is a
-pure model-size reduction with zero effect on the solution set.
+Such a reaction cannot be knocked out while preserving the desired region, so it is removed from the
+reaction KO candidates. The same set is supplied to `reduce_model_gprs`, allowing genes that can only
+damage required reactions to be removed before their gadgets are built. A SUPPRESS region is not used
+for this early protection: reactions essential to the undesired behavior may be exactly the desired
+single-reaction cut sets.
 
-**Second consumer: `reduce_gpr`.** The `essential_reacs` set computed here is passed straight
-into GPR reduction (`compute_strain_designs.py`):
+### 5.3 Final model-bound FVA
 
-```python
-uncmp_gko_cost = reduce_gpr(cmp_model, essential_reacs, uncmp_gki_cost, uncmp_gko_cost)
-```
+After GPR extension and COMPRESS #2, `bound_blocked_or_irrevers_fva` computes ranges and mutates the
+stored cobra bounds:
 
-`reduce_gpr` (`networktools.py`) simplifies the Boolean gene–protein–reaction rules before
-they are compiled into flux structure ([Ch 4](#ch4)). Knowing which reactions are essential lets it
-also drop the *genes* that only ever control essential reactions from the knockable gene set:
-if a reaction can never be knocked out, a gene whose only role is to (be required to) enable
-that reaction is likewise non-knockable, and pruning it shrinks both the GPR encoding and the
-gene KO cost dictionary. Thus one FVA pass feeds two reductions — reaction-level and, through
-`reduce_gpr`, gene-level.
+- a lower or upper model bound that is not reached is relaxed to `-inf` or `+inf`;
+- a direction whose optimum is zero is pinned to zero according to the solver-specific numerical
+  policy; and
+- the DataFrame is returned so the same result can serve downstream consumers.
 
-**Why `compress=False` here.** The model is *already* compressed (COMPRESS #1 just ran), so
-`speedy_fva`'s own internal coupled-compression pass is switched off to avoid re-compressing an
-already-compressed, rational-bound network. FVA #1 is comparatively cheap: it runs on the small
-pre-GPR metabolic network and typically for a single PROTECT module.
+The call is scoped by `_fva_scope`. Reactions already at `(0,+inf)` are omitted because their only
+possible additional tightening is blockedness; retaining `(0,+inf)` does not enlarge the actual flux
+space when stoichiometry already forces zero, and a blocked target cannot occur in a minimal cut set.
 
-### 5.3 FVA #2 — `bound_blocked_or_irrevers_fva`: relaxing non-binding bounds
+### 5.4 Per-module FVA and size-1 MCS
 
-FVA #2 runs *after* GPR extension and COMPRESS #2, so that **all** reactions — including the
-gene pseudoreactions added by `extend_model_gpr` — are processed
-(`compute_strain_designs.py`):
+For the general path, each final module receives an FVA constrained to its region and scoped to the
+knockable reaction IDs. The returned ranges have two consumers:
 
-```python
-bound_blocked_or_irrevers_fva(cmp_model, solver=kwargs[SOLVER], compress=False)
-```
+- essentiality classification and classical size-1 MCS extraction; and
+- `SDProblem._module_bound_override`, which carries only blockedness or sign into that module's
+  continuous block.
 
-Its body (`networktools.py`) runs one whole-model FVA and then rewrites each
-reaction's *stored* bounds (`r._lower_bound` / `r._upper_bound` directly, to make the change
-permanent and bypass cobra's optlang synchronisation) according to **four independent
-branches**. With CPLEX/Gurobi the tolerance `tol` is `0.0`; with SCIP/GLPK it is `1e-10`
-(`networktools.py`). Let `[v_min, v_max]` be the FVA interval and `[lb, ub]` the
-current bounds.
+The override is not written to the shared cobra model. This is essential for multi-module problems:
+a reaction can be one-sided or blocked in one module and unrestricted in another.
 
-```python
-if r.lower_bound < 0.0 and limits.minimum - tol > r.lower_bound:   # (A) redundant lb → −inf
-    r._lower_bound = -np.inf ;                       n_lb_to_inf += 1
-if limits.minimum >= tol:                                          # (B) min ≥ 0 → lb = 0
-    r._lower_bound = max([0.0, r._lower_bound]) ;    n_tightened_zero += 1
-if r.upper_bound > 0.0 and limits.maximum + tol < r.upper_bound:   # (C) redundant ub → +inf
-    r._upper_bound = np.inf ;                        n_ub_to_inf += 1
-if limits.maximum <= -tol:                                         # (D) max ≤ 0 → ub = 0
-    r._upper_bound = min([0.0, r._upper_bound]) ;    n_tightened_zero += 1
-```
+For one classical SUPPRESS plus any PROTECT modules, a reaction essential to SUPPRESS but not to any
+PROTECT is a size-1 MCS. It is removed from the KO search and re-injected during decompression.
+Reactions essential to both undesired and desired regions are non-targetable.
 
-Decoding the four branches:
+### 5.5 The single-module fold
 
-- **(A) redundant lower bound → −∞.** The reaction *can* go negative (`lb < 0`), yet the
-  achievable minimum flux `v_min` is strictly greater than `lb`. The lower bound therefore
-  never binds — the network's stoichiometry constrains `v_j` more tightly than the box bound
-  does. Relaxing `lb` to `−∞` discards a constraint that is provably slack everywhere.
-- **(B) min ≥ 0 → lb = 0.** FVA proves `v_j` cannot be negative under steady state. The
-  reaction is effectively **irreversible in the forward direction**, so its lower bound is
-  pinned at 0 (`max(0, lb)`). Note the interaction with (A): a reaction with `lb = −1000` but
-  `v_min = 2` first has `lb` set to `−∞` by (A), then *overwritten* to `0` by (B) because the
-  branches are evaluated in sequence on the same reaction. The net effect is `lb = 0`
-  (irreversible), not `−∞`. Detecting irreversibility this way lets the MILP omit the negative
-  half-space entirely.
-- **(C) redundant upper bound → +∞.** Symmetric to (A): `ub > 0` but the achievable maximum
-  `v_max` is strictly below `ub`, so the upper box bound never binds and is relaxed to `+∞`.
-- **(D) max ≤ 0 → ub = 0.** Symmetric to (B): the reaction cannot carry positive flux, so it
-  is irreversible in the backward direction and `ub` is pinned at 0.
+If and only if all of the following hold:
 
-A reaction that is fully **blocked** (`v_min = v_max = 0`) triggers (B) *and* (D): `lb` and
-`ub` are both pinned to 0, freezing it out of every flux state.
+- there is exactly one module;
+- its type is SUPPRESS or PROTECT; and
+- it has no inner objective,
 
-**Decoding the real log line.** `bound_blocked_or_irrevers_fva` emits, on iML1515 after GPR
-extension (`networktools.py`):
+one constrained call to `bound_blocked_or_irrevers_fva` replaces the final model-bound FVA and the
+module FVA. Its reaction list is the union of `_fva_scope` and the knockable IDs. The returned table
+both updates the model bounds and supplies `module['fva_bounds']`.
 
-```
-FVA bounds: 4 lb→inf, 1825 ub→inf, 2258 tightened to 0, 2150 stayed finite
-```
+The gate matters. With multiple modules, ranges from one region cannot safely be written into the
+shared model because they may remove flux used by another module. Bilevel modules also require their
+existing construction path.
 
-- `4 lb→inf` = branch (A) fired 4 times: only 4 reactions had a genuinely reversible, slack
-  lower bound. (Almost all reactions in a curated model are already forward-irreversible, so
-  few have a slack negative lower bound to relax.)
-- `1825 ub→inf` = branch (C) fired 1825 times: for 1825 reactions the upper bound was slack
-  and is relaxed to `+∞`. This is the large one — most reactions' nominal upper bound (e.g.
-  the default 1000) never binds; the true maximum is limited by network stoichiometry.
-- `2258 tightened to 0` = **the combined count of branches (B) and (D)** — the same counter
-  `n_tightened_zero` is incremented in both (`networktools.py` and `:1621`). It therefore
-  aggregates "lower bound pinned to 0 (forward-irreversible)" and "upper bound pinned to 0
-  (backward-irreversible / blocked)". It is *not* a count of distinct reactions: a single
-  reaction that triggers both (B) and (D) — i.e. a blocked reaction — is counted twice, and a
-  reaction that triggers (A) then (B) contributes to both `n_lb_to_inf` and `n_tightened_zero`.
-- `2150 stayed finite` is computed independently at `networktools.py` as the number
-  of reactions with **at least one finite bound after all rewrites**:
-  `sum(1 for r in model.reactions if not isinf(r.lower_bound) or not isinf(r.upper_bound))`.
-  These are the reactions that were *not* fully relaxed to `(−∞, +∞)`.
+### 5.6 `speedy_fva`
 
-Because the four counters overlap (a reaction can increment several), they do **not** sum to
-the reaction count; only "stayed finite" is a clean per-reaction tally. This subtlety is easy
-to misread as an inconsistency — it is intentional (each counter reports how often a *branch*
-fired), not a bug.
+Public `fva` dispatches to `speedy_fva`. It avoids blindly solving `2n` independent LPs by combining
+bound-resolved directions, scan LPs, warm-started residual solves and optional internal compression.
+Only the objective changes between solves. Large residual sets may be distributed through `SDPool`;
+smaller ones remain sequential to avoid process overhead. `fva_legacy` remains the simple `2n`-LP
+reference implementation.
 
-#### Why relaxing a provably non-binding bound to ±∞ shrinks and conditions the MILP
+### 5.7 Current preprocessing profile
 
-This FVA is not cosmetic — it directly determines the size and numerical quality of the MILP
-built next (`SDMILP`, [Ch 6](#ch6)–7). The mechanism has two prongs.
-
-**(1) Only genuinely finite (binding) bounds become knockable constraints.** In the MILP, a
-reaction knockout is enforced by tying its binary `z_j` to the reaction's flux-bound rows so
-that `z_j = 1 ⇒ v_j = 0`; and in the dualized SUPPRESS block every finite reaction bound
-becomes a *dual variable* with its own row and its own coupling to `z` (see [Ch 6](#ch6) for the
-Farkas dualization and [Ch 7](#ch7) for `link_z`). A bound relaxed to `±∞` is, by definition, *no
-constraint at all*: it contributes no row to the primal, hence no dual variable to the
-dualized problem, and nothing for `z` to switch on that side. So every `lb→−∞` (branch A) and
-`ub→+∞` (branch C) *deletes* a constraint row and, in the dual, a variable. On the numbers
-above that is `4 + 1825 = 1829` bound rows removed. Conversely, the 2150 reactions that
-"stayed finite" are exactly the ones whose remaining binding bound *does* need an
-indicator/big-M linkage in the MILP — the relaxation has narrowed the set of reactions that
-require this machinery to the ones that genuinely constrain flux.
-
-**(2) The remaining big-Ms get tighter.** Where a knockout linkage is realised as a **big-M**
-constraint (PROTECT's finite-flux primal rows; the big-M vs indicator fork is emergent from
-bound structure, [Ch 7](#ch7)), the constant `M` must be a valid over-estimate of `|v_j|`. `link_z`
-derives each `M` from a bounding LP over the reaction's flux range. By replacing the loose
-nominal box bounds (e.g. `±1000`) with (a) the *tight, FVA-proved* range or (b) an honest
-`±∞` where the bound is slack, FVA #2 feeds `link_z` sharper information: reactions with a
-proved finite range get a smaller, tighter `M` (better LP relaxation, faster branch-and-bound),
-and reactions whose bound is genuinely non-binding are steered toward the **indicator**
-formulation (which has no `M` at all and yields a tighter relaxation) rather than a
-meaningless huge `M`. Both outcomes improve the MILP: fewer rows, tighter continuous
-relaxation, better conditioning. (See [Ch 7](#ch7) for the exact `self.M`/bounding-LP fork.)
-
-The important invariant: because branches (A) and (C) only relax bounds that FVA has *proved*
-never bind, and (B)/(D) only pin bounds the reaction can provably never cross, **the feasible
-flux set is unchanged.** No design is added or lost; only the *description* of the polytope is
-made leaner and better-conditioned.
-
-### 5.4 FVA #3 — knockable-scoped essentials and size-1 MCS extraction
-
-FVA #3 (`compute_strain_designs.py`) runs on the final, fully GPR-extended and
-COMPRESS #2-compressed model, but — unlike #1 and #2 — it is **scoped to knockable reactions
-only** via `speedy_fva`'s `reaction_list` kwarg:
-
-```python
-knockable_ids = list(set(cmp_ko_cost.keys()) | set(cmp_ki_cost.keys()))
-for m in sd_modules:
-    flux_limits = fva(cmp_model, solver=..., constraints=m[CONSTRAINTS],
-                      compress=False, reaction_list=knockable_ids)
-    ...
-    if m[MODULE_TYPE] != SUPPRESS:
-        essential_reacs.update(essentials_in_module)     # essential for a PROTECT/desired module
-    else:
-        suppress_essential.update(essentials_in_module)  # essential for the SUPPRESS module
-```
-
-Essentiality of a *non-knockable* reaction is irrelevant here — the MILP will never toggle its
-`z` — so restricting FVA to `knockable_ids` avoids computing `2n` LPs and instead computes only
-`2·|knockable|`. The same essentiality predicate from §5.1 is applied, but now the results are
-**split by module type** into two sets: `essential_reacs` (essential for some PROTECT/desired
-module) and `suppress_essential` (essential for the SUPPRESS module).
-
-**Size-1 MCS: the core observation.** A Minimal Cut Set is a smallest set of knockouts that
-makes the SUPPRESS behaviour infeasible while keeping PROTECT feasible ([Ch 1](#ch1)). A reaction that
-is **essential for the SUPPRESS behaviour but NOT essential for any PROTECT behaviour** is,
-all by itself, a valid cut set of size one: deleting it makes SUPPRESS infeasible (essential ⇒
-`v_j = 0` breaks it, §5.1), and — because it is *not* PROTECT-essential — deleting it leaves
-PROTECT feasible. This is computed by a set difference
-(`compute_strain_designs.py`):
-
-```python
-is_classical_mcs = (len([m for m in sd_modules if m[MODULE_TYPE] == SUPPRESS]) == 1 and
-                    all(m[MODULE_TYPE] == PROTECT for m in [... non-SUPPRESS ...]))
-if is_classical_mcs and suppress_essential:
-    size1_mcs = suppress_essential - essential_reacs          # SUPPRESS-essential, not PROTECT-essential
-    size1_mcs_knockable = {r for r in size1_mcs if r in cmp_ko_cost}
-    if size1_mcs_knockable:
-        cmp_size1_mcs = [{r: -1} for r in size1_mcs_knockable]
-    both_essential = suppress_essential & essential_reacs      # essential for BOTH → non-knockable
-    essential_reacs.update(both_essential)
-    for r in size1_mcs_knockable:
-        cmp_ko_cost.pop(r, None)                                # remove from KO candidates
-```
-
-**The `is_classical_mcs` guard.** The size-1-MCS shortcut is *only* valid for a classical MCS
-problem: **exactly one SUPPRESS module and every remaining module a PROTECT**
-(`compute_strain_designs.py`). The guard exists because the "essential-for-SUPPRESS ⇒
-valid single cut" argument relies on there being a single, well-defined behaviour to suppress
-and only feasibility-preservation (not optimization) requirements to respect. In bilevel
-problems (OptKnock/RobustKnock/OptCouple, which carry inner/outer objectives) or multi-SUPPRESS
-problems, a reaction that is SUPPRESS-essential is *not* guaranteed to be a self-contained
-minimal intervention — the objective coupling or a second SUPPRESS can make the "singleton"
-either non-minimal or insufficient — so the shortcut is disabled and those reactions flow into
-the ordinary MILP.
-
-**Why pull size-1 MCS out of `ko_cost`.** Once a reaction *r* is known to be a size-1 cut set,
-any larger design that *contains* *r* is **non-minimal** — it is a superset of the already-known
-minimal cut `{r}`. Leaving *r*'s binary `z_r` in the MILP would invite the solver to enumerate
-exactly those non-minimal supersets, wasting branch-and-bound effort and (in POPULATE mode)
-polluting the solution pool with dominated designs that would only be filtered out later. So
-each such *r* is `pop`ped from `cmp_ko_cost`, deleting `z_r` from the MILP. The
-size-1 cuts themselves are stashed in `cmp_size1_mcs` as `[{r: -1}]` entries (the `-1` encodes
-"knock this reaction out") and are **re-injected as standalone solutions at decompression**
-(`_decompress_solutions`, [Ch 9](#ch9)), so they still appear in the final result set — they are simply
-solved by inspection instead of by the MILP.
-
-Two guard details worth noting:
-
-- The filter `size1_mcs_knockable = {r for r in size1_mcs if r in cmp_ko_cost}`
-  restricts extraction to reactions that are *pure KO candidates*. Reactions carrying a KI or
-  regulatory intervention are left in place (comment at `:486–489`), because they may still
-  participate in non-KO solutions that the singleton-KO shortcut does not represent.
-- `both_essential = suppress_essential & essential_reacs`: a reaction essential for
-  BOTH the SUPPRESS and a PROTECT behaviour cannot be knocked out at all (it would break
-  PROTECT), and is therefore folded into `essential_reacs` and removed from `ko_cost` by the
-  final sweep at `compute_strain_designs.py`.
-
-### 5.5 The `speedy_fva` acceleration engine
-
-Every FVA above calls `fva` → `speedy_fva` (`speedy_fva.py`). Understanding its algorithm
-is essential because it is where the wall-time is spent, and its behaviour depends sharply on
-the `reaction_list` scoping and `compress` flags the three call sites pass.
-
-The naive FVA (`fva_legacy`, `lptools.py`) solves **`2n` independent LPs**: for each of the
-`n` reactions it sets objective `+e_j` and `−e_j` and solves to get `v_min^j` and `v_max^j`.
-`speedy_fva` produces the identical result but replaces most of those `2n` solves with a small
-number of *global scan LPs* whose single optimal vertex simultaneously resolves the min or max
-of many reactions at once. It is a **two-phase** algorithm.
-
-#### Bookkeeping and the "resolved" mask
-
-`speedy_fva` maintains, for the `n` reactions, boolean masks `res_max`, `res_min` and
-incumbent vectors `incumbent_max`, `incumbent_min` (`speedy_fva.py`). A reaction's max
-(resp. min) is "resolved" when its true `v_max` (resp. `v_min`) is known. Three cheap
-pre-resolutions run before any LP:
-
-- **Fixed reactions** (`|ub − lb| < 10⁻¹²`): `v_min = lb`, `v_max = ub` with no
-  LP.
-- **`reaction_list` scoping**: every reaction *not* in the requested list is
-  marked resolved with `NaN` incumbents. This is how FVA #3's `reaction_list=knockable_ids`
-  collapses the problem — non-knockable reactions are simply never scanned or solved, and come
-  back as `NaN` in the returned DataFrame.
-- **`v = 0` feasibility shortcut**: if `0` is a feasible flux vector — which
-  holds when no lower bound is strictly positive, no upper bound strictly negative, and there
-  are no extra constraints (`not np.any(lb > tol) and not np.any(ub < -tol) and not
-  has_constraints`) — then for every reaction whose `lb = 0`, the minimum is provably `0`
-  (it cannot go below `lb=0`, and `0` is attainable), and symmetrically every reaction with
-  `ub = 0` has maximum `0`. These are resolved for free, no LP. This single check typically
-  clears a large fraction of an irreversible-heavy genome-scale model's bounds.
-
-#### Phase 1 — global scan LPs
-
-**(1b) The `min Σ|x|` scan LP.** The first real LP minimizes the total absolute flux
-`Σ_j |v_j|` subject to `Sv = 0`, the extra constraints, and the bounds (`_build_abssum_lp`,
-`speedy_fva.py`). Absolute values are linearized by **variable splitting**: reactions are
-classified as forward-only (`lb ≥ 0`, so `|v_j| = v_j`, objective coeff `+1`), backward-only
-(`ub ≤ 0`, so `|v_j| = −v_j`, coeff `−1`), or truly reversible (`lb < 0 < ub`). For each
-reversible reaction the variable is split `v_j = p_j − n_j` with `p_j, n_j ≥ 0` and an
-auxiliary equality row `v_j − p_j + n_j = 0`, and both `p_j` and `n_j` carry objective coeff
-`+1` so the objective equals `p_j + n_j = |v_j|` at optimum (`speedy_fva.py`).
-Infinite bounds are clamped to `±BIG (=1000)` purely so the *push* objective is bounded; this
-does not alter feasibility.
-
-The optimal vertex of this LP is the flux state with the least total flux. Its virtue is that
-it drives most reactions **to zero**: any reaction sitting exactly at a `lb = 0` or `ub = 0`
-bound at this vertex is resolved by the vectorized *bound scan* `_bound_scan`
-(`speedy_fva.py`), which marks `res_max`/`res_min` wherever `|x_j − ub_j| < 10⁻⁹` or
-`|x_j − lb_j| < 10⁻⁹`. In one LP this resolves the min/max of every reaction that touches a
-zero bound at the min-flux vertex. Simultaneously the vertex's flux values update the
-incumbents (`np.maximum(incumbent_max, x_scan)`, `np.minimum(incumbent_min, x_scan)`,
-): even a reaction not *proved* extreme has its known range widened by this
-witness — **co-optimization**, one LP contributing evidence about `n` reactions at once.
-
-**(1c) Iterative push-to-bounds with warm-started dual simplex.** The remaining unresolved
-maxima are attacked collectively: a single objective `c` puts `−1` on *every* reaction whose
-max is still unresolved (`speedy_fva.py`) and the LP is re-solved — pushing all of
-them toward their upper bounds at once. Whatever lands on its `ub` is resolved by `_bound_scan`;
-incumbents update for the rest. The symmetric objective with `+1` on unresolved-min reactions
- pushes toward lower bounds. This alternation repeats
-(`while True: ... if resolved_this_round < 5: break`) until a round resolves
-fewer than 5 new bounds — i.e. until the cheap global pushes stop paying off.
-
-The critical performance ingredient is that the scan LP object is **reused** across all these
-re-solves — only the objective vector changes (`scan_lp.set_objective(...)`), never the
-constraint matrix — and the solver is set to **dual simplex** (`set_lp_method(LP_METHOD_DUAL)`,
-). Changing only the objective keeps the previous basis *primal*-feasible but
-dual-infeasible, which is exactly the situation dual simplex resumes from cheaply: each
-re-optimization is a warm-started handful of pivots rather than a cold solve. Dozens of push
-LPs therefore cost a small multiple of one LP.
-
-#### Phase 2 — individual LPs for the residual
-
-Whatever Phase 1 could not resolve (`n_remaining = 2n − n_done`) is finished with
-individual per-objective LPs, dispatched one of two ways (`speedy_fva.py`):
-
-- **Parallel** (`n_remaining ≥ 1000 and threads > 1`): the unresolved objective
-  indices (even = max, odd = min, via `idx2c`) are farmed to an `SDPool` of workers, each
-  holding its own persistent LP (`fva_worker_init`/`fva_worker_compute`), with a NaN-retry
-  loop for any solve that returns NaN.
-- **Sequential** (`0 < n_remaining < 1000`, or `threads == 1`): a single warm-started
-  LP is stepped through the residual objectives with `set_objective_idx`, periodically rebuilt
-  every 200 solves to limit warm-start basis degeneration. Each solved vertex is
-  *also* run through `_bound_scan` and the incumbent update, so even in Phase 2
-  one LP can opportunistically resolve *other* pending reactions — the same co-optimization
-  trick. A correctness guard detects when a warm-started optimum is *worse* than
-  the incumbent (a sign of a degenerate/stale basis) and rebuilds the LP and re-solves from
-  scratch for that objective.
-
-`threads` auto-selects to `Configuration.processes` only when the model has `≥ 1000`
-reactions, else `1`. Note the asymmetry that drives §5.6: the parallel path is
-gated on **`n_remaining ≥ 1000`**, i.e. on how many objectives *survive Phase 1*, not on the
-model size.
-
-#### Internal compression (`compress`) and result expansion
-
-When `compress` is `None`/`True` and the model has `≥ 200` reactions,
-`speedy_fva` first lumps flux-coupled reactions and removes conservation rows
-(`_compress_for_fva`) — a *single* nullspace pass (no recursive fixpoint), since FVA
-needs only first-order couplings — runs FVA on the smaller compressed model, then expands the
-results back via `_expand_fva`, scaling lumped reactions by their coupling factor
-(with a min/max swap when the factor is negative) and filling blocked reactions
-with `0/0`. **All three preprocessing call sites pass `compress=False`**, because the model is
-already compressed by the pipeline's own COMPRESS passes; this is the key fact for §5.6.
-
-#### Contrast with `fva_legacy`
-
-`fva_legacy` (`lptools.py`) always solves the full `2n` LPs (parallel over an `SDPool` when
-`processes > 1 and numr > 300`, else a serial warm-started loop), with no scan phase, no `v=0`
-shortcut, no co-optimization, and no `reaction_list` scoping. On genome-scale models
-`speedy_fva`'s Phase 1 typically resolves well over half of the `2n` objectives with a handful
-of scan LPs, so the residual handed to Phase 2 is a fraction of `2n`. The two return identical
-DataFrames (both post-process `|value| < 10⁻¹¹ → 0`); `fva_legacy` exists purely as a
-debugging oracle.
-
-### 5.6 Why FVA #2 is the ~117 s genome-scale bottleneck
-
-On the canonical iML1515 gene-MCS run (SUPPRESS biomass ≥ 0.001, POPULATE, `max_cost=3`,
-`gene_kos`), preprocessing's blocked/irreversible FVA — **FVA #2** — measures at **~117 s**,
-the single largest preprocessing slice ([Ch 11](#ch11)). Every structural reason for this is visible in
-the three call sites and in `speedy_fva`'s control flow:
-
-1. **It is whole-model — no `reaction_list`.** FVA #2 (`bound_blocked_or_irrevers_fva`,
-   `networktools.py`) forwards its kwargs to `fva` with *no* `reaction_list`, so
-   `speedy_fva` must resolve **all `2n` objectives** — every bound of every reaction — because
-   the bound-relaxation logic in §5.3 needs the true range of *every* reaction, not just
-   knockable ones. FVA #1 is also whole-model but runs on the smaller pre-GPR network; FVA #3
-   is scoped to `knockable_ids` and so solves only `2·|knockable|` objectives. FVA #2 is the
-   only one paying the full `2n` on the *large* model.
-
-2. **It runs on the GPR-extended model, which is much larger.** FVA #2 executes *after*
-   `extend_model_gpr`, which injects a gene pseudoreaction per gene and additional
-   pseudoreactions/pseudo-metabolites to encode the Boolean AND/OR structure ([Ch 4](#ch4)). On
-   iML1515 this roughly doubles the reaction count relative to the metabolic-only network FVA #1
-   saw. The log line's totals (`1825` + `2258` + `2150` + …) reflect a network of several
-   thousand reactions. More reactions ⇒ more objectives *and* larger per-LP factorizations.
-
-3. **Internal compression is disabled (`compress=False`).** Because the model is already
-   compressed by COMPRESS #2, FVA #2 passes `compress=False`, so `speedy_fva` does **not** run
-   its own coupled-lumping pass — it solves LPs at the full GPR-extended dimension rather than a
-   reduced one. This is correct (re-compressing the rational-bound model would be wasteful and
-   the caller needs bounds on the *actual* reactions), but it means no dimension reduction
-   cushions the LP cost.
-
-4. **Phase 2 likely drops below the parallel threshold.** `speedy_fva` parallelizes Phase 2
-   only when `n_remaining ≥ 1000`. Phase 1's scan LPs are very effective at resolving
-   the many trivially-bounded reactions of a GPR-extended model (huge numbers of forward-only
-   reactions with `lb=0`, resolved by the `v=0` shortcut and the `min Σ|x|` scan), so the
-   *residual* handed to Phase 2 can fall **below 1000** — at which point Phase 2 runs the
-   **sequential, single-threaded** path, grinding through the residual individual LPs
-   one at a time. A residual of a few hundred genome-scale LPs solved serially, each on a
-   several-thousand-variable model, accounts for the bulk of the 117 s. (Phase 1's own push LPs
-   are cheap thanks to dual-simplex warm-starting; the cost concentrates in the serial Phase 2
-   tail.)
-
-This makes FVA #2 a concrete, high-value **performance lever** ([Ch 11](#ch11)). Candidate mitigations
-that follow directly from the analysis above: force Phase 2 onto the parallel path even for
-`n_remaining < 1000` (or lower the threshold) so the residual LPs use all cores; or restrict
-FVA #2's objectives to the reactions whose bounds can actually matter downstream — although,
-unlike FVA #3, it genuinely needs *all* reactions' ranges to relax bounds correctly, so a
-`reaction_list` restriction is not directly applicable and any scoping must be justified against
-the bound-relaxation semantics of §5.3. The safe, immediately-available win is parallelism on
-the Phase 2 tail.
+On the current PR branch, the canonical iML1515 single-SUPPRESS gene-MCS preprocessing run with
+Gurobi measured about **19.6 s**. The two largest pieces were reversibility pre-tightening
+(about **6.3 s**) and the folded final FVA (about **5.8 s**), followed by the two compression passes
+(about **5.0 s** total). See Chapter 11 for the detailed, nested profile. These numbers are a
+machine/solver-specific benchmark, not constants of the algorithm.
 
 
 (ch6)=
@@ -2724,10 +2287,12 @@ A direct performance consequence follows from the unboundedness: **FVA-style bou
 bound these dual variables.** The preprocessing FVA ([Ch 5](#ch5)) tightens variable ranges by
 maximizing/minimizing each variable over the polytope; for a Farkas dual variable that range is
 `(−∞, +∞)` by construction (the feasible set is a cone, scale-free), so FVA returns `±∞` and buys
-nothing. In `link_z` ([Ch 7](#ch7)) this is exactly why the SUPPRESS dual rows end up as **indicator
-constraints** rather than big-M: the per-constraint bounding LP that would supply a finite `M`
-returns `±∞`, and the code's `self.M = inf` default routes an unbounded row to a native indicator.
-This is emergent from the cone geometry, not a hard-coded "SUPPRESS ⇒ indicator" switch.
+nothing. In `link_z` ([Ch 7](#ch7)) these rows therefore remain **indicator constraints** for a
+native-indicator backend under the default `M = inf` policy. MILP construction deliberately does
+not solve per-row bounding LPs. GLPK, which has no native indicator constraints, uses the configured
+blanket finite M (1000 by default); an explicitly supplied finite M requests the same formulation on
+other backends. This is a compatibility formulation, not a claim that the Farkas cone has useful
+finite coordinate bounds.
 
 #### 6.3.4 The `b^T y ≠ 0` caveat
 
@@ -2929,465 +2494,125 @@ Every row is a stacking of "assert an LP's optimum via primal + dual + strong-du
 `LP_dualize`. That is what makes the dualization machinery reusable: the metabolic content changes,
 the linear-algebra primitive does not.
 
-### 6.6 Boundary with [Chapter 7](#ch7)
+### 6.6 Boundary with Chapter 7
 
-Everything above produces **continuous rows only**: dual variables `y = (λ, μ)`, dual-feasibility
-constraints, strong-duality equality rows, Farkas normalization rows, and the primal blocks they are
-paired with — together with the `z_map_vars`, `z_map_constr_ineq`, `z_map_constr_eq` matrices that
-record *which reaction's knockout removes which row or variable* after all the transposition. What is
-**not** done here is attaching the binary intervention variables `z` to those rows. That is
-`link_z` (`strainDesignProblem.py`), [Ch 7](#ch7): it reads the `z_map_*` matrices, splits knockable
-equalities into directional inequalities, tries to bound each row with an LP to obtain a valid
-big-M, and — where the bounding LP returns `±∞`, as it always does for the scale-free Farkas dual
-rows (§6.3.3) — falls back to native indicator constraints. The emergent split noted throughout this
-chapter (SUPPRESS's unbounded Farkas rows → indicators; PROTECT's finite-flux primal rows → big-M)
-is a *consequence* of the bound structure this chapter's dualization produces, decided in [Ch 7](#ch7)'s
-`self.M`/bounding-LP fork, not a per-type switch. Read this chapter for *what the rows mean*; read
-[Ch 7](#ch7) for *how `z` turns them on and off*.
+Dualization produces continuous rows and the `z_map_*` bookkeeping that says which intervention gates
+which row or variable. It does not itself choose a big-M or construct an indicator constraint.
+
+`link_z` owns that final encoding. Zero- and single-continuous-variable rows can obtain a finite
+relaxation directly from variable bounds. Rows with two or more continuous variables are intentionally
+routed to a native indicator when `self.M = inf`; GLPK or an explicit finite `M` uses that configured
+blanket value instead. No per-row bounding LP is run during MILP construction.
+
+This is especially relevant to SUPPRESS. Farkas-certificate variables are commonly unbounded, so their
+rows naturally land on the indicator/configured-M path. The behavior follows the row structure and
+the global M policy rather than a hard-coded module-type test.
 
 
 (ch7)=
 ## 7. MILP construction & the z-linking
 
-By the time this chapter's code runs, every strain-design *module* has been turned into a
-self-contained linear (in)equality block — a Farkas infeasibility certificate for **SUPPRESS**, a raw
-primal feasibility system for **PROTECT**, or a strong-duality sandwich for the bilevel types ([Ch 6](#ch6)
-owns that content). What remains is *assembly*: stacking those blocks into one matrix, attaching the
-seed rows that account for intervention cost, and — the substance of this chapter — **wiring the binary
-intervention variables `z` to the continuous rows** so that flipping `z_j` genuinely removes reaction
-`j` from the flux system. That wiring is done two ways, native **indicator constraints** or **big-M**
-linearization, and the choice between them is made per-constraint by a bound-computing LP. Getting it
-right is what separates a correct, numerically well-behaved MILP from one that either admits phantom
-solutions (M too small) or grinds through a useless LP relaxation (M too large).
+By this point each strain-design module has become a continuous linear block: a Farkas certificate for
+SUPPRESS, a primal feasibility system for PROTECT, or a strong-duality system for a bilevel module.
+`SDProblem` stacks those blocks and connects the shared intervention vector `z`.
 
-All line references are to `strainDesignProblem.py` unless noted; the indicator container lives in
-`indicatorConstraints.py`.
+### 7.1 Seed rows and shared binaries
 
-### 7.1 Notation and the shape of the master problem
+The first `num_z` variables are binary intervention indicators. Three fixed inequality rows represent
+the lower cost bracket, the `max_cost` budget and the objective placeholder. Continuous module blocks
+are appended block-diagonally, while their `z` mappings share the same binary columns. This is how one
+reaction intervention acts in every module simultaneously.
 
-The MILP variable vector is partitioned as
+`self.M` selects the fallback:
 
-```
-x = [ z ; y ]        z ∈ {0,1}^{num_z},   y ∈ ℝ^{n_cont}
-```
+- GLPK with no user value uses the cobra default bound, normally `1000`;
+- Gurobi, CPLEX and SCIP with no user value use `inf`, enabling native indicators; and
+- an explicit finite `M` requests the blanket big-M formulation.
 
-with the `num_z` binaries occupying the *leading* columns (`self.idx_z = [0..numr-1]`,
-`SDProblem.__init__`:164) and all continuous module variables `y` appended afterward. The final
-`self.vtype = 'B'*num_z + 'C'*(z_map_vars.shape[1]-num_z)` simply records that split.
+The finite fallback is intentionally global. It is not presented as an automatically valid or tight
+row bound; users choosing big-M accept its known numerical sensitivity.
 
-`z_j = 1` means "intervention `j` is applied". For a **knockout** that is removal of reaction `j`; for
-a **knock-in** the meaning is inverted (`z_inverted[j] = True`, set from `ki_cost`), and
-the sign machinery of §7.6 flips the coupling so that `z_j = 1` still reads as "the intervention is
-made". One binary per *compressed* reaction: `self.num_z = numr` (`numr =
-len(model.reactions)`), because at this point the model has already been through both compression
-passes and GPR extension ([Ch 3](#ch3), [Ch 4](#ch4)), so a "reaction" may be a lumped subnet or a gene
-pseudoreaction. There is deliberately **no** separate binary per constraint or per variable — a single
-`z_j` fans out to *all* rows and variables that reaction `j` controls, tracked by the three maps
-introduced below.
+### 7.2 Per-module sign overrides
 
-Throughout, the master inequality system is `A_ineq · x ≤ b_ineq`, the equality system `A_eq · x =
-b_eq`, with variable box `lb ≤ x ≤ ub`.
+For classical SUPPRESS and PROTECT modules without an inner objective,
+`_module_bound_override` reads `module['fva_bounds']` and creates a targeted subset of sign-only
+overrides:
 
-#### The three z-maps
+- blocked in the module: `(0,0)`;
+- nonnegative in the module: lower bound `0`; and
+- nonpositive in the module: upper bound `0`.
 
-Coupling bookkeeping is carried in three sparse matrices, each with `num_z` rows (one per binary) and
-one column per constraint/variable of the system being tracked:
+No magnitude is tightened and no bound is relaxed to infinity. The override is passed to
+`build_primal_from_cbm` for this module block only, preserving the semantics of other modules that
+share the same reaction binary.
 
-| map | shape | entry `(j, k)` meaning |
-|---|---|---|
-| `z_map_constr_ineq` | `num_z × #ineq` | `z_j` knocks inequality row `k` |
-| `z_map_constr_eq`   | `num_z × #eq`   | `z_j` knocks equality row `k` |
-| `z_map_vars`        | `num_z × #vars` | `z_j` knocks variable `k` (forces its flux to 0) |
+### 7.3 `prevent_boundary_knockouts`
 
-The stored value encodes *both* which binary and the coupling polarity: **`+1` = knockout** (this row
-disappears when `z_j = 1`), **`−1` = knock-in / addition** (the row is present only when `z_j = 1`),
-`0` = no coupling. These are the maps `link_z` reads to decide, for every row, which `z` column to
-write into and with which sense. They are the single source of truth linking the *combinatorial* layer
-(`z`) to the *continuous* layer (fluxes, dual variables).
+A hard variable bound cannot be disabled by a binary. Therefore, the knockable side of a nonzero-sign
+bound is moved into an inequality row before dualization. The associated `z_map_constr_ineq` column
+records which binary owns that row. Non-knockable bounds remain in the variable box.
 
-### 7.2 `SDProblem.__init__` — the seed rows, `num_z`, and the M switch
+### 7.4 `link_z`
 
-Before any module is added, `__init__` lays down a 3-row skeleton over the `z` columns only.
+`link_z` performs seven steps:
 
-#### The three fixed seed rows
+1. split knockable equalities into positive and negative inequality rows;
+2. convert knockable variable directions into inequality rows;
+3. inspect the number of continuous nonzeros in each knockable row;
+4. apply a finite bound-derived big-M to zero- and single-variable rows;
+5. route multi-variable or otherwise unbounded rows to indicators, or to `self.M` when it is finite;
+6. consolidate opposite/duplicate indicator rows and remove gated rows from the static system; and
+7. fix intervention binaries that no longer control any row.
 
-```python
-self.A_ineq = sparse.csr_matrix([[-i for i in self.cost],   # row 0: idx_row_maxcost
-                                  self.cost,                 # row 1: idx_row_mincost
-                                  [0 for _ in range(num_z)]]) # row 2: idx_row_obj
-self.b_ineq = [0.0, max_cost_or_sum, np.inf]
+For a single-variable row `a*x <= b`, the relaxation value is read directly from the appropriate
+variable bound:
+
+```text
+max(a*x) = a*ub  if a > 0
+max(a*x) = a*lb  if a < 0
 ```
 
-with `self.cost` the per-reaction intervention weight (KO cost, overwritten by KI cost where a KI is
-defined;, `nan`→`0`). The three rows and their right-hand sides:
+If the required bound is infinite, the row follows the indicator/configured-M path. A row containing
+two or more continuous variables is deliberately assigned `inf` without solving a bounding LP.
 
-- **Row 0, `idx_row_maxcost`**: $-\sum_j \text{cost}_j \cdot z_j \le 0$, i.e. $\sum_j \text{cost}_j z_j \ge 0$. With
-  non-negative costs this is slack at construction, but it is a *live lower bracket* on total
-  intervention cost: the enumeration/optimization layer ([Ch 8](#ch8)) raises its RHS to force the solver past
-  cost levels already exhausted, turning it into $\sum \text{cost}_j z_j \ge \kappa$. Keeping it as a permanent row
-  means that lower bound can be tightened in place without restructuring the matrix.
+For a finite relaxation value `M`, a KO-style gate uses:
 
-- **Row 1, `idx_row_mincost`**: $\sum_j \text{cost}_j z_j \le b$, the **budget cap**. Its RHS is
-  `self.max_cost` when the user supplied one, else $\sum_j |\text{cost}_j|$ — the latter is a
-  vacuous cap (no design can cost more than the sum of all weights), present so the row always exists
-  and can be tightened later. This is the constraint that makes "minimal" cut sets minimal-*enough*:
-  no design exceeding the budget is admitted.
-
-- **Row 2, `idx_row_obj`**: an all-zero placeholder with RHS $+\infty$. For a pure MCS problem
-  the objective is *minimize intervention cost* and lives in the objective vector `self.c` (lines
-  202–205: `c[j] = cost[j]`), so this row stays inert. For **bilevel** problems (OptKnock, OptCouple,
-  …) the outer objective is a flux expression, not a cost sum; the row is then overwritten with the
-  objective coefficients and used by `fixObjective` (`strainDesignMILP.py`:239–241) to
-  pin $c \cdot x \le \text{value}$ during the BEST search. Reserving row 2 up front lets that pin be a single
-  `set_ineq_constraint` call rather than a matrix resize.
-
-The naming (`maxcost` on the `≥ 0` row, `mincost` on the `≤ budget` row) reads backwards against the
-RHS values and is best treated as an internal label; the *mathematics* is: row 0 lower-brackets and
-row 1 upper-brackets the weighted intervention sum, and row 2 is the swappable objective slot.
-
-The companion `z_map_constr_ineq` is initialised to `(numr × 3)` **zeros**: the seed rows
-are *not knockable* — they constrain `z`, they are not part of any flux subsystem, so no `z` ever
-"removes" them.
-
-#### `self.M` — the master indicator/big-M switch
-
-```python
-bound_thres = max(|cobra_conf.lower_bound|, |cobra_conf.upper_bound|)
-if self.M is None and solver == 'glpk':   self.M = bound_thres   # GLPK: no indicators
-elif self.M is None:                       self.M = np.inf         # default
-# else: user-supplied M kept as-is
+```text
+a*x + (b-M) z <= b
 ```
 
-`self.M` is the *fallback* big-M used only when the per-constraint bounding LP (§7.5) cannot produce a
-finite bound. Its three regimes:
+so `z=0` enforces the original row and `z=1` relaxes it to `a*x <= M`. The inverse polarity is used
+for knock-ins.
 
-- **`inf` (default).** Rows with no finite bound get **no** big-M row; they fall through to native
-  **indicator constraints** (§7.7). This is the preferred, numerically clean path.
-- **cobra bound (GLPK).** GLPK has no indicator-constraint API, so `self.M` is forced finite (the
-  cobra default bound, typically 1000) and *every* unbounded row becomes a big-M row with that
-  constant. A warning is logged. This is the escape hatch that lets the open-source solver
-  run at all, at the cost of a loose, uniform M.
-- **user override.** Passing `M=<value>` in kwargs pins the fallback explicitly (for a solver that
-  supports indicators, this forces big-M everywhere a bound is missing).
+### 7.5 Indicators and the blanket-M fallback
 
-So `self.M` decides what happens to the rows the bounding LP *cannot* bound; the bounding LP decides
-everything else. The emergent SUPPRESS→indicator / PROTECT→big-M split (§7.8) is a downstream
-consequence of this, not a separate branch.
+With `self.M = inf`, the remaining rows are represented by `IndicatorConstraints` and passed to
+Gurobi, CPLEX or SCIP. GLPK has no native indicator implementation and therefore receives the
+configured finite M, normally 1000. Passing an explicit finite `M` requests the same blanket
+substitution on every backend.
 
-### 7.3 `addModule` — block-diagonal assembly
+This behavior is intentional. Automatic per-row M estimation was removed because it was expensive
+and did not make the big-M formulation reliable: values that are too small can miss designs, while
+very large values can introduce numerical artifacts and spurious designs. Native indicators remain
+the preferred formulation for these rows.
 
-Each module produces its own block `(A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, c_i)` plus its
-own three z-maps `z_map_*_i` (the [Ch 6](#ch6) dual/primal machinery; here we only care about *how* the block
-joins the master). The join is:
+### 7.6 Duplicate consolidation and free binaries
 
-```python
-self.z_map_constr_ineq = hstack((self.z_map_constr_ineq, z_map_constr_ineq_i))  # 688
-self.z_map_constr_eq   = hstack((self.z_map_constr_eq,   z_map_constr_eq_i))    # 689
-self.z_map_vars        = hstack((self.z_map_vars,        z_map_vars_i))         # 690
-self.A_ineq = sparse.bmat([[self.A_ineq, None],
-                           [None,        A_ineq_i]]).tocsr()                     # 691
-self.b_ineq += b_ineq_i
-self.A_eq   = sparse.bmat([[self.A_eq, None], [None, A_eq_i]]).tocsr()          # 693
-self.b_eq   += b_eq_i
-self.c  += c_i;  self.lb += lb_i;  self.ub += ub_i
-```
+Opposite indicator inequalities with the same normalized sparse row can be represented as one
+equality indicator; same-direction duplicates are removed. Hashing exact sparse `(indices, data)`
+keys avoids the previous quadratic row comparison.
 
-The constraint matrices grow **block-diagonally**: the new module's rows occupy new rows *and* new
-columns, with explicit `None` (zero) off-diagonal blocks. The z-maps, in contrast, grow **only in
-columns** (`hstack`) — they keep their `num_z` rows.
+After all links are built, a targetable KO binary that appears only in the cost/budget rows and gates
+no finite-M row, equality or indicator cannot affect feasibility. Such a binary cannot occur in a
+minimal design and its upper bound is fixed to zero. Non-targetable variables, knock-ins and essential
+knock-ins are excluded from this cleanup.
 
-#### Why block-diagonal for the continuous part
+### 7.7 Numerical consequences
 
-Each module owns a **private set of continuous variables**. A SUPPRESS module's block is a Farkas dual
-living in *dual* space (one dual variable per primal constraint of that module's flux system); a
-PROTECT module's block is a *primal* flux vector `v`; a bilevel module carries primal flux *and* dual
-variables. These variable sets are semantically disjoint — the flux that must stay feasible in a
-PROTECT module has nothing to do with the dual ray that certifies infeasibility in a SUPPRESS module,
-and two SUPPRESS modules certify infeasibility of two *different* behaviors, each needing its own ray.
-Sharing continuous columns between them would impose spurious equalities (module A's flux = module B's
-flux) that are simply wrong. Block-diagonal placement gives each module an independent copy of flux
-space; the modules never see each other's continuous variables.
-
-#### Why the z-columns are shared
-
-The *only* thing all modules must agree on is **which reactions are cut** — that is the design, and it
-is global. Those are the `z` columns, columns `0..num_z-1`, which are *not* re-created per module: the
-seed skeleton put them there once, and every module's z-maps are `hstack`-ed onto the same `num_z`
-rows. When `link_z` later writes a big-M coefficient into `A_ineq[row, z_j]`, it writes into that
-shared leftmost block — filling the bottom-left "`None`" corner that `bmat` left as zeros. So the
-architecture is: **block-diagonal in the continuous variables, dense-shared in the `z` variables**.
-The design vector `z` is the coupling backbone; every module hangs off it. This is exactly the
-structure that makes a *single* set of `num_z` binaries enforce *all* modules simultaneously — a
-knockout that satisfies the SUPPRESS certificate is the *same* `z` that must leave the PROTECT flux
-feasible.
-
-`z_map_constr_ineq_i / z_map_constr_eq_i / z_map_vars_i` carried in with each module record precisely
-which of that module's *new* rows/variables reaction `j` controls, so after the `hstack` the master
-maps know, for every row in the assembled system, which `z` (if any) knocks it and with what polarity.
-
-### 7.4 `prevent_boundary_knockouts` — why nonzero-sign bounds must be moved
-
-This runs inside `build_primal_from_cbm`, before dualization, on every primal flux
-system. It repairs a specific incompatibility between the KO encoding and reactions whose flux is
-*forced away from zero*.
-
-#### The KO encoding and the failure
-
-A knockout of reaction `j` is ultimately realized (link_z, §7.5–7.6) by driving its flux `v_j` to 0.
-The mechanism *tightens the reaction's box toward 0*: for a variable with `ub_j > 0` it adds the row
-`v_j ≤ 0` gated by `z`; for `lb_j < 0` it adds `−v_j ≤ 0`. This is valid **iff `0 ∈ [lb_j, ub_j]`** —
-the KO row merely collapses the box onto a value the box already contains.
-
-Now suppose the reaction has a **nonzero-sign bound**: `lb_j > 0` (obligatorily forward) or `ub_j < 0`
-(obligatorily reverse). Then `0 ∉ [lb_j, ub_j]`. The variable's *own box bound* — which is a property
-of the variable, not a constraint row, and is therefore **never multiplied by `z`** — keeps forcing
-`v_j ≥ lb_j > 0` even when the KO row `v_j ≤ 0` is active. The two are contradictory: the "knockout"
-does not remove the reaction, it renders the subsystem infeasible. Equivalently, in the
-bound-multiplication view the docstring uses (multiply the bound by `z` to simulate the KO):
-multiplying a bound that lies strictly on one side of 0 can never *reach* 0, so **the residual bound
-still forces flux**.
-
-#### The transformation
-
-For each knockable column (`col_has_z`, from `z_map_vars`):
-
-```
-if lb_j > 0:   add row  -v_j ≤ -lb_j      (i.e.  v_j ≥ lb_j),   then set lb_j := 0
-if ub_j < 0:   add row  +v_j ≤  ub_j      (i.e.  v_j ≤ ub_j),   then set ub_j := 0
-```
-
-The obligation is *moved out of the variable box and into an explicit inequality row*, and the box is
-reset so that `0 ∈ [lb_j, ub_j]`. Concretely, `lb_j > 0` becomes box `[0, ub_j]` plus a standalone row
-`v_j ≥ lb_j`. The new rows are appended with **zero z-columns** (: `hstack([z_map_constr_ineq,
-zeros(numz, new_z_cols)])`) — they are **non-knockable**. That is the crucial point: the obligation is
-now a fixed property of the flux system that survives into the dual as an ordinary constraint with an
-unconditioned multiplier, rather than a variable bound that the z-machinery would try (and fail) to
-multiply. The KO machinery can now cleanly collapse the (0-containing) box, and the moved row, carrying
-no `z`, cannot be corrupted by the coupling.
-
-(It moves the nonzero-sign bounds — `lb > 0` and `ub < 0`, the ones that exclude 0, since those are what break the encoding.)
-
-In practice this fires rarely, because FVA preprocessing ([Ch 5](#ch5)) has already relaxed non-binding bounds
-to `±∞` and pinned irreversible/blocked reactions to 0; the survivors are the genuinely
-obligatory-flux reactions, and this function is what keeps them knockable.
-
-### 7.5 `link_z` — the heart of the chapter
-
-`link_z` transforms the assembled but *unlinked* system — where `z`-columns are still zero in every
-module row — into a fully coupled MILP. Six steps.
-
-#### Step 1: knockable equalities → ± inequality pairs
-
-You cannot "relax an equality with a big-M" in one row: `a·x = b` gated off needs both `a·x ≤ b` and
-`a·x ≥ b` to disappear. So each knockable equality (a nonzero column of `z_map_constr_eq`) is split:
-
-```
-a·x = b     →     a·x ≤ b   and   −a·x ≤ −b
-```
-
-Both new inequalities are gated by the *same* `z` (`z_eq = z_map_constr_eq[:, tuple(idx)*2]`,
- — the column is duplicated). The originals are deleted from `A_eq`. When the
-gate is *inactive*, the pair re-imposes the equality exactly; when active, both directions relax. (If
-this equality later lands on the indicator path with both directions unbounded, §7.7's lumping step
-fuses the pair *back* into a single `'E'` indicator — the split is undone once it is no longer needed.)
-
-#### Step 2: variable-KOs → inequality rows
-
-A knockable *variable* (nonzero column of `z_map_vars`) is translated into an inequality that pins its
-flux to 0 on the relevant side:
-
-```
-if ub_j > 0:   row  +1·v_j ≤ 0     (knock the positive side toward 0)
-if lb_j < 0:   row  −1·v_j ≤ 0     (knock the negative side toward 0)
-```
-
-A reversible reaction (`lb_j<0<ub_j`) gets *both* rows. The gating column is `z_lb_ub =
-−z_map_vars[:, cols]` — **note the negation**. A plain KO reaction has `z_map_vars` entry
-`+1`; negated to `−1`, which by the polarity convention (§7.6) means "enforce the row when `z=1`" —
-exactly right: applying the KO (`z=1`) must *enforce* `v_j ≤ 0`. So the negation is what makes a
-knockout gate correctly.
-
-#### Step 3: the per-constraint bounding LP
-
-For every knockable inequality row `a·x ≤ b`, we need a big-M large enough that when the gate relaxes
-it, the row becomes non-binding. The valid/tight-M theory:
-
-**A big-M is *valid* if $M \ge \max\{\, a \cdot x : x \in P_{\text{relaxed}} \,\}$** and **tight** if it equals that max, where
-`P_relaxed` is the *most relaxed* polytope any knockout combination can produce. The code builds
-`P_relaxed` by **dropping all knockable inequality rows** and keeping only the non-knockable
-inequalities, all equalities, and the (continuous-variable) box:
-
-```python
-cont_vars = columns that are not z                                  # 765
-M_A_ineq / M_b_ineq = A_ineq/b_ineq  with knockable rows removed     # 766-767 (the constraints of P)
-M_A_eq  / M_b_eq    = all equalities                                 # 768-769
-M_lb / M_ub         = box over continuous vars                       # 770-771
-M_A_sparse / M_b    = the knockable rows themselves (the objectives) # 774-775
-```
-
-Dropping *every* knockable row is what makes `P_relaxed` a superset of every actually-reachable knocked
-polytope (any real design drops only *some* rows), so `max a·x` over `P_relaxed` upper-bounds `a·x`
-over any knocked subsystem — hence a **valid** M — and taking the exact max makes it **tight**.
-
-Because solving one LP per knockable row is expensive, rows are triaged by sparsity:
-
-- **`nnz == 0`** (empty row): `max = 0`. (`n_zero`)
-- **`nnz == 1`** (single variable `coeff·v_c`): `max = coeff·ub_c` if `coeff>0` else `coeff·lb_c`,
-  read straight off the box; `∞` if that bound is infinite. (`n_single`)
-- **`nnz ≥ 2`**: needs an actual LP, $\max a \cdot x = -\min(-a \cdot x)$ over `P_relaxed`. (`n_lp`)
-
-logged as `Bounding MILP: N constraints (X zero, Y single-var, Z need LP)`. Only the `n_lp`
-rows hit the solver, optionally across a worker pool (`worker_compute` maximises `a·x` by minimising
-`−a·x` and negating). Finite results are rounded *up* to 5 digits (`ceil(M·1e5)/1e5`,
-) to stay safely on the valid side; **infinite** results are replaced by `self.M` —
-the point where §7.2's switch takes effect.
-
-#### Step 4: the fork at the M value
-
-For each knockable inequality row, `Ms[row]` is now either a finite number or `self.M` (which may be
-`inf`). The loop:
-
-```python
-for row in ...:
-    if not isinf(Ms[row]) and not isnan(Ms[row]):     # finite M  → big-M row
-        z_i   = z_map_constr_ineq[:, row].nonzero()[0][0]
-        sense = z_map_constr_ineq[z_i, row]
-        if sense > 0:   # z_i = 1 knocks out (KO)
-            A_ineq[row, z_i] = -Ms[row] + b_ineq[row]
-        else:           # z_i = 0 knocks out (KI convention)
-            A_ineq[row, z_i] = Ms[row] - b_ineq[row]
-            b_ineq[row]      = Ms[row]
-```
-
-Rows with `isinf(Ms[row])` are **skipped** here and picked up by the indicator path in step 5. The two
-sense cases, written out (let `a·x ≤ b` be the row, `M = Ms[row]`):
-
-- **`sense > 0` (KO, active when `z=1`)** — coefficient `b − M` in the z-column gives the row
-  $a \cdot x + (b - M) \cdot z \le b$:
-  - `z = 0`: $a \cdot x \le b$ — **enforced**.
-  - `z = 1`: $a \cdot x \le M$ — relaxed to the tight maximum, hence **non-binding** (since $M = \max a \cdot x$).
-
-  This is exactly tight: at the knocked state the bound equals the reachable maximum, not the looser
-  `b + M` a naive formulation would use.
-
-- **`sense < 0` (KI, active when `z=1`, absent when `z=0`)** — coefficient `M − b`, and `b` reset to
-  `M`, giving $a \cdot x + (M - b) \cdot z \le M$:
-  - `z = 1`: $a \cdot x \le b$ — **enforced** (reaction present).
-  - `z = 0`: $a \cdot x \le M$ — relaxed, **non-binding** (reaction absent).
-
-Both cases realize the same logic — "constraint holds in the active state, evaporates in the knocked
-state" — with the polarity dictated by the `z_map` sign. The finite-M rows are now permanently part of
-`A_ineq`; only their `z`-column entries changed.
-
-#### Steps 5–6: indicators and cleanup
-
-Every row still carrying `isinf(Ms[row])` (`knockable_constr_ineq_ic`) becomes a **native
-indicator constraint**. First, a **lumping** pass undoes the step-1 split where it is
-no longer useful: rows are canonicalised by the sign of their first nonzero entry, grouped
-by an exact `(indices, data)` key, and pairs found to be identical up to a global sign
-flip (`ident_rows` product `−1`) — i.e. an `a·x ≤ b` and an `a·x ≥ b` on the same `z` — are fused into
-a single equality indicator; exact duplicates (product `+1`) drop one copy. The
-survivors are packaged into an `IndicatorConstraints` object and *removed* from the
-static `A_ineq`/`A_eq`, because an indicator row is enforced by the solver's logic
-engine, not by the LP matrix.
-
-### 7.6 Indicator constraints (`indicatorConstraints.py`)
-
-`IndicatorConstraints(binv, A, b, sense, indicval)` is a thin container (constructor) for
-rows of the form
-
-```
-z_{binv[k]} = indicval[k]   ⇒   A[k]·x  <sense[k]>  b[k]
-```
-
-with `sense ∈ {'L','E','G'}` (≤, =, ≥). The container is populated in `link_z`:
-
-- **`binv`** — the `z` index gating each row, read from the nonzero of the row's `z_map` column.
-- **`A, b`** — the surviving knockable inequality rows first (`'L'`), then the lumped equality rows
-  (`'E'`): `sense = 'L'*n_ineq + 'E'*n_eq`.
-- **`indicval`** — *which* value of the binary triggers enforcement, derived from the `z_map` polarity
-: `[0 if d == 1 else 1 for d in data]`. So a `z_map` entry of **`+1` (KO) → `indicval = 0`**
-  (the constraint is enforced while the reaction is *present*, `z=0`, and released on knockout), and
-  **`−1` (KI/addition) → `indicval = 1`** (enforced only when the reaction is *added*, `z=1`). The code
-  comment states this mapping directly. This is the exact combinatorial analogue of the
-  big-M sense cases in §7.5 step 4.
-
-Semantically, $z = \text{indicval} \Rightarrow A \cdot x \;\{\le,=\}\; b$ and, when $z \ne \text{indicval}$, the constraint is simply *not
-present* — there is no slack variable, no large constant, nothing in the LP relaxation. The solver
-enforces the implication by branching/logic.
-
-### 7.7 Why indicators give a tighter LP relaxation than big-M
-
-Take the KO row from §7.5, $a \cdot x + (b - M) \cdot z \le b$, and relax the binary to $z \in [0,1]$ (what every LP
-node in branch-and-bound actually sees). Rearranged:
-
-```
-a·x ≤ b + (M − b)·z
-```
-
-At a *fractional* `z` the right-hand side floats up proportionally to `z`: the relaxation lets `a·x`
-exceed its true bound `b` by up to `(M−b)·z`. The feasible region of the relaxation is therefore
-**enlarged**, and the enlargement grows *linearly with M*. A loose (large) M produces a weak
-relaxation: the LP bound at each node is poor, branch-and-bound explores more nodes, and the wide
-spread between M and the unit-scale flux coefficients degrades numerical conditioning (`FeasibilityTol`
-/ `IntFeasTol` interactions, ill-scaled bases). This is the concrete cost of a bad M.
-
-The indicator constraint has *no* continuous relaxation of the implication: at fractional `z` the
-solver does not manufacture a proportional slack; it enforces `z=indicval ⇒ a·x ≤ b` combinatorially.
-The relaxation it presents is at least as tight as the big-M one and usually strictly tighter, with no
-M to condition on. That is why indicators are the default whenever the solver supports them, and why
-the per-constraint tight M matters when it does *not*: the bounding LP of §7.5 exists precisely to
-make each finite M as small as validly possible. This is also the payoff of [Ch 5](#ch5)'s FVA bound
-relaxation — by pushing non-binding bounds to `±∞`, FVA makes the corresponding `max a·x` *infinite*,
-which routes those rows to indicators (the tightest option, no M at all) instead of leaving them with a
-finite-but-large M. Tight preprocessing and tight linearization are the same fight.
-
-### 7.8 The emergent SUPPRESS→indicator / PROTECT→big-M split
-
-A frequently observed pattern under the default `M = inf`: SUPPRESS modules end up almost entirely on
-**indicator** constraints, PROTECT modules almost entirely on **big-M**. This is *emergent from bound
-structure*, not a per-type branch anywhere in the code.
-
-- A **SUPPRESS** module is a **Farkas dual** (`farkas_dualize`, [Ch 6](#ch6)). Its variables are the components
-  of an unbounded *dual ray*; the dual feasible set is a **homogeneous cone**, so the dual variables
-  are unbounded above. The knockable rows are constraints on these unbounded dual variables, so their
-  bounding LP returns `max a·x = +∞` → `Ms = self.M = inf` → **indicator**.
-
-- A **PROTECT** module is a **raw primal** flux system (`reassign_lb_ub_from_ineq`, [Ch 6](#ch6)). Its
-  variables are fluxes with **finite FVA bounds**; the knockable rows are ordinary flux constraints,
-  so their bounding LP returns a **finite** `max a·x` → **big-M** with that tight constant.
-
-So the fork is decided entirely by whether `max a·x` over the relaxed polytope is finite — a property
-of the *bounds*, funneled through the single `self.M`/bounding-LP mechanism in `link_z`. Change the
-bound structure (e.g. cap the dual variables, or lose FVA relaxation on the primal) and the split
-moves. On GLPK it collapses entirely: `self.M` is finite, so even the unbounded SUPPRESS rows get a
-big-M, and there are no indicators at all. This is the mechanistic content behind the memory note that
-SUPPRESS means *"cannot"* (make a behavior infeasible — certified by an unbounded dual ray, hence
-indicators) and PROTECT means *"can"* (keep a behavior feasible — a bounded primal flux, hence big-M).
-
-### 7.9 Final consolidation and the binary block
-
-After `link_z`, the master problem is:
-
-- **`A_ineq`** — seed rows 0–2, then the block-diagonal module rows, plus the eq→ineq rows (step 1)
-  and var-KO rows (step 2), with finite-M `z`-column coefficients written in place; indicator rows have
-  been *removed* (they live in `self.indic_constr`).
-- **`A_eq`** — the non-knockable equalities (stoichiometry `S·v = 0`, fixed module equalities) plus any
-  lumped equalities that stayed on the big-M path; indicator equalities removed.
-- **`self.indic_constr`** — the `IndicatorConstraints` bundle.
-- **`self.c`** — for a pure MCS problem, `c[j] = cost[j]` on the `z` block, 0 elsewhere (minimize
-  intervention cost, `is_mcs_computation = True`); for bilevel, `c` on `z` is 0 and the
-  outer objective sits in seed row 2. `self.c_bu` backs it up.
-- **`self.vtype = 'B'*num_z + 'C'*(z_map_vars.shape[1]-num_z)`**: the binary block is the
-  leading `num_z` columns — the design variables `z`, which every module's coupling was wired into —
-  and everything after is the continuous module variables (fluxes, dual rays) that hang off them
-  block-diagonally.
-
-The `ContMILP` snapshot stores the continuous projection (all columns except `idx_z`)
-together with the three z-maps, so that a candidate design `z*` can be validated by substitution
-without re-solving the full MILP (used by `verify_sd`, [Ch 8](#ch8)). At this point the problem is a complete,
-solver-ready MILP: binaries coupled to continuous rows through tight per-constraint big-Ms where
-bounds are finite and native indicators where they are not.
+Indicators avoid choosing an M but remain subject to each solver's indicator implementation and
+feasibility tolerances. The explicit/GLPK big-M path is a compatibility mode whose completeness and
+specificity must be checked against known designs for the model at hand. Changing M is a formulation
+change, not merely a performance tune.
 
 
 (ch8)=
@@ -3791,45 +3016,30 @@ before the solver sees them, shrinking the binary count and keeping the B&B tree
 variables. Solutions are expanded back to the original `z`-space afterward (`_expand_z_to_orig`,
 `:151-160`).
 
-### 8.7 Verified performance: the phase timeline and CPLEX vs Gurobi
+### 8.7 Enumeration performance and the preprocessing boundary
 
-For the canonical **iML1515 gene-MCS** problem (SUPPRESS biomass ≥ 0.001, POPULATE, `max_cost = 3`,
-gene KOs) yielding **393 MCS** (package v1.18):
+An older end-to-end run of the canonical **iML1515 gene-MCS** problem (SUPPRESS biomass ≥ 0.001,
+POPULATE, `max_cost = 3`, gene KOs) returned **393 MCS** and showed that exhaustive solution-pool
+search can dominate total runtime. That run recorded CPLEX at 1241 s and Gurobi at 280 s, but it
+predates the current preprocessing implementation and used only one seed. Treat those values as
+historical evidence about the importance of pool enumeration, not as a current solver ratio or
+preprocessing benchmark.
 
-| Phase | Time | Notes |
-|---|---|---|
-| Preprocessing: blocked/irreversible FVA | **~117 s** | solver-agnostic, one-time |
-| MILP build | **~4 s** | matrix assembly + `link_z` |
-| Populate (enumeration) | **~1101 s** (CPLEX) | dominates |
-| **Total** | **CPLEX 1241 s / Gurobi 280 s (≈4.4×)** | |
-
-For **e_coli_core** (455 MCS) the whole thing is **~1.2 s** on CPLEX — small enough that phase structure
-is irrelevant.
-
-**Interpretation.** On iML1515, preprocessing FVA (~117 s) and build (~4 s) are essentially fixed costs
-independent of the MILP solver; they are ~10 % of the CPLEX total. The remaining **~89 %** is the
-**pool search** inside `populate`. So the thing that dominates genome-scale enumeration is *not* solving
-a single MILP to optimality — a single feasibility or optimality solve is comparatively quick — it is
-**exhaustively filling the solution pool at each cost level**: the solver must, after finding the optimal
-cost, keep branching to enumerate *every* tied design and prove there are no more. That is intrinsically
-harder than a single optimize, and it is where CPLEX and Gurobi diverge: Gurobi's pool search
-(`PoolSearchMode = 2`) closes this instance ~4.4× faster than CPLEX's `populate_solution_pool` at
-`intensity = 4`. The preprocessing FVA ([Ch 5](#ch5)) is the second-largest lever and, being solver-agnostic, is
-where portable speedups live; the pool search is a solver-quality question.
-
-Because this 4.4× is a **single-seed** figure, per §8.6.3 it should be read as "Gurobi is materially
-faster here", not as a precise constant — reproduce across seeds before quoting it as a benchmark.
+The current preprocessing-only profile is maintained in [Ch 11](#ch11): approximately 19.6 s on
+the profiled Gurobi setup, dominated by sign/FVA queries and compression, with `SDMILP` construction
+below one second. End-to-end solver comparisons must report preprocessing and enumeration separately,
+use the same preprocessed problem, verify the decompressed MCS set, and run multiple seeds.
 
 **The discredited "big-M / indicators-catastrophic" dead-end.** An earlier performance hypothesis held
 that native **indicator constraints** were catastrophically slow at genome scale and that forcing a
 global **big-M** reformulation would fix it. This was investigated and **discredited** — do not repeat
-it. Two reasons: (1) The dominant cost is pool enumeration (~89 % above), *not* the LP relaxation of the
-z-linking, so swapping the linking mechanism cannot address the actual bottleneck. (2) Indicator
+it. Two reasons: (1) exhaustive pool enumeration can dominate an end-to-end run, so swapping the
+linking mechanism does not address that cost. (2) Indicator
 constraints give a **tighter** LP relaxation than big-M ([Ch 7](#ch7)) — a valid big-M must be large enough to
 never spuriously bind, which loosens the relaxation and generally *hurts* branch-and-bound, the opposite
-of the hypothesis. Recall also (CONTEXT §, [Ch 7](#ch7)) that under the default `M = inf`, SUPPRESS's unbounded
-Farkas-dual rows *become* indicator constraints and PROTECT's finite-flux primal rows *become* big-M
-**emergently** from the bound structure in `link_z` — there is no per-module type switch to "fix". The
+of the hypothesis. Under the default `M = inf`, multi-continuous-variable rows become indicators,
+while zero- and single-variable rows can use a finite relaxation read directly from their bounds;
+there is no per-module type switch to "fix". The
 lever that actually moves genome-scale time is faster pool search (solver choice) and cheaper
 preprocessing FVA, not the linking encoding.
 
@@ -3865,7 +3075,7 @@ proved unstable.
 The MILP does not run on the model the user handed to `compute_strain_designs`. By the time
 `SDMILP` is built ([Ch 7](#ch7)), the network has passed through two lossless compression rounds (COMPRESS
 #1 before GPR integration, COMPRESS #2 after — [Ch 3](#ch3)), an optional GPR extension that turned genes
-into pseudoreactions ([Ch 4](#ch4)), and three FVA passes that pruned essential reactions and pulled out
+into pseudoreactions ([Ch 4](#ch4)), and several sign/FVA jobs that prune essential reactions and pull out
 size‑1 minimal cut sets ([Ch 5](#ch5)). The binary intervention variables `z` therefore index **compressed
 reactions of the GPR‑extended model**, not the original reactions or genes the user cares about.
 
@@ -4070,7 +3280,7 @@ decision in §9.4.
 
 ### 9.3 Size‑1 MCS re‑injection
 
-Recall from [Ch 5](#ch5) that FVA #3 (`compute_strain_designs.py‑491`) finds reactions that are
+Recall from [Ch 5](#ch5) that the final module FVA finds reactions that are
 **essential for the SUPPRESS behaviour but not for any PROTECT behaviour** — i.e. reactions whose sole
 knockout already makes the undesired flux infeasible while keeping the desired flux feasible. These
 are size‑1 minimal cut sets. They are deliberately **removed from the knockable set before the MILP is
@@ -4361,9 +3571,9 @@ mechanisms, either of which can leave a knockable-but-inert gene in the problem.
 > that match the reported id/name signature and remain worth hardening — not as a bug with a known fixing
 > commit. The issue stays open awaiting the reporter's exact failing `gene_sd`.
 
-#### Mechanism 1 — `reduce_gpr` pops protected/essential genes by **id only**
+#### Mechanism 1 — `reduce_model_gprs` pops protected/essential genes by **id only**
 
-`reduce_gpr` (`networktools.py`) is the pre-GPR-integration pass that removes genes which cannot
+`reduce_model_gprs` (`networktools.py`) is the pre-GPR-integration pass that removes genes which cannot
 usefully be knocked out — genes that only touch essential reactions, or that are essential to an essential
 reaction — so they never become MILP binary variables (see [Ch 4](#ch4) for the full GPR-reduction role). It builds
 a `protected_genes` set (steps 2–3), and then, in step 4:
@@ -4387,15 +3597,15 @@ and *this* line is name-aware:
 ```
 
 Likewise step 6 restores knock-in candidates by matching *either* `g.id in gkis` or
-`g.name in gkis`. So `reduce_gpr` knows perfectly well that `gkos`/`gkis` may be name-keyed — every
+`g.name in gkis`. So `reduce_model_gprs` knows perfectly well that `gkos`/`gkis` may be name-keyed — every
 membership *test* checks both id and name — but the one place it *mutates* `gkos`, the `.pop` at line
 904, uses `pg.id` alone. That is the fragility: a single un-mirrored key access in an otherwise
 id-or-name-tolerant function.
 
-The downstream effect compounds through the rest of `reduce_gpr`. `protected_genes_dict` is keyed by
+The downstream effect compounds through the rest of `reduce_model_gprs`. `protected_genes_dict` is keyed by
 `pg.id` and fed to `simplify_gpr_ast`, which rewrites each reaction's GPR treating protected
 genes as constant-`True` and **deletes them from the Boolean rule**; then step 8 removes
-protected genes from `model.genes` entirely. So after `reduce_gpr` a name-keyed essential
+protected genes from `model.genes` entirely. So after `reduce_model_gprs` a name-keyed essential
 gene can be in an inconsistent state: still present as a cost entry in `gkos` (because the pop missed it),
 but scrubbed out of the GPRs and the gene list. When `extend_model_gpr` then builds gene pseudoreactions
 from `model.genes` ([Ch 4](#ch4)), that gene has no pseudoreaction to attach a `z` to — the intervention is
@@ -4440,7 +3650,7 @@ pruning that is supposed to remove inert genes upstream.
 
 #### The id-vs-name fragility, end to end
 
-Beyond `reduce_gpr`, the id/name split threads through several stages and is the reason "names break, ids
+Beyond `reduce_model_gprs`, the id/name split threads through several stages and is the reason "names break, ids
 work" is a plausible signature:
 
 - **Pseudoreaction vs. pseudometabolite naming diverge.** In `extend_model_gpr`, when `use_names=True` the
@@ -4604,31 +3814,13 @@ so they misroute (deferred as if gene-regulatory) or raise. The same aliasing me
 surface — there is a code comment acknowledging the in-place mutation, but the fix (copy
 the caller's dict on entry, as is already done for modules) has not been applied.
 
-### 10.5 Gotcha (b) — Gurobi/GLPK-only name truncation (sha256; CPLEX exempt)
+### 10.5 Gotcha (b) — deterministic truncation of long GPR gadget names
 
-`extend_model_gpr` can generate very long pseudo-metabolite/pseudoreaction names, especially after
-compression lumps many reactions into one ([Ch 3](#ch3)/[Ch 4](#ch4)): the lumped id is a `*`-joined concatenation of the
-member ids and gene tags, easily exceeding a few hundred characters. To stay within solver name-length
-limits, names longer than `MAX_NAME_LEN = 230` are hashed:
+Long generated gene/metabolite/reaction identifiers are truncated for every solver using the same
+prefix-plus-SHA-256 rule. This avoids the former cross-solver identifier mismatch. Downstream code
+must still treat generated IDs as opaque: reconstructing them independently or matching only the
+human-readable prefix can break cost lookup and decompression.
 
-```python
-# networktools.py:1001,1012–1014
-MAX_NAME_LEN = 230
-def truncate(id):
-    h = hashlib.sha256(id.encode()).hexdigest()[:20]
-    return id[0:MAX_NAME_LEN - 21] + "_" + h
-```
-
-The crucial detail is the **guard**: every truncation site fires only for `solver in {GUROBI, GLPK}`
-. **CPLEX is exempt.** The consequence is that the *same
-input model* produces *different reaction/metabolite identifiers* depending on which solver is selected: a
-long name is preserved verbatim under CPLEX but replaced by `<prefix>_<sha256[:20]>` under Gurobi/GLPK.
-That changes reaction/metabolite identity in logs and in any downstream lookup keyed by name — which is why
-it is #43-adjacent: a name-keyed gene/reaction lookup that works on CPLEX can miss on Gurobi because the
-key was hashed out from under it, and the reporter of #43 saw exactly the truncation warning. It also means
-solver-to-solver diffs of the extended model are not name-comparable without accounting for truncation.
-Ids, being short, never hit `MAX_NAME_LEN`, so id-keyed workflows are immune — a second reason the #43
-signature is "names break, ids work".
 
 ### 10.6 Gotcha (c) — solver numeric-status robustness (Gurobi 12 NUMERIC; CPLEX 5/6 unscaled-infeasibilities)
 
@@ -4638,9 +3830,9 @@ gracefully.
 
 **Why these MILPs hit the numeric statuses.** The SUPPRESS blocks are Farkas infeasibility certificates
 ([Ch 6](#ch6)) whose dual variables are unbounded by nature and are anchored only by a normalization row, and the
-`z`-linking mixes big-M rows with indicator rows ([Ch 7](#ch7)). Big-M constants derived from bounding LPs on an
-ill-conditioned genome-scale network can span many orders of magnitude (the MILP-conditioning workstream
-measured a ~9-order big-M range), giving the LP relaxation a badly scaled constraint matrix. Under such
+`z`-linking mixes big-M rows with indicator rows ([Ch 7](#ch7)). A blanket finite M on an
+ill-conditioned genome-scale network can be too large for some rows and too small for others, giving
+the LP relaxation a badly scaled constraint matrix or changing the feasible set. Under such
 scaling the simplex/barrier can reach a point it believes optimal or feasible but whose *unscaled*
 residuals exceed tolerance — that is precisely CPLEX status 5/6 ("optimal/best with unscaled
 infeasibilities") and Gurobi status 12 (`NUMERIC`). These are not logic bugs; they are the expected
@@ -4699,387 +3891,95 @@ fix trades a crash for occasionally accepting a marginally non-minimal design.
 (ch11)=
 ## 11. Performance, benchmarking & roadmap
 
-This chapter is forward-facing. The rest of *StrainDesign Internals* explains how the pipeline works;
-this one is a map for the developer who wants to make it **faster** without making it **wrong**. It
-does three things: (1) pins down where wall-time actually goes at genome scale, with numbers, so that
-optimization effort lands on real bottlenecks and not folklore; (2) enumerates the performance levers,
-each grounded in that profile and in the mathematics of the formulation (see [Ch 6](#ch6), [Ch 7](#ch7)); and (3) lays
-out the benchmarking discipline and the roadmap. Throughout, the governing constraint is
-**completeness** — a Minimal Cut Set (MCS) computation must never silently drop a valid design ([Ch 8](#ch8),
-[Ch 9](#ch9)), so every speedup is a claim that has to be gated against a known answer.
+Performance work must preserve the complete design set. A faster preprocessing or MILP formulation is
+not accepted on timing alone; it must pass a known-answer gate after decompression.
 
-Two numbers to keep in your head, both measured on the canonical iML1515 gene-MCS run
-(SUPPRESS `BIOMASS_Ec_iML1515_core_75p37M ≥ 0.001`, POPULATE, `max_cost=3`, `gene_kos=True`):
-**CPLEX 1241 s, Gurobi 280 s**, both returning the identical 393 MCS. That ≈4.4× solver gap, and the
-internal split of those seconds, is the spine of everything below.
+### 11.1 Current iML1515 preprocessing profile
 
-### 11.1 The verified bottleneck profile
+The current PR branch was profiled on the canonical iML1515 single-SUPPRESS gene-MCS setup with
+Gurobi, compression enabled and preprocessing dumped before enumeration. Total preprocessing was
+about **19.6 s**.
 
-All timings here were measured against the real solver APIs (package v1.18, CPLEX 22.1.2 / Gurobi 13.0.1)
-on the canonical iML1515 393-MCS problem. State them as given;
-re-measure before trusting anything not on this list.
+| Phase | Time | Detail |
+|---|---:|---|
+| reversibility pre-tightening | ~6.32 s | 1281 LP solves ~4.72 s; temporary compression ~1.17 s; structural sweep ~0.05 s |
+| folded final FVA | ~5.81 s | about 702 LP solves ~5.61 s |
+| main compression passes | ~5.00 s | coupled work ~3.75 s; parallel ~0.81 s; conservation removal ~0.33 s |
+| suppressed model copies | ~0.75 s | four `_CarrierSolver` copies; nested in the surrounding phases |
+| `extend_model_gpr` | ~0.62 s | gadget construction without a live backend |
+| `SDMILP` construction | ~0.48 s | includes `link_z`; no per-row bounding LP |
+| module validation FBA | ~0.33 s | selected-solver validation |
+| dump serialization | ~0.16 s | preprocessed pickle |
+| GPR reduction/simplification | ~0.17 s | small relative to FVA/compression |
 
-#### 11.1.1 Where the seconds go (canonical iML1515, CPLEX)
+Some rows are nested and therefore are not additive. The important result is the ordering:
+**FVA/sign classification and compression dominate preprocessing; model copying and MILP construction
+do not.**
 
-| Phase | What it is | Time |
-|---|---|---|
-| Prepare/parse | modules, solver, costs, seed | ~7 s |
-| COMPRESS #1 | 2712 → 1237 reactions (parallel + coupled, 5 iters) | 3.4 s |
-| GPR preprocessing | 1516 genes → `extend_model_gpr` (model → 3448 reac) | ~1 s |
-| COMPRESS #2 | after GPR extension, 3448 → 2152 reactions | 4.3 s |
-| **`bound_blocked_or_irrevers_fva`** | whole-model bound-classifying FVA (the ~4300-LP sweep) | **117.4 s** |
-| FVA essential + size-1 MCS | 88 size-1 MCS extracted via SUPPRESS-scoped FVA | 3.5 s |
-| MILP build | Farkas dual assembly 2.7 s + `link_z` (536 indicators) 0.9 s | **3.7 s** |
-| **Solve (POPULATE)** | pool search → 84 compressed solutions | **1101 s** |
-| Decompress | `expand_sd` + maxcost filter + phenotype → 393 | ~1 s |
-| **Total** | | **1241 s** |
+### 11.2 Solver-suppressed model copies
 
-Three facts fall straight out of this table, and each one redirects a class of optimization effort:
+`suppress_lp_context` patches solver-touching cobra/optlang methods during preprocessing. A copied
+model receives `_CarrierSolver`, which retains the solver interface identity but has empty
+constraint/variable containers and is never optimized. LP and MILP consumers construct their own
+`MILP_LP` from stoichiometry and bounds.
 
-1. **The two costs that matter at genome scale are the preprocessing FVA (~117 s) and the solve/pool
-   search (~1101 s).** Together they are 98% of wall-time. Everything else — parse, both compressions,
-   GPR extension, size-1 MCS extraction, decompression — is single-digit seconds. Optimize the two big
-   phases; leave the rest alone unless it becomes structurally coupled to them.
+This removes two costs:
 
-2. **MILP *construction* is now cheap (~4 s).** This was not always true: before PR #55 the build was
-   ~70 s, dominated by a scalar-loop `prevent_boundary_knockouts` (~51 s) and a non-deduplicated
-   `link_z` (~16 s). Vectorizing `prevent_boundary_knockouts` and hashing the `link_z` bounding-LP
-   dedup collapsed it to ~7 s, byte-identical output, and the exact-nullspace/build refinements since
-   have trimmed it further. **The lesson for the next optimizer:** the build phase has already been
-   wrung out; do not spend effort shaving milliseconds off matrix assembly. The money is in FVA and the
-   solve.
+- deep-copying and reconstructing a populated optlang backend; and
+- populating an otherwise empty live backend while GPR metabolites and reactions are added.
 
-3. **The 117 s FVA is a genuinely preprocessing cost, not a solve cost** — it is the whole-model
-   `bound_blocked_or_irrevers_fva` call (see [Ch 5](#ch5), §3.3), roughly `2n` single-reaction LPs with no
-   `reaction_list` scoping and no extra constraints. That structure is what makes it CPLEX's per-LP
-   overhead multiplied by ~4300, and it is why it is separately attackable from the pool search.
+In the profile, emulating the previous live-empty-solver copy increased the measured copy/GPR
+components by roughly 0.25 s. More importantly, the carrier makes the intended lifetime explicit:
+preprocessing copies are data carriers, not cobra models to optimize through `model.solver`.
 
-#### 11.1.2 The CPLEX-vs-Gurobi ≈4.4× gap and its *true* causes
+The patch is process-global while active and is designed for the serial preprocessing pipeline.
+Nested calls are no-ops and the outer context owns restoration. The source model's live solver is
+either left untouched or rebuilt and repopulated once on outer-context exit when the structural
+reaction set changed; intermediate mutations are deliberately not mirrored into it. Carrier copies
+stay backend-free for their preprocessing lifetime.
 
-The same 393-MCS problem runs in **CPLEX 1241 s vs Gurobi 279.8 s**. Decomposing both runs by phase
-localizes the entire gap to exactly two places:
+### 11.3 Where optimization effort belongs
 
-- **Preprocessing FVA: ~117 s on CPLEX.** This is CPLEX's per-LP construction/solve overhead paid ~4300
-  times over. Gurobi's per-LP overhead on the same sweep is materially lower. This is a *fixed tax per
-  LP*, so the fix is architectural (fewer LPs, parallelism, cheaper backend for the sweep — §11.2.5),
-  not a solver-parameter tweak.
-- **Pool search (POPULATE): ~1101 s on CPLEX vs a small fraction of that on Gurobi.** CPLEX's
-  solution-pool enumeration runs ~4–7× slower than Gurobi's on this MILP. This is the dominant term and
-  the dominant contribution to the 4.4×.
+The current levers, in priority order, are:
 
-Everything else — the branch-and-bound on the incumbent-finding solves, the MILP build — is at rough
-parity between the two solvers. So the correct one-sentence statement of the gap is: **the CPLEX
-disadvantage is per-LP preprocessing overhead plus pool-search speed, and nothing else.**
+1. **Reduce LP count without changing the queried polytope.** The single-module fold is an example:
+   one constrained FVA serves two consumers.
+2. **Reduce each FVA LP structurally.** Temporary exact compression and the structural sign sweep are
+   useful only if their own setup cost remains below the saved solve time.
+3. **Improve exact compression.** Fewer reactions reduce both later LP objectives and MILP binaries.
+   Scaling choices must preserve biologically meaningful finite bounds and avoid pushing them below
+   solver resolution.
+4. **Keep solver work out of model mutation.** Carrier copies and batched solver reconstruction avoid
+   optlang bookkeeping that does not contribute to the mathematical problems being solved.
+5. **Treat big-M as a compatibility formulation.** The blanket M is intentional for GLPK or an
+   explicit user request; native indicators are preferred for multi-variable rows.
 
-Three things the gap is emphatically **NOT**, each of which cost prior investigation time and is now
-closed:
+### 11.4 Benchmarking discipline
 
-- **NOT the indicator constraints.** Under the default `M = inf`, SUPPRESS's Farkas-dual rows become
-  indicator constraints and PROTECT's finite-flux primal rows become big-M rows — but this is emergent
-  from the bound structure via the `self.M`/bounding-LP fork in `link_z` (`strainDesignProblem.py`, the
-  finite-vs-`inf` `max_Ax` test around line ~853), **not** a per-module-type switch ([Ch 7](#ch7), §3.2). Both
-  solvers get the *same* formulation with the same indicators, and both handle those indicators fine.
-  The indicators are not the gap.
+Every performance comparison should record:
 
-- **NOT the pool parameters.** CPLEX sets `mip.pool.absgap=0`, `mip.pool.relgap=0`,
-  `mip.pool.intensity=4` at solver construction (`cplex_interface.py`), and Gurobi sets
-  `PoolGap=PoolGapAbs=1e-9` (`gurobi_interface.py`). These have been dated by `git blame` to
-  2022 (CPLEX line `b87d49c1`, 2022-04-18 — not a recent regression) and, more importantly, **verified
-  inert for single `solve`**: after a feasibility solve at `intensity=4`, `pool.get_num==0`,
-  identical to `intensity=0`. CPLEX does not populate the pool during a plain `optimize`; the pool
-  params only bite inside `populate` (POPULATE). They are architecturally misplaced (they belong
-  inside `populate`), but they are **not a performance bug for ANY/BEST**. Do not re-derive this — it
-  was tested three ways.
+- commit, solver/version, license mode, thread count and seed;
+- exact model/setup and whether bounds were converted to a cone;
+- compressed model dimensions and number of targetable interventions;
+- per-phase timings and FVA LP counts;
+- compressed and decompressed design counts; and
+- set identity against a trusted run.
 
-- **NOT a big-M conditioning catastrophe.** A discredited earlier reading claimed "CPLEX 400 s /
-  indicators catastrophic / use big-M." That number came from calling `backend.solve` on the MILP's
-  *construction* objective — a global optimization that no production path ever runs — on a self-made
-  iML1515/1,4-BDO/`max_cost=40` dump with 2228 indicators and a loose cardinality bound. It is not
-  representative of any real run and has been thrown out. **The dead-end to remember:** there is no
-  9.4-order big-M range in the built MILP to fix. As the MILP roadmap verified (§0–§1), the shipped
-  formulation carries only a few dozen big-M rows, all at the loose default ±1000 (e.g. iMLcore: 34
-  big-M / 388 indicators), because the wide-flux-span reactions all relax to ±inf bounds and become
-  *indicators*, not tiny big-M's. Equilibration of a big-M range that does not exist is moot.
+Preprocessing experiments should normally stop at `dump_preprocessed`; enumeration is required only
+when the changed preprocessing or formulation could affect the design set. Timing a full population
+search to compare two byte-equivalent MILPs only adds solver variance.
 
-The practical upshot: **do not chase the solver gap through solver knobs or the indicator/big-M
-dichotomy.** The gap lives in the *number of LPs* in preprocessing and in *pool-search throughput*.
-Fix those structurally.
+### 11.5 Numerical policy
 
-### 11.2 The performance levers
+There are two different uses of tolerances:
 
-The levers below are grouped and ordered to match the profile: compression (cuts the problem before it
-is built), formulation/conditioning (shapes the MILP the solver sees), skipping hopeless work, the
-Farkas-dual pre-bounding problem, the preprocessing FVA, and the enumeration strategy. This list
-reflects informed intuition, not a ranked plan — argue with it, and measure before committing effort.
-Phil's standing prior: the biggest *suspected* structural win is a better MILP formulation/conditioning
-(group 2), solver parameters (group 4-adjacent) are a fragile secondary bet, and the "good compression
-≈ MCS2" insight (group 1) is a **hypothesis to verify**, not a foundation to build on.
+- a **witness tolerance** lets an observed nonzero flux resolve another direction without a dedicated
+  LP; a false negative merely costs an extra solve;
+- a **zero/tightening policy** changes a model bound and therefore must be conservative.
 
-#### 11.2.1 Compression depth = rank / z-count reduction (the structural lever)
-
-The binary variable count `num_z = numr` — one `z` per compressed reaction (`strainDesignProblem.py`
-`__init__`, `num_z` set around line ~144) — is the dominant complexity driver of the MILP. Branch and
-bound over `z` is combinatorial; halving `numr` is worth far more than any constant-factor solver tune.
-Network compression ([Ch 3](#ch3)) is the mechanism that reduces `numr` losslessly and exactly, and it is
-therefore the single largest structural lever available.
-
-The reasoning is that compression is a **rank/dimension reduction of the flux system done for free**:
-parallel merge, coupled/flux-coupled merge, conservation-relation (row) removal, and blocked/zero-flux
-removal each shrink `S` while preserving the exact set of steady-state flux distributions (the exact
-integer/rational nullspace guarantees this — never float; see [Ch 3](#ch3) and the hard constraint). Every
-reaction removed is a `z` never created, an LP row never linked, a branch never taken. On the canonical
-run, COMPRESS #1 takes 2712 → 1237 and COMPRESS #2 takes 3448 → 2152 (after GPR extension inflates the
-count); pushing either merge closer to a true fixpoint directly removes binaries.
-
-Concrete sub-levers, in decreasing certainty:
-
-- **Scaled-parallel merging** (shipped, PR #54): merge reactions whose stoichiometry is identical *up
-  to any rational scalar* and that share reversibility/bound topology. This is strictly more merging
-  than exact-equality parallel detection, and it is exact (the merge factor is a flux-split share).
-- **Push the coupled+parallel alternation to a genuine fixpoint.** The compression loop alternates
-  parallel-merge → conservation-removal → coupled-merge until a step stops reducing ([Ch 3](#ch3)). Confirming
-  we reach *maximal* exact reduction — that no additional pass would remove one more reaction — is the
-  cleanest way to guarantee the `z`-count is minimal for a given model.
-- **Order interactions** between blocked/dead-end removal, conservation-relation removal, and coupling:
-  removing dead ends first can expose new couplings and vice versa; the order the fixpoint visits them
-  affects how quickly it converges and, at the margin, what it finds.
-
-The deeper claim attached to this lever is the **"good compression ≈ MCS2" hypothesis** (Phil).
-MCS2 (doi:10.1093/bioinformatics/btz393) computes minimal coordinated supports over the nullspace;
-its structural benefit is essentially working in a full-rank coordinate system. The hypothesis is that
-*a sufficiently good compression already reduces the MILP to (near) full rank, producing a problem
-almost identical to MCS2's* — so maximizing exact compression captures most of the MCS2 advantage
-without importing MCS2's method. Two pieces of evidence bear on it: a standalone MCS2-style nullspace
-approach was tried and gave **no speedup** (solid compression already captured the structural benefit),
-and the exact-nullspace PR #60 lifted compression ~1.6× and made yeast-GEM compress at all. But this
-remains a **hypothesis, not a fact**, and the way to settle it is stated in §11.3: complete-enumerate
-(ALL, not BEST/ANY) reaction MCS up to ~6 KOs on a couple of genome-scale models and compare
-head-to-head with MCS2. If the hypothesis holds, compression depth is the whole game for competitiveness
-and the MILP-formulation work is secondary; if it fails, the reverse.
-
-#### 11.2.2 MILP formulation & conditioning
-
-Compression decides *how many* binaries; formulation decides *how hard the solver's job is per binary*.
-The relevant machinery is `link_z` ([Ch 7](#ch7)), which wires each binary `z` to the continuous rows either as
-a native indicator constraint or as a big-M row, choosing per-row on the sign of a bounding-LP maximum
-`max_Ax` (finite ⇒ big-M with that constant; `inf` ⇒ indicator). The levers:
-
-- **Prefer native indicators; use big-M only where forced.** Gurobi, CPLEX, and SCIP all support native
-  indicator constraints; only GLPK forces everything to big-M (its `self.M` is a finite cobra bound).
-  A loose big-M gives a weak LP relaxation, and a weak relaxation hurts CPLEX more than Gurobi. The
-  shipped formulation already leans indicator-heavy by construction (536 indicators on the canonical
-  run), which is why the indicator/big-M split was ruled *out* as the cause of the solver gap
-  (§11.1.2). But the audit is still worth doing on new model classes: verify we never hand CPLEX a
-  structurally weaker formulation than Gurobi on the same problem.
-
-- **Tighten every big-M to its smallest valid bound.** `link_z` already computes a per-row
-  `max_Ax` = max of the constraint over the LP-relaxed feasible region, which is the tightest *valid*
-  M given the bounds (an LP-tight, not MILP-tight, heuristic — the true MILP-tight max-min is as hard as
-  SUPPRESS itself). The gap here: the few dozen *functional* big-M rows that survive are written at the
-  loose default ±1000, not at their tighter FVA maxima (MILP roadmap §0: iMLcore = 34 big-M all ≈1000).
-  Tightening those 34 from 1000 to their FVA-computed maxima strengthens the relaxation. The honest
-  caveat is that 34 ≪ 388 indicators, so the impact is likely small and *must be measured across models*
-  before it earns effort.
-
-- **Cut the `z` count at the formulation boundary, not just in compression.** Beyond compression
-  (§11.2.1), drop structurally-non-knockable reactions and essential reactions *before* they become
-  `z` variables: FVA #1 removes reactions essential to a desired/PROTECT module from the knockable set,
-  and FVA #3 pulls size-1 MCS out entirely (re-injected at decompression so the MILP never enumerates
-  their supersets; [Ch 5](#ch5), [Ch 9](#ch9)). Every reaction kept out of `cmp_ko_cost` is one fewer binary.
-
-- **The trace-cofactor ill-conditioning and the 9.4-order big-M range — a note, now largely closed.**
-  The MILP roadmap initially diagnosed a chain: stoichiometry spanning 7.6 orders of magnitude →
-  FVA flux spans of 9.4 orders → tiny big-M's from trace-cofactor pathways (biotin flux ~1e-6, etc.).
-  Following the actual pipeline showed **that chain does not exist in the built MILP**: the tiny-flux
-  reactions relax to ±inf bounds and become *indicators*, never tiny big-M's, so there is no 9.4-order
-  big-M range to condition (§11.1.2). Exact row+col equilibration of the stoichiometry (7.6 → ~3.8–4.0
-  orders, exact via `D·N·v=0 ⟺ N·v=0`) remains a *possible* lever on the primal/dual matrix
-  conditioning that the SUPPRESS-indicator path sees — but whether stoich conditioning of 4.0 vs 7.6
-  orders changes the indicator solve at all is **unproven and is the correct experiment to run**, not an
-  assumption. Combined stoich + big-M equilibration is a genuine conflict (`s_j·M_j` spans ~9.7 orders;
-  one column scaling can fix stoich·α *or* big-M/α but not both when `s·M ≉ 1`), so it is off the table
-  for the big-M range and only live for the (separate, unproven) stoich angle.
-
-#### 11.2.3 Skip hopeless big-M / dual work
-
-The cheapest work is work not done. When a knockable constraint's reaction is provably always-zero, or
-its bound provably never binds, the entire big-M/indicator machinery for that row can be skipped rather
-than computed and added. Two concrete pieces:
-
-- **The `link_z` sparse short-circuit** (on `hpc_benchmark`): before running the bounding LP, inspect
-  the row's nonzero count. `nnz==0` ⇒ `M=0` directly; `nnz==1` (a plain reaction KO) ⇒ M is just
-  `coeff·bound` (∞ if that bound is ∞) — no LP needed, because a single-variable row's maximum over a
-  box is read straight off the bound. Only `nnz≥2` rows (module/dual constraints) go to an actual LP
-  (parallelized via `SDPool` above ~1000 rows). This is what makes the build cheap; promote it and keep
-  it. The corollary lever, from MILP roadmap §0, is that `max_Ax` for single-var KOs is *redundant* — it
-  reproduces the bound `bound_blocked_or_irrevers_fva` just set — so the LP pool can be restricted to
-  multi-variable rows with no behavior change and a measurable preprocessing saving.
-
-- **Substituting out or removing binaries after a target is found** is the uncertain end of this lever.
-  Once a synthetic-lethal single (`DBTS`) or a specific double (`AOXSr2, DBTS`) is identified, it is
-  unclear whether anything beyond removing the binary variable helps — branch-and-bound may already
-  prune those paths. This is problem-structure-dependent and may require a MILP rebuild; treat wins here
-  as speculative until measured.
-
-#### 11.2.4 The Farkas-dual pre-bounding problem (the known hard lever)
-
-This is the deepest formulation lever and the one with the most headroom, because it is the one the
-current architecture *cannot* address with its existing tools.
-
-The asymmetry: PROTECT modules embed the raw primal (the desired flux state must stay feasible), so
-their reaction variables carry **finite flux bounds** that FVA can pre-bound and tighten. SUPPRESS
-modules instead build a **Farkas infeasibility certificate**: `farkas_dualize` (`strainDesignProblem.py`
-~1141) dualizes the primal with a zero objective and appends the normalization row `c_d·y ≤ −1`
-(verified: `A_ineq_f = vstack(A_ineq_d, c_d)`, `b_ineq_f = b_ineq_d + [-1]`), which encodes "the
-undesired flux state is infeasible after the knockouts" ([Ch 6](#ch6)). The knockouts act on **dual variables**,
-and those duals are **unbounded by nature** — one-sided `[0,∞)` for inequality duals or free for
-equality duals — pinned only by the `≤ −1` anchor. There is no finite flux bound to read off, so
-**FVA pre-bounding does not help the SUPPRESS rows at all.** This is *why* they fall to `inf` `max_Ax`
-and become indicators (§11.1.2): not a design choice, a mathematical fact about Farkas rays.
-
-Because SUPPRESS is the "cannot" half of every classical MCS problem, this is not a corner case — it is
-the core. Three redesign options, in increasing ambition, each a *different exact encoding of the same
-problem* ([Ch 6](#ch6) owns the dual math; these are pointers for the optimizer):
-
-1. **Split the compressed network into forward/reverse before Farkas construction.** Constructing the
-   certificate over a sign-definite (fwd/rev-split) network changes which dual components are free vs
-   one-sided and can expose bounds that the un-split formulation hides. This is the lowest-risk of the
-   three because it operates on the network before dualization.
-2. **Slack variables tied to global binaries.** Replace the pure dual-ray encoding with slacks that are
-   directly linked to the intervention binaries, so the "infeasibility after KO" condition is carried by
-   bounded slacks rather than unbounded duals — giving FVA something finite to bound.
-3. **Branch on the indicator constraints directly** rather than routing through the dual ray at all.
-
-A related, concrete M-dimensioning idea for the Farkas certificate (MILP roadmap R2, untested): run FVA
-at *all combinatorial cases of the few inhomogeneous bounds* (PROTECT biomass, glucose uptake, ATPM),
-take the smallest nonzero flux a reaction can carry, and use `1/v_min` as that reaction's M in the
-certificate (or 1000 if every case gives 0). This would give tight-but-valid Farkas M's for the trace
-reactions without the exponential max-min — but it must be prototyped and checked for **completeness**
-(no missed solutions) before it is trusted.
-
-#### 11.2.5 The whole-model preprocessing FVA
-
-`bound_blocked_or_irrevers_fva` ([Ch 5](#ch5), `networktools.py`) is ~117 s and the entire preprocessing
-bottleneck. It runs one whole-model FVA — passing *no* `reaction_list` and *no* extra constraints, so it
-does the full `2n` objectives — and then classifies each reaction's bounds: redundant bound (FVA never
-reaches it) → ±inf; `min≥0` → irreversible-forward (`lb=0`); `max≤0` → blocked/reverse (`ub=0`); and it
-mutates `_lower_bound`/`_upper_bound` in place. It *needs* every bound to do the classification, so it
-genuinely cannot be scoped to knockable reactions only. The levers are therefore about the *cost of the
-sweep*, not its scope:
-
-- **Parallelize the Phase-2 residual.** `speedy_fva` ([Ch 5](#ch5), `speedy_fva.py`) already avoids most of the
-  `2n` LPs via a `v=0`-feasibility pass, a `min Σ|x|` scan, and iterative warm-started push-to-bounds,
-  falling to individual LPs only for the residual reactions Phase-1 did not resolve. The likely win: on
-  this whole-model call Phase-1 resolves so much that the Phase-2 residual drops *below* the ~1000-LP
-  parallelization threshold and runs **serially** — so it pays CPLEX's per-LP tax one reaction at a time.
-  Forcing the residual to parallelize (or lowering the threshold for this call) directly attacks the
-  117 s.
-- **A cheaper backend for the LP sweep.** The 117 s is dominated by CPLEX's ~2 s/LP construction
-  overhead × ~4300 LPs. Nothing about a bound-classification FVA needs CPLEX specifically; running the
-  sweep on a lighter LP backend (or `slim_fba`/`slim_solve`-style reduced solves) sidesteps the per-LP
-  tax that is the whole cost.
-- **Amortize across seeds.** `dump_preprocessed` + `compute_strain_designs_from_preprocessed` (shipped)
-  lets one preprocessing run feed many seeded solves — essential for the multi-seed benchmarking below,
-  since it turns a per-seed 117 s tax into a one-time cost.
-- **FVA relocation** (on `hpc_benchmark`): moving/reordering the FVA relative to COMPRESS #2 and snapshotting
-  `pre_fva_bounds` is prototyped; its real speedup must be measured rigorously head-to-head, not assumed.
-
-#### 11.2.6 Enumeration & pooling strategy
-
-The ~1101 s pool search is the largest single term, and it is the one place where the enumeration
-*strategy* (as opposed to the formulation) is the lever. The solve loop rebuilds and re-solves,
-excluding each found design with `add_exclusion_constraints` (integer cuts that exclude a design *and
-its supersets*; [Ch 8](#ch8)). Levers:
-
-- **Integer cuts as lazy constraints.** Adding the exclusion constraints as solver-native *lazy*
-  constraints, and reusing the branch-and-bound tree / basis across iterations, avoids rebuilding the
-  model for every solution found. This is the natural fit for the iterative enumerate loop and is where
-  a warm-started, incremental architecture would pay off most against the 1101 s.
-- **Warm starts.** Reuse the previous solve's basis and incumbent when adding the next cut, rather than
-  cold-starting each populate iteration.
-- **A cross-solution minimality/dedup pass** on pooled `sd.ANY` results — removes the residual ~2%
-  non-minimal supersets (issue #38) that arise from value-0 KI markers and from pooling many seeds, and
-  is cheap relative to the search itself.
-
-Solver-parameter tuning of the pool (CPLEX emphasis/numeric-emphasis, indicator-API usage) is a
-**fragile bet** and belongs strictly *after* the formulation is confirmed identical across solvers:
-leaning on parameter defaults makes the package vulnerable to solver-version updates that change those
-defaults or add better internal routes. Confirm the formulation first, tune params only to *confirm* a
-hypothesis, never to carry one.
-
-### 11.3 Benchmarking discipline
-
-Speed claims about a branch-and-bound MILP are worthless without discipline, because B&B is chaotic in
-ways that a naive timing hides. Four rules.
-
-**Multi-seed distributions — single-seed timing is meaningless.** The seed is fully plumbed
-(`compute_strain_designs(seed=)` → `kwargs_milp[SEED]` → the backend constructor → CPLEX
-`parameters.randomseed` / Gurobi `Params.Seed`). The B&B tree *shape* is seed-dependent: the order in
-which the solver branches, and therefore how quickly it finds and proves solutions, changes with the
-seed. A single-seed run is one sample from a wide distribution, and comparing two configurations on one
-seed each can invert the true ordering. **Every speed comparison — ANY, BEST, and POPULATE alike — needs
-≥5 seeds** and is reported as a distribution (median + spread), never a single point. This is why the
-`dump_preprocessed` amortization (§11.2.5) matters operationally: it makes a 5-seed sweep affordable by
-paying the 117 s preprocessing once.
-
-**Known-answer gates — completeness is the gate, not a nicety.** Two canonical counts are the regression
-oracle: **e_coli_core = 455 MCS** (CPLEX ~1.2 s) and **iML1515 = 393 gene-MCS** (the canonical run
-above). No MIP optimality gap is ever set, so both solvers run at their default 1e-4 relative gap, which
-for integer intervention-cost objectives is effectively exact. Any change to bounds, big-M values,
-Farkas M-dimensioning, compression depth, or enumeration strategy **must reproduce these counts
-exactly**. A speedup that returns 392 MCS is not a speedup; it is a correctness regression. The
-non-negotiable phrasing from the MILP roadmap: any M/bound change must not drop a valid MCS, and every
-experiment must re-verify the known-answer counts. The test class that enforces this — re-evaluating
-*every* returned design against all PROTECT modules on the original model — is precisely the gate that
-would catch a completeness regression (and would have caught the historical #44).
-
-**Head-to-head against the real competitors, on both solvers.** The target is competitiveness with
-**MCS2** (doi:10.1093/bioinformatics/btz393, code at `github.com/RezaMash/MCS`) and **gMCSpy**
-(doi:10.1093/bioinformatics/btae318, code + benchmark at `github.com/PlanesLab/gMCSpy`), measured on
-**both Gurobi and CPLEX** — because the whole point of the Direction-A work is that Gurobi is currently
-much faster than CPLEX on the same straindesign problem, and a fair comparison must not hide behind one
-solver. The benchmark set is iML1515 / Yeast-GEM 8.7 / Human-GEM 1.16. The harness lives locally on the
-`hpc_benchmark` branch (gitignored), with `benchmarks/tools/MCS2/` reconstructed and its MEX
-Octave-recompiled. A caution learned the hard way: prior bound-config experiments (the P-A/B/C, F-A–E
-configs in `bench_bound_configs.py`) produced almost no actual MILP change and *insignificant* perf
-differences — the amount of real headroom is unknown, so **measure before committing effort**, and do
-not mine old JSON in place of a fresh, correctly-distinct experiment.
-
-**Never drop a valid MCS.** Restated because it is the one rule that overrides all others: completeness
-is not traded for speed. The complete-enumeration (ALL, not BEST/ANY) runs up to ~6 KOs that would
-settle the "good compression ≈ MCS2" hypothesis (§11.2.1) are themselves the strongest completeness
-test, because they force the machinery to produce *every* MCS in a size band and expose any silent drop.
-
-### 11.4 Roadmap & directions
-
-**Direction A — compute performance & MCS2/gMCSpy competitiveness (the live thrust).** This is the
-active work. Shipped so far: MILP build cut ~70 s → ~7 s (PR #55) and the CPLEX-populate configuration
-win. The measured gap stands at CPLEX 1241 s vs Gurobi 280 s ≈ 4.4× on the canonical
-iML1515 393, split into preprocessing FVA ~117 s and pool search ~1101 s — so the two real levers are
-the whole-model bound FVA (§11.2.5) and the pool-enumeration strategy (§11.2.6), **not** indicators and
-**not** the pool params (both verified inert). The near-term milestones are: (1) MCS2/gMCSpy
-head-to-heads on iML1515 / Yeast-GEM 8.7 / Human-GEM 1.16; (2) push compression depth to a true fixpoint
-(§11.2.1) and settle the "good compression ≈ MCS2" hypothesis by complete enumeration; (3) redesign the
-Farkas-dual pre-bounding (§11.2.4); (4) clean up the solver-agnostic `internal_other` remnant. Hexaly is
-an optional extra backend target.
-
-**The exact-nullspace compression thread.** The exactness constraint is upstream and settled: the
-nullspace/compression stays integer/rational (never float — small numeric deviations introduce
-irreparable compression errors), and PR #60 folded the exact integer/rational sparse nullspace into
-`compression.py` as public `straindesign.nullspace`/`sparse_nullspace`, delivering ~1.6× compression on
-iML1515/Human-GEM and making **yeast-GEM compress at all** (it previously crashed on scipy's int64
-ceiling; the fix routes >64-bit coefficients through a dict-of-Fractions mode + `ExactCOO`). This is the
-shared building block under the compression-depth lever: better exact compression is more `z`-count
-reduction, which §11.2.1 argues is the largest structural win.
-
-**Adjacent efforts (pointers only).** Two prototypes share the exact-nullspace core but are not part of
-the straindesign performance work: **SENUS** (`VonAlphaBisZulu/SENUS`) is the standalone exact
-integer/rational sparse nullspace lifted out of `compression.py` — a longer-shot Direction-B play whose
-next speedup is a Bareiss fraction-free elimination to bound coefficient growth; and **Kimonu**
-(`VonAlphaBisZulu/Kimonu.py`) is an *independent* kinetic-module (COCOA-style) analyzer that reuses the
-same nullspace core but is not a straindesign component. Both are mentioned here only so a reader tracing
-the nullspace code across repos knows where it went; neither is on the straindesign performance critical
-path.
+These must not be represented by one threshold. Nonoptimal LP statuses are uncertainty and should
+preserve the direction as possible rather than convert it to zero. Small-flux regression models should
+be part of the correctness suite alongside genome-scale known-answer tests.
 
 
 (ch12)=
@@ -6097,129 +4997,71 @@ makes the pickle a fully self-contained, reproducible record.
 
 ### 13.4 The preprocessed-dump workflow
 
-The single most expensive part of a strain-design run is **preprocessing**, not the MILP solve:
-the compression passes and — dominantly — the blocked/irreversible FVA. On the canonical
-iML1515 gene-MCS problem the preprocessing FVA alone is ~117 s, while MILP *construction* is
-~4 s ([Ch 11](#ch11)). If you want to sweep the MILP solve across many configurations — different random
-seeds, different solvers, different solution approaches, different pre-FVA bound settings — you
-should pay the ~117 s **once** and replay the cheap part. That is exactly what `dump_preprocessed`
-+ `compute_strain_designs_from_preprocessed` provide. This is the workhorse of the benchmarking
-harness.
+`dump_preprocessed` separates deterministic preprocessing/MILP construction from enumeration. On the
+current canonical Gurobi profile, preprocessing is about 19.6 s and is dominated by reversibility
+classification, the final folded FVA and compression. Reusing the dump is therefore useful for seed,
+solver and enumeration comparisons.
 
-#### 13.4.1 Dumping: `dump_preprocessed`
+#### 13.4.1 Dumping
 
-`dump_preprocessed` is a kwarg to `compute_strain_designs` (whitelisted at
-`compute_strain_designs.py`); its value is a path. The orchestrator runs the *entire*
-preprocessing pipeline normally — compression #1/#2, GPR integration, all three FVA phases,
-size-1 MCS extraction, essential-reaction removal, and MILP-kwarg assembly — and then, just
-before it would solve the MILP (`:534-592`), if `dump_preprocessed` is set it pickles a
-dictionary and returns early (with any size-1 MCS already found, but *without* running the
-MILP). The dumped dict (`:540-562`) contains:
+`compute_strain_designs(..., dump_preprocessed=path)` runs normal preprocessing, including:
 
-| Key | What it is | Why it's needed on replay |
-|-----|-----------|----------------------------|
-| `cmp_model` | the **compressed, GPR-extended** cobra model (exact-rational bounds) | the model the MILP is built on — the expensive artifact |
-| `sd_modules` | the modules **remapped to compressed reaction space** | `SDMILP` construction consumes these |
-| `kwargs_milp` | solver, `max_cost`, `M`, `seed`, threads, **compressed** ko/ki costs, `essential_kis` | the exact MILP-build arguments |
-| `kwargs_computation` | `max_solutions`, `time_limit`, `show_no_ki` | passed to `compute`/`compute_optimal`/`enumerate` |
-| `solution_approach` | `'any'`/`'best'`/`'populate'` | which solve method to call |
-| `cmp_mapReac` | the compression map | needed to decompress the eventual solutions |
-| `uncmp_ko_cost`, `uncmp_ki_cost`, `uncmp_reg_cost` | uncompressed cost dicts | decompression + `filter_sd_maxcost` |
-| `orig_model`, `orig_sd_modules`, `orig_*_cost`, `orig_g*_cost` | the pristine originals | building `sd_setup` and the returned `SDSolutions` |
-| `gene_kos` | bool flag | selects gene vs reaction decompression |
-| `max_cost`, `cmp_size1_mcs` | cost cap and the size-1 MCS found in preprocessing | decompression/filtering |
-| `pre_fva_bounds` | `{reac_id: (lb, ub)}` **before** the blocked/irrevers FVA | lets you *re-run* the bound-relaxation with a different config, or study its effect, without recompressing |
+- optional reversibility pre-tightening and both compression passes;
+- desired-region essentiality and GPR reduction/extension;
+- either the folded single-classical-module FVA or the general final bound/module FVA route;
+- size-1 MCS extraction;
+- per-module `fva_bounds`; and
+- MILP argument assembly.
 
-`pre_fva_bounds` (captured at `:449`, immediately before `bound_blocked_or_irrevers_fva`) is the
-key enabler of **bound-configuration experiments**: the compressed model is snapshotted with its
-bounds *as they were before* the redundant-bound relaxation, so a downstream experiment can
-apply a different bound policy to the already-compressed model rather than re-deriving the whole
-compression. The dump thus amortizes not just the FVA but the entire compression + GPR chain.
+It then serializes the compressed model and returns before solving the MILP. The dictionary contains
+the compressed model/modules, MILP and computation kwargs, compression map, original and compressed
+cost information, pristine model/setup, gene-mode metadata, size-1 MCS and `pre_fva_bounds`.
 
-On dump the function logs a copy-pasteable resume line and returns an `SDSolutions` holding only
-the size-1 MCS (or infeasible/empty), with `compressed_sd`/`compression_map`/`group_map` and
-`_cmp_model` populated (`:568-592`).
+`pre_fva_bounds` is captured immediately before the final bound-relaxation FVA. It supports controlled
+bound-policy experiments without rerunning compression and GPR extension.
 
-#### 13.4.2 Replaying: `compute_strain_designs_from_preprocessed`
+#### 13.4.2 Carrier solver in the dump
 
-`compute_strain_designs_from_preprocessed(dump, seed=None, solver=None, solution_approach=None,
-max_solutions=None, time_limit=None)` (`:759-851`) is the cheap replay. Its signature *is* the
-sweep interface: every keyword is an **override** applied on top of the dumped configuration.
+The compressed cobra model is pickled with a backend-free `_CarrierSolver`, not a populated optlang
+model. The carrier preserves the solver interface needed by selection and model metadata, but it is
+not itself solved. `compute_strain_designs_from_preprocessed` re-enters `suppress_lp_context` while
+constructing `SDMILP`; the latter builds its own backend from the serialized matrices and bounds.
 
-- `dump` may be a **path** (unpickled) or the **dict itself** (`:776-781`) — the latter lets you
-  unpickle once, mutate the dict in a loop (e.g. rewrite `cmp_model` bounds using
-  `pre_fva_bounds`, or swap `sd_modules`), and feed each variant in without touching disk.
-- Overrides (`:803-813`): `seed` → `kwargs_milp[SEED]`; `solver` →
-  `kwargs_milp[SOLVER]` (via `select_solver`); `max_solutions`/`time_limit` →
-  `kwargs_computation`; `solution_approach` replaces the dumped approach.
-- The compressed model was pickled while its LP/solver was suppressed (its solver is a stub), so
-  the replay re-enters `suppress_lp_context(cmp_model)` (`:817-818`) before building the
-  `SDMILP`, so that `SDMILP` can safely touch variables without triggering a solver build.
-- It then rebuilds the MILP (`SDMILP(cmp_model, sd_modules, **kwargs_milp)`, `:824`), solves via
-  the chosen approach, and — crucially — runs the **identical** `_decompress_solutions` path
-  (`:842-845`) as the normal orchestrator, so the returned `SDSolutions` (lazy expansion, costs,
-  bounds, gene translation, `_cmp_model`) is indistinguishable from one produced end-to-end.
+#### 13.4.3 Replaying
 
-#### 13.4.3 The developer workflow
-
-The typical benchmarking loop:
+`compute_strain_designs_from_preprocessed` accepts either the pickle path or an already loaded
+dictionary. Optional arguments override seed, solver, solution approach, maximum solutions and time
+limit. It rebuilds the MILP, runs ANY/BEST/POPULATE, and passes the compressed result through the same
+decompression and filtering path as the end-to-end function.
 
 ```python
-from straindesign import (compute_strain_designs,
-                          compute_strain_designs_from_preprocessed)
+compute_strain_designs(
+    model,
+    sd_modules=[suppress],
+    gene_kos=True,
+    max_cost=3,
+    solution_approach="populate",
+    dump_preprocessed="iml1515_gmcs.pkl",
+)
 
-# 1. Pay preprocessing ONCE (~117 s on iML1515). Returns early; writes the dump.
-compute_strain_designs(model, sd_modules=[suppress],
-                       gene_kos=True, max_cost=3,
-                       solution_approach='populate',
-                       dump_preprocessed='iml1515_gmcs.pkl')
-
-# 2. Sweep the cheap MILP solve — e.g. a seed sweep for solver-variance study:
-results = []
-for s in range(10):
-    sol = compute_strain_designs_from_preprocessed('iml1515_gmcs.pkl', seed=s)
-    results.append(sol)
-
-# 3. Or a solver comparison (the CPLEX-vs-Gurobi story, Ch 11):
-gu = compute_strain_designs_from_preprocessed('iml1515_gmcs.pkl', solver='gurobi')
-cp = compute_strain_designs_from_preprocessed('iml1515_gmcs.pkl', solver='cplex')
-
-# 4. Or a bound-config experiment using the in-memory dict form:
-import pickle
-d = pickle.load(open('iml1515_gmcs.pkl', 'rb'))
-for cfg in bound_configs:
-    apply_bounds(d['cmp_model'], d['pre_fva_bounds'], cfg)   # mutate compressed model
-    results.append(compute_strain_designs_from_preprocessed(d))   # pass the dict
+sol = compute_strain_designs_from_preprocessed(
+    "iml1515_gmcs.pkl", seed=42, solver="gurobi"
+)
 ```
 
-Because each replay reuses the same compressed model, module remapping and cost translation, the
-*only* variable across runs is the MILP itself — which is precisely the isolation a benchmark
-wants. And because the returned `SDSolutions` objects are merge-compatible (same model, same
-compression map), a seed or solver sweep can be folded into a single deduplicated solution set
-with `sum(results, results[0])`-style `__iadd__` (13.2.5). This is the object-level plumbing
-that makes the benchmarking harness ([Ch 11](#ch11)) fast and reproducible.
+For a parameter sweep, load the dictionary once and pass it directly. Keep preprocessing fixed unless
+the experiment explicitly changes a stored model bound or module; otherwise the comparison no longer
+isolates the MILP/solver phase.
 
 
 (ch14)=
 ## 14. The solver-interface layer (`MILP_LP` + backends)
 
-Every LP and MILP that `straindesign` ever solves — the three preprocessing FVA sweeps, the
-size-1 MCS probes, the bounding LPs that compute big-M values, and the central strain-design
-MILP with its integer-cut enumeration — passes through a single class, `MILP_LP` in
-`solver_interface.py`. `MILP_LP` is a thin, uniform façade over four numerically and API-wise
-very different solvers (CPLEX, Gurobi, SCIP/SoPlex, GLPK). This chapter is about the physical
-handoff: how the abstract problem `(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, vtype, indic_constr, M)`
-built upstream ([Ch 7](#ch7)) becomes a live solver object, how `solve` / `slim_solve` / `populate` map onto
-each backend's very different notion of "solve," how indicator constraints are handed over natively
-or reduced to big-M, how each solver's status codes are collapsed into one canonical vocabulary,
-and where — physically — the ~4.4× CPLEX-vs-Gurobi runtime gap on the canonical iML1515 gene-MCS
-benchmark lives.
+Every LP and MILP that `straindesign` solves passes through `MILP_LP`: module validation,
+public FBA/FVA, reversibility classification, final preprocessing FVA and the strain-design MILP.
+MILP construction no longer launches per-row big-M bounding LPs. This chapter describes the common
+status vocabulary and the backend-specific implementations for CPLEX, Gurobi, SCIP/SoPlex and GLPK.
 
-Boundaries: **[Ch 7](#ch7)** owns the *decision* of which continuous rows get a big-M encoding versus a
-native indicator constraint (the `link_z` fork) and the mathematics of a valid/tight `M`. **[Ch 8](#ch8)**
-owns the *solve loop* — the ANY / BEST / POPULATE objective setups and the integer-cut enumeration
-that repeatedly calls the methods described here. This chapter owns only the layer in between: the
-abstraction and the four backend translations.
 
 ### 14.1 Why an abstraction layer exists
 
@@ -6346,14 +5188,13 @@ An `IndicatorConstraints` object (`indicatorConstraints.py`) stores a *batch* of
 `A` a sparse matrix (one row per constraint), `b` the right-hand sides, `sense ∈ {'L','E','G'}`, and
 `indicval ∈ {0,1}`. This is a solver-neutral container; each backend translates it.
 
-Recall the [Ch 7](#ch7) result stated as given in CONTEXT: under the default `M = inf`, `link_z` emits the
-**SUPPRESS Farkas-dual rows as indicator constraints** (their fluxes are unbounded, so no finite `M`
-exists) and the **PROTECT finite-flux primal rows as big-M rows already baked into `A_ineq`**. This
-split is emergent from bound structure, not a per-module switch. Consequently, by the time a problem
-reaches this layer, the big-M rows are *ordinary inequality rows* — no backend does anything special
-with them — and the `indic_constr` block carries only the genuinely indicator-encoded implications.
-The one exception is GLPK, which cannot represent indicators and must convert that block to big-M
-here, using the `M` value the abstraction passed it.
+Recall the [Ch 7](#ch7) rule: under the default `M = inf`, `link_z` derives finite relaxations for
+zero- and single-continuous-variable rows and emits multi-variable rows as indicator constraints.
+The split follows row structure, not module type. Consequently, by the time a problem reaches this
+layer, finite-M rows are ordinary inequality rows and `indic_constr` carries the remaining
+indicator-encoded implications. GLPK cannot represent indicators and receives the configured blanket
+M (1000 by default) for those rows; explicitly passing a finite M requests this replacement on the
+other backends too.
 
 **CPLEX** (`cplex_interface.py`). The batch is reshaped to CPLEX's format — each row becomes
 `[[col indices],[coeffs]]` — and handed to `self.indicator_constraints.add_batch` with
@@ -6605,42 +5446,22 @@ The common design principle: a numerically caveated but present solution is retu
 `TIME_LIMIT_W_SOL` and left for the outer verification to accept or reject, never crashing the
 enumeration mid-run.
 
-### 14.9 Where the CPLEX-vs-Gurobi performance story physically lives
+### 14.9 Where preprocessing performance reaches the solver layer
 
-The interface choices in this chapter are the physical substrate of the headline benchmark
-(CONTEXT): the canonical iML1515 gene-MCS run (SUPPRESS biomass ≥ 0.001, POPULATE, `max_cost = 3`,
-gene KOs) finds **393 MCS** in **Gurobi 280 s vs CPLEX 1241 s (≈ 4.4×)**, with the split
-preprocessing FVA ~117 s, MILP build ~4 s, populate ~1101 s. Reading that against the code:
+The current preprocessing profile creates many small LPs in two places:
+`fast_reversibility` before COMPRESS #1 and the final bound/module FVA after COMPRESS #2. Each phase
+reuses one `MILP_LP` while changing objectives, with periodic rebuilds to limit warm-start
+degeneration. Solver-specific model setup and objective-update costs are therefore multiplied by the
+number of residual directions.
 
-1. **The gap is in `populate`, not construction.** Both backends receive the *same* abstract MILP
-   with the *same* native indicator constraints and the *same* default `1e-4` MIP gap; construction
-   is ~4 s either way. The ~1101 s populate phase is a single native pool search on each solver, and
-   the 4.4× difference is the two solvers' pool-search engines exploring the design space at
-   different rates — not a formulation asymmetry this layer introduces. This is why the CPLEX pool
-   parameters, though set since 2022, are *not* the culprit: they are inert during `solve` and, in
-   `populate`, they configure the pool identically in spirit to Gurobi's `PoolGap`/`PoolSearchMode`.
+Gurobi and CPLEX provide native indicator constraints for the multi-variable `link_z` rows. SCIP also
+has an indicator path; GLPK uses the finite blanket M. There is no bounding-LP phase in `link_z`, so
+MILP construction is now a sub-second component in the canonical profile.
 
-2. **Per-LP overhead in preprocessing goes through this layer.** The ~117 s of blocked/irreversible
-   FVA is thousands of small LPs, each a `slim_solve` on a freshly constructed backend object.
-   Gurobi mitigates the per-object cost by sharing **one quiet `Env`** across all models
-   (`gurobi_interface.py`, `_get_quiet_env`) — creating a Gurobi environment per model would
-   spin up a licence session each time, which on a node-locked HPC licence is expensive. CPLEX
-   constructs a fresh `Cplex` per object (and sizes `workmem` to 75 % RAM each time). For a run
-   that instantiates the interface thousands of times, this fixed per-solve overhead — object
-   creation, parameter setting, matrix load — is real and is paid inside `MILP_LP.__init__` and the
-   backend constructors, which is exactly why `slim_solve` (no solution-vector extraction) and
-   `skip_checks` exist as fast paths.
-
-3. **The abstraction does not tax the hot path with translation.** Matrices are handed to each solver
-   in its preferred bulk form (CPLEX `set_coefficients` on COO triplets, Gurobi `addMConstr` on the
-   sparse matrix directly, GLPK a single `glp_load_matrix`), so the per-call cost is solver-native
-   assembly, not a Python re-encoding loop — with the exception of SCIP, whose term-by-term `Expr`
-   assembly (`scip_interface.py`) is inherently slower and compounds its lack of a native
-   pool. This is the mechanical reason SCIP and GLPK, while correct, are validation backends rather
-   than the engines behind the benchmark numbers.
-
-For the enumeration-loop mechanics that drive these calls and the deeper benchmark analysis, see
-[Ch 8](#ch8) and [Ch 11](#ch11); for the conditioning that provokes the Section 14.8 numeric states, see [Ch 11](#ch11).
+Status normalization is correctness-critical during preprocessing. `OPTIMAL` supplies a bound or
+flux witness, `UNBOUNDED` proves the corresponding direction is available, and any other status is
+uncertainty. A caller that changes model bounds must handle that uncertainty conservatively. During
+enumeration, `TIME_LIMIT_W_SOL` can still expose an incumbent for outer verification.
 
 
 (ch15)=
@@ -7129,5 +5950,5 @@ cProfile.run("compute_strain_designs(model, sd_modules=[...], solver='glpk')", '
 pstats.Stats('profile_out').sort_stats('cumulative').print_stats(30)
 ```
 
-The hot spots are typically the preprocessing FVA, `link_z` (its per-constraint LP bounding), and the
+The hot spots are typically the preprocessing FVA, `link_z`, and the
 solver's enumeration loop ([Ch 11](#ch11)).
