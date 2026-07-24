@@ -143,100 +143,15 @@ def reduce_model_gprs(model, essential_reacs, gkis, gkos):
             elif len(new_children) == 1:
                 return new_children[0]
             else:
-                # Apply additional simplifications for OR nodes
-                if isinstance(node.op, ast.Or):
-                    new_children = remove_redundant_or_terms(new_children)
-                    if len(new_children) == 1:
-                        return new_children[0]
-
-                # Sort children for consistent ordering (like string approach does)
+                # (b) De-dup: boolean simplification (absorption/dedup of OR terms) is delegated to
+                # simplify_model_gprs, which runs right after reduce_model_gprs on every path that
+                # runs reduce. Here we only apply the protected-gene substitution + True/False
+                # elimination and keep a stable child ordering.
                 sorted_children = sort_ast_nodes(new_children)
                 new_node = ast.BoolOp(op=node.op, values=sorted_children)
                 return new_node
         else:
             raise ValueError(f"Unsupported AST node type: {type(node)}")
-
-    def remove_redundant_or_terms(children):
-        """
-        Remove redundant terms from OR expressions using boolean logic simplification.
-        Example: (a and b and c) or (a and b) simplifies to (a and b)
-        since (a and b) is logically sufficient when both terms are present.
-        """
-        # Convert AST nodes to comparable forms
-        simplified = []
-        for child in children:
-            # Check if this child makes any other child redundant
-            is_redundant = False
-            for other in children:
-                if child is not other and is_subset_of(child, other):
-                    # child is a subset of other, so other is redundant
-                    is_redundant = False  # Keep child, remove other later
-                elif child is not other and is_subset_of(other, child):
-                    # other is a subset of child, so child is redundant
-                    is_redundant = True
-                    break
-            if not is_redundant:
-                simplified.append(child)
-
-        # Remove duplicates
-        unique = []
-        for child in simplified:
-            if not any(ast_nodes_equal(child, existing) for existing in unique):
-                unique.append(child)
-
-        return unique if unique else children
-
-    def is_subset_of(node1, node2):
-        """
-        Check if node1 logically absorbs node2 in boolean algebra.
-        
-        In OR expressions: A or (A and B) = A
-        This means A absorbs (A and B) because A is simpler/more general.
-        
-        For absorption to work: node1 must be "simpler" than node2,
-        meaning node2 implies node1 (node2 is more restrictive).
-        
-        Examples:
-        - mobA absorbs (mobA and mobB) 
-        - (a and b) absorbs (a and b and c)
-        """
-        # Case 1: Single gene absorbs AND expression containing that gene
-        if isinstance(node1, ast.Name) and isinstance(node2, ast.BoolOp) and isinstance(node2.op, ast.And):
-            genes_in_and = get_genes_from_ast(node2)
-            return node1.id in genes_in_and
-
-        # Case 2: Shorter AND expression absorbs longer AND expression with same genes
-        if (isinstance(node1, ast.BoolOp) and isinstance(node1.op, ast.And) and isinstance(node2, ast.BoolOp) and
-                isinstance(node2.op, ast.And)):
-            genes1 = get_genes_from_ast(node1)
-            genes2 = get_genes_from_ast(node2)
-            # node1 absorbs node2 if node1's genes are a proper subset of node2's genes
-            return genes1.issubset(genes2) and len(genes1) < len(genes2)
-
-        return False
-
-    def get_genes_from_ast(node):
-        """Extract set of genes from AST node"""
-        if isinstance(node, ast.Name):
-            return {node.id}
-        elif isinstance(node, ast.BoolOp):
-            genes = set()
-            for child in node.values:
-                genes.update(get_genes_from_ast(child))
-            return genes
-        return set()
-
-    def ast_nodes_equal(node1, node2):
-        """Check if two AST nodes are equivalent"""
-        if type(node1) != type(node2):
-            return False
-        if isinstance(node1, ast.Name):
-            return node1.id == node2.id
-        elif isinstance(node1, ast.BoolOp):
-            if type(node1.op) != type(node2.op):
-                return False
-            return (len(node1.values) == len(node2.values) and all(ast_nodes_equal(a, b) for a, b in zip(node1.values, node2.values)))
-        return False
 
     def sort_ast_nodes(nodes):
         """Sort AST nodes for consistent ordering"""
