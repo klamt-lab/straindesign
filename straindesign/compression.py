@@ -38,9 +38,7 @@ LOG = logging.getLogger(__name__)
 # function bodies to avoid the circular dependency (networktools re-exports
 # compression symbols).
 
-# =============================================================================
 # Utility Functions
-# =============================================================================
 
 
 def float_to_fraction(val, max_precision: int = 6, max_denom: int = 100) -> Fraction:
@@ -85,9 +83,7 @@ def _lcm_list(numbers: List[int]) -> int:
     return reduce(lcm, numbers, 1) if numbers else 1
 
 
-# =============================================================================
 # Rational Matrix with Sparse Storage
-# =============================================================================
 
 
 _INT64_MAX = (1 << 63) - 1
@@ -122,9 +118,7 @@ class RationalMatrix:
         if not self._batch_mode:
             self._csc_cache = None
 
-    # -------------------------------------------------------------------------
     # Construction
-    # -------------------------------------------------------------------------
 
     @classmethod
     def _from_sparse(cls,
@@ -223,9 +217,7 @@ class RationalMatrix:
         result._dict_frac = dic
         return result
 
-    # -------------------------------------------------------------------------
     # Size queries
-    # -------------------------------------------------------------------------
 
     def get_row_count(self) -> int:
         return self._rows
@@ -233,9 +225,7 @@ class RationalMatrix:
     def get_column_count(self) -> int:
         return self._cols
 
-    # -------------------------------------------------------------------------
     # Iteration
-    # -------------------------------------------------------------------------
 
     def iter_column_fractions(self, col: int) -> Iterator[Tuple[int, Fraction]]:
         """Iterate over non-zero entries in column as (row, Fraction) pairs."""
@@ -262,9 +252,7 @@ class RationalMatrix:
             return -1
         return 0
 
-    # -------------------------------------------------------------------------
     # Batch edit mode
-    # -------------------------------------------------------------------------
 
     def begin_batch_edit(self):
         """Enter batch edit mode - delays cache invalidation."""
@@ -279,9 +267,7 @@ class RationalMatrix:
         self._den_sparse = self._den_sparse.tocsr()
         self._csc_cache = None
 
-    # -------------------------------------------------------------------------
     # Matrix operations
-    # -------------------------------------------------------------------------
 
     def clone(self) -> 'RationalMatrix':
         """Create a deep copy."""
@@ -386,9 +372,7 @@ class RationalMatrix:
             den_lil[row, col] = new_den if new_num != 0 else 0
         self._invalidate_cache()
 
-    # -------------------------------------------------------------------------
     # Conversion
-    # -------------------------------------------------------------------------
 
     def to_numpy(self) -> np.ndarray:
         """Convert to numpy float array."""
@@ -498,9 +482,7 @@ class RationalMatrix:
         return f"RationalMatrix({self._rows}x{self._cols})"
 
 
-# =============================================================================
 # Sparse Integer RREF for Nullspace Computation
-# =============================================================================
 
 
 def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]], int, List[int]]:
@@ -527,7 +509,7 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
     rows = rm.get_row_count()
     cols = rm.get_column_count()
 
-    # --- Column sorting: sparse columns first ---
+    # Column sorting: sparse columns first
     # col_order[sorted_pos] = original_col
     nnz_per_col = np.diff(rm._num_sparse.tocsc().indptr)
     col_order = np.argsort(nnz_per_col, kind='stable').tolist()
@@ -562,7 +544,7 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
         if row_data:
             data[r] = row_data
 
-    # --- Row sorting: sparse rows first (better initial pivot candidates) ---
+    # Row sorting: sparse rows first (better initial pivot candidates)
     if data:
         sorted_row_keys = sorted(data.keys(), key=lambda r: len(data[r]))
         data = {new_r: data[old_r] for new_r, old_r in enumerate(sorted_row_keys)}
@@ -632,7 +614,7 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
                     for c in old_cols:
                         col_rows[c].discard(elim_row)
 
-    # ---- Phase 1: forward elimination to row-echelon form ----
+    # Phase 1: forward elimination to row-echelon form
     # Eliminate each pivot only from rows BELOW its pivot row, so already-processed pivot rows stay
     # sparse. Full Gauss-Jordan (eliminating upward too) re-reduces those filled rows with every later
     # pivot — ~99% of the total work on iML1515. The reduced form is recovered in phase 2. Rows are not
@@ -671,7 +653,7 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
         targets = [(r, data[r][pivot_col]) for r in list(col_rows.get(pivot_col, ()))]
         _eliminate(pivot_row_data, best_val, pivot_col, targets, True)
 
-    # ---- Phase 2: back-substitution to reduced row-echelon form ----
+    # Phase 2: back-substitution to reduced row-echelon form
     # Process pivots last-to-first, clearing each pivot column from the pivot rows ABOVE it. In this
     # order each pivot row's later-pivot-column entries are already cleared, so back-substitution only
     # introduces free-column fill — far less than Gauss-Jordan (iML1515: ~0.8M ops vs ~9.4M).
@@ -773,9 +755,7 @@ def _nullspace_sparse(matrix: RationalMatrix) -> RationalMatrix:
     return RationalMatrix._build_from_sparse_data(row_indices, col_indices, numerators, denominators, cols, nullity)
 
 
-# =============================================================================
 # Linear Algebra Functions
-# =============================================================================
 
 
 def nullspace(matrix: RationalMatrix) -> RationalMatrix:
@@ -845,9 +825,7 @@ def sparse_nullspace(matrix):
     return csr
 
 
-# =============================================================================
 # Configuration
-# =============================================================================
 
 
 class CompressionMethod(Enum):
@@ -869,9 +847,7 @@ class CompressionMethod(Enum):
         return [cls.NULLSPACE, cls.RECURSIVE]
 
 
-# =============================================================================
 # Statistics
-# =============================================================================
 
 
 class CompressionStatistics:
@@ -910,9 +886,7 @@ class CompressionStatistics:
                 f"coupled={self.coupled_count})")
 
 
-# =============================================================================
 # Compression Record
-# =============================================================================
 
 
 class CompressionRecord:
@@ -936,9 +910,7 @@ class CompressionRecord:
         self.stats = stats
 
 
-# =============================================================================
 # Working State (Internal)
-# =============================================================================
 
 
 class _Size:
@@ -1103,9 +1075,7 @@ class _WorkRecord:
         return CompressionRecord(pre_trunc, cmp_trunc, post_trunc, meta_names_trunc, self.stats)
 
 
-# =============================================================================
 # Core Algorithm
-# =============================================================================
 
 
 class StoichMatrixCompressor:
@@ -1423,9 +1393,7 @@ class StoichMatrixCompressor:
         work.stats.inc_coupled_reactions_count(len(group))
 
 
-# =============================================================================
 # COBRA Interface
-# =============================================================================
 
 
 class CompressionResult:
@@ -1643,7 +1611,7 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
             reaction_map[main_rxn.id] = {original_reaction_names[main_idx]: Fraction(1)}
             continue
 
-        # --- Merged group (2+ contributing reactions) ---
+        # Merged group (2+ contributing reactions)
 
         # Store subset info
         main_rxn.subset_rxns = [idx for idx, _ in contributing]
@@ -1762,9 +1730,7 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
     return reaction_map
 
 
-# =============================================================================
 # Preprocessing Functions
-# =============================================================================
 
 
 def remove_blocked_reactions(model) -> List:
@@ -1820,9 +1786,7 @@ def stoichmat_coeff2float(model) -> None:
             rxn._metabolites[met] = float(coeff)
 
 
-# =============================================================================
 # GPR Propagation Helpers
-# =============================================================================
 
 
 def _gpr_ast_to_expr(node, op=None):
@@ -1886,12 +1850,9 @@ def _combine_gprs(gpr_bodies, op):
     return _expr_to_gpr_string(_gpr_ast_to_expr(exprs, op))
 
 
-# =============================================================================
 # High-Level Compression API
-# =============================================================================
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Monotone (positive-unate) GPR-rule simplification
 #
 # Pipeline:  parse -> minimal SOP (DNF + absorption) -> algebraic factoring.
@@ -1903,7 +1864,6 @@ def _combine_gprs(gpr_bodies, op):
 # conjuncts (exact, near-optimal since complexes sit on ~disjoint genes). `simplify_model_gprs(model)`
 # is the entry point; compress_model calls it when propagate_gpr is set so standalone compression
 # emits already-simplified rules.
-# ─────────────────────────────────────────────────────────────────────────────
 
 # popcount: C-level int.bit_count() on Python 3.10+, else the bin().count fallback
 _popcount = getattr(int, 'bit_count', None) or (lambda c: bin(c).count('1'))
@@ -1938,7 +1898,7 @@ def _gpr_parse(s):
     return p_or()
 
 
-# ---- variable <-> bit mapping (reset per rule via simplify_gpr_string) ----
+# variable <-> bit mapping (reset per rule via simplify_gpr_string)
 _GPR_VMAP = {}; _GPR_VINV = []
 def _gpr_bit(v):
     i = _GPR_VMAP.get(v)
@@ -1952,7 +1912,7 @@ def _gpr_lits_of(mask):
     return out
 
 
-# ---- cover algebra (cubes = ints) ----
+# cover algebra (cubes = ints)
 def _gpr_absorb(cubes):
     uniq = set(cubes)
     buckets = {}
@@ -2423,9 +2383,7 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
     return rational_map
 
 
-# =============================================================================
 # Exports
-# =============================================================================
 
 __all__ = [
     # Rational matrix and utilities
