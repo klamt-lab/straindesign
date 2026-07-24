@@ -1400,7 +1400,7 @@ def modules_coeff2float(sd_modules):
 
 
 def bound_blocked_or_irrevers_fva(model, **kwargs):
-    """Use FVA to determine the flux ranges. Use this information to update the model bounds
+    """Use FVA to determine flux ranges, update model bounds, and return the ranges.
 
     If flux ranges for a reaction are narrower than its bounds in the mode, these bounds can be omitted,
     since other reactions must constrain the reaction flux. If (upper or lower) flux bounds are found to
@@ -1424,6 +1424,7 @@ def bound_blocked_or_irrevers_fva(model, **kwargs):
             r._upper_bound = np.inf
         if limits.maximum <= -tol:
             r._upper_bound = min([0.0, r._upper_bound])
+    return flux_limits
 
 
 # ── Portable, rational-safe model (de)serialisation ──────────────────────────

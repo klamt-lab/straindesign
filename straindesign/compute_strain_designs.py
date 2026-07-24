@@ -680,33 +680,61 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                   if not (float(r.lower_bound) == 0.0
                           and np.isinf(float(r.upper_bound))
                           and float(r.upper_bound) > 0)]
-    bound_blocked_or_irrevers_fva(cmp_model, solver=kwargs[SOLVER], compress=False,
-                                  reaction_list=_fva_scope)
-    logging.info('  FVA done (%.1fs).' % (time.time() - t0))
-
-    # FVA to identify essential reactions and size-1 MCS before building MILP
-    logging.info('  FVA(s) in compressed model to identify essential reactions.')
     essential_reacs = set()
     suppress_essential = set()
     cmp_size1_mcs = []
-    # FVA over each module's region, scoped to knockable reactions. The ranges serve two purposes:
-    # (1) essentiality for size-1 MCS detection, and (2) region-FVA subproblem tightening, read back
-    # in SDMILP, which is why SDProblem runs no region FVA of its own. flux_limits is stored on the
-    # module and flows to SDMILP via sd_modules. Scoping to knockable reactions keeps
-    # the LP count down (and only knockable reactions carry z-links to tighten anyway).
     knockable_ids = list(set(cmp_ko_cost.keys()) | set(cmp_ki_cost.keys()))
-    for m in sd_modules:
-        flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS],
-                          compress=False, reaction_list=knockable_ids)
-        m['fva_bounds'] = flux_limits
-        essentials_in_module = set()
-        for (reac_id, limits) in flux_limits.iterrows():
-            if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0:
-                essentials_in_module.add(reac_id)
-        if m[MODULE_TYPE] != SUPPRESS:
-            essential_reacs.update(essentials_in_module)
-        else:
+
+    # With exactly one classical module, one FVA over the constrained module polytope can serve both
+    # model-bound tightening and module essentiality. This is only sound for a single module: applying
+    # one module's tighter ranges to the shared model could otherwise alter another module's polytope.
+    fold_module_fva = (
+        len(sd_modules) == 1
+        and sd_modules[0][MODULE_TYPE] in [SUPPRESS, PROTECT]
+        and sd_modules[0][INNER_OBJECTIVE] is None
+    )
+    if fold_module_fva:
+        module = sd_modules[0]
+        fold_scope = sorted(set(_fva_scope) | set(knockable_ids))
+        flux_limits = bound_blocked_or_irrevers_fva(
+            cmp_model, solver=kwargs[SOLVER], constraints=module[CONSTRAINTS],
+            compress=False, reaction_list=fold_scope)
+        module_limits = flux_limits.loc[
+            [reac_id for reac_id in knockable_ids if reac_id in flux_limits.index]]
+        module['fva_bounds'] = module_limits
+        essentials_in_module = {
+            reac_id for reac_id, limits in module_limits.iterrows()
+            if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0
+        }
+        if module[MODULE_TYPE] == SUPPRESS:
             suppress_essential.update(essentials_in_module)
+        else:
+            essential_reacs.update(essentials_in_module)
+        logging.info('  Folded model/module FVA done (%.1fs).' % (time.time() - t0))
+    else:
+        bound_blocked_or_irrevers_fva(
+            cmp_model, solver=kwargs[SOLVER], compress=False, reaction_list=_fva_scope)
+        logging.info('  FVA done (%.1fs).' % (time.time() - t0))
+
+        # FVA to identify essential reactions and size-1 MCS before building MILP
+        logging.info('  FVA(s) in compressed model to identify essential reactions.')
+        # FVA over each module's region, scoped to knockable reactions. The ranges serve two purposes:
+        # (1) essentiality for size-1 MCS detection, and (2) region-FVA subproblem tightening, read back
+        # in SDMILP, which is why SDProblem runs no region FVA of its own. flux_limits is stored on the
+        # module and flows to SDMILP via sd_modules. Scoping to knockable reactions keeps
+        # the LP count down (and only knockable reactions carry z-links to tighten anyway).
+        for module in sd_modules:
+            flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=module[CONSTRAINTS],
+                              compress=False, reaction_list=knockable_ids)
+            module['fva_bounds'] = flux_limits
+            essentials_in_module = {
+                reac_id for reac_id, limits in flux_limits.iterrows()
+                if np.min(abs(limits)) > 1e-10 and np.prod(np.sign(limits)) > 0
+            }
+            if module[MODULE_TYPE] == SUPPRESS:
+                suppress_essential.update(essentials_in_module)
+            else:
+                essential_reacs.update(essentials_in_module)
 
     # Size-1 MCS detection: only for classical MCS problems (one SUPPRESS + any PROTECT)
     is_classical_mcs = (len([m for m in sd_modules if m[MODULE_TYPE] == SUPPRESS]) == 1 and
