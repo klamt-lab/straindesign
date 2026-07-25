@@ -29,6 +29,20 @@ dependencies = [
     "scipy",
     "matplotlib",
     "psutil",
+    # Imported directly by this package, but every one of them is already a hard
+    # requirement of cobra. They are listed so the imports are declared, and left
+    # deliberately unpinned: contributing no version constraint leaves cobra the
+    # sole authority on which versions get resolved. Do not add bounds here --
+    # that would start a fight with cobra over versions we have no opinion on.
+    "numpy",
+    "pandas",
+    "optlang",
+    "swiglpk",
+    # The only free solver that handles indicator constraints natively. GLPK has
+    # to translate them into big-M, which is documented to give incorrect results
+    # (see glpk_interface.py and test_07_compression.py), so without this a
+    # default install would have no solver able to express the formulation.
+    "pyscipopt",
 ]
 
 [project.urls]

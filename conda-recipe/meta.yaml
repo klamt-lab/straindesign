@@ -13,13 +13,18 @@ requirements:
   build:
     - python
     - pip
-    - setuptools >=64
+    - setuptools >=77
     - wheel
   run:
     - python
     - scipy
-    - matplotlib
+    - matplotlib-base
     - psutil
+    - numpy
+    - pandas
+    - optlang
+    - swiglpk
+    - pyscipopt
     - conda-forge:cobra
 
 build:
