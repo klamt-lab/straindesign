@@ -1383,21 +1383,6 @@ def modules_coeff_to_fraction(sd_modules):
     return sd_modules
 
 
-def modules_coeff2float(sd_modules):
-    """Convert coefficients occurring in SDModule objects to floats"""
-    for i, module in enumerate(sd_modules):
-        for param in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
-            if param in module and module[param] is not None:
-                if param == CONSTRAINTS:
-                    for constr in module[CONSTRAINTS]:
-                        for reac in constr[0].keys():
-                            constr[0][reac] = float(constr[0][reac])
-                if param in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
-                    for reac in module[param].keys():
-                        module[param][reac] = float(module[param][reac])
-    return sd_modules
-
-
 def bound_blocked_or_irrevers_fva(model, **kwargs):
     """Use FVA to determine flux ranges, update model bounds, and return the ranges.
 
