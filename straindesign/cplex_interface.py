@@ -95,7 +95,18 @@ class Cplex_MILP_LP(Cplex):
             A CPLEX MILP/LP interface class.
     """
 
-    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None, seed=None, milp_threads=None):
+    def __init__(self,
+                 c=None,
+                 A_ineq=None,
+                 b_ineq=None,
+                 A_eq=None,
+                 b_eq=None,
+                 lb=None,
+                 ub=None,
+                 vtype=None,
+                 indic_constr=None,
+                 seed=None,
+                 milp_threads=None):
         super().__init__()
         self.objective.set_sense(self.objective.sense.minimize)
         try:
@@ -331,14 +342,12 @@ class Cplex_MILP_LP(Cplex):
             method: LP_METHOD_AUTO, LP_METHOD_PRIMAL, LP_METHOD_DUAL, or LP_METHOD_BARRIER
         """
         # CPLEX lpmethod: 0=auto, 1=primal, 2=dual, 4=barrier
-        _map = {LP_METHOD_AUTO: 0, LP_METHOD_PRIMAL: 1,
-                LP_METHOD_DUAL: 2, LP_METHOD_BARRIER: 4}
+        _map = {LP_METHOD_AUTO: 0, LP_METHOD_PRIMAL: 1, LP_METHOD_DUAL: 2, LP_METHOD_BARRIER: 4}
         self.parameters.lpmethod.set(_map.get(method, 0))
 
     def get_lp_method(self):
         """Return the current LP method as a solver-neutral string."""
-        _rmap = {0: LP_METHOD_AUTO, 1: LP_METHOD_PRIMAL,
-                 2: LP_METHOD_DUAL, 4: LP_METHOD_BARRIER}
+        _rmap = {0: LP_METHOD_AUTO, 1: LP_METHOD_PRIMAL, 2: LP_METHOD_DUAL, 4: LP_METHOD_BARRIER}
         return _rmap.get(self.parameters.lpmethod.get(), LP_METHOD_AUTO)
 
     def get_basis(self):
@@ -362,9 +371,7 @@ class Cplex_MILP_LP(Cplex):
         """
         if basis is None:
             return
-        self.start.set_start(
-            col_status=basis['vbasis'], row_status=basis['cbasis'],
-            col_primal=[], row_primal=[], col_dual=[], row_dual=[])
+        self.start.set_start(col_status=basis['vbasis'], row_status=basis['cbasis'], col_primal=[], row_primal=[], col_dual=[], row_dual=[])
 
     def set_time_limit(self, t):
         """Set the computation time limit (in seconds)"""

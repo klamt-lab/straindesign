@@ -116,7 +116,7 @@ class SDMILP(SDProblem, MILP_LP):
             self._z_orig_indices = None  # no trimming needed
             return
 
-        self._z_orig_indices = keep_z       # trimmed_idx -> orig_idx
+        self._z_orig_indices = keep_z  # trimmed_idx -> orig_idx
         self._orig_num_z = self.num_z
 
         n_cont = len(self.c) - self.num_z

@@ -67,8 +67,9 @@ def _essentials_from_limits(flux_limits):
     ``flux_limits`` is an FVA result over the module's constrained polytope. Both bounds must share
     a sign and stay clear of zero, so the reaction carries flux in every point of the module.
     """
-    return {reac_id for reac_id, limits in flux_limits.iterrows()
-            if np.min(abs(limits)) > _ESSENTIALITY_TOL and np.prod(np.sign(limits)) > 0}
+    return {
+        reac_id for reac_id, limits in flux_limits.iterrows() if np.min(abs(limits)) > _ESSENTIALITY_TOL and np.prod(np.sign(limits)) > 0
+    }
 
 
 def reduce_model_gprs(model, essential_reacs, gkis, gkos):
@@ -265,7 +266,6 @@ def reduce_model_gprs(model, essential_reacs, gkis, gkos):
 
 
 @with_suppressed_lp
-
 def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """Computes strain designs for a user-defined strain design problem
 
@@ -577,20 +577,21 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         for r in cmp_model.reactions:
             can_fwd, can_rev = _rev[r.id]
             if not can_fwd and float(r._upper_bound) > 0.0:
-                r._upper_bound = min(0.0, float(r._upper_bound)); _n_tight += 1
+                r._upper_bound = min(0.0, float(r._upper_bound))
+                _n_tight += 1
             if not can_rev and float(r._lower_bound) < 0.0:
-                r._lower_bound = max(0.0, float(r._lower_bound)); _n_tight += 1
-        logging.info('  Reversibility pre-tightening fixed %d reaction directions (%.1fs).'
-                     % (_n_tight, time.time() - t0))
+                r._lower_bound = max(0.0, float(r._lower_bound))
+                _n_tight += 1
+        logging.info('  Reversibility pre-tightening fixed %d reaction directions (%.1fs).' % (_n_tight, time.time() - t0))
         logging.info('Compressing Network (' + str(len(cmp_model.reactions)) + ' reactions).')
         t0 = time.time()
-        cmp_mapReac_1 = compress_model(cmp_model, no_par_compress_reacs,
-                                        propagate_gpr=True,
-                                        no_coupled_compress_reacs=no_coupled_compress_reacs)
+        cmp_mapReac_1 = compress_model(cmp_model,
+                                       no_par_compress_reacs,
+                                       propagate_gpr=True,
+                                       no_coupled_compress_reacs=no_coupled_compress_reacs)
         sd_modules = compress_modules(sd_modules, cmp_mapReac_1)
         # Compress reaction + regulatory costs only (gene costs not yet added)
-        cmp_ko_cost, cmp_ki_cost, cmp_mapReac_1 = compress_ki_ko_cost(
-            uncmp_ko_cost, uncmp_ki_cost, cmp_mapReac_1)
+        cmp_ko_cost, cmp_ki_cost, cmp_mapReac_1 = compress_ki_ko_cost(uncmp_ko_cost, uncmp_ki_cost, cmp_mapReac_1)
         logging.info('  Compressed to ' + str(len(cmp_model.reactions)) + ' reactions (%.1fs).' % (time.time() - t0))
     else:
         cmp_mapReac_1 = []
@@ -627,8 +628,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                              len([True for r in cmp_model.reactions if r.gene_reaction_rule]) < num_gpr):
             num_genes = len(cmp_model.genes)
             num_gpr = len([True for r in cmp_model.reactions if r.gene_reaction_rule])
-            logging.info('  Simplified to ' + str(num_genes) + ' genes and ' +
-                str(num_gpr) + ' gpr rules (%.1fs).' % (time.time() - t_gpr))
+            logging.info('  Simplified to ' + str(num_genes) + ' genes and ' + str(num_gpr) + ' gpr rules (%.1fs).' % (time.time() - t_gpr))
         logging.info('  Extending metabolic network with gpr associations.')
         reac_map = extend_model_gpr(cmp_model, has_gene_names)
         for i, m in enumerate(sd_modules):
@@ -668,11 +668,12 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         logging.info('Compressing after GPR extension (' + str(len(cmp_model.reactions)) + ' reactions).')
         t0 = time.time()
         no_par_compress_reacs = _collect_no_par_compress_reacs(sd_modules)
-        cmp_mapReac_2 = compress_model(cmp_model, no_par_compress_reacs,
-)
+        cmp_mapReac_2 = compress_model(
+            cmp_model,
+            no_par_compress_reacs,
+        )
         sd_modules = compress_modules(sd_modules, cmp_mapReac_2)
-        cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2 = compress_ki_ko_cost(
-            cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2)
+        cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2 = compress_ki_ko_cost(cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2)
         cmp_mapReac = cmp_mapReac_1 + cmp_mapReac_2
         logging.info('  Compressed to ' + str(len(cmp_model.reactions)) + ' reactions (%.1fs).' % (time.time() - t0))
     else:
@@ -684,14 +685,15 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     t0 = time.time()
     # Save pre-FVA bounds for dump_preprocessed (bound config experiments)
     pre_fva_bounds = {r.id: (r.lower_bound, r.upper_bound) for r in cmp_model.reactions}
-    # Subset-scope the bound-stripping FVA off reactions already at (0,+inf). 
-    # FVA on such a reaction can only ever tighten a genuinely blocked one 
-    # to (0,0); leaving it at (0,+inf) changes no feasible flux (the stoichiometry 
+    # Subset-scope the bound-stripping FVA off reactions already at (0,+inf).
+    # FVA on such a reaction can only ever tighten a genuinely blocked one
+    # to (0,0); leaving it at (0,+inf) changes no feasible flux (the stoichiometry
     # already forces it to 0) and a blocked knockable can never belong to a minimal cut set.
-    _fva_scope = [r.id for r in cmp_model.reactions
-                  if not (float(r.lower_bound) == 0.0
-                          and np.isinf(float(r.upper_bound))
-                          and float(r.upper_bound) > 0)]
+    _fva_scope = [
+        r.id
+        for r in cmp_model.reactions
+        if not (float(r.lower_bound) == 0.0 and np.isinf(float(r.upper_bound)) and float(r.upper_bound) > 0)
+    ]
     essential_reacs = set()
     suppress_essential = set()
     cmp_size1_mcs = []
@@ -700,19 +702,17 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     # With exactly one classical module, one FVA over the constrained module polytope can serve both
     # model-bound tightening and module essentiality. This is only sound for a single module: applying
     # one module's tighter ranges to the shared model could otherwise alter another module's polytope.
-    fold_module_fva = (
-        len(sd_modules) == 1
-        and sd_modules[0][MODULE_TYPE] in [SUPPRESS, PROTECT]
-        and sd_modules[0][INNER_OBJECTIVE] is None
-    )
+    fold_module_fva = (len(sd_modules) == 1 and sd_modules[0][MODULE_TYPE] in [SUPPRESS, PROTECT] and
+                       sd_modules[0][INNER_OBJECTIVE] is None)
     if fold_module_fva:
         module = sd_modules[0]
         fold_scope = sorted(set(_fva_scope) | set(knockable_ids))
-        flux_limits = bound_blocked_or_irrevers_fva(
-            cmp_model, solver=kwargs[SOLVER], constraints=module[CONSTRAINTS],
-            compress=False, reaction_list=fold_scope)
-        module_limits = flux_limits.loc[
-            [reac_id for reac_id in knockable_ids if reac_id in flux_limits.index]]
+        flux_limits = bound_blocked_or_irrevers_fva(cmp_model,
+                                                    solver=kwargs[SOLVER],
+                                                    constraints=module[CONSTRAINTS],
+                                                    compress=False,
+                                                    reaction_list=fold_scope)
+        module_limits = flux_limits.loc[[reac_id for reac_id in knockable_ids if reac_id in flux_limits.index]]
         module['fva_bounds'] = module_limits
         essentials_in_module = _essentials_from_limits(module_limits)
         if module[MODULE_TYPE] == SUPPRESS:
@@ -721,8 +721,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             essential_reacs.update(essentials_in_module)
         logging.info('  Folded model/module FVA done (%.1fs).' % (time.time() - t0))
     else:
-        bound_blocked_or_irrevers_fva(
-            cmp_model, solver=kwargs[SOLVER], compress=False, reaction_list=_fva_scope)
+        bound_blocked_or_irrevers_fva(cmp_model, solver=kwargs[SOLVER], compress=False, reaction_list=_fva_scope)
         logging.info('  FVA done (%.1fs).' % (time.time() - t0))
 
         # FVA to identify essential reactions and size-1 MCS before building MILP
@@ -733,8 +732,11 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         # module and flows to SDMILP via sd_modules. Scoping to knockable reactions keeps
         # the LP count down (and only knockable reactions carry z-links to tighten anyway).
         for module in sd_modules:
-            flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=module[CONSTRAINTS],
-                              compress=False, reaction_list=knockable_ids)
+            flux_limits = fva(cmp_model,
+                              solver=kwargs[SOLVER],
+                              constraints=module[CONSTRAINTS],
+                              compress=False,
+                              reaction_list=knockable_ids)
             module['fva_bounds'] = flux_limits
             essentials_in_module = _essentials_from_limits(flux_limits)
             if module[MODULE_TYPE] == SUPPRESS:
@@ -814,34 +816,35 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         import os, pickle as _pickle
         dump_path = dump_preprocessed
         with open(dump_path, 'wb') as f:
-            _pickle.dump({
-                'cmp_model': cmp_model,
-                'sd_modules': sd_modules,
-                'kwargs_milp': kwargs_milp,
-                'kwargs_computation': kwargs_computation,
-                'solution_approach': solution_approach,
-                'cmp_mapReac': cmp_mapReac,
-                # Expansion/filtering data
-                'uncmp_ko_cost': uncmp_ko_cost,
-                'uncmp_ki_cost': uncmp_ki_cost,
-                'uncmp_reg_cost': uncmp_reg_cost,
-                'orig_model': orig_model,
-                'orig_sd_modules': orig_sd_modules,
-                'orig_ko_cost': orig_ko_cost,
-                'orig_ki_cost': orig_ki_cost,
-                'orig_reg_cost': orig_reg_cost,
-                'gene_kos': kwargs['gene_kos'],
-                'orig_gko_cost': locals().get('orig_gko_cost'),
-                'orig_gki_cost': locals().get('orig_gki_cost'),
-                'max_cost': kwargs[MAX_COST],
-                'cmp_size1_mcs': cmp_size1_mcs,
-                'pre_fva_bounds': pre_fva_bounds,
-            }, f)
+            _pickle.dump(
+                {
+                    'cmp_model': cmp_model,
+                    'sd_modules': sd_modules,
+                    'kwargs_milp': kwargs_milp,
+                    'kwargs_computation': kwargs_computation,
+                    'solution_approach': solution_approach,
+                    'cmp_mapReac': cmp_mapReac,
+                    # Expansion/filtering data
+                    'uncmp_ko_cost': uncmp_ko_cost,
+                    'uncmp_ki_cost': uncmp_ki_cost,
+                    'uncmp_reg_cost': uncmp_reg_cost,
+                    'orig_model': orig_model,
+                    'orig_sd_modules': orig_sd_modules,
+                    'orig_ko_cost': orig_ko_cost,
+                    'orig_ki_cost': orig_ki_cost,
+                    'orig_reg_cost': orig_reg_cost,
+                    'gene_kos': kwargs['gene_kos'],
+                    'orig_gko_cost': locals().get('orig_gko_cost'),
+                    'orig_gki_cost': locals().get('orig_gki_cost'),
+                    'max_cost': kwargs[MAX_COST],
+                    'cmp_size1_mcs': cmp_size1_mcs,
+                    'pre_fva_bounds': pre_fva_bounds,
+                },
+                f)
         logging.info('Preprocessed data saved to ' + dump_path)
         logging.info('  Resume with:')
         logging.info('    from straindesign import compute_strain_designs_from_preprocessed')
-        logging.info("    sol = compute_strain_designs_from_preprocessed('%s', seed=42)" %
-                     dump_path.replace('\\', '\\\\'))
+        logging.info("    sol = compute_strain_designs_from_preprocessed('%s', seed=42)" % dump_path.replace('\\', '\\\\'))
 
         # Return early with size-1 MCS only (or empty)
         setup = deepcopy(cmp_sd_solution.sd_setup) if 'cmp_sd_solution' in dir() else {MODEL_ID: orig_model.id}
@@ -885,15 +888,14 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     if kwargs['gene_kos']:
         setup.update({GKOCOST: orig_gko_cost, GKICOST: orig_gki_cost})
 
-    sd_solutions = _decompress_solutions(
-        cmp_sd_solution, cmp_mapReac, cmp_size1_mcs,
-        kwargs[MAX_COST], uncmp_ko_cost, uncmp_ki_cost, uncmp_reg_cost,
-        orig_model, setup, kwargs['gene_kos'],
-        locals().get('orig_gko_cost'), locals().get('orig_gki_cost'))
+    sd_solutions = _decompress_solutions(cmp_sd_solution, cmp_mapReac, cmp_size1_mcs, kwargs[MAX_COST], uncmp_ko_cost, uncmp_ki_cost,
+                                         uncmp_reg_cost, orig_model, setup, kwargs['gene_kos'],
+                                         locals().get('orig_gko_cost'),
+                                         locals().get('orig_gki_cost'))
     sd_solutions._cmp_model = cmp_model
-    logging.info(str(sd_solutions.get_num_materialized()) + ' solutions found'
-                 + (' (lazy, estimated %d total).' % sd_solutions.get_num_sols()
-                    if sd_solutions.is_lazy else '.'))
+    logging.info(
+        str(sd_solutions.get_num_materialized()) + ' solutions found' +
+        (' (lazy, estimated %d total).' % sd_solutions.get_num_sols() if sd_solutions.is_lazy else '.'))
 
     return sd_solutions
 
@@ -915,9 +917,8 @@ def postprocess_reg_sd(reg_cost, sd):
 LAZY_EXPANSION_THRESHOLD = 100_000
 
 
-def _decompress_solutions(cmp_sd_solution, cmp_mapReac, cmp_size1_mcs,
-                          max_cost, uncmp_ko_cost, uncmp_ki_cost, uncmp_reg_cost,
-                          orig_model, setup, gene_kos, orig_gko_cost, orig_gki_cost):
+def _decompress_solutions(cmp_sd_solution, cmp_mapReac, cmp_size1_mcs, max_cost, uncmp_ko_cost, uncmp_ki_cost, uncmp_reg_cost, orig_model,
+                          setup, gene_kos, orig_gko_cost, orig_gki_cost):
     """Decompress MILP solutions, using lazy expansion if estimated count exceeds threshold."""
     logging.info('  Decompressing.')
 
@@ -933,9 +934,8 @@ def _decompress_solutions(cmp_sd_solution, cmp_mapReac, cmp_size1_mcs,
 
     if estimated > LAZY_EXPANSION_THRESHOLD:
         logging.info('  Estimated %d expanded solutions - using lazy expansion.' % estimated)
-        sd, group_map, compressed_sd = _build_lazy_representatives(
-            cmp_sds, cmp_size1_mcs, cmp_mapReac, max_cost,
-            uncmp_ko_cost, uncmp_ki_cost, uncmp_reg_cost)
+        sd, group_map, compressed_sd = _build_lazy_representatives(cmp_sds, cmp_size1_mcs, cmp_mapReac, max_cost, uncmp_ko_cost,
+                                                                   uncmp_ki_cost, uncmp_reg_cost)
 
         status = cmp_sd_solution.status
         if status not in [OPTIMAL, TIME_LIMIT_W_SOL] and sd:
@@ -995,8 +995,7 @@ def _decompress_solutions(cmp_sd_solution, cmp_mapReac, cmp_size1_mcs,
     return sd_solutions
 
 
-def _build_lazy_representatives(cmp_sds, cmp_size1_mcs, cmp_mapReac, max_cost,
-                                uncmp_ko_cost, uncmp_ki_cost, uncmp_reg_cost):
+def _build_lazy_representatives(cmp_sds, cmp_size1_mcs, cmp_mapReac, max_cost, uncmp_ko_cost, uncmp_ki_cost, uncmp_reg_cost):
     """Build one representative expanded solution per compressed group.
 
     Returns (sd, group_map, compressed_sd).
@@ -1033,9 +1032,7 @@ def _build_lazy_representatives(cmp_sds, cmp_size1_mcs, cmp_mapReac, max_cost,
     return sd, group_map, compressed_sd
 
 
-def compute_strain_designs_from_preprocessed(dump, seed=None, solver=None,
-                                             solution_approach=None, max_solutions=None,
-                                             time_limit=None):
+def compute_strain_designs_from_preprocessed(dump, seed=None, solver=None, solution_approach=None, max_solutions=None, time_limit=None):
     """Load preprocessed model and run MILP solve with optional overrides.
 
     Args:
@@ -1094,8 +1091,7 @@ def compute_strain_designs_from_preprocessed(dump, seed=None, solver=None,
     from straindesign.networktools import suppress_lp_context
     with suppress_lp_context(cmp_model):
         logging.info('Loading preprocessed data from ' + (dump if isinstance(dump, str) else 'dict input.'))
-        logging.info('  Seed: %s, Solver: %s, Approach: %s' % (
-            kwargs_milp.get(SEED), kwargs_milp.get(SOLVER), sol_approach))
+        logging.info('  Seed: %s, Solver: %s, Approach: %s' % (kwargs_milp.get(SEED), kwargs_milp.get(SOLVER), sol_approach))
 
         t0 = time.time()
         sd_milp = SDMILP(cmp_model, sd_modules, **kwargs_milp)
@@ -1116,13 +1112,11 @@ def compute_strain_designs_from_preprocessed(dump, seed=None, solver=None,
     if gene_kos:
         setup.update({GKOCOST: orig_gko_cost, GKICOST: orig_gki_cost})
 
-    sd_solutions = _decompress_solutions(
-        cmp_sd_solution, cmp_mapReac, cmp_size1_mcs,
-        max_cost, uncmp_ko_cost, uncmp_ki_cost, uncmp_reg_cost,
-        orig_model, setup, gene_kos, orig_gko_cost, orig_gki_cost)
+    sd_solutions = _decompress_solutions(cmp_sd_solution, cmp_mapReac, cmp_size1_mcs, max_cost, uncmp_ko_cost, uncmp_ki_cost,
+                                         uncmp_reg_cost, orig_model, setup, gene_kos, orig_gko_cost, orig_gki_cost)
     sd_solutions._cmp_model = cmp_model
-    logging.info(str(sd_solutions.get_num_materialized()) + ' solutions found'
-                 + (' (lazy, estimated %d total).' % sd_solutions.get_num_sols()
-                    if sd_solutions.is_lazy else '.'))
+    logging.info(
+        str(sd_solutions.get_num_materialized()) + ' solutions found' +
+        (' (lazy, estimated %d total).' % sd_solutions.get_num_sols() if sd_solutions.is_lazy else '.'))
 
     return sd_solutions

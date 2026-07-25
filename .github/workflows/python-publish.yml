@@ -38,6 +38,20 @@ jobs:
         pip install yapf
     - name: format repository with yapf in google-python format
       run: yapf -i -r --style ./.github/style.yapf .
+    # Build and validate the distributions before anything is published or pushed:
+    # a failure here leaves the repository untouched, with no tag, release or
+    # version-bump commit to unwind.
+    - name: Install build and twine
+      run: |
+        pip install --upgrade build twine
+    - name: Clean PyPi build directories
+      run: rm -rf dist
+    - name: Build for PyPi
+      run: |
+        python -m build
+    - name: Check the built distributions
+      run: |
+        twine check dist/*
     - name: retrieve name and E-Mail configuration
       run: |
         git config --global user.name ${{ secrets.NAME_GITHUB }}
@@ -52,6 +66,13 @@ jobs:
       run: git fetch
     - name: push code to main
       run: git push
+    - name: Publish to PyPI
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        password: ${{ secrets.PYPI_API_TOKEN }}
+    # Tag and release only once PyPI has accepted the upload. A version cannot be
+    # re-uploaded to PyPI even after deletion, so the release must not advertise a
+    # version that never made it there.
     - name: Create Release
       env:
         GITHUB_TOKEN: ${{ github.token }}
@@ -59,21 +80,6 @@ jobs:
         gh release create "v${{ github.event.inputs.version }}" \
           --title "v${{ github.event.inputs.version }}" \
           --notes "${{ github.event.inputs.description }}"
-    - name: Install build and twine
-      run: |
-        pip install --upgrade build twine
-    - name: Clean PyPi build directories
-      run: rm -rf dist
-    - name: Build for PyPi
-      run: |
-        python -m build
-    - name: Check the built distributions
-      run: |
-        twine check dist/*
-    - name: Publish to PyPI
-      uses: pypa/gh-action-pypi-publish@release/v1
-      with:
-        password: ${{ secrets.PYPI_API_TOKEN }}
     - name: Install conda dependencies
       run: conda install anaconda-client conda-build
     - name: Clean Anaconda build directories

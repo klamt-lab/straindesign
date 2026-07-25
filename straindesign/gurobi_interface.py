@@ -31,6 +31,7 @@ gstatus = grb.Status
 # Shared quiet environment — avoids creating a new license session per model
 _quiet_env = None
 
+
 def _get_quiet_env():
     """Return a shared Gurobi environment with OutputFlag=0."""
     global _quiet_env
@@ -107,7 +108,18 @@ class Gurobi_MILP_LP(gp.Model):
             A Gurobi MILP/LP interface class.
     """
 
-    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None, seed=None, milp_threads=None):
+    def __init__(self,
+                 c=None,
+                 A_ineq=None,
+                 b_ineq=None,
+                 A_eq=None,
+                 b_eq=None,
+                 lb=None,
+                 ub=None,
+                 vtype=None,
+                 indic_constr=None,
+                 seed=None,
+                 milp_threads=None):
         super().__init__(env=_get_quiet_env())
         try:
             numvars = A_ineq.shape[1]
@@ -142,8 +154,8 @@ class Gurobi_MILP_LP(gp.Model):
                 cols = A_csr.indices[start:end]
                 vals = A_csr.data[start:end]
                 lhs = gp.quicksum(float(val) * x[int(col)] for col, val in zip(cols, vals))
-                self.addGenConstrIndicator(x[indic_constr.binv[i]], bool(indic_constr.indicval[i]),
-                                           lhs, '=' if indic_constr.sense[i] == 'E' else '<', indic_constr.b[i])
+                self.addGenConstrIndicator(x[indic_constr.binv[i]], bool(indic_constr.indicval[i]), lhs,
+                                           '=' if indic_constr.sense[i] == 'E' else '<', indic_constr.b[i])
 
         # set parameters
         self.params.OutputFlag = 0
@@ -379,14 +391,12 @@ class Gurobi_MILP_LP(gp.Model):
         Args:
             method: LP_METHOD_AUTO, LP_METHOD_PRIMAL, LP_METHOD_DUAL, or LP_METHOD_BARRIER
         """
-        _map = {LP_METHOD_AUTO: -1, LP_METHOD_PRIMAL: 0,
-                LP_METHOD_DUAL: 1, LP_METHOD_BARRIER: 2}
+        _map = {LP_METHOD_AUTO: -1, LP_METHOD_PRIMAL: 0, LP_METHOD_DUAL: 1, LP_METHOD_BARRIER: 2}
         self.params.Method = _map.get(method, -1)
 
     def get_lp_method(self):
         """Return the current LP method as a solver-neutral string."""
-        _rmap = {-1: LP_METHOD_AUTO, 0: LP_METHOD_PRIMAL,
-                 1: LP_METHOD_DUAL, 2: LP_METHOD_BARRIER}
+        _rmap = {-1: LP_METHOD_AUTO, 0: LP_METHOD_PRIMAL, 1: LP_METHOD_DUAL, 2: LP_METHOD_BARRIER}
         return _rmap.get(self.params.Method, LP_METHOD_AUTO)
 
     def get_basis(self):

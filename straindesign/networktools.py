@@ -53,6 +53,7 @@ def _sb_noop(self, lb, ub):
 
 # -- Cobra-level suppression replacements ------------------------------------
 
+
 def _suppressed_set_id(self, value):
     """Bypass solver variable rename: write _id and update DictList index."""
     old_id = self._id
@@ -158,7 +159,7 @@ def _suppressed_copy(model):
     extension's ``add_metabolites`` calls run without building (or pushing constraints into) a live
     solver.
     """
-    iface = model.solver.interface          # captured before stubbing
+    iface = model.solver.interface  # captured before stubbing
     saved = model._solver
     orig_copy = next(o for cls, attr, o in _ORIG_COBRA if cls is Model and attr == 'copy')
     try:
@@ -168,6 +169,7 @@ def _suppressed_copy(model):
         model._solver = saved
     new._solver = _CarrierSolver(iface)
     return new
+
 
 _ORIG_CONTAINER_GETITEM = None  # saved Container.__getitem__
 
@@ -272,10 +274,10 @@ def _suppressed_add_metabolites(self, metabolite_list):
 
 # -- Saved originals (None = not suppressed) ----------------------------------
 
-_ORIG_SLC = None   # (cls, method) for Constraint.set_linear_coefficients
-_ORIG_SB = None    # (cls, method) for Variable.set_bounds
+_ORIG_SLC = None  # (cls, method) for Constraint.set_linear_coefficients
+_ORIG_SB = None  # (cls, method) for Variable.set_bounds
 _ORIG_OSLC = None  # (cls, method) for Objective.set_linear_coefficients
-_ORIG_COBRA = []   # list of (cls, attr_name, original) for cobra-level patches
+_ORIG_COBRA = []  # list of (cls, attr_name, original) for cobra-level patches
 
 
 def _suppress_lp_updates(model):
@@ -438,8 +440,7 @@ def suppress_lp_context(model):
                 del model._suppressed_obj
             if current_ids != _pre_ids:
                 if model.groups:
-                    kept = {c.id for c in
-                            list(model.reactions) + list(model.metabolites) + list(model.genes)}
+                    kept = {c.id for c in list(model.reactions) + list(model.metabolites) + list(model.genes)}
                     for grp in model.groups:
                         stale = [m for m in grp.members if m.id not in kept]
                         if stale:
@@ -461,17 +462,20 @@ def with_suppressed_lp(func):
 
     The first positional argument must be a cobra Model.
     """
+
     @wraps(func)
     def wrapper(*args, **kwargs):
         model = args[0]
         with suppress_lp_context(model):
             return func(*args, **kwargs)
+
     return wrapper
 
 
 # =============================================================================
 # I/O Suppression
 # =============================================================================
+
 
 @contextmanager
 def _silent_io():
@@ -608,6 +612,7 @@ def gene_kos_to_constraints(model, gene_kos):
 
     return [[{r: 1}, '=', 0] for r in sorted(knocked_out_reactions)]
 
+
 def _build_cmp_reverse_map(cmp_map):
     """Build reverse lookup: original reaction ID -> final compressed ID.
 
@@ -668,10 +673,9 @@ def compress_constraints(constraints, cmp_mapReac):
                 coeff_dict = c[0]
                 lumped = [k for k in coeff_dict if k in old_reac_val]
                 if lumped:
-                    coeff_dict[new_reac] = sum(
-                        coeff_dict.pop(k) * old_reac_val[k] for k in lumped
-                    )
+                    coeff_dict[new_reac] = sum(coeff_dict.pop(k) * old_reac_val[k] for k in lumped)
     return constraints
+
 
 def resolve_gene_constraints(model, constraints):
     """Scan constraints for gene IDs/names and replace with reaction constraints.
@@ -1358,8 +1362,7 @@ def filter_sd_maxcost(sd, max_cost, kocost, kicost):
     # non-made KIs are marked by 0.0 and non-made KOs don't appear.
     # We count costs of interventions made, which are marked by v != 0.
     if max_cost:
-        costs = [np.sum([(kocost[k] if k in kocost else kicost.get(k, 0)) if v != 0 else 0
-                         for k, v in m.items()]) for m in sd]
+        costs = [np.sum([(kocost[k] if k in kocost else kicost.get(k, 0)) if v != 0 else 0 for k, v in m.items()]) for m in sd]
         sd = [sd[i] for i in range(len(sd)) if costs[i] <= max_cost + 1e-8]
         # sort strain designs by intervention costs
         [s.update({'**cost**': c}) for s, c in zip(sd, costs)]
@@ -1425,14 +1428,12 @@ from collections import OrderedDict as _OrderedDict
 from operator import attrgetter as _attrgetter
 from fractions import Fraction as _Fraction
 import math as _math
-from cobra.io.dict import (_metabolite_to_dict, _metabolite_from_dict,
-                           _gene_to_dict, gene_from_dict, _fix_type, _update_optional,
-                           _OPTIONAL_REACTION_ATTRIBUTES, _ORDERED_OPTIONAL_REACTION_KEYS,
-                           _OPTIONAL_MODEL_ATTRIBUTES, _ORDERED_OPTIONAL_MODEL_KEYS)
+from cobra.io.dict import (_metabolite_to_dict, _metabolite_from_dict, _gene_to_dict, gene_from_dict, _fix_type, _update_optional,
+                           _OPTIONAL_REACTION_ATTRIBUTES, _ORDERED_OPTIONAL_REACTION_KEYS, _OPTIONAL_MODEL_ATTRIBUTES,
+                           _ORDERED_OPTIONAL_MODEL_KEYS)
 from cobra.util.solver import set_objective as _set_objective
 
-_INF_TOKENS = {'inf': _math.inf, 'infinity': _math.inf, '+inf': _math.inf,
-               '-inf': -_math.inf, '-infinity': -_math.inf}
+_INF_TOKENS = {'inf': _math.inf, 'infinity': _math.inf, '+inf': _math.inf, '-inf': -_math.inf, '-infinity': -_math.inf}
 
 
 def _num_to_json(v):
@@ -1442,13 +1443,13 @@ def _num_to_json(v):
     if isinstance(v, bool):
         return v
     if isinstance(v, _Fraction):
-        return str(v)                                    # exact: '1/3', '10', '-1/2'
+        return str(v)  # exact: '1/3', '10', '-1/2'
     num, den = getattr(v, 'numerator', None), getattr(v, 'denominator', None)
     if num is not None and den is not None and not isinstance(v, int):
-        return '%d/%d' % (int(num), int(den))            # sympy Rational etc.
-    v = _fix_type(v)                                     # numpy -> native python
+        return '%d/%d' % (int(num), int(den))  # sympy Rational etc.
+    v = _fix_type(v)  # numpy -> native python
     if isinstance(v, float) and (_math.isinf(v) or _math.isnan(v)):
-        return str(v)                                    # 'inf', '-inf', 'nan'
+        return str(v)  # 'inf', '-inf', 'nan'
     return v
 
 
@@ -1461,7 +1462,7 @@ def _num_from_json(v):
             return _INF_TOKENS[low]
         if low == 'nan':
             return _math.nan
-        return _Fraction(v)                              # 'num/den' or integer string
+        return _Fraction(v)  # 'num/den' or integer string
     return v
 
 
@@ -1473,8 +1474,7 @@ def _reaction_to_json(reaction, obj_coeff=0):
     new['id'] = reaction.id
     new['name'] = reaction.name
     new['metabolites'] = _OrderedDict(
-        (str(met), _num_to_json(reaction.metabolites[met]))
-        for met in sorted(reaction.metabolites, key=_attrgetter('id')))
+        (str(met), _num_to_json(reaction.metabolites[met])) for met in sorted(reaction.metabolites, key=_attrgetter('id')))
     new['lower_bound'] = _num_to_json(reaction.lower_bound)
     new['upper_bound'] = _num_to_json(reaction.upper_bound)
     new['gene_reaction_rule'] = reaction.gene_reaction_rule
@@ -1495,9 +1495,8 @@ def _reaction_from_json(reaction, model):
         if k in {'objective_coefficient', 'reversibility', 'reaction'}:
             continue
         elif k == 'metabolites':
-            new_reaction.add_metabolites(_OrderedDict(
-                (model.metabolites.get_by_id(str(met)), _num_from_json(coeff))
-                for met, coeff in v.items()))
+            new_reaction.add_metabolites(
+                _OrderedDict((model.metabolites.get_by_id(str(met)), _num_from_json(coeff)) for met, coeff in v.items()))
         elif k in {'lower_bound', 'upper_bound'}:
             setattr(new_reaction, k, _num_from_json(v))
         else:
@@ -1552,10 +1551,8 @@ def model_from_dict(obj):
     model.add_metabolites([_metabolite_from_dict(m) for m in obj['metabolites']])
     model.genes.extend([gene_from_dict(g) for g in obj['genes']])
     model.add_reactions([_reaction_from_json(r, model) for r in obj['reactions']])
-    objective_reactions = [r for r in obj['reactions']
-                           if _num_from_json(r.get('objective_coefficient', 0)) != 0]
-    coefficients = {model.reactions.get_by_id(r['id']): _num_from_json(r['objective_coefficient'])
-                    for r in objective_reactions}
+    objective_reactions = [r for r in obj['reactions'] if _num_from_json(r.get('objective_coefficient', 0)) != 0]
+    coefficients = {model.reactions.get_by_id(r['id']): _num_from_json(r['objective_coefficient']) for r in objective_reactions}
     _set_objective(model, coefficients)
     for k, v in obj.items():
         if k in {'id', 'name', 'notes', 'compartments', 'annotation'}:

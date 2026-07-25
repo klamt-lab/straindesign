@@ -259,32 +259,47 @@ def test_doubleopt(curr_solver, model_doubleopt):
     need to achieve 60% of their optima.
     """
     # Knockable: organism-internal reactions + shared sinks (enable cross-feeding KOs)
-    ko_reacs = [r.id for r in model_doubleopt.reactions if r.id.startswith('A_R') or r.id.startswith('B_R')
-                or r.id in ['A_10', 'B_10', 'shared_R_D', 'shared_R_C']]
+    ko_reacs = [
+        r.id
+        for r in model_doubleopt.reactions
+        if r.id.startswith('A_R') or r.id.startswith('B_R') or r.id in ['A_10', 'B_10', 'shared_R_D', 'shared_R_C']
+    ]
     kocost = {r: 1 for r in ko_reacs}
 
     # --- Exact DOUBLEOPT: tight coupling via shared sink KOs ---
-    modules_exact = [sd.SDModule(model_doubleopt, DOUBLEOPT,
-                                 inner_objective='A_BM',
-                                 outer_objective='B_BM',
-                                 constraints=['A_BM >= 0.1', 'B_BM >= 0.1'])]
+    modules_exact = [
+        sd.SDModule(model_doubleopt, DOUBLEOPT, inner_objective='A_BM', outer_objective='B_BM', constraints=['A_BM >= 0.1', 'B_BM >= 0.1'])
+    ]
     sol_exact = sd.compute_strain_designs(model_doubleopt.copy(),
-        sd_modules=modules_exact, max_cost=6, max_solutions=inf,
-        solution_approach=POPULATE, ko_cost=kocost, solver=curr_solver, compress=False)
+                                          sd_modules=modules_exact,
+                                          max_cost=6,
+                                          max_solutions=inf,
+                                          solution_approach=POPULATE,
+                                          ko_cost=kocost,
+                                          solver=curr_solver,
+                                          compress=False)
     assert len(sol_exact.reaction_sd) > 0, \
         "Exact DOUBLEOPT should find solutions when shared sinks are knockable"
     min_cost_exact = min(sum(abs(v) for v in s.values()) for s in sol_exact.reaction_sd)
 
     # --- Relaxed DOUBLEOPT: 60% optimality tolerance finds cheaper solutions ---
-    modules_relaxed = [sd.SDModule(model_doubleopt, DOUBLEOPT,
-                                   inner_objective='A_BM',
-                                   outer_objective='B_BM',
-                                   inner_opt_tol=0.6,
-                                   outer_opt_tol=0.6,
-                                   constraints=['A_BM >= 0.1', 'B_BM >= 0.1'])]
+    modules_relaxed = [
+        sd.SDModule(model_doubleopt,
+                    DOUBLEOPT,
+                    inner_objective='A_BM',
+                    outer_objective='B_BM',
+                    inner_opt_tol=0.6,
+                    outer_opt_tol=0.6,
+                    constraints=['A_BM >= 0.1', 'B_BM >= 0.1'])
+    ]
     sol_relaxed = sd.compute_strain_designs(model_doubleopt.copy(),
-        sd_modules=modules_relaxed, max_cost=3, max_solutions=inf,
-        solution_approach=POPULATE, ko_cost=kocost, solver=curr_solver, compress=False)
+                                            sd_modules=modules_relaxed,
+                                            max_cost=3,
+                                            max_solutions=inf,
+                                            solution_approach=POPULATE,
+                                            ko_cost=kocost,
+                                            solver=curr_solver,
+                                            compress=False)
     assert len(sol_relaxed.reaction_sd) > 0, \
         "Relaxed DOUBLEOPT should find solutions with opt_tol=0.6"
     min_cost_relaxed = min(sum(abs(v) for v in s.values()) for s in sol_relaxed.reaction_sd)
@@ -348,9 +363,14 @@ def test_dump_preprocessed(model_small_example, tmp_path):
 
     # Step 1: Dump preprocessed data (should return early without solving)
     sol_dump = sd.compute_strain_designs(model_small_example,
-        sd_modules=modules, max_cost=inf, max_solutions=inf,
-        solution_approach='any', ki_cost=kicost, solver=solver,
-        compress=True, dump_preprocessed=dump_path)
+                                         sd_modules=modules,
+                                         max_cost=inf,
+                                         max_solutions=inf,
+                                         solution_approach='any',
+                                         ki_cost=kicost,
+                                         solver=solver,
+                                         compress=True,
+                                         dump_preprocessed=dump_path)
     import os
     assert os.path.exists(dump_path), "Dump file should exist"
 
@@ -387,9 +407,13 @@ def test_lazy_expansion(model_small_example):
     csd.LAZY_EXPANSION_THRESHOLD = 1  # Force lazy mode
     try:
         sol = sd.compute_strain_designs(model_small_example,
-            sd_modules=modules, max_cost=inf, max_solutions=inf,
-            solution_approach='any', ki_cost=kicost, solver=solver,
-            compress=True)
+                                        sd_modules=modules,
+                                        max_cost=inf,
+                                        max_solutions=inf,
+                                        solution_approach='any',
+                                        ki_cost=kicost,
+                                        solver=solver,
+                                        compress=True)
         if sol.is_lazy:
             assert sol.get_num_materialized() < sol.get_num_sols(), \
                 "Lazy mode: materialized < estimated total"

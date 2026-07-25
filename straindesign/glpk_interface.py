@@ -387,8 +387,7 @@ class GLPK_MILP_LP():
         # GLPK meth: 1=primal, 2=dual, 3=dual+pricing
         if method == LP_METHOD_BARRIER:
             logging.warning('GLPK does not support barrier method, falling back to dual simplex.')
-        _map = {LP_METHOD_AUTO: 1, LP_METHOD_PRIMAL: 1,
-                LP_METHOD_DUAL: 2, LP_METHOD_BARRIER: 2}
+        _map = {LP_METHOD_AUTO: 1, LP_METHOD_PRIMAL: 1, LP_METHOD_DUAL: 2, LP_METHOD_BARRIER: 2}
         self.lp_params.meth = _map.get(method, 1)
 
     def get_lp_method(self):

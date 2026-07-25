@@ -150,11 +150,9 @@ def test_fba_optimum_recovered_through_map():
     model = load_model("e_coli_core")
     cmp_maps = nt.compress_model(model)
     cmp_id, factor = _trace_lump(cmp_maps, biomass)
-    assert cmp_id in [r.id for r in model.reactions], (
-        f"compression map names {cmp_id}, which is not in the compressed model")
+    assert cmp_id in [r.id for r in model.reactions], (f"compression map names {cmp_id}, which is not in the compressed model")
     val = sd.fba(model, obj={cmp_id: 1}, obj_sense='maximize').objective_value
-    assert abs(factor * val - ref) < 1e-6, (
-        f"recovered optimum {factor * val} != uncompressed {ref}")
+    assert abs(factor * val - ref) < 1e-6, (f"recovered optimum {factor * val} != uncompressed {ref}")
 
 
 def test_cobra_optimize_after_compression():
@@ -188,8 +186,7 @@ def test_cobra_optimize_after_compression():
     sol = model_cmp.optimize()
     assert sol.status == 'optimal', f"Expected optimal solution, got {sol.status}"
     val_expanded = sol.objective_value * biomass_coeff
-    assert abs(val_orig - val_expanded) < 1e-6, (
-        f"Expanded objective mismatch: original={val_orig}, expanded={val_expanded}")
+    assert abs(val_orig - val_expanded) < 1e-6, (f"Expanded objective mismatch: original={val_orig}, expanded={val_expanded}")
 
 
 # =============================================================================
@@ -252,13 +249,12 @@ def test_mcs_e_coli_core():
     solver = SCIP if SCIP in strong_solvers else next(iter(strong_solvers))
     model = load_model('e_coli_core')
     modules = [sd.SDModule(model, SUPPRESS, constraints='BIOMASS_Ecoli_core_w_GAM >= 0.001')]
-    sols = sd.compute_strain_designs(model,
-                                     sd_modules=modules,
-                                     solution_approach=POPULATE,
-                                     max_cost=3,
-                                     gene_kos=True,
-                                     solver=solver,
-)
-    assert len(sols.reaction_sd) == 455, (
-        f"Expected 455 MCS for e_coli_core, got {len(sols.reaction_sd)}")
-
+    sols = sd.compute_strain_designs(
+        model,
+        sd_modules=modules,
+        solution_approach=POPULATE,
+        max_cost=3,
+        gene_kos=True,
+        solver=solver,
+    )
+    assert len(sols.reaction_sd) == 455, (f"Expected 455 MCS for e_coli_core, got {len(sols.reaction_sd)}")

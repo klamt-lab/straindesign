@@ -231,8 +231,8 @@ class SDModule(Dict):
         self[MODEL_ID] = model.id
         self[MODULE_TYPE] = module_type
         allowed_keys = {
-            CONSTRAINTS, INNER_OBJECTIVE, INNER_OPT_SENSE, OUTER_OBJECTIVE, OUTER_OPT_SENSE,
-            INNER_OPT_TOL, OUTER_OPT_TOL, PROD_ID, 'skip_checks', MIN_GCP, 'reac_ids'
+            CONSTRAINTS, INNER_OBJECTIVE, INNER_OPT_SENSE, OUTER_OBJECTIVE, OUTER_OPT_SENSE, INNER_OPT_TOL, OUTER_OPT_TOL, PROD_ID,
+            'skip_checks', MIN_GCP, 'reac_ids'
         }
         # set all keys passed in kwargs as properties of the SD_Module object
         for key, value in kwargs.items():
@@ -262,8 +262,8 @@ class SDModule(Dict):
             elif self[INNER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE] or self[OUTER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE]:
                 raise Exception('Inner and outer optimization sense must be "' + MINIMIZE + '" or "' + MAXIMIZE + '" (default).')
             if ((self[INNER_OBJECTIVE] == None) or (self[OUTER_OBJECTIVE] == None)):
-                raise Exception('When module type is "' + OPTKNOCK + '", "' + ROBUSTKNOCK +
-                                '" or "' + DOUBLEOPT + '", an inner and outer objective function must be provided.')
+                raise Exception('When module type is "' + OPTKNOCK + '", "' + ROBUSTKNOCK + '" or "' + DOUBLEOPT +
+                                '", an inner and outer objective function must be provided.')
         elif (self[MODULE_TYPE] == OPTCOUPLE):
             if self[INNER_OPT_SENSE] is None:
                 self[INNER_OPT_SENSE] = MAXIMIZE
@@ -277,8 +277,7 @@ class SDModule(Dict):
                 raise Exception('When module type is "' + OPTCOUPLE + '", the production reaction id must be provided.')
         if self[MODULE_TYPE] in [PROTECT, SUPPRESS] and self[OUTER_OBJECTIVE] is not None:
             if self[INNER_OBJECTIVE] is None:
-                raise Exception('When outer_objective is set for "' + self[MODULE_TYPE] +
-                                '", inner_objective must also be provided.')
+                raise Exception('When outer_objective is set for "' + self[MODULE_TYPE] + '", inner_objective must also be provided.')
             if self[OUTER_OPT_SENSE] is None:
                 self[OUTER_OPT_SENSE] = MAXIMIZE
             if self[OUTER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE]:

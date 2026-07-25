@@ -88,7 +88,8 @@ def _git_sha() -> str:
     try:
         return subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"],
-            cwd=TESTS_DIR, stderr=subprocess.DEVNULL,
+            cwd=TESTS_DIR,
+            stderr=subprocess.DEVNULL,
         ).decode().strip()
     except Exception:
         return "unknown"
@@ -107,8 +108,7 @@ def _solver_ver(solver: str) -> str:
     return "n/a"
 
 
-def record(name: str, solver: str, model_id: str,
-           elapsed: float, n_sol: int, status: str) -> None:
+def record(name: str, solver: str, model_id: str, elapsed: float, n_sol: int, status: str) -> None:
     entry = {
         "test": name,
         "solver": solver,
@@ -128,10 +128,10 @@ def record(name: str, solver: str, model_id: str,
 
 STRONG_SOLVERS = [s for s in [CPLEX, GUROBI] if s in sd.avail_solvers]
 
-
 # ---------------------------------------------------------------------------
 # Model fixtures  (session-scoped → loaded once per run)
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="session")
 def model_core():
@@ -152,6 +152,7 @@ def model_imlcore():
 # Quick suite — e_coli_core  (MCS correctness + speed, ~8 s / solver)
 # ===========================================================================
 
+
 @pytest.mark.parametrize("solver", STRONG_SOLVERS)
 @pytest.mark.timeout(180)
 def test_ecoli_core_mcs_455(solver, model_core):
@@ -164,18 +165,15 @@ def test_ecoli_core_mcs_455(solver, model_core):
     t0 = time.perf_counter()
     sol = sd.compute_strain_designs(
         m,
-        sd_modules=[sd.SDModule(m, SUPPRESS,
-                                constraints="BIOMASS_Ecoli_core_w_GAM >= 0.001")],
+        sd_modules=[sd.SDModule(m, SUPPRESS, constraints="BIOMASS_Ecoli_core_w_GAM >= 0.001")],
         solution_approach=POPULATE,
         max_cost=3,
         gene_kos=True,
         solver=solver,
     )
     elapsed = time.perf_counter() - t0
-    record("mcs_455", solver, "e_coli_core", elapsed,
-           len(sol.reaction_sd), sol.status)
-    assert len(sol.reaction_sd) == 455, (
-        f"[{solver}] Expected 455 MCS, got {len(sol.reaction_sd)}")
+    record("mcs_455", solver, "e_coli_core", elapsed, len(sol.reaction_sd), sol.status)
+    assert len(sol.reaction_sd) == 455, (f"[{solver}] Expected 455 MCS, got {len(sol.reaction_sd)}")
 
 
 # ===========================================================================
@@ -189,8 +187,17 @@ def test_ecoli_core_mcs_455(solver, model_core):
 
 # Shared KO / KI costs for model_weak_coupling  (from test_05_straindesign.py)
 _WEAK_KO = {
-    'r1': 1, 'r2': 1, 'r4': 1.1, 'r5': 0.75, 'r7': 0.8, 'r8': 1,
-    'r9': 1, 'r_S': 1.0, 'r_P': 1, 'r_BM': 1, 'r_Q': 1.5,
+    'r1': 1,
+    'r2': 1,
+    'r4': 1.1,
+    'r5': 0.75,
+    'r7': 0.8,
+    'r8': 1,
+    'r9': 1,
+    'r_S': 1.0,
+    'r_P': 1,
+    'r_BM': 1,
+    'r_Q': 1.5,
 }
 _WEAK_KI = {'r3': 0.6, 'r6': 1.0}
 _WEAK_REG = {'r6 >= 4.5': 1.2}
@@ -208,9 +215,7 @@ def test_weak_mcs_wgcp(solver, model_weak):
     """
     m = model_weak.copy()
     modules = [
-        sd.SDModule(m, SUPPRESS,
-                    inner_objective="r_BM",
-                    constraints=["r_P - 0.4 r_S <= 0", "r_S >= 0.1"]),
+        sd.SDModule(m, SUPPRESS, inner_objective="r_BM", constraints=["r_P - 0.4 r_S <= 0", "r_S >= 0.1"]),
         sd.SDModule(m, PROTECT, constraints=["r_BM >= 0.2"]),
     ]
     t0 = time.perf_counter()
@@ -222,14 +227,12 @@ def test_weak_mcs_wgcp(solver, model_weak):
         max_solutions=inf,
         ko_cost=_WEAK_KO,
         ki_cost=_WEAK_KI,
-        reg_cost=dict(_WEAK_REG),   # fresh copy: extend_model_regulatory mutates its arg
+        reg_cost=dict(_WEAK_REG),  # fresh copy: extend_model_regulatory mutates its arg
         solver=solver,
     )
     elapsed = time.perf_counter() - t0
-    record("mcs_wgcp", solver, "weak_coupling", elapsed,
-           len(sol.reaction_sd), sol.status)
-    assert len(sol.reaction_sd) == 3, (
-        f"[{solver}] Expected 3 wGCP MCS solutions, got {len(sol.reaction_sd)}")
+    record("mcs_wgcp", solver, "weak_coupling", elapsed, len(sol.reaction_sd), sol.status)
+    assert len(sol.reaction_sd) == 3, (f"[{solver}] Expected 3 wGCP MCS solutions, got {len(sol.reaction_sd)}")
 
 
 @pytest.mark.parametrize("solver", STRONG_SOLVERS)
@@ -242,10 +245,7 @@ def test_weak_optknock(solver, model_weak):
     """
     m = model_weak.copy()
     modules = [
-        sd.SDModule(m, OPTKNOCK,
-                    outer_objective="r_P",
-                    inner_objective="r_BM",
-                    constraints="r_BM >= 1"),
+        sd.SDModule(m, OPTKNOCK, outer_objective="r_P", inner_objective="r_BM", constraints="r_BM >= 1"),
     ]
     t0 = time.perf_counter()
     sol = sd.compute_strain_designs(
@@ -256,14 +256,12 @@ def test_weak_optknock(solver, model_weak):
         max_solutions=3,
         ko_cost=_WEAK_KO,
         ki_cost=_WEAK_KI,
-        reg_cost=dict(_WEAK_REG),   # fresh copy: extend_model_regulatory mutates its arg
+        reg_cost=dict(_WEAK_REG),  # fresh copy: extend_model_regulatory mutates its arg
         solver=solver,
     )
     elapsed = time.perf_counter() - t0
-    record("optknock", solver, "weak_coupling", elapsed,
-           len(sol.reaction_sd), sol.status)
-    assert len(sol.reaction_sd) == 3, (
-        f"[{solver}] Expected 3 OptKnock solutions, got {len(sol.reaction_sd)}")
+    record("optknock", solver, "weak_coupling", elapsed, len(sol.reaction_sd), sol.status)
+    assert len(sol.reaction_sd) == 3, (f"[{solver}] Expected 3 OptKnock solutions, got {len(sol.reaction_sd)}")
 
 
 @pytest.mark.parametrize("solver", STRONG_SOLVERS)
@@ -276,10 +274,9 @@ def test_weak_robustknock(solver, model_weak):
     """
     m = model_weak.copy()
     modules = [
-        sd.SDModule(m, ROBUSTKNOCK,
-                    outer_objective="r_P",
-                    inner_objective="r_BM",
-                    constraints=[[{"r_BM": 1.0}, ">=", 1.0]]),
+        sd.SDModule(m, ROBUSTKNOCK, outer_objective="r_P", inner_objective="r_BM", constraints=[[{
+            "r_BM": 1.0
+        }, ">=", 1.0]]),
     ]
     t0 = time.perf_counter()
     sol = sd.compute_strain_designs(
@@ -290,14 +287,12 @@ def test_weak_robustknock(solver, model_weak):
         max_solutions=3,
         ko_cost=_WEAK_KO,
         ki_cost=_WEAK_KI,
-        reg_cost=dict(_WEAK_REG),   # fresh copy: extend_model_regulatory mutates its arg
+        reg_cost=dict(_WEAK_REG),  # fresh copy: extend_model_regulatory mutates its arg
         solver=solver,
     )
     elapsed = time.perf_counter() - t0
-    record("robustknock", solver, "weak_coupling", elapsed,
-           len(sol.reaction_sd), sol.status)
-    assert len(sol.reaction_sd) >= 2, (
-        f"[{solver}] Expected ≥2 RobustKnock solutions, got {len(sol.reaction_sd)}")
+    record("robustknock", solver, "weak_coupling", elapsed, len(sol.reaction_sd), sol.status)
+    assert len(sol.reaction_sd) >= 2, (f"[{solver}] Expected ≥2 RobustKnock solutions, got {len(sol.reaction_sd)}")
 
 
 @pytest.mark.parametrize("solver", STRONG_SOLVERS)
@@ -310,10 +305,7 @@ def test_weak_optcouple(solver, model_weak):
     """
     m = model_weak.copy()
     modules = [
-        sd.SDModule(m, OPTCOUPLE,
-                    prod_id="r_P",
-                    inner_objective="r_BM",
-                    min_gcp=1.0),
+        sd.SDModule(m, OPTCOUPLE, prod_id="r_P", inner_objective="r_BM", min_gcp=1.0),
     ]
     t0 = time.perf_counter()
     sol = sd.compute_strain_designs(
@@ -324,19 +316,18 @@ def test_weak_optcouple(solver, model_weak):
         max_solutions=3,
         ko_cost=_WEAK_KO,
         ki_cost=_WEAK_KI,
-        reg_cost=dict(_WEAK_REG),   # fresh copy: extend_model_regulatory mutates its arg
+        reg_cost=dict(_WEAK_REG),  # fresh copy: extend_model_regulatory mutates its arg
         solver=solver,
     )
     elapsed = time.perf_counter() - t0
-    record("optcouple", solver, "weak_coupling", elapsed,
-           len(sol.reaction_sd), sol.status)
-    assert len(sol.reaction_sd) == 2, (
-        f"[{solver}] Expected 2 OptCouple solutions, got {len(sol.reaction_sd)}")
+    record("optcouple", solver, "weak_coupling", elapsed, len(sol.reaction_sd), sol.status)
+    assert len(sol.reaction_sd) == 2, (f"[{solver}] Expected 2 OptCouple solutions, got {len(sol.reaction_sd)}")
 
 
 # ===========================================================================
 # Standard suite (--medium): iMLcore gene-level MCS  (~47 s / solver each)
 # ===========================================================================
+
 
 @pytest.mark.medium
 @pytest.mark.parametrize("solver", STRONG_SOLVERS)
@@ -350,11 +341,8 @@ def test_imlcore_mcs_ethanol(solver, model_imlcore):
     """
     m = model_imlcore.copy()
     modules = [
-        sd.SDModule(m, SUPPRESS,
-                    constraints=["EX_etoh_e <= 1.0",
-                                 "BIOMASS_Ec_iML1515_core_75p37M >= 0.14"]),
-        sd.SDModule(m, PROTECT,
-                    constraints=["BIOMASS_Ec_iML1515_core_75p37M >= 0.15"]),
+        sd.SDModule(m, SUPPRESS, constraints=["EX_etoh_e <= 1.0", "BIOMASS_Ec_iML1515_core_75p37M >= 0.14"]),
+        sd.SDModule(m, PROTECT, constraints=["BIOMASS_Ec_iML1515_core_75p37M >= 0.15"]),
     ]
     t0 = time.perf_counter()
     sol = sd.compute_strain_designs(
@@ -366,10 +354,8 @@ def test_imlcore_mcs_ethanol(solver, model_imlcore):
         solver=solver,
     )
     elapsed = time.perf_counter() - t0
-    record("imlcore_ethanol", solver, "iMLcore", elapsed,
-           len(sol.reaction_sd), sol.status)
-    assert len(sol.reaction_sd) > 0, (
-        f"[{solver}] Expected ≥1 MCS for iMLcore ethanol scenario, got 0")
+    record("imlcore_ethanol", solver, "iMLcore", elapsed, len(sol.reaction_sd), sol.status)
+    assert len(sol.reaction_sd) > 0, (f"[{solver}] Expected ≥1 MCS for iMLcore ethanol scenario, got 0")
 
 
 @pytest.mark.medium
@@ -383,8 +369,7 @@ def test_imlcore_mcs_growth(solver, model_imlcore):
     """
     m = model_imlcore.copy()
     modules = [
-        sd.SDModule(m, SUPPRESS,
-                    constraints="BIOMASS_Ec_iML1515_core_75p37M >= 0.001"),
+        sd.SDModule(m, SUPPRESS, constraints="BIOMASS_Ec_iML1515_core_75p37M >= 0.001"),
     ]
     t0 = time.perf_counter()
     sol = sd.compute_strain_designs(
@@ -396,15 +381,14 @@ def test_imlcore_mcs_growth(solver, model_imlcore):
         solver=solver,
     )
     elapsed = time.perf_counter() - t0
-    record("imlcore_growth", solver, "iMLcore", elapsed,
-           len(sol.reaction_sd), sol.status)
-    assert len(sol.reaction_sd) > 0, (
-        f"[{solver}] Expected ≥1 MCS for iMLcore growth scenario, got 0")
+    record("imlcore_growth", solver, "iMLcore", elapsed, len(sol.reaction_sd), sol.status)
+    assert len(sol.reaction_sd) > 0, (f"[{solver}] Expected ≥1 MCS for iMLcore growth scenario, got 0")
 
 
 # ===========================================================================
 # Large suite (--large): iML1515 — known answer 393
 # ===========================================================================
+
 
 @pytest.mark.large
 @pytest.mark.parametrize("solver", [GUROBI])  # CPLEX is very slow on this one; skip to save time
@@ -421,23 +405,21 @@ def test_iml1515_mcs_393(solver):
     t0 = time.perf_counter()
     sol = sd.compute_strain_designs(
         m,
-        sd_modules=[sd.SDModule(m, SUPPRESS,
-                                constraints="BIOMASS_Ec_iML1515_core_75p37M >= 0.001")],
+        sd_modules=[sd.SDModule(m, SUPPRESS, constraints="BIOMASS_Ec_iML1515_core_75p37M >= 0.001")],
         solution_approach=POPULATE,
         max_cost=3,
         gene_kos=True,
         solver=solver,
     )
     elapsed = time.perf_counter() - t0
-    record("iml1515_393", solver, "iML1515", elapsed,
-           len(sol.reaction_sd), sol.status)
-    assert len(sol.reaction_sd) == 393, (
-        f"[{solver}] Expected 393 MCS for iML1515, got {len(sol.reaction_sd)}")
+    record("iml1515_393", solver, "iML1515", elapsed, len(sol.reaction_sd), sol.status)
+    assert len(sol.reaction_sd) == 393, (f"[{solver}] Expected 393 MCS for iML1515, got {len(sol.reaction_sd)}")
 
 
 # ===========================================================================
 # Session teardown: write JSON + print comparison table
 # ===========================================================================
+
 
 @pytest.fixture(scope="session", autouse=True)
 def _write_results():
@@ -449,7 +431,9 @@ def _write_results():
         "git_sha": _git_sha(),
         "platform": platform.platform(),
         "python": platform.python_version(),
-        "solver_versions": {s: _solver_ver(s) for s in STRONG_SOLVERS},
+        "solver_versions": {
+            s: _solver_ver(s) for s in STRONG_SOLVERS
+        },
         "results": _RESULTS,
     }
     out_file = RESULTS_DIR / f"{_SESSION_TS}.json"
@@ -460,14 +444,12 @@ def _write_results():
     tests_ran = sorted({(r["test"], r["model"]) for r in _RESULTS})
     col = 16
 
-    header = (f"{'Test':<22} {'Model':<16}"
-              + "".join(f"  {s:>{col}}" for s in solvers_ran))
+    header = (f"{'Test':<22} {'Model':<16}" + "".join(f"  {s:>{col}}" for s in solvers_ran))
     print("=== Solver Performance Summary ===")
     print(header)
     print("-" * len(header))
     for (test, model) in tests_ran:
-        row = {r["solver"]: r for r in _RESULTS
-               if r["test"] == test and r["model"] == model}
+        row = {r["solver"]: r for r in _RESULTS if r["test"] == test and r["model"] == model}
         line = f"{test:<22} {model:<16}"
         for s in solvers_ran:
             if s in row:
