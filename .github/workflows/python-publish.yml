@@ -20,7 +20,23 @@ jobs:
     runs-on: ubuntu-latest
     environment: build_and_publish
     steps:
+    # Anyone with write access can dispatch a workflow, and this one publishes
+    # irreversibly to PyPI. Fail loudly rather than skipping, so a dispatch that
+    # does nothing cannot be mistaken for a release that worked.
+    - name: Restrict releases to the maintainer
+      if: github.actor != 'VonAlphaBisZulu'
+      run: |
+        echo "::error::Releases may only be dispatched by VonAlphaBisZulu (dispatched by: ${{ github.actor }})"
+        exit 1
+    # Checked out over SSH with a write deploy key. The ruleset protecting main
+    # requires changes to arrive by pull request and lists DeployKey as a bypass
+    # actor, so the version-bump commit can only be pushed with this key. The key
+    # is an environment secret of build_and_publish, so no other workflow can
+    # read it -- unlike a bypass for github-actions[bot], which would apply to
+    # every workflow in the repository.
     - uses: actions/checkout@v4
+      with:
+        ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
     - name: Print version number
       run: echo ${{ github.event.inputs.version }}
     - name: set up Python
