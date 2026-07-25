@@ -75,7 +75,7 @@ The comprehensive StrainDesign package for MILP-based strain design computation 
   :width: 40%
   :alt: Plot animation
 
-The default compression uses a pure Python sparse RREF implementation. A legacy Java-based compression via EFMTool :html:`<a href="#ref6"><sup>[6]</sup></a>` is optionally available (see :doc:`legacy_methods`). Note that the Java backend (via JPype) is known to conflict with CPLEX's native library when both are loaded in the same Python session. If you use CPLEX, we recommend the default Python compression backend.
+Network compression uses a pure Python sparse RREF implementation with exact rational arithmetic, following the approach of EFMTool :html:`<a href="#ref6"><sup>[6]</sup></a>`. It has no dependencies beyond NumPy/SciPy.
 
 :html:`<a id="installation"></a>`\ Installation:
 ================================================
@@ -136,7 +136,6 @@ How to cite:
    examples/JN_08_compression.ipynb
    9_cnapy_integration
    api_reference
-   legacy_methods
    developers_guide
    
 .. 

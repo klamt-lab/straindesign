@@ -484,7 +484,6 @@ def _silent_io():
 from straindesign.compression import (
     compress_model,
     compress_model_coupled,
-    compress_model_efmtool,  # backward-compat alias
     compress_model_parallel,
     remove_blocked_reactions,
     remove_ext_mets,

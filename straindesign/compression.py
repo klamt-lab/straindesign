@@ -2092,7 +2092,7 @@ def simplify_model_gprs(model, budget=50000):
     logging.info('  GPR rule simplification: %d rules, %d rewritten.' % (n, nchg))
 
 
-def compress_model(model, no_par_compress_reacs=set(), compression_backend='sparse_rref', propagate_gpr=False,
+def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False,
                    no_coupled_compress_reacs=set()):
     """Compress a metabolic model using multiple techniques.
 
@@ -2108,11 +2108,6 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
             un-merged through COMPRESS#1 so that gene multiplicity is preserved exactly once
             GPR rules are integrated (correct gene-regulatory semantics under compression).
             To also exempt them from parallel merging, include them in no_par_compress_reacs.
-        compression_backend: Compression backend to use:
-            - 'sparse_rref' (default): Pure Python sparse integer RREF.
-              No external dependencies beyond NumPy/SciPy.
-            - 'efmtool_rref' (legacy): Java-based EFMTool via JPype.
-              Requires a JVM and the jpype1 package.
         propagate_gpr: If True, propagate and simplify GPR rules through
             compression (AND for coupled, OR for parallel merges).
             Empty GPR rules are correctly handled: skipped in AND (always
@@ -2126,16 +2121,6 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
     no_coupled_compress_reacs = set(no_coupled_compress_reacs)
     with suppress_lp_context(model):
         cmp_mapReac = []
-        use_java = (compression_backend == 'efmtool_rref')
-        if use_java:
-            # The Python compressor re-expresses each lump in one member's units (see
-            # StoichMatrixCompressor._restore_group_scale); the legacy Java backend does not, so a
-            # lump can come out at an extreme scale. The returned map carries the factor, so
-            # expanding a design stays exact -- but a bound stated on a lumped reaction is read in
-            # the lump's units, which is how 'biomass >= 0.001' can end up below feasibility tolerance.
-            LOG.warning('  Compression backend "efmtool_rref" does not normalize lumped-reaction '
-                        'scales; bounds and constraints on lumped reactions are expressed in the '
-                        'lump\'s units. Use "sparse_rref" if you constrain lumped reactions.')
         LOG.info('  Removing blocked reactions.')
         remove_blocked_reactions(model)
         LOG.info('  Converting coefficients to rationals.')
@@ -2155,10 +2140,7 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
                 cmp_mapReac.append({"reac_map_exp": reac_map_exp, "parallel": True})
 
             # 2. Conservation relation removal (reduces S rows for RREF)
-            if use_java:
-                _remove_conservation_relations_java(model)
-            else:
-                remove_conservation_relations(model)
+            remove_conservation_relations(model)
 
             # 3. Exit if either parallel or coupled found nothing (after
             #    at least one full cycle).  If one step found nothing,
@@ -2171,7 +2153,7 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
             # 4. Coupled (expensive — nullspace/RREF)
             numr_pre = len(model.reactions)
             LOG.info(f'  Compression {run}: Lumping coupled reactions.')
-            reac_map_exp = compress_model_coupled(model, compression_backend,
+            reac_map_exp = compress_model_coupled(model,
                                                   propagate_gpr=propagate_gpr,
                                                   protected_reactions=no_coupled_compress_reacs)
             for new_reac, old_reac_val in reac_map_exp.items():
@@ -2198,38 +2180,20 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
     return cmp_mapReac
 
 
-def _remove_conservation_relations_java(model) -> None:
-    """Remove conservation relations using Java efmtool."""
-    from . import efmtool_cmp_interface as efm
-    stoich_mat = create_stoichiometric_matrix(model, array_type='lil')
-    basic_mets = efm.basic_columns_rat_java(stoich_mat.transpose().toarray(), tolerance=0)
-    dependent = [model.metabolites[i] for i in set(range(len(model.metabolites))) - set(basic_mets)]
-    if dependent:
-        model.remove_metabolites(dependent)
-
-
-def compress_model_coupled(model, compression_backend='sparse_rref', propagate_gpr=False,
-                           suppressed_reactions=set(), protected_reactions=set()):
+def compress_model_coupled(model, propagate_gpr=False, protected_reactions=set()):
     """Compress by lumping stoichiometrically coupled (dependent) reactions.
 
     Identifies groups of reactions whose flux vectors are proportional in every
     steady state (i.e. they share a common nullspace direction) and merges each
-    group into a single lumped reaction.  Both the pure-Python and legacy Java
-    backends perform this operation; the compression_backend controls the nullspace algorithm.
+    group into a single lumped reaction, via the sparse integer RREF nullspace.
 
     Args:
         model: COBRA model to compress in-place
-        compression_backend: 'sparse_rref' (default, Python) or 'efmtool_rref' (Java legacy)
         propagate_gpr: If True, AND-combine GPR rules of merged reactions
             (with sympy simplification). Empty GPRs are skipped. Default False.
-        suppressed_reactions: Set of reaction IDs to exclude from compression
-            (Java backend only). Used to protect reactions referenced in strain
-            design constraints from being deleted by the Java compressor's
-            CoupledContradicting logic. Ignored for the Python backend (which
-            handles contradicting groups correctly via bounds intersection).
         protected_reactions: Set of reaction IDs to exempt from coupled merging
             (kept as their own reactions; the rest of their coupled group still
-            merges). Python (sparse_rref) backend only. Used to keep gene-controlled
+            merges). Used to keep gene-controlled
             reactions intact through compression before GPR integration so that the
             gene multiplicity is preserved (correct gene-regulatory semantics).
 
@@ -2239,27 +2203,18 @@ def compress_model_coupled(model, compression_backend='sparse_rref', propagate_g
     # Compression is pure linear algebra; keep it off the optlang solver.
     from straindesign.networktools import suppress_lp_context
     with suppress_lp_context(model):
-        # Save GPR AST bodies before either backend clears them
+        # Save GPR AST bodies before compression clears them
         if propagate_gpr:
             saved_gpr_bodies = {r.id: r.gpr.body for r in model.reactions}
 
-        if compression_backend == 'efmtool_rref':
-            from .efmtool_cmp_interface import compress_model_java
-            reaction_map = compress_model_java(model, suppressed_reactions=suppressed_reactions)
-            # Clean up any remaining zero-flux reactions that the Java compressor created.
-            zero_flux = {r for r in model.reactions if r.lower_bound == 0 and r.upper_bound == 0}
-            for r in zero_flux:
-                reaction_map.pop(r.id, None)
-            if zero_flux:
-                model.remove_reactions(list(zero_flux), remove_orphans=True)
-        else:
-            # Clear gene rules to match Java behavior
-            for r in model.reactions:
-                r.gene_reaction_rule = ''
+        # Gene rules are cleared here and re-derived below from the saved ASTs, so a lumped
+        # reaction's rule is the AND-combination of its members rather than one member's.
+        for r in model.reactions:
+            r.gene_reaction_rule = ''
 
-            result = compress_cobra_model(model, methods=CompressionMethod.standard(), in_place=True,
-                                          protected_reactions=protected_reactions)
-            reaction_map = result.reaction_map
+        result = compress_cobra_model(model, methods=CompressionMethod.standard(), in_place=True,
+                                      protected_reactions=protected_reactions)
+        reaction_map = result.reaction_map
 
         # Propagate GPR rules: AND-combine contributing reactions' GPR ASTs
         if propagate_gpr:
@@ -2272,11 +2227,6 @@ def compress_model_coupled(model, compression_backend='sparse_rref', propagate_g
                 rxn.gene_reaction_rule = _combine_gprs(gpr_bodies, 'and')
 
     return reaction_map
-
-
-# Backward-compatibility alias (old name referenced efmtool, but the function
-# is backend-agnostic — the new name compress_model_coupled is preferred).
-compress_model_efmtool = compress_model_coupled
 
 
 def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
@@ -2413,7 +2363,6 @@ __all__ = [
     # High-level API
     'compress_model',
     'compress_model_coupled',
-    'compress_model_efmtool',  # backward-compat alias
     'compress_model_parallel',
     # GPR propagation helpers
     '_gpr_ast_to_expr',

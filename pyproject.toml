@@ -31,9 +31,6 @@ dependencies = [
     "psutil",
 ]
 
-[project.optional-dependencies]
-java = ["jpype1"]
-
 [project.urls]
 Homepage = "https://github.com/klamt-lab/straindesign"
 Documentation = "https://straindesign.readthedocs.io/en/latest/index.html"
@@ -43,5 +40,3 @@ Source = "https://github.com/klamt-lab/straindesign/"
 [tool.setuptools.packages.find]
 include = ["straindesign*"]
 
-[tool.setuptools.package-data]
-straindesign = ["efmtool.jar"]
