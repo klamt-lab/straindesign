@@ -8,7 +8,7 @@
 [![Documentation Status](https://readthedocs.org/projects/straindesign/badge/?version=latest)](https://readthedocs.org/projects/straindesign/builds/)
 [![Supported Python Versions](https://img.shields.io/pypi/pyversions/straindesign.svg)](https://pypi.org/project/straindesign/)
 [![CI-test Status](https://github.com/klamt-lab/straindesign/workflows/CI-test/badge.svg)](https://github.com/klamt-lab/straindesign/actions/workflows/CI-test.yml)
-[![License](https://img.shields.io/pypi/l/straindesign.svg)](https://www.gnu.org/licenses/old-licenses/lgpl-2.0.html)
+[![License](https://img.shields.io/pypi/l/straindesign.svg)](https://github.com/klamt-lab/straindesign/blob/main/LICENSE)
 [![Code style: YAPF](https://img.shields.io/badge/code%20style-yapf-blue)](https://github.com/google/yapf)
 
 ## A COBRApy<a href="#ref1"><sup>[1]</sup></a>-based package for computational design of metabolic networks

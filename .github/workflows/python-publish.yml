@@ -29,7 +29,7 @@ jobs:
         python-version: '3.x'
     - name: update version number
       run: |
-        python ./.github/update_version.py setup.py ${{ github.event.inputs.version }}
+        python ./.github/update_version.py pyproject.toml ${{ github.event.inputs.version }}
         python ./.github/update_version.py conda-recipe/meta.yaml ${{ github.event.inputs.version }}
         python ./.github/update_version.py docs/source/conf.py ${{ github.event.inputs.version }}
     - name: install yapf
@@ -59,14 +59,17 @@ jobs:
         gh release create "v${{ github.event.inputs.version }}" \
           --title "v${{ github.event.inputs.version }}" \
           --notes "${{ github.event.inputs.description }}"
-    - name: Install setuptools, wheel and twine
+    - name: Install build and twine
       run: |
-        pip install build setuptools wheel twine
+        pip install --upgrade build twine
     - name: Clean PyPi build directories
       run: rm -rf dist
     - name: Build for PyPi
       run: |
-        python setup.py sdist bdist_wheel
+        python -m build
+    - name: Check the built distributions
+      run: |
+        twine check dist/*
     - name: Publish to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
       with:

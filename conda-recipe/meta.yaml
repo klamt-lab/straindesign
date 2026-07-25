@@ -13,13 +13,18 @@ requirements:
   build:
     - python
     - pip
-    - setuptools >=64
+    - setuptools >=77
     - wheel
   run:
     - python
     - scipy
-    - matplotlib
+    - matplotlib-base
     - psutil
+    - numpy
+    - pandas
+    - optlang
+    - swiglpk
+    - pyscipopt
     - conda-forge:cobra
 
 build:
@@ -33,8 +38,8 @@ test:
 
 about:
   home:  https://github.com/klamt-lab/straindesign
-  license: Apache 2
-  license_family: MIT
+  license: Apache-2.0
+  license_family: Apache
   license_file: LICENSE
   summary: Computational strain design package for the COBRApy framework.
   doc_url: https://github.com/klamt-lab/straindesign
