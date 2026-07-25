@@ -104,6 +104,71 @@ class _SolverStub:
 
 _SOLVER_STUB = _SolverStub('__stub__')
 
+
+class _CarrierSolver:
+    """Backend-free stand-in solver attached to suppressed model copies.
+
+    Reports the real optlang interface (so ``model.problem`` / ``select_solver`` resolve) and
+    exposes empty constraint/variable containers so cobra's ``add_metabolites`` /
+    ``Reaction.add_metabolites`` run without a live backend: constraint/variable lookups fall
+    through the permissive ``Container.__getitem__`` to ``_SOLVER_STUB`` (no-op coefficient/bound
+    setters) and ``add`` is a no-op. The copy is never solved -- FVA/FBA build their own MILP_LP
+    from the stoichiometry -- so no real backend is needed. Building an empty ``iface.Model()``
+    instead (the previous behaviour) forced ``add_cons_vars`` to push every gadget metabolite into
+    a live Gurobi/CPLEX model during ``extend_model_gpr`` (~0.5s wasted per copy on iML1515).
+    """
+    __slots__ = ('interface', 'constraints', 'variables')
+
+    def __init__(self, interface):
+        from optlang.container import Container
+        self.interface = interface
+        self.constraints = Container()
+        self.variables = Container()
+
+    def add(self, *a, **kw):
+        pass
+
+    def remove(self, *a, **kw):
+        pass
+
+    def update(self, *a, **kw):
+        pass
+
+    # Picklable (dump_preprocessed pickles cmp_model): store the interface by module name and
+    # rebuild empty containers on load -- the carrier is never solved, so this suffices.
+    def __getstate__(self):
+        return self.interface.__name__
+
+    def __setstate__(self, name):
+        import importlib
+        from optlang.container import Container
+        self.interface = importlib.import_module(name)
+        self.constraints = Container()
+        self.variables = Container()
+
+
+def _suppressed_copy(model):
+    """``Model.copy`` while LP updates are suppressed: no deep copy of the optlang backend.
+
+    A plain copy deepcopies the live solver, which rebuilds the whole Gurobi/CPLEX model (~3s per
+    copy on iML1515). Under suppression nothing reads that solver -- FVA builds its own LP and
+    compression manipulates the stoichiometry directly -- so the solver is swapped for a stub while
+    copying (~0.3s) and the copy is given a backend-free ``_CarrierSolver`` of the same interface.
+    The carrier exposes ``.interface`` and empty constraint/variable containers, so the GPR
+    extension's ``add_metabolites`` calls run without building (or pushing constraints into) a live
+    solver.
+    """
+    iface = model.solver.interface          # captured before stubbing
+    saved = model._solver
+    orig_copy = next(o for cls, attr, o in _ORIG_COBRA if cls is Model and attr == 'copy')
+    try:
+        model._solver = _SOLVER_STUB
+        new = orig_copy(model)
+    finally:
+        model._solver = saved
+    new._solver = _CarrierSolver(iface)
+    return new
+
 _ORIG_CONTAINER_GETITEM = None  # saved Container.__getitem__
 
 
@@ -186,6 +251,25 @@ def _suppressed_remove_metabolites(self, metabolite_list, destructive=False):
         _remove_metabolites_direct(self, remove_set)
 
 
+def _suppressed_add_metabolites(self, metabolite_list):
+    """Bypass solver constraint creation: direct DictList manipulation.
+
+    Mirrors ``cobra.Model.add_metabolites`` dedup + ``_model`` wiring but skips the optlang
+    ``Constraint`` construction and ``add_cons_vars`` -- both need a live backend and, on the
+    suppressed copy, only build a throwaway solver the code never reads (FVA/FBA construct their
+    own MILP_LP; the original model's solver is rebuilt on suppress-exit via ``_populate_solver``).
+    Safe under ``extend_model_gpr`` because it de-dupes gadget metabolites before calling this.
+    """
+    if not hasattr(metabolite_list, '__iter__'):
+        metabolite_list = [metabolite_list]
+    metabolite_list = [x for x in metabolite_list if x.id not in self.metabolites]
+    if not metabolite_list:
+        return
+    for x in metabolite_list:
+        x._model = self
+    self.metabolites += metabolite_list
+
+
 # -- Saved originals (None = not suppressed) ----------------------------------
 
 _ORIG_SLC = None   # (cls, method) for Constraint.set_linear_coefficients
@@ -210,6 +294,7 @@ def _suppress_lp_updates(model):
       - Model._populate_solver → no-op (rebuild on context exit)
       - Model.remove_reactions → direct list manipulation
       - Model.remove_metabolites → direct list manipulation
+      - Model.add_metabolites → direct list manipulation (no backend constraints)
       - Container.__getitem__ → return stub for missing keys
 
     Safe to call when already suppressed (idempotent).  The real methods
@@ -267,6 +352,12 @@ def _suppress_lp_updates(model):
     if Model.remove_metabolites is not _suppressed_remove_metabolites:
         _ORIG_COBRA.append((Model, 'remove_metabolites', Model.remove_metabolites))
         Model.remove_metabolites = _suppressed_remove_metabolites
+    if Model.add_metabolites is not _suppressed_add_metabolites:
+        _ORIG_COBRA.append((Model, 'add_metabolites', Model.add_metabolites))
+        Model.add_metabolites = _suppressed_add_metabolites
+    if Model.copy is not _suppressed_copy:
+        _ORIG_COBRA.append((Model, 'copy', Model.copy))
+        Model.copy = _suppressed_copy
 
     # Permissive solver container: return stub for missing keys
     global _ORIG_CONTAINER_GETITEM
@@ -346,6 +437,13 @@ def suppress_lp_context(model):
             if hasattr(model, '_suppressed_obj'):
                 del model._suppressed_obj
             if current_ids != _pre_ids:
+                if model.groups:
+                    kept = {c.id for c in
+                            list(model.reactions) + list(model.metabolites) + list(model.genes)}
+                    for grp in model.groups:
+                        stale = [m for m in grp.members if m.id not in kept]
+                        if stale:
+                            grp.remove_members(stale)
                 try:
                     solver_interface = model.solver.interface
                     model._solver = solver_interface.Model()
@@ -392,7 +490,7 @@ from straindesign.compression import (
     remove_ext_mets,
     remove_conservation_relations,
     remove_dummy_bounds,
-    stoichmat_coeff2rational,
+    stoichmat_coeff_to_fraction,
     stoichmat_coeff2float,
 )
 
@@ -401,7 +499,7 @@ def evaluate_gpr_ast(node, gene_states):
     """Evaluate a GPR AST node with given gene states.
 
     Supports arbitrary nesting of AND/OR operators (not limited to DNF/CNF).
-    Used by both gene_kos_to_constraints and reduce_gpr.
+    Used by both gene_kos_to_constraints and reduce_model_gprs.
 
     Args:
         node: An ast.Name or ast.BoolOp node from a parsed GPR rule
@@ -660,288 +758,6 @@ def resolve_gene_constraints(model, constraints):
     return clean_constraints
 
 
-def reduce_gpr(model, essential_reacs, gkis, gkos):
-    """Simplify GPR rules by removing non-targetable genes and reducing boolean expressions
-
-    This function is used in preprocessing of computational strain design computations. Often,
-    certain reactions, for instance, reactions essential for microbial growth can/must not be
-    targeted by interventions. That can be exploited to reduce the set of genes in which
-    interventions need to be considered.
-
-    Given a set of essential reactions that is to be maintained operational, some genes can be
-    removed from a metabolic model, either because they only affect only blocked reactions or
-    essential reactions, or because they are essential reactions and must not be removed. As a
-    consequence, the GPR rules of a model can be simplified using AST parsing for both DNF and non-DNF rules.
-
-
-    Example:
-        reduce_gpr(model, essential_reacs, gkis, gkos):
-    
-    Args:
-        model (cobra.Model):
-            A metabolic model that is an instance of the cobra.Model class containing GPR rules
-            
-        essential_reacs (list of str):
-            A list of identifiers of essential reactions.
-            
-        gkis, gkos (dict):
-            Dictionaries that contain the costs for gene knockouts and additions. E.g.,
-            gkos={'adhE': 1.0, 'ldhA' : 1.0 ...}
-            
-    Returns:
-        (dict):
-        An updated dictionary of the knockout costs in which irrelevant genes are removed.
-    """
-
-    def ast_to_gene_reaction_rule(node):
-        """
-        Convert an AST node back to gene reaction rule string format.
-        """
-        if isinstance(node, ast.Name):
-            return node.id
-        elif isinstance(node, ast.BoolOp):
-            child_strings = [ast_to_gene_reaction_rule(child) for child in node.values]
-            if isinstance(node.op, ast.And):
-                return ' and '.join(f'({s})' if ' or ' in s else s for s in child_strings)
-            elif isinstance(node.op, ast.Or):
-                return ' or '.join(f'({s})' if ' and ' in s else s for s in child_strings)
-        else:
-            raise ValueError(f"Unsupported AST node type: {type(node)}")
-
-    def simplify_gpr_ast(node, protected_genes_dict):
-        """
-        Simplify GPR AST by setting protected genes to True and applying boolean simplification.
-        This is equivalent to the original string-based approach but operates purely on AST.
-        """
-        return apply_gene_protection_to_ast(node, protected_genes_dict)
-
-    def apply_gene_protection_to_ast(node, protected_genes_dict):
-        """
-        Apply gene protection to AST by setting protected genes to True and simplifying boolean expressions.
-        Returns a simplified AST node with redundant terms removed and consistent gene ordering.
-        """
-        if isinstance(node, ast.Name):
-            if node.id in protected_genes_dict:
-                return True
-            else:
-                return node
-        elif isinstance(node, ast.BoolOp):
-            # Recursively apply to children
-            new_children = []
-            for child in node.values:
-                simplified_child = apply_gene_protection_to_ast(child, protected_genes_dict)
-
-                if isinstance(node.op, ast.And):
-                    if simplified_child is False:
-                        return False
-                    elif simplified_child is not True:
-                        new_children.append(simplified_child)
-                elif isinstance(node.op, ast.Or):
-                    if simplified_child is True:
-                        return True
-                    elif simplified_child is not False:
-                        new_children.append(simplified_child)
-
-            # Handle results
-            if not new_children:
-                return True if isinstance(node.op, ast.And) else False
-            elif len(new_children) == 1:
-                return new_children[0]
-            else:
-                # Apply additional simplifications for OR nodes
-                if isinstance(node.op, ast.Or):
-                    new_children = remove_redundant_or_terms(new_children)
-                    if len(new_children) == 1:
-                        return new_children[0]
-
-                # Sort children for consistent ordering (like string approach does)
-                sorted_children = sort_ast_nodes(new_children)
-                new_node = ast.BoolOp(op=node.op, values=sorted_children)
-                return new_node
-        else:
-            raise ValueError(f"Unsupported AST node type: {type(node)}")
-
-    def remove_redundant_or_terms(children):
-        """
-        Remove redundant terms from OR expressions using boolean logic simplification.
-        Example: (a and b and c) or (a and b) simplifies to (a and b)
-        since (a and b) is logically sufficient when both terms are present.
-        """
-        # Convert AST nodes to comparable forms
-        simplified = []
-        for child in children:
-            # Check if this child makes any other child redundant
-            is_redundant = False
-            for other in children:
-                if child is not other and is_subset_of(child, other):
-                    # child is a subset of other, so other is redundant
-                    is_redundant = False  # Keep child, remove other later
-                elif child is not other and is_subset_of(other, child):
-                    # other is a subset of child, so child is redundant
-                    is_redundant = True
-                    break
-            if not is_redundant:
-                simplified.append(child)
-
-        # Remove duplicates
-        unique = []
-        for child in simplified:
-            if not any(ast_nodes_equal(child, existing) for existing in unique):
-                unique.append(child)
-
-        return unique if unique else children
-
-    def is_subset_of(node1, node2):
-        """
-        Check if node1 logically absorbs node2 in boolean algebra.
-        
-        In OR expressions: A or (A and B) = A
-        This means A absorbs (A and B) because A is simpler/more general.
-        
-        For absorption to work: node1 must be "simpler" than node2,
-        meaning node2 implies node1 (node2 is more restrictive).
-        
-        Examples:
-        - mobA absorbs (mobA and mobB) 
-        - (a and b) absorbs (a and b and c)
-        """
-        # Case 1: Single gene absorbs AND expression containing that gene
-        if isinstance(node1, ast.Name) and isinstance(node2, ast.BoolOp) and isinstance(node2.op, ast.And):
-            genes_in_and = get_genes_from_ast(node2)
-            return node1.id in genes_in_and
-
-        # Case 2: Shorter AND expression absorbs longer AND expression with same genes
-        if (isinstance(node1, ast.BoolOp) and isinstance(node1.op, ast.And) and isinstance(node2, ast.BoolOp) and
-                isinstance(node2.op, ast.And)):
-            genes1 = get_genes_from_ast(node1)
-            genes2 = get_genes_from_ast(node2)
-            # node1 absorbs node2 if node1's genes are a proper subset of node2's genes
-            return genes1.issubset(genes2) and len(genes1) < len(genes2)
-
-        return False
-
-    def get_genes_from_ast(node):
-        """Extract set of genes from AST node"""
-        if isinstance(node, ast.Name):
-            return {node.id}
-        elif isinstance(node, ast.BoolOp):
-            genes = set()
-            for child in node.values:
-                genes.update(get_genes_from_ast(child))
-            return genes
-        return set()
-
-    def ast_nodes_equal(node1, node2):
-        """Check if two AST nodes are equivalent"""
-        if type(node1) != type(node2):
-            return False
-        if isinstance(node1, ast.Name):
-            return node1.id == node2.id
-        elif isinstance(node1, ast.BoolOp):
-            if type(node1.op) != type(node2.op):
-                return False
-            return (len(node1.values) == len(node2.values) and all(ast_nodes_equal(a, b) for a, b in zip(node1.values, node2.values)))
-        return False
-
-    def sort_ast_nodes(nodes):
-        """Sort AST nodes for consistent ordering"""
-
-        def node_sort_key(node):
-            if isinstance(node, ast.Name):
-                return (0, node.id)
-            elif isinstance(node, ast.BoolOp):
-                return (1, len(node.values), str(type(node.op)))
-            return (2, str(node))
-
-        return sorted(nodes, key=node_sort_key)
-
-    def is_gene_essential_to_reaction_ast(reaction, gene_id):
-        """
-        Determine if a gene is essential for a reaction using AST-based GPR analysis.
-        A gene is considered essential if removing it (setting it to False) makes 
-        the entire GPR expression evaluate to False, rendering the reaction impossible.
-        """
-        if not reaction.gene_reaction_rule:
-            return False
-
-        # Skip reactions without gene associations
-        if not reaction.gpr or not reaction.gpr.body:
-            return False
-
-        try:
-            # Test what happens if we knock out this gene using AST
-            gene_states = {gene_id: False}
-            result = evaluate_gpr_ast(reaction.gpr.body, gene_states)
-            return result is False
-        except Exception as e:
-            # Catch unsupported AST node types but don't fall back to string parsing
-            logging.warning(f'Unsupported AST node type in reaction {reaction.id} for gene {gene_id}: {e}')
-            return False
-
-    # 1) Remove gpr rules from blocked reactions
-    blocked_reactions = [reac.id for reac in model.reactions if reac.bounds == (0, 0)]
-    for rid in blocked_reactions:
-        model.reactions.get_by_id(rid).gene_reaction_rule = ''
-    for g in model.genes[::-1]:  # iterate in reverse order to avoid mixing up the order of the list when removing genes
-        if not g.reactions:
-            model.genes.remove(g)
-
-    protected_genes = set()
-
-    # 2. Protect genes that only occur in essential reactions
-    for g in model.genes:
-        if not g.reactions or {r.id for r in g.reactions}.issubset(essential_reacs):
-            protected_genes.add(g)
-
-    # 3. Protect genes that are essential to essential reactions (AST-based analysis)
-    for r in [model.reactions.get_by_id(s) for s in essential_reacs]:
-        for g in r.genes:
-            if is_gene_essential_to_reaction_ast(r, g.id):
-                protected_genes.add(g)
-
-    # 4. Remove essential genes, and knockouts without impact from gko_costs
-    [gkos.pop(pg.id) for pg in protected_genes if pg.id in gkos]
-
-    # 5. Add all not-knockable genes to the protected list
-    [protected_genes.add(g) for g in model.genes if (g.id not in gkos) and (g.name not in gkos)]  # support names or ids in gkos
-
-    # 6. genes with kiCosts are kept (remove from protected list so they can be targeted)
-    gki_ids = [g.id for g in model.genes if (g.id in gkis) or (g.name in gkis)]  # support names or ids in gkis
-    protected_genes = protected_genes.difference({model.genes.get_by_id(g) for g in gki_ids})
-    protected_genes_dict = {pg.id: True for pg in protected_genes}
-
-    # 7. Simplify GPR rules using AST-based boolean logic and remove non-targetable rules
-    for r in model.reactions:
-        if r.gene_reaction_rule and r.gpr and r.gpr.body:
-            try:
-                simplified = simplify_gpr_ast(r.gpr.body, protected_genes_dict)
-
-                if simplified is True:
-                    # Rule is always satisfied (cannot be knocked out)
-                    model.reactions.get_by_id(r.id).gene_reaction_rule = ''
-                elif simplified is False:
-                    # Rule is impossible - should not happen with proper protection
-                    logging.error(f'Something went wrong during gpr rule simplification for {r.id}.')
-                elif isinstance(simplified, (ast.Name, ast.BoolOp)):
-                    # Convert simplified AST back to string
-                    new_rule = ast_to_gene_reaction_rule(simplified)
-                    model.reactions.get_by_id(r.id).gene_reaction_rule = new_rule
-                # If simplified is the original node, keep original rule
-            except Exception as e:
-                logging.warning(f'Failed to simplify GPR rule for reaction {r.id}: {e}')
-
-    # 8. Remove obsolete genes and protected genes
-    for g in model.genes[::-1]:
-        if not g.reactions or g in protected_genes:
-            model.genes.remove(g)
-
-    return gkos
-
-
-# backward-compat alias
-remove_irrelevant_genes = reduce_gpr
-
-
 def extend_model_gpr(model, use_names=False):
     """Integrate GPR-rules into a metabolic model as pseudo metabolites and reactions using AST parsing
     
@@ -1004,15 +820,13 @@ def extend_model_gpr(model, use_names=False):
                         "\nOne of the generated reaction names is beyond or close to the limit of 255 "+\
                         "characters\npermitted by GLPK and Gurobi. The name of the newly generated "+\
                         "reaction or metabolite: \n "+id+",\ngenerated from reaction or metabolite:\n "+\
-                        p+"\n"+"was therefore trimmed to:\n "+id[0:MAX_NAME_LEN]+".\nThis trimming is "+\
-                        "usually safe, no guarantee is given. To avoid this message,\nuse the CPLEX "+\
-                        "solver or consider simplifying GPR rules or gene names in your model.")
+                        p+"\n"+"was therefore trimmed to:\n "+truncate(id)+".\nThis trimming is "+\
+                        "usually safe, no guarantee is given. To avoid this message,\nconsider "+\
+                        "simplifying GPR rules or gene names in your model.")
 
     def truncate(id):
         h = hashlib.sha256(id.encode()).hexdigest()[:20]
         return id[0:MAX_NAME_LEN - 21] + "_" + h
-
-    solver = search('(' + '|'.join(avail_solvers) + ')', model.solver.interface.__name__)[0]
 
     # Track created metabolites to avoid duplicates
     created_metabolites = set()
@@ -1022,7 +836,7 @@ def extend_model_gpr(model, use_names=False):
         gene_met_id = f'g_{gene_id}'
 
         # Check name length and truncate if necessary
-        if len(gene_met_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
+        if len(gene_met_id) > MAX_NAME_LEN:
             if truncate(gene_met_id) not in [m.id for m in model.metabolites]:
                 warning_name_too_long(gene_met_id, gene_id)
             gene_met_id = truncate(gene_met_id)
@@ -1039,7 +853,7 @@ def extend_model_gpr(model, use_names=False):
                 reaction_id = gene.id
 
             # Check name length and truncate if necessary
-            if len(reaction_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
+            if len(reaction_id) > MAX_NAME_LEN:
                 warning_name_too_long(reaction_id, gene_id)
                 reaction_id = truncate(reaction_id)
 
@@ -1055,7 +869,7 @@ def extend_model_gpr(model, use_names=False):
         and_met_id = "_and_".join(sorted(child_metabolites))
 
         # Check name length and truncate if necessary
-        if len(and_met_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
+        if len(and_met_id) > MAX_NAME_LEN:
             if truncate(and_met_id) not in [m.id for m in model.metabolites]:
                 warning_name_too_long(and_met_id, "AND combination")
             and_met_id = truncate(and_met_id)
@@ -1068,7 +882,7 @@ def extend_model_gpr(model, use_names=False):
             reaction_id = f"R_{and_met_id}"
 
             # Check name length and truncate if necessary
-            if len(reaction_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
+            if len(reaction_id) > MAX_NAME_LEN:
                 warning_name_too_long(reaction_id, "AND combination")
                 reaction_id = truncate(reaction_id)
 
@@ -1084,7 +898,7 @@ def extend_model_gpr(model, use_names=False):
         or_met_id = "_or_".join(sorted(child_metabolites))
 
         # Check name length and truncate if necessary
-        if len(or_met_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
+        if len(or_met_id) > MAX_NAME_LEN:
             if truncate(or_met_id) not in [m.id for m in model.metabolites]:
                 warning_name_too_long(or_met_id, "OR combination")
             or_met_id = truncate(or_met_id)
@@ -1099,7 +913,7 @@ def extend_model_gpr(model, use_names=False):
                 reaction_id = f"R{i}_{or_met_id}"
 
                 # Check name length and truncate if necessary
-                if len(reaction_id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
+                if len(reaction_id) > MAX_NAME_LEN:
                     warning_name_too_long(reaction_id, "OR combination")
                     reaction_id = truncate(reaction_id)
 
@@ -1140,7 +954,7 @@ def extend_model_gpr(model, use_names=False):
                 r_rev.id = r.id + '_reverse_' + hex(hash(r))[8:]
             r_rev.lower_bound = np.max([0, r_rev.lower_bound])
             reac_map[r.id].update({r_rev.id: -1.0})
-            if len(r_rev.id) > MAX_NAME_LEN and solver in {GUROBI, GLPK}:
+            if len(r_rev.id) > MAX_NAME_LEN:
                 warning_name_too_long(r_rev.id, r.id)
                 r_rev.id = truncate(r_rev.id)
             rev_reac.add(r_rev)
@@ -1332,7 +1146,7 @@ def compress_modules(sd_modules, cmp_mapReac):
         (list of SDModule):
         A list of strain design modules for the compressed network
     """
-    sd_modules = modules_coeff2rational(sd_modules)
+    sd_modules = modules_coeff_to_fraction(sd_modules)
     for cmp in cmp_mapReac:
         reac_map_exp = cmp["reac_map_exp"]
         parallel = cmp["parallel"]
@@ -1554,19 +1368,19 @@ def filter_sd_maxcost(sd, max_cost, kocost, kicost):
     return sd
 
 
-def modules_coeff2rational(sd_modules):
-    """Convert coefficients to rational numbers using sympy.Rational"""
-    from .compression import float_to_rational
+def modules_coeff_to_fraction(sd_modules):
+    """Convert SDModule coefficients to exact fractions.Fraction."""
+    from .compression import float_to_fraction
     for i, module in enumerate(sd_modules):
         for param in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
             if param in module and module[param] is not None:
                 if param == CONSTRAINTS:
                     for constr in module[CONSTRAINTS]:
                         for reac in constr[0].keys():
-                            constr[0][reac] = float_to_rational(constr[0][reac])
+                            constr[0][reac] = float_to_fraction(constr[0][reac])
                 if param in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                     for reac in module[param].keys():
-                        module[param][reac] = float_to_rational(module[param][reac])
+                        module[param][reac] = float_to_fraction(module[param][reac])
     return sd_modules
 
 
@@ -1586,7 +1400,7 @@ def modules_coeff2float(sd_modules):
 
 
 def bound_blocked_or_irrevers_fva(model, **kwargs):
-    """Use FVA to determine the flux ranges. Use this information to update the model bounds
+    """Use FVA to determine flux ranges, update model bounds, and return the ranges.
 
     If flux ranges for a reaction are narrower than its bounds in the mode, these bounds can be omitted,
     since other reactions must constrain the reaction flux. If (upper or lower) flux bounds are found to
@@ -1610,6 +1424,7 @@ def bound_blocked_or_irrevers_fva(model, **kwargs):
             r._upper_bound = np.inf
         if limits.maximum <= -tol:
             r._upper_bound = min([0.0, r._upper_bound])
+    return flux_limits
 
 
 # ── Portable, rational-safe model (de)serialisation ──────────────────────────

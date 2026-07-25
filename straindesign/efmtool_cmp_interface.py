@@ -307,6 +307,13 @@ def jBigFraction2sympyRat(val):
     return jBigIntegerPair2sympyRat(val.getNumerator(), val.getDenominator())
 
 
+def jBigFraction2fraction(val):
+    """Convert Java BigFraction to fractions.Fraction."""
+    from fractions import Fraction
+    r = jBigIntegerPair2sympyRat(val.getNumerator(), val.getDenominator())
+    return Fraction(int(r.p), int(r.q))
+
+
 def jBigIntegerPair2sympyRat(numer, denom):
     """Convert Java BigInteger pair to sympy Rational (requires sympy)."""
     import sympy
@@ -378,13 +385,13 @@ def compress_model_java(model, suppressed_reactions=set()):
         dict: Reaction map from compressed to original reactions with scaling factors
     """
     import jpype
-    from .networktools import stoichmat_coeff2rational
+    from .networktools import stoichmat_coeff_to_fraction
 
     # Initialize Java if not already done
     _init_java()
 
     # Convert to rational coefficients for Java
-    stoichmat_coeff2rational(model)
+    stoichmat_coeff_to_fraction(model)
 
     for r in model.reactions:
         r.gene_reaction_rule = ''
@@ -442,7 +449,7 @@ def compress_model_java(model, suppressed_reactions=set()):
         model.reactions[r0_mi].subset_stoich = []
         for ai in rxn_ai:
             mi = active_to_model[ai]
-            factor = jBigFraction2sympyRat(comprec.post.getBigFractionValueAt(ai, j))
+            factor = jBigFraction2fraction(comprec.post.getBigFractionValueAt(ai, j))
             model.reactions[mi] *= factor
             if model.reactions[mi].lower_bound not in (0, -float('inf')):
                 model.reactions[mi].lower_bound /= abs(subset_matrix[ai, j])
@@ -472,7 +479,7 @@ def compress_model_java(model, suppressed_reactions=set()):
                 merged_obj = 0.0
                 for ai in rxn_ai:
                     mi = active_to_model[ai]
-                    factor = jBigFraction2sympyRat(comprec.post.getBigFractionValueAt(ai, j))
+                    factor = jBigFraction2fraction(comprec.post.getBigFractionValueAt(ai, j))
                     merged_obj += _obj.pop(old_reac_ids[mi], 0.0) * float(factor)
                 if merged_obj != 0:
                     _obj[model.reactions[r0_mi].id] = merged_obj
