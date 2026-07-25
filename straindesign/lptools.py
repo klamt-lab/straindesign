@@ -319,7 +319,10 @@ def fva_legacy(model, **kwargs) -> DataFrame:
     if status not in [OPTIMAL, UNBOUNDED]:
         logging.info('FVA problem not feasible.')
         return DataFrame(
-            {"minimum": [nan] * numr, "maximum": [nan] * numr},
+            {
+                "minimum": [nan] * numr,
+                "maximum": [nan] * numr
+            },
             index=reaction_ids,
         )
 
@@ -328,18 +331,14 @@ def fva_legacy(model, **kwargs) -> DataFrame:
     x = [nan] * 2 * numr
 
     if processes > 1 and numr > 300:
-        with SDPool(processes, initializer=fva_worker_init,
-                    initargs=(A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver)) as pool:
+        with SDPool(processes, initializer=fva_worker_init, initargs=(A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver)) as pool:
             chunk_size = len(reaction_ids) // processes
-            for i, value in pool.imap_unordered(fva_worker_compute, range(2 * numr),
-                                                chunksize=chunk_size):
+            for i, value in pool.imap_unordered(fva_worker_compute, range(2 * numr), chunksize=chunk_size):
                 x[i] = value
     elif processes > 1 and numr > 500 and solver == GLPK:
-        with SDPool(processes, initializer=fva_worker_init_glpk,
-                    initargs=(A_ineq, b_ineq, A_eq, b_eq, lb, ub)) as pool:
+        with SDPool(processes, initializer=fva_worker_init_glpk, initargs=(A_ineq, b_ineq, A_eq, b_eq, lb, ub)) as pool:
             chunk_size = len(reaction_ids) // processes
-            for i, value in pool.imap_unordered(fva_worker_compute_glpk, range(2 * numr),
-                                                chunksize=chunk_size):
+            for i, value in pool.imap_unordered(fva_worker_compute_glpk, range(2 * numr), chunksize=chunk_size):
                 x[i] = value
     else:
         fva_worker_init(A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver)
@@ -352,8 +351,7 @@ def fva_legacy(model, **kwargs) -> DataFrame:
         logging.warning(f'FVA: {len(nan_remaining)}/{2*numr} LP solves returned NaN, re-solving.')
         _BATCH = 50
         while nan_remaining:
-            lp_retry = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
-                               lb=lb, ub=ub, solver=solver)
+            lp_retry = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb, ub=ub, solver=solver)
             prev_retry = 0
             for i in nan_remaining[:_BATCH]:
                 C = idx2c(i, prev_retry)
@@ -374,8 +372,7 @@ def fva_legacy(model, **kwargs) -> DataFrame:
                 sig = sign(mod(i, 2) - 0.5)
                 c_vec = [0.0] * numr
                 c_vec[col] = sig
-                lp_last = MILP_LP(c=c_vec, A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
-                                  lb=lb, ub=ub, solver=solver)
+                lp_last = MILP_LP(c=c_vec, A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb, ub=ub, solver=solver)
                 x[i] = lp_last.slim_solve()
             nan_remaining = [i for i in nan_remaining if isnan(x[i])]
         if nan_remaining:
@@ -383,8 +380,10 @@ def fva_legacy(model, **kwargs) -> DataFrame:
 
     x = [v if abs(v) >= 1e-11 else 0.0 for v in x]
     return DataFrame(
-        {"minimum": [x[i] for i in range(1, 2 * numr, 2)],
-         "maximum": [-x[i] for i in range(0, 2 * numr, 2)]},
+        {
+            "minimum": [x[i] for i in range(1, 2 * numr, 2)],
+            "maximum": [-x[i] for i in range(0, 2 * numr, 2)]
+        },
         index=reaction_ids,
     )
 
@@ -623,8 +622,7 @@ def slim_fba_via_cmp(model, cmp_model, cmp_map, **kwargs) -> float:
         if isinstance(obj, str):
             obj = linexpr2dict(obj, orig_reaction_ids)
     else:
-        obj = {r.id: r.objective_coefficient for r in model.reactions
-               if r.objective_coefficient != 0}
+        obj = {r.id: r.objective_coefficient for r in model.reactions if r.objective_coefficient != 0}
 
     # Trace each objective reaction through compression
     obj_cmp = {}
@@ -673,8 +671,7 @@ def slim_fba_via_cmp(model, cmp_model, cmp_map, **kwargs) -> float:
     lb = [float(v.lower_bound) for v in cmp_model.reactions]
     ub = [float(v.upper_bound) for v in cmp_model.reactions]
 
-    fba_prob = MILP_LP(c=c, A_ineq=A_ineq, b_ineq=b_ineq,
-                       A_eq=A_eq, b_eq=b_eq, lb=lb, ub=ub, solver=solver)
+    fba_prob = MILP_LP(c=c, A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb, ub=ub, solver=solver)
     opt_cx = fba_prob.slim_solve()
 
     if isnan(opt_cx):
@@ -906,6 +903,7 @@ def yopt(model, **kwargs) -> Solution:
     else:
         status = INFEASIBLE
 
+
 def expand_fluxes(fluxes_cmp, cmp_map, orig_reaction_ids):
     """Expand a compressed flux vector to the full (uncompressed) model.
 
@@ -944,6 +942,7 @@ def expand_fluxes(fluxes_cmp, cmp_map, orig_reaction_ids):
             fluxes[rid] = 0.0
     return fluxes
 
+
 def _make_fix_constraint(axes, ax_idx, ax_type, value):
     """Create an equality constraint fixing axis ax_idx to value."""
     if ax_type == 'rate':
@@ -960,8 +959,7 @@ def _optimize_axis(model, ax_idx, axes, ax_type, constraints, solver, sense):
     if ax_type == 'rate':
         sol = fba(model, obj=axes[ax_idx][0], constraints=constraints, solver=solver, obj_sense=sense)
     else:  # yield
-        sol = yopt(model, obj_num=axes[ax_idx][0], obj_den=axes[ax_idx][1],
-                   constraints=constraints, solver=solver, obj_sense=sense)
+        sol = yopt(model, obj_num=axes[ax_idx][0], obj_den=axes[ax_idx][1], constraints=constraints, solver=solver, obj_sense=sense)
     return sol
 
 
@@ -1000,8 +998,7 @@ def _trace_polygon_rate_rate(model, axes, constraints, solver):
 
     # Step 1: Find 4 extremes
     extremes = []
-    for coeff, sense in [(ax0_coeff, 'maximize'), (ax0_coeff, 'minimize'),
-                         (ax1_coeff, 'maximize'), (ax1_coeff, 'minimize')]:
+    for coeff, sense in [(ax0_coeff, 'maximize'), (ax0_coeff, 'minimize'), (ax1_coeff, 'maximize'), (ax1_coeff, 'minimize')]:
         sol = fba(model, obj=coeff, constraints=constraints, solver=solver, obj_sense=sense)
         if sol.status == OPTIMAL:
             x0 = sum(c * sol.fluxes.get(r, 0) for r, c in ax0_coeff.items())
@@ -1027,16 +1024,13 @@ def _trace_polygon_rate_rate(model, axes, constraints, solver):
     unique_pts.sort(key=lambda p: arctan2(p[1] - cy, p[0] - cx))
 
     # Step 4: Recursive edge refinement
-    diameter = max(
-        ((a[0]-b[0])**2 + (a[1]-b[1])**2)**0.5
-        for a in unique_pts for b in unique_pts
-    )
+    diameter = max(((a[0] - b[0])**2 + (a[1] - b[1])**2)**0.5 for a in unique_pts for b in unique_pts)
     min_edge = 1e-10 * diameter if diameter > 0 else 1e-10
 
     def _refine(vi, vj, depth):
         if depth > 50:
             return [vi]
-        edge_len = ((vi[0]-vj[0])**2 + (vi[1]-vj[1])**2)**0.5
+        edge_len = ((vi[0] - vj[0])**2 + (vi[1] - vj[1])**2)**0.5
         if edge_len < min_edge:
             return [vi]
         # Outward normal (perpendicular to edge, pointing outward from centroid)
@@ -1063,8 +1057,8 @@ def _trace_polygon_rate_rate(model, axes, constraints, solver):
             dist /= norm_len
         if dist > tol and edge_len > min_edge:
             # Check p_new is not a duplicate of vi or vj
-            if ((abs(p_new[0]-vi[0]) < tol and abs(p_new[1]-vi[1]) < tol) or
-                (abs(p_new[0]-vj[0]) < tol and abs(p_new[1]-vj[1]) < tol)):
+            if ((abs(p_new[0] - vi[0]) < tol and abs(p_new[1] - vi[1]) < tol) or
+                (abs(p_new[0] - vj[0]) < tol and abs(p_new[1] - vj[1]) < tol)):
                 return [vi]
             left = _refine(vi, p_new, depth + 1)
             right = _refine(p_new, vj, depth + 1)
@@ -1091,6 +1085,7 @@ def _trace_boundary_adaptive(model, axes, ax_types, constraints, solver, max_dep
     Returns (upper_boundary, lower_boundary) as sorted lists of (x, y) tuples.
     Uses recursive midpoint refinement where linear interpolation error exceeds tolerance.
     """
+
     def _fix_and_opt(x_val, sense):
         constr = constraints.copy()
         constr.append(_make_fix_constraint(axes, 0, ax_types[0], x_val))
@@ -1100,11 +1095,8 @@ def _trace_boundary_adaptive(model, axes, ax_types, constraints, solver, max_dep
         return nan
 
     # Step 1: axis-0 range endpoints (already known from val_limits, but we need y values)
-    x_min, x_max = ceil_dec(
-        _optimize_axis(model, 0, axes, ax_types[0], constraints, solver, 'minimize').objective_value, 8
-    ), floor_dec(
-        _optimize_axis(model, 0, axes, ax_types[0], constraints, solver, 'maximize').objective_value, 8
-    )
+    x_min, x_max = ceil_dec(_optimize_axis(model, 0, axes, ax_types[0], constraints, solver, 'minimize').objective_value,
+                            8), floor_dec(_optimize_axis(model, 0, axes, ax_types[0], constraints, solver, 'maximize').objective_value, 8)
 
     # Step 2: y values at endpoints
     y_min_at_xmin = _fix_and_opt(x_min, 'minimize')
@@ -1168,10 +1160,7 @@ def _trace_polytope_3d_rate(model, axes, constraints, solver):
     tol = 1e-8
 
     def _project(sol):
-        return tuple(
-            ceil_dec(sum(c * sol.fluxes.get(r, 0) for r, c in coeffs[j].items()), 9)
-            for j in range(3)
-        )
+        return tuple(ceil_dec(sum(c * sol.fluxes.get(r, 0) for r, c in coeffs[j].items()), 9) for j in range(3))
 
     def _is_dup(pt, pts):
         return any(all(abs(pt[k] - q[k]) < tol for k in range(3)) for q in pts)
@@ -1248,10 +1237,8 @@ def _hull_face_polygons(hull):
         # Build orthonormal basis in the face plane
         ref = array([1, 0, 0]) if abs(normal[0]) < 0.9 else array([0, 1, 0])
         u = ref - normal * normal.dot(ref)
-        u = u / (u.dot(u) ** 0.5)
-        v = array([normal[1]*u[2] - normal[2]*u[1],
-                    normal[2]*u[0] - normal[0]*u[2],
-                    normal[0]*u[1] - normal[1]*u[0]])
+        u = u / (u.dot(u)**0.5)
+        v = array([normal[1] * u[2] - normal[2] * u[1], normal[2] * u[0] - normal[0] * u[2], normal[0] * u[1] - normal[1] * u[0]])
         # Sort by angle in face plane
         angles = [arctan2((pt - centroid).dot(v), (pt - centroid).dot(u)) for pt in pts]
         order = sorted(range(len(verts)), key=lambda i: angles[i])
@@ -1420,14 +1407,13 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
             variable contains information about which datapoints need to be connected in triangles to
             render a closed surface. The last variable contains the matplotlib object.
     """
-    
+
     cmp_model = kwargs.pop('cmp_model', None)
     cmp_map = kwargs.pop('cmp_map', None)
 
     _orig_axes = None  # store original axis names for labelling
     if cmp_model is not None and cmp_map is not None:
-        from straindesign.networktools import (resolve_gene_constraints,
-            compress_constraints, _build_cmp_reverse_map)
+        from straindesign.networktools import (resolve_gene_constraints, compress_constraints, _build_cmp_reverse_map)
         # Resolve gene constraints on the original model, then compress
         if CONSTRAINTS in kwargs and kwargs[CONSTRAINTS]:
             kwargs[CONSTRAINTS] = resolve_gene_constraints(model, kwargs[CONSTRAINTS])
@@ -1455,7 +1441,7 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
                 axes[i] = [reverse.get(a, a) if isinstance(a, str) else a for a in ax]
         # Switch to compressed model
         model = cmp_model
-      
+
     reaction_ids = model.reactions.list_attr("id")
 
     if CONSTRAINTS in kwargs:
@@ -1592,8 +1578,7 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
             vertices = _trace_polygon_rate_rate(model, axes, kwargs[CONSTRAINTS], solver)
         else:
             adapt_depth = max(5, int(log2(max(points, 2))))
-            upper, lower = _trace_boundary_adaptive(
-                model, axes, ax_type, kwargs[CONSTRAINTS], solver, max_depth=adapt_depth)
+            upper, lower = _trace_boundary_adaptive(model, axes, ax_type, kwargs[CONSTRAINTS], solver, max_depth=adapt_depth)
             # Build polygon from upper (left-to-right) + reversed lower (right-to-left)
             if upper and lower:
                 vertices = upper + list(reversed(lower))
@@ -1634,9 +1619,7 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
             x0, y0 = unique_verts[0]
             dx, dy = unique_verts[1][0] - x0, unique_verts[1][1] - y0
             span = max(abs(dx), abs(dy), 1e-12)
-            is_collinear = all(
-                abs((v[0] - x0) * dy - (v[1] - y0) * dx) / span < 1e-6
-                for v in unique_verts[2:])
+            is_collinear = all(abs((v[0] - x0) * dy - (v[1] - y0) * dx) / span < 1e-6 for v in unique_verts[2:])
 
         if is_collinear and len(unique_verts) <= 1:
             # Collapsed to a point
@@ -1786,8 +1769,8 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
 
             elif n_yields == 1:
                 # 1 yield + 2 rate: slice along yield, trace rate-rate polygon per slice
-                datapoints, triang, slice_outlines = _trace_3d_slice_polygon(
-                    model, axes, ax_type, val_limits, kwargs[CONSTRAINTS], solver, points)
+                datapoints, triang, slice_outlines = _trace_3d_slice_polygon(model, axes, ax_type, val_limits, kwargs[CONSTRAINTS], solver,
+                                                                             points)
 
             else:
                 # 2+ yields: grid-based scanning (fallback)
@@ -1807,8 +1790,7 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
                     if abs(y_hi - y_lo) < 1e-10:
                         y_space = [y_lo]
                     else:
-                        n_pts = max(3, int(points * abs(y_hi - y_lo) / max(1e-10,
-                            max(abs(val_limits[1][1] - val_limits[1][0]), 1e-10))))
+                        n_pts = max(3, int(points * abs(y_hi - y_lo) / max(1e-10, max(abs(val_limits[1][1] - val_limits[1][0]), 1e-10))))
                         n_pts = min(n_pts, points)
                         y_space = linspace(y_lo, y_hi, n_pts).tolist()
                     upper_slice = []
@@ -1843,8 +1825,7 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
                 triang = []
                 for s in range(len(slices) - 1):
                     _triangulate_strips(datapoints_top[s], datapoints_top[s + 1], datapoints, triang)
-                    _triangulate_strips(datapoints_bottom[s], datapoints_bottom[s + 1], datapoints, triang,
-                                        flip_winding=True)
+                    _triangulate_strips(datapoints_bottom[s], datapoints_bottom[s + 1], datapoints, triang, flip_winding=True)
                 front_top = [t[0] for t in datapoints_top]
                 front_bot = [b[0] for b in datapoints_bottom]
                 _triangulate_strips(front_top, front_bot, datapoints, triang, flip_winding=True)
@@ -1852,8 +1833,7 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
                 back_bot = [b[-1] for b in datapoints_bottom]
                 _triangulate_strips(back_top, back_bot, datapoints, triang)
                 _triangulate_strips(datapoints_top[0], datapoints_bottom[0], datapoints, triang)
-                _triangulate_strips(datapoints_top[-1], datapoints_bottom[-1], datapoints, triang,
-                                    flip_winding=True)
+                _triangulate_strips(datapoints_top[-1], datapoints_bottom[-1], datapoints, triang, flip_winding=True)
 
         if not datapoints:
             raise Exception('No feasible points found. Problem may be infeasible.')
@@ -1882,10 +1862,8 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
                 return 0.5
             e1 = pts[1] - pts[0]
             e2 = pts[2] - pts[0]
-            normal = array([e1[1]*e2[2] - e1[2]*e2[1],
-                            e1[2]*e2[0] - e1[0]*e2[2],
-                            e1[0]*e2[1] - e1[1]*e2[0]])
-            length = (normal.dot(normal)) ** 0.5
+            normal = array([e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]])
+            length = (normal.dot(normal))**0.5
             if length > 0:
                 normal = normal / length
             # Map normal direction to scalar: use spherical angles
@@ -1899,8 +1877,7 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
             rng = mx - mn if mx > mn else 1
             face_colors = plt.get_cmap(cmap)([(c - mn) / rng for c in color_vals])
             face_colors[:, 3] = 1.0
-            collection = Poly3DCollection(poly_verts, facecolors=face_colors,
-                                          edgecolors='black', linewidths=1.0)
+            collection = Poly3DCollection(poly_verts, facecolors=face_colors, edgecolors='black', linewidths=1.0)
             ax3.add_collection3d(collection)
             plot1 = collection
         elif triang:
@@ -1911,16 +1888,14 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
             rng = mx - mn if mx > mn else 1
             face_colors = plt.get_cmap(cmap)([(c - mn) / rng for c in color_vals])
             face_colors[:, 3] = 1.0
-            collection = Poly3DCollection(tri_verts, facecolors=face_colors,
-                                          edgecolors='none', linewidths=0)
+            collection = Poly3DCollection(tri_verts, facecolors=face_colors, edgecolors='none', linewidths=0)
             ax3.add_collection3d(collection)
             # Draw slice polygon outlines (exact contour at each yield level)
             if slice_outlines:
                 for idx_list in slice_outlines:
                     pts = array([datapoints[i] for i in idx_list])
                     pts = array(list(pts) + [pts[0]])  # close the loop
-                    ax3.plot(pts[:, 0], pts[:, 1], pts[:, 2],
-                             color='gray', linewidth=0.4)
+                    ax3.plot(pts[:, 0], pts[:, 1], pts[:, 2], color='gray', linewidth=0.4)
             plot1 = collection
         else:
             plot1 = ax3.scatter(x, y, z, s=20)

@@ -102,7 +102,8 @@ class MILP_LP(object):
 
     def __init__(self, **kwargs):
         allowed_keys = {
-            'c', 'A_ineq', 'b_ineq', 'A_eq', 'b_eq', 'lb', 'ub', 'vtype', 'indic_constr', 'M', SOLVER, 'skip_checks', 'tlim', SEED, MILP_THREADS
+            'c', 'A_ineq', 'b_ineq', 'A_eq', 'b_eq', 'lb', 'ub', 'vtype', 'indic_constr', 'M', SOLVER, 'skip_checks', 'tlim', SEED,
+            MILP_THREADS
         }
         # set all keys passed in kwargs
         for key, value in kwargs.items():

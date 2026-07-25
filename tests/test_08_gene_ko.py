@@ -17,7 +17,9 @@ def wt_growth(ecoli_core):
 
 # ── gene_kos_to_constraints unit tests ───────────────────────────────
 
+
 class TestGeneKosToConstraints:
+
     def test_single_gene_by_id(self, ecoli_core):
         """b0727 (sucB) is in AND rule for AKGDH → single KO kills AKGDH."""
         c = gene_kos_to_constraints(ecoli_core, ['b0727'])
@@ -62,7 +64,9 @@ class TestGeneKosToConstraints:
 
 # ── resolve_gene_constraints unit tests ──────────────────────────────
 
+
 class TestResolveGeneConstraints:
+
     def test_string_format(self, ecoli_core):
         """Gene KO as string 'b0727 = 0' should produce reaction constraints."""
         c = resolve_gene_constraints(ecoli_core, 'b0727 = 0')
@@ -116,7 +120,9 @@ class TestResolveGeneConstraints:
 
 # ── FBA integration tests ────────────────────────────────────────────
 
+
 class TestFbaWithGeneKO:
+
     def test_nonessential_single_ko(self, ecoli_core, wt_growth):
         """b0727 (sucB) KO reduces growth slightly but is not lethal."""
         sol = sd.fba(ecoli_core, constraints='b0727 = 0')
@@ -160,7 +166,9 @@ class TestFbaWithGeneKO:
 
 # ── FVA integration tests ────────────────────────────────────────────
 
+
 class TestFvaWithGeneKO:
+
     def test_knocked_reaction_fixed_at_zero(self, ecoli_core):
         """FVA after b0727 KO: AKGDH must have min=max=0."""
         fva_r = sd.fva(ecoli_core, constraints='b0727 = 0')

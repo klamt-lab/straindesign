@@ -101,7 +101,6 @@ def _lcm_list(numbers: List[int]) -> int:
 
 # Rational Matrix with Sparse Storage
 
-
 _INT64_MAX = (1 << 63) - 1
 
 
@@ -372,8 +371,9 @@ class RationalMatrix:
         num_lil, den_lil = self._num_sparse, self._den_sparse
         num_csc = num_lil.tocsc() if num_lil.format != 'csc' else num_lil
         den_csc = den_lil.tocsc() if den_lil.format != 'csc' else den_lil
-        entries = [(num_csc.indices[i], int(num_csc.data[i]), int(den_csc.data[i]))
-                   for i in range(num_csc.indptr[col], num_csc.indptr[col + 1])]
+        entries = [
+            (num_csc.indices[i], int(num_csc.data[i]), int(den_csc.data[i])) for i in range(num_csc.indptr[col], num_csc.indptr[col + 1])
+        ]
         for row, cur_num, cur_den in entries:
             if cur_num == 0:
                 continue
@@ -407,10 +407,9 @@ class RationalMatrix:
         Returns numerator matrix scaled by LCM of denominators, plus the LCM.
         """
         if self.is_bigint():
-            raise OverflowError(
-                "coefficients exceed int64 and cannot be stored in a scipy sparse matrix; "
-                "use to_coo_exact() / to_sparse_pattern(), or the public sparse_nullspace() helper "
-                "which returns an ExactCOO in that case.")
+            raise OverflowError("coefficients exceed int64 and cannot be stored in a scipy sparse matrix; "
+                                "use to_coo_exact() / to_sparse_pattern(), or the public sparse_nullspace() helper "
+                                "which returns an ExactCOO in that case.")
         # Empty matrix (e.g. a 0-dimensional nullspace)
         if self._den_sparse is None:
             return csr_matrix((self._rows, self._cols), dtype=np.int64), 1
@@ -421,8 +420,7 @@ class RationalMatrix:
         common_denom = _lcm_list([int(d) for d in dens if d != 0])
         coo_num = self._num_sparse.tocoo()
         coo_den = self._den_sparse.tocoo()
-        scaled_data = [int(num) * (common_denom // int(den)) if num != 0 else 0
-                       for num, den in zip(coo_num.data, coo_den.data)]
+        scaled_data = [int(num) * (common_denom // int(den)) if num != 0 else 0 for num, den in zip(coo_num.data, coo_den.data)]
         scaled = csr_matrix((scaled_data, (coo_num.row, coo_num.col)), shape=(self._rows, self._cols), dtype=np.int64)
         return scaled, common_denom
 
@@ -443,13 +441,17 @@ class RationalMatrix:
         if self._dict_frac is not None:
             for r, cd in self._dict_frac.items():
                 for c, f in cd.items():
-                    rows.append(int(r)); cols.append(int(c)); fracs.append(f)
+                    rows.append(int(r))
+                    cols.append(int(c))
+                    fracs.append(f)
         elif self._num_sparse is not None:
             coo_num = self._num_sparse.tocoo()
             coo_den = self._den_sparse.tocoo()
             for r, c, n, d in zip(coo_num.row, coo_num.col, coo_num.data, coo_den.data):
                 if n != 0:
-                    rows.append(int(r)); cols.append(int(c)); fracs.append(Fraction(int(n), int(d)))
+                    rows.append(int(r))
+                    cols.append(int(c))
+                    fracs.append(Fraction(int(n), int(d)))
         denom = _lcm_list([f.denominator for f in fracs]) if fracs else 1
         data = [int(f.numerator) * (denom // f.denominator) for f in fracs]
         return ExactCOO(rows, cols, data, (self._rows, self._cols), denom)
@@ -470,7 +472,9 @@ class RationalMatrix:
                 rd = {}
                 for c, f in cd.items():
                     if f != 0:
-                        ai.append(int(r)); aj.append(int(c)); rd[int(c)] = f
+                        ai.append(int(r))
+                        aj.append(int(c))
+                        rd[int(c)] = f
                 if rd:
                     row_data[int(r)] = rd
             pattern = csr_matrix(([1] * len(ai), (ai, aj)), shape=(self._rows, self._cols), dtype=np.int8)
@@ -695,7 +699,7 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
         _eliminate(prd, pval, pcol, targets, False)
         holders = pivcol_holders.get(pcol)
         if holders:
-            holders.difference_update(above)   # pcol is now cleared from those rows
+            holders.difference_update(above)  # pcol is now cleared from those rows
 
     # Final GCD reduction of the pivot rows (insurance; rows are already reduced per step).
     for key in pivot_keys:
@@ -706,12 +710,10 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
                 row_data[c] //= row_gcd
 
     # Translate results back to original column space, keyed by pivot index (rref_data[i] = pivot i).
-    original_data = {i: {col_order[sc]: v for sc, v in data[key].items()}
-                     for i, key in enumerate(pivot_keys)}
+    original_data = {i: {col_order[sc]: v for sc, v in data[key].items()} for i, key in enumerate(pivot_keys)}
     pivot_cols_original = [col_order[p] for p in pivot_cols_sorted]
 
     return original_data, rank, pivot_cols_original
-
 
 
 def _nullspace_sparse(matrix: RationalMatrix) -> RationalMatrix:
@@ -940,7 +942,10 @@ class _Size:
 class _WorkRecord:
     """Mutable state during compression algorithm."""
 
-    def __init__(self, stoich: RationalMatrix, meta_names: List[str], reac_names: List[str],
+    def __init__(self,
+                 stoich: RationalMatrix,
+                 meta_names: List[str],
+                 reac_names: List[str],
                  bounds: Optional[List[Tuple[float, float]]] = None):
         rows, cols = stoich.get_row_count(), stoich.get_column_count()
         self.pre = RationalMatrix.identity(rows)
@@ -1346,10 +1351,9 @@ class StoichMatrixCompressor:
                     return min(fin) if fin else None
 
                 def _lam(r):
-                    return 1.0 if ratios[r] is None else float(abs(ratios[r]))   # master's own ratio is 1
+                    return 1.0 if ratios[r] is None else float(abs(ratios[r]))  # master's own ratio is 1
 
-                bounded = [(b, r) for r in group for b in [_small_bound(r)]
-                           if b is not None and 0.1 <= _lam(r) <= 10]
+                bounded = [(b, r) for r in group for b in [_small_bound(r)] if b is not None and 0.1 <= _lam(r) <= 10]
                 keep = min(bounded)[1] if bounded else max(group, key=lambda r: nnz[r])
                 self._restore_group_scale(work, group, ratios, keep)
 
@@ -1363,8 +1367,7 @@ class StoichMatrixCompressor:
 
         return contradicting_removed
 
-    def _restore_group_scale(self, work: _WorkRecord, group: List[int],
-                             ratios: List[Optional[Fraction]], keep: int) -> None:
+    def _restore_group_scale(self, work: _WorkRecord, group: List[int], ratios: List[Optional[Fraction]], keep: int) -> None:
         """Express a merged group in the units of one of its members.
 
         A lump's ratios are fixed but its overall scale is free, and merging into ``group[0]`` can
@@ -1376,7 +1379,7 @@ class StoichMatrixCompressor:
         master = group[0]
         if keep == master:
             return
-        lam = abs(ratios[keep])                     # |.| so the reaction keeps its orientation
+        lam = abs(ratios[keep])  # |.| so the reaction keeps its orientation
         if lam == 0 or lam == 1:
             return
         # v_master = ratios[keep] * v_keep, so re-expressing the lump in v_keep multiplies the
@@ -1509,11 +1512,12 @@ def remove_conservation_relations(model) -> None:
         model.remove_metabolites(dependent_mets)
 
 
-def compress_cobra_model(model,
-                         methods: Optional[List[Union[str, CompressionMethod]]] = None,
-                         in_place: bool = True,
-                         suppressed_reactions: Set[str] = set(),
-                         protected_reactions: Set[str] = set()) -> CompressionResult:
+def compress_cobra_model(
+    model,
+    methods: Optional[List[Union[str, CompressionMethod]]] = None,
+    in_place: bool = True,
+    suppressed_reactions: Set[str] = set(),
+    protected_reactions: Set[str] = set()) -> CompressionResult:
     """
     Compress a COBRA model using nullspace-based coupling detection.
 
@@ -1561,7 +1565,8 @@ def compress_cobra_model(model,
     # Run compression
     compressor = StoichMatrixCompressor(*compression_methods)
     bounds = [(float(r.lower_bound), float(r.upper_bound)) for r in model.reactions]
-    compression_record = compressor.compress(stoich_matrix, metabolite_names, reaction_names, suppressed_reactions, bounds, protected_reactions)
+    compression_record = compressor.compress(stoich_matrix, metabolite_names, reaction_names, suppressed_reactions, bounds,
+                                             protected_reactions)
 
     # Apply to model (uses direct manipulation, bypasses solver)
     reaction_map = _apply_compression_to_model(model, compression_record, reaction_names)
@@ -1691,10 +1696,7 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
         # Update stored objective through compression factors
         obj_dict = getattr(model, '_suppressed_obj', None)
         if obj_dict is not None:
-            merged_obj = sum(
-                obj_dict.pop(original_reaction_names[idx], 0.0) * float(coeff)
-                for idx, coeff in contributing
-            )
+            merged_obj = sum(obj_dict.pop(original_reaction_names[idx], 0.0) * float(coeff) for idx, coeff in contributing)
             if merged_obj != 0:
                 obj_dict[main_rxn.id] = merged_obj
 
@@ -1784,12 +1786,12 @@ def stoichmat_coeff_to_fraction(model) -> None:
     for rxn in model.reactions:
         for met, coeff in rxn._metabolites.items():
             if isinstance(coeff, Fraction):
-                continue                                        # already exact
+                continue  # already exact
             elif isinstance(coeff, (float, int)):
-                rxn._metabolites[met] = float_to_fraction(coeff)          # -> Fraction
-            elif hasattr(coeff, 'p'):                           # sympy.Rational -> Fraction
+                rxn._metabolites[met] = float_to_fraction(coeff)  # -> Fraction
+            elif hasattr(coeff, 'p'):  # sympy.Rational -> Fraction
                 rxn._metabolites[met] = Fraction(int(coeff.p), int(coeff.q))
-            elif hasattr(coeff, 'numerator'):                   # other Rational -> Fraction
+            elif hasattr(coeff, 'numerator'):  # other Rational -> Fraction
                 rxn._metabolites[met] = Fraction(coeff.numerator, coeff.denominator)
             else:
                 raise TypeError(f"Unsupported coefficient type: {type(coeff)}")
@@ -1848,8 +1850,10 @@ def _expr_to_gpr_string(expr):
         return expr
     op, args = expr
     other = 'or' if op == 'and' else 'and'
-    parts = [f'({s})' if isinstance(a, tuple) and a[0] == other else s
-             for a, s in sorted(((a, _expr_to_gpr_string(a)) for a in args), key=lambda p: p[1])]
+    parts = [
+        f'({s})' if isinstance(a, tuple) and a[0] == other else s
+        for a, s in sorted(((a, _expr_to_gpr_string(a)) for a in args), key=lambda p: p[1])
+    ]
     return f' {op} '.join(parts)
 
 
@@ -1867,7 +1871,6 @@ def _combine_gprs(gpr_bodies, op):
 
 
 # High-Level Compression API
-
 
 # Monotone (positive-unate) GPR-rule simplification
 #
@@ -1896,35 +1899,63 @@ def _gpr_parse(s):
     Accepts both ``and``/``or`` and ``*``/``+`` operators, and is robust to any gene id,
     including digit-leading or dotted names.
     """
-    toks = list(_gpr_tokenize(s)); pos = 0
-    def peek(): return toks[pos] if pos < len(toks) else None
+    toks = list(_gpr_tokenize(s))
+    pos = 0
+
+    def peek():
+        return toks[pos] if pos < len(toks) else None
+
     def eat():
-        nonlocal pos; t = toks[pos]; pos += 1; return t
+        nonlocal pos
+        t = toks[pos]
+        pos += 1
+        return t
+
     def p_or():
         n = [p_and()]
-        while peek() in ('or', '+'): eat(); n.append(p_and())
+        while peek() in ('or', '+'):
+            eat()
+            n.append(p_and())
         return ('OR', n) if len(n) > 1 else n[0]
+
     def p_and():
         n = [p_atom()]
-        while peek() in ('and', '*'): eat(); n.append(p_atom())
+        while peek() in ('and', '*'):
+            eat()
+            n.append(p_atom())
         return ('AND', n) if len(n) > 1 else n[0]
+
     def p_atom():
-        if peek() == '(': eat(); e = p_or(); eat(); return e
+        if peek() == '(':
+            eat()
+            e = p_or()
+            eat()
+            return e
         return ('VAR', eat())
+
     return p_or()
 
 
 # variable <-> bit mapping (reset per rule via simplify_gpr_string)
-_GPR_VMAP = {}; _GPR_VINV = []
+_GPR_VMAP = {}
+_GPR_VINV = []
+
+
 def _gpr_bit(v):
     i = _GPR_VMAP.get(v)
     if i is None:
-        i = len(_GPR_VINV); _GPR_VMAP[v] = i; _GPR_VINV.append(v)
+        i = len(_GPR_VINV)
+        _GPR_VMAP[v] = i
+        _GPR_VINV.append(v)
     return 1 << i
+
+
 def _gpr_lits_of(mask):
     out = []
     while mask:
-        l = mask & -mask; out.append(('VAR', _GPR_VINV[l.bit_length() - 1])); mask ^= l
+        l = mask & -mask
+        out.append(('VAR', _GPR_VINV[l.bit_length() - 1]))
+        mask ^= l
     return out
 
 
@@ -1945,11 +1976,12 @@ def _gpr_absorb(cubes):
 
 def _gpr_to_dnf(node):
     t = node[0]
-    if t == 'VAR':   return [_gpr_bit(node[1])]
+    if t == 'VAR': return [_gpr_bit(node[1])]
     if t == 'CONST': return [] if not node[1] else [0]
     if t == 'OR':
         cov = []
-        for ch in node[1]: cov += _gpr_to_dnf(ch)
+        for ch in node[1]:
+            cov += _gpr_to_dnf(ch)
         return _gpr_absorb(cov)
     if t == 'AND':
         cov = [0]
@@ -1961,8 +1993,10 @@ def _gpr_to_dnf(node):
 
 
 def _gpr_common(cubes):
-    it = iter(cubes); c = next(it)
-    for x in it: c &= x
+    it = iter(cubes)
+    c = next(it)
+    for x in it:
+        c &= x
     return c
 
 
@@ -1971,7 +2005,9 @@ def _gpr_lit_counts(F):
     for c in F:
         m = c
         while m:
-            l = m & -m; cnt[l] = cnt.get(l, 0) + 1; m ^= l
+            l = m & -m
+            cnt[l] = cnt.get(l, 0) + 1
+            m ^= l
     return cnt
 
 
@@ -1991,18 +2027,21 @@ def _gpr_candidate_divisors(F):
     if len(F) < 2: return []
     cnt = _gpr_lit_counts(F)
     reps = sorted((x for x, n in cnt.items() if n >= 2), key=lambda x: -cnt[x])
-    seen = set(); out = []
+    seen = set()
+    out = []
     for l in reps:
         K = tuple(sorted(_gpr_one_kernel(F, l)))
         if len(K) >= 2 and K not in seen:
-            seen.add(K); out.append(list(K))
+            seen.add(K)
+            out.append(list(K))
     return out
 
 
 def _gpr_divide(F, D):
     """Exact algebraic division: (Q, R) with D*Q disjoint-union R == F (correctness guaranteed
     regardless of divisor quality -- a quotient cube is accepted only if D*Q stays inside F)."""
-    Fs = set(F); quo = None
+    Fs = set(F)
+    quo = None
     for d in D:
         vd = {c & ~d for c in F if (c & d) == d}
         quo = vd if quo is None else (quo & vd)
@@ -2015,8 +2054,8 @@ def _gpr_divide(F, D):
 
 def _gpr_factor(F):
     F = _gpr_absorb(F)
-    if not F:     return ('CONST', False)
-    if F == [0]:  return ('CONST', True)
+    if not F: return ('CONST', False)
+    if F == [0]: return ('CONST', True)
     if len(F) == 1:
         lits = _gpr_lits_of(F[0])
         return lits[0] if len(lits) == 1 else ('AND', lits)
@@ -2044,9 +2083,9 @@ def _gpr_factor(F):
 def _gpr_est_cubes(node):
     """Upper bound on DNF cube count (product across ANDs, sum across ORs); cheap, no expansion."""
     t = node[0]
-    if t == 'VAR':   return 1
+    if t == 'VAR': return 1
     if t == 'CONST': return 1
-    if t == 'OR':    return sum(_gpr_est_cubes(c) for c in node[1])
+    if t == 'OR': return sum(_gpr_est_cubes(c) for c in node[1])
     if t == 'AND':
         p = 1
         for c in node[1]:
@@ -2056,6 +2095,8 @@ def _gpr_est_cubes(node):
 
 
 _GPR_WARN = []
+
+
 def _gpr_factor_auto(node, budget=50000):
     """Global factoring within budget; AND-split above it. Never splits an OR unless one single
     OR-block alone exceeds budget (logged as a last resort -- raise the budget to avoid)."""
@@ -2083,7 +2124,9 @@ def simplify_gpr_string(rule, budget=50000):
     """Return a leaf-minimized, boolean-equivalent monotone GPR string ('' passes through)."""
     if not rule or not rule.strip():
         return rule
-    _GPR_VMAP.clear(); _GPR_VINV.clear(); _GPR_WARN.clear()
+    _GPR_VMAP.clear()
+    _GPR_VINV.clear()
+    _GPR_WARN.clear()
     return _gpr_to_string(_gpr_factor_auto(_gpr_parse(rule), budget))
 
 
@@ -2102,14 +2145,14 @@ def simplify_model_gprs(model, budget=50000):
         try:
             new = simplify_gpr_string(s, budget)
             if new and new != s:
-                r.gene_reaction_rule = new; nchg += 1
+                r.gene_reaction_rule = new
+                nchg += 1
         except Exception as e:
             logging.warning('gpr_simplify: kept original GPR for %s (%s)' % (r.id, type(e).__name__))
     logging.info('  GPR rule simplification: %d rules, %d rewritten.' % (n, nchg))
 
 
-def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False,
-                   no_coupled_compress_reacs=set()):
+def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False, no_coupled_compress_reacs=set()):
     """Compress a metabolic model using multiple techniques.
 
     Performs blocked reaction removal, conservation relation removal, and
@@ -2148,8 +2191,7 @@ def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False,
 
             # 1. Parallel (cheap — hash-based, no RREF)
             LOG.info(f'  Compression {run}: Lumping parallel reactions.')
-            reac_map_exp = compress_model_parallel(model, no_par_compress_reacs,
-                                                    propagate_gpr=propagate_gpr)
+            reac_map_exp = compress_model_parallel(model, no_par_compress_reacs, propagate_gpr=propagate_gpr)
             parallel_changed = numr > len(reac_map_exp)
             if parallel_changed:
                 LOG.info(f'  Reduced to {len(reac_map_exp)} reactions.')
@@ -2169,9 +2211,7 @@ def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False,
             # 4. Coupled (expensive — nullspace/RREF)
             numr_pre = len(model.reactions)
             LOG.info(f'  Compression {run}: Lumping coupled reactions.')
-            reac_map_exp = compress_model_coupled(model,
-                                                  propagate_gpr=propagate_gpr,
-                                                  protected_reactions=no_coupled_compress_reacs)
+            reac_map_exp = compress_model_coupled(model, propagate_gpr=propagate_gpr, protected_reactions=no_coupled_compress_reacs)
             for new_reac, old_reac_val in reac_map_exp.items():
                 old_reacs = [r for r in no_par_compress_reacs if r in old_reac_val]
                 if old_reacs:
@@ -2228,8 +2268,7 @@ def compress_model_coupled(model, propagate_gpr=False, protected_reactions=set()
         for r in model.reactions:
             r.gene_reaction_rule = ''
 
-        result = compress_cobra_model(model, methods=CompressionMethod.standard(), in_place=True,
-                                      protected_reactions=protected_reactions)
+        result = compress_cobra_model(model, methods=CompressionMethod.standard(), in_place=True, protected_reactions=protected_reactions)
         reaction_map = result.reaction_map
 
         # Propagate GPR rules: AND-combine contributing reactions' GPR ASTs
@@ -2270,8 +2309,7 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
     ub = [float(r.upper_bound) for r in model.reactions]
     fwd = [1 if (isinf(u) and f > 0 or isinf(l) and f < 0) else 0 for f, l, u in zip(factor, lb, ub)]
     rev = [1 if (isinf(l) and f > 0 or isinf(u) and f < 0) else 0 for f, l, u in zip(factor, lb, ub)]
-    inh = [i + 1 if not ((isinf(ub[i]) or ub[i] == 0) and (isinf(lb[i]) or lb[i] == 0)) else 0
-           for i in range(len(model.reactions))]
+    inh = [i + 1 if not ((isinf(ub[i]) or ub[i] == 0) and (isinf(lb[i]) or lb[i] == 0)) else 0 for i in range(len(model.reactions))]
 
     # Canonical scale-invariant key per reaction: normalize the stoichiometry row by its first
     # nonzero coefficient in exact rational arithmetic, so reactions parallel up to any rational
@@ -2350,10 +2388,7 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
         else:
             scales = [abs(factor[j]) for j in group]
             total = sum(Fraction(s).limit_denominator(1000) for s in scales)
-            rational_map[model.reactions[i].id] = {
-                old_reac_ids[j]: Fraction(abs(factor[j])).limit_denominator(1000) / total
-                for j in group
-            }
+            rational_map[model.reactions[i].id] = {old_reac_ids[j]: Fraction(abs(factor[j])).limit_denominator(1000) / total for j in group}
 
     return rational_map
 

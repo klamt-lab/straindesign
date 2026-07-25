@@ -12,8 +12,7 @@ import straindesign.compute_strain_designs  # noqa: F401  (ensure submodule impo
 # imported into the package), so reach the module via sys.modules.
 csd = sys.modules["straindesign.compute_strain_designs"]
 from straindesign import SUPPRESS, PROTECT
-from straindesign.names import (MODULES, MAX_COST, MAX_SOLUTIONS,
-                                SOLUTION_APPROACH, KOCOST, GKOCOST, SOLVER, SEED)
+from straindesign.names import (MODULES, MAX_COST, MAX_SOLUTIONS, SOLUTION_APPROACH, KOCOST, GKOCOST, SOLVER, SEED)
 
 GPR = os.path.join(os.path.dirname(__file__), "model_gpr.xml")
 TOL = 1e-6
@@ -36,12 +35,15 @@ def _compute(model, threshold=None):
     if threshold is not None:
         old, csd.LAZY_EXPANSION_THRESHOLD = csd.LAZY_EXPANSION_THRESHOLD, threshold
     try:
-        return sd.compute_strain_designs(
-            model,
-            sd_modules=[sd.SDModule(model, SUPPRESS,
-                                    constraints="Biomass_Ecoli_core >= 0.1")],
-            gene_kos=True, max_cost=3, max_solutions=8,
-            solution_approach="any", solver=_solver(), seed=1, compress=True)
+        return sd.compute_strain_designs(model,
+                                         sd_modules=[sd.SDModule(model, SUPPRESS, constraints="Biomass_Ecoli_core >= 0.1")],
+                                         gene_kos=True,
+                                         max_cost=3,
+                                         max_solutions=8,
+                                         solution_approach="any",
+                                         solver=_solver(),
+                                         seed=1,
+                                         compress=True)
     finally:
         if threshold is not None:
             csd.LAZY_EXPANSION_THRESHOLD = old
@@ -53,7 +55,7 @@ def test_embed_and_restore_roundtrip(model, tmp_path):
     ref_rsd = sols.get_reaction_sd()
     ref_gsd = sols.get_gene_sd()
     f = str(tmp_path / "sd.pkl")
-    sols.save(f)                                   # embed_model=True by default
+    sols.save(f)  # embed_model=True by default
 
     # default load: model NOT rebuilt, but solutions are there
     loaded = sd.SDSolutions.load(f)
@@ -67,14 +69,13 @@ def test_embed_and_restore_roundtrip(model, tmp_path):
     assert len(restored._model.reactions) == len(model.reactions)
     assert len(restored._model.genes) == len(model.genes)
     r = "AKGDH"
-    assert (restored._model.reactions.get_by_id(r).gene_reaction_rule
-            == model.reactions.get_by_id(r).gene_reaction_rule)
+    assert (restored._model.reactions.get_by_id(r).gene_reaction_rule == model.reactions.get_by_id(r).gene_reaction_rule)
 
 
 def test_explicit_model_takes_precedence(model, tmp_path):
     sols = _compute(model)
     f = str(tmp_path / "sd.pkl")
-    sols.save(f, embed_model=False)                # leaner file, no snapshot
+    sols.save(f, embed_model=False)  # leaner file, no snapshot
     loaded = sd.SDSolutions.load(f)
     assert loaded._embedded_model_dict is None
     # nothing to restore from, stays model-less
@@ -88,19 +89,19 @@ def test_live_model_and_solver_never_pickled(model, tmp_path):
     f = str(tmp_path / "sd.pkl")
     sols.save(f)
     with open(f, "rb") as fh:
-        raw = pickle.load(fh)               # must not raise (no live solver in pickle)
+        raw = pickle.load(fh)  # must not raise (no live solver in pickle)
     assert raw._model is None
     assert raw._embedded_model_dict is not None
 
 
 # ── lazy round-trip: save must not force-expand; restore then expand ─────
 def test_lazy_save_no_expand_then_restore_and_expand(model, tmp_path):
-    sols = _compute(model, threshold=1)            # force lazy expansion
+    sols = _compute(model, threshold=1)  # force lazy expansion
     assert sols.is_lazy
     materialized = sols.get_num_materialized()
     f = str(tmp_path / "lazy.pkl")
-    sols.save(f)                                   # must NOT expand_all (no hang)
-    assert sols.is_lazy                            # still lazy after save
+    sols.save(f)  # must NOT expand_all (no hang)
+    assert sols.is_lazy  # still lazy after save
 
     # default load: lazy, materialized reps available, expand errors clearly
     loaded = sd.SDSolutions.load(f)
@@ -122,6 +123,7 @@ def test_lazy_save_no_expand_then_restore_and_expand(model, tmp_path):
 #    combined gene + reaction interventions, SUPPRESS/PROTECT validated by FBA
 #    on compressed representatives AND after expansion, then the whole
 #    computation is REPRODUCED from the artifact alone (embedded model + sd_setup).
+
 
 def _max_flux(model, rid):
     with model:
@@ -157,18 +159,32 @@ def _validate_designs(reaction_designs):
 
 def _keyset(reaction_designs):
     """Canonical set of designs = set of frozensets of knocked-out reaction ids."""
-    return {frozenset(k for k, v in d.items() if v in (-1, -1.0, False))
-            for d in reaction_designs}
+    return {frozenset(k for k, v in d.items() if v in (-1, -1.0, False)) for d in reaction_designs}
 
 
 def _combined_setup(model, solver, approach):
-    modules = [sd.SDModule(model, SUPPRESS, constraints=["1.0 rd_ex >= 1.0 "]),
-               sd.SDModule(model, PROTECT, constraints=[[{"r_bm": 1.0}, ">=", 1.0]])]
-    return {MODULES: modules, MAX_COST: 3, MAX_SOLUTIONS: inf,
-            SOLUTION_APPROACH: approach,
-            KOCOST: {"rs_up": 1.0, "rd_ex": 1.0, "rp_ex": 1.1},         # reaction KOs
-            GKOCOST: {g.id: 1.0 for g in model.genes},                 # gene KOs
-            SOLVER: solver, SEED: 7}
+    modules = [
+        sd.SDModule(model, SUPPRESS, constraints=["1.0 rd_ex >= 1.0 "]),
+        sd.SDModule(model, PROTECT, constraints=[[{
+            "r_bm": 1.0
+        }, ">=", 1.0]])
+    ]
+    return {
+        MODULES: modules,
+        MAX_COST: 3,
+        MAX_SOLUTIONS: inf,
+        SOLUTION_APPROACH: approach,
+        KOCOST: {
+            "rs_up": 1.0,
+            "rd_ex": 1.0,
+            "rp_ex": 1.1
+        },  # reaction KOs
+        GKOCOST: {
+            g.id: 1.0 for g in model.genes
+        },  # gene KOs
+        SOLVER: solver,
+        SEED: 7
+    }
 
 
 @pytest.mark.parametrize("approach", ["any", "best", "populate"])
@@ -192,12 +208,12 @@ def test_full_reproducibility_roundtrip(tmp_path, approach, force_lazy):
     ref_gene_sd = sol.get_gene_sd()
     ref_keys = _keyset(sol.get_reaction_sd())
     assert ref_gene_sd
-    _validate_designs(sol.get_reaction_sd())            # sanity on the fresh result
+    _validate_designs(sol.get_reaction_sd())  # sanity on the fresh result
 
     # save a self-contained artifact (embed_model=True by default)
     f = str(tmp_path / "repro.pkl")
     sol.save(f)
-    assert sol.is_lazy == force_lazy                    # save never expanded a lazy result
+    assert sol.is_lazy == force_lazy  # save never expanded a lazy result
 
     # (A) reload WITHOUT a model: designs preserved; validate the COMPRESSED
     #     representatives directly via SUPPRESS/PROTECT FBA
@@ -210,11 +226,11 @@ def test_full_reproducibility_roundtrip(tmp_path, approach, force_lazy):
     #     expanded design set via FBA
     restored = sd.SDSolutions.load(f, model=True, cmp_model=True)
     assert restored._model is not None
-    restored.expand_all()                               # no-op if already non-lazy
+    restored.expand_all()  # no-op if already non-lazy
     assert not restored.is_lazy
     _validate_designs(restored.get_reaction_sd())
-    expanded_keys = _keyset(restored.get_reaction_sd())   # full design set
-    assert expanded_keys >= ref_keys                      # reps ⊆ full set
+    expanded_keys = _keyset(restored.get_reaction_sd())  # full design set
+    assert expanded_keys >= ref_keys  # reps ⊆ full set
 
     # (C) REPRODUCE the computation from the artifact ALONE: the embedded
     #     (uncompressed) model + the stored sd_setup must regenerate the exact
@@ -229,11 +245,27 @@ from fractions import Fraction
 
 
 def _combined_gpr(model, solver, approach="any"):
-    modules = [sd.SDModule(model, SUPPRESS, constraints=["1.0 rd_ex >= 1.0 "]),
-               sd.SDModule(model, PROTECT, constraints=[[{"r_bm": 1.0}, ">=", 1.0]])]
-    return {MODULES: modules, MAX_COST: 3, SOLUTION_APPROACH: approach,
-            KOCOST: {"rs_up": 1.0, "rd_ex": 1.0, "rp_ex": 1.1},
-            GKOCOST: {g.id: 1.0 for g in model.genes}, SOLVER: solver, SEED: 7}
+    modules = [
+        sd.SDModule(model, SUPPRESS, constraints=["1.0 rd_ex >= 1.0 "]),
+        sd.SDModule(model, PROTECT, constraints=[[{
+            "r_bm": 1.0
+        }, ">=", 1.0]])
+    ]
+    return {
+        MODULES: modules,
+        MAX_COST: 3,
+        SOLUTION_APPROACH: approach,
+        KOCOST: {
+            "rs_up": 1.0,
+            "rd_ex": 1.0,
+            "rp_ex": 1.1
+        },
+        GKOCOST: {
+            g.id: 1.0 for g in model.genes
+        },
+        SOLVER: solver,
+        SEED: 7
+    }
 
 
 def test_networktools_model_dict_rational_exact():
@@ -243,18 +275,21 @@ def test_networktools_model_dict_rational_exact():
     from straindesign.networktools import model_to_dict, model_from_dict
     import json, math
     m = Model("rat")
-    A = Metabolite("A_c", compartment="c"); B = Metabolite("B_c", compartment="c")
-    r = Reaction("r1"); m.add_reactions([r])
+    A = Metabolite("A_c", compartment="c")
+    B = Metabolite("B_c", compartment="c")
+    r = Reaction("r1")
+    m.add_reactions([r])
     r.add_metabolites({A: Fraction(1, 3), B: Fraction(-7, 3)})
-    r.lower_bound = Fraction(1, 3); r.upper_bound = float("inf")
+    r.lower_bound = Fraction(1, 3)
+    r.upper_bound = float("inf")
     d = model_to_dict(m)
-    rt = model_from_dict(json.loads(json.dumps(d)))     # force through JSON primitives
+    rt = model_from_dict(json.loads(json.dumps(d)))  # force through JSON primitives
     lb = rt.reactions.r1.lower_bound
     coeff = rt.reactions.r1.metabolites[rt.metabolites.A_c]
-    assert isinstance(lb, Fraction) and lb == Fraction(1, 3)          # exact, still rational
+    assert isinstance(lb, Fraction) and lb == Fraction(1, 3)  # exact, still rational
     assert isinstance(coeff, Fraction) and coeff == Fraction(1, 3)
-    assert float(Fraction(1, 3)) != Fraction(1, 3)                    # sanity: float would differ
-    assert math.isinf(rt.reactions.r1.upper_bound)                   # inf round-trips
+    assert float(Fraction(1, 3)) != Fraction(1, 3)  # sanity: float would differ
+    assert math.isinf(rt.reactions.r1.upper_bound)  # inf round-trips
 
 
 def test_networktools_model_dict_float_matches_cobra(model):
@@ -263,7 +298,7 @@ def test_networktools_model_dict_float_matches_cobra(model):
     from straindesign.networktools import model_to_dict, model_from_dict
     import json
     d = model_to_dict(model)
-    json.dumps(d)                                        # must be JSON-clean
+    json.dumps(d)  # must be JSON-clean
     rt = model_from_dict(d)
     assert len(rt.reactions) == len(model.reactions)
     assert len(rt.genes) == len(model.genes)
@@ -278,12 +313,12 @@ def test_compressed_model_embedded_by_default_restore_optin(tmp_path):
     assert sol._cmp_model is not None and len(sol._cmp_model.reactions) < len(m.reactions)
     cm0 = sol._cmp_model
     f = str(tmp_path / "sd.pkl")
-    sol.save(f)                                          # embeds BOTH by default
+    sol.save(f)  # embeds BOTH by default
 
     # default load restores neither model
     o0 = sd.SDSolutions.load(f)
     assert o0.get_model() is None and o0.get_compressed_model() is None
-    assert o0._embedded_cmp_model_dict is not None       # ...but it IS embedded
+    assert o0._embedded_cmp_model_dict is not None  # ...but it IS embedded
 
     # model=True, cmp_model=True rebuild both; compressed model is exact + usable
     o = sd.SDSolutions.load(f, model=True, cmp_model=True)
@@ -296,18 +331,19 @@ def test_compressed_model_embedded_by_default_restore_optin(tmp_path):
         assert r0.lower_bound == r1.lower_bound and r0.upper_bound == r1.upper_bound
         for a in ("lower_bound", "upper_bound"):
             if isinstance(getattr(r0, a), Fraction):
-                assert isinstance(getattr(r1, a), Fraction)   # rational not float-ified
+                assert isinstance(getattr(r1, a), Fraction)  # rational not float-ified
         for mt, c0 in r0.metabolites.items():
             c1 = r1.metabolites[cm.metabolites.get_by_id(mt.id)]
             assert c0 == c1 and (not isinstance(c0, Fraction) or isinstance(c1, Fraction))
     assert any(isinstance(b, Fraction) for r in cm.reactions for b in (r.lower_bound, r.upper_bound))
     cm.objective = cm.reactions[0].id
-    assert cm.optimize().status == "optimal"             # a fully working model
+    assert cm.optimize().status == "optimal"  # a fully working model
 
     # explicit overrides take precedence
     assert sd.SDSolutions.load(f, cmp_model=cm0).get_compressed_model() is cm0
     # embed_model=False -> no compressed snapshot
-    f2 = str(tmp_path / "lean.pkl"); sol.save(f2, embed_model=False)
+    f2 = str(tmp_path / "lean.pkl")
+    sol.save(f2, embed_model=False)
     assert sd.SDSolutions.load(f2, model=True, cmp_model=True).get_compressed_model() is None
 
 
@@ -317,14 +353,15 @@ def test_compressed_solutions_analyzable_in_restored_cmp_model(tmp_path):
     solver = _solver()
     m = read_sbml_model(GPR)
     sol = sd.compute_strain_designs(m, sd_setup=_combined_gpr(m, solver))
-    f = str(tmp_path / "sd.pkl"); sol.save(f)
+    f = str(tmp_path / "sd.pkl")
+    sol.save(f)
     o = sd.SDSolutions.load(f, model=True, cmp_model=True)
     cm = o.get_compressed_model()
     cm_rxn_ids = {r.id for r in cm.reactions}
     non_empty = [cs for cs in o.compressed_sd if cs]
     assert non_empty, "expected at least one non-empty compressed solution"
     for cs in non_empty:
-        assert set(cs).issubset(cm_rxn_ids)              # analysable in the compressed model
+        assert set(cs).issubset(cm_rxn_ids)  # analysable in the compressed model
     # apply one compressed KO set and confirm FBA still runs in the small model
     cs = non_empty[0]
     with cm:
@@ -339,8 +376,12 @@ def test_networktools_preserves_objective_direction():
     """networktools serializers keep the objective SENSE, which cobra drops."""
     from cobra import Model, Metabolite, Reaction
     from straindesign.networktools import model_to_dict, model_from_dict
-    m = Model("obj"); A = Metabolite("A_c", compartment="c")
-    r = Reaction("r1", lower_bound=0, upper_bound=10); m.add_reactions([r])
-    r.add_metabolites({A: 1.0}); m.objective = "r1"; m.objective.direction = "min"
+    m = Model("obj")
+    A = Metabolite("A_c", compartment="c")
+    r = Reaction("r1", lower_bound=0, upper_bound=10)
+    m.add_reactions([r])
+    r.add_metabolites({A: 1.0})
+    m.objective = "r1"
+    m.objective.direction = "min"
     rt = model_from_dict(model_to_dict(m))
     assert rt.objective.direction == "min"

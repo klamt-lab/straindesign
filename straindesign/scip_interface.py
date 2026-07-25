@@ -94,7 +94,18 @@ class SCIP_MILP(pso.Model):
             A SCIP MILP interface class.
     """
 
-    def __init__(self, c=None, A_ineq=None, b_ineq=None, A_eq=None, b_eq=None, lb=None, ub=None, vtype=None, indic_constr=None, seed=None, milp_threads=None):
+    def __init__(self,
+                 c=None,
+                 A_ineq=None,
+                 b_ineq=None,
+                 A_eq=None,
+                 b_eq=None,
+                 lb=None,
+                 ub=None,
+                 vtype=None,
+                 indic_constr=None,
+                 seed=None,
+                 milp_threads=None):
         super().__init__()
         # uncomment to forward SCIP output to python terminal
         # self.redirectOutput()
@@ -371,16 +382,14 @@ class SCIP_MILP(pso.Model):
             method: LP_METHOD_AUTO, LP_METHOD_PRIMAL, LP_METHOD_DUAL, or LP_METHOD_BARRIER
         """
         # SCIP lp/initalgorithm + lp/resolvealgorithm: 's'=auto, 'p'=primal, 'd'=dual, 'b'=barrier
-        _map = {LP_METHOD_AUTO: 's', LP_METHOD_PRIMAL: 'p',
-                LP_METHOD_DUAL: 'd', LP_METHOD_BARRIER: 'b'}
+        _map = {LP_METHOD_AUTO: 's', LP_METHOD_PRIMAL: 'p', LP_METHOD_DUAL: 'd', LP_METHOD_BARRIER: 'b'}
         algo = _map.get(method, 's')
         self.setParam('lp/initalgorithm', algo)
         self.setParam('lp/resolvealgorithm', algo)
 
     def get_lp_method(self):
         """Return the current LP method as a solver-neutral string."""
-        _rmap = {'s': LP_METHOD_AUTO, 'p': LP_METHOD_PRIMAL,
-                 'd': LP_METHOD_DUAL, 'b': LP_METHOD_BARRIER}
+        _rmap = {'s': LP_METHOD_AUTO, 'p': LP_METHOD_PRIMAL, 'd': LP_METHOD_DUAL, 'b': LP_METHOD_BARRIER}
         return _rmap.get(self.getParam('lp/initalgorithm'), LP_METHOD_AUTO)
 
     def get_basis(self):

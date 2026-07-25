@@ -278,9 +278,9 @@ class SDProblem:
                 logging.warning('  Module FVA range for %s is inconsistent (min %g > max %g), no bound '
                                 'override applied.' % (rid, lim.minimum, lim.maximum))
                 continue
-            lo = 0.0 if lim.minimum >= tol else None       # convincingly non-negative in-module
-            hi = 0.0 if lim.maximum <= -tol else None      # convincingly non-positive in-module
-            if lo is not None or hi is not None:           # both sides fixed == blocked in-module
+            lo = 0.0 if lim.minimum >= tol else None  # convincingly non-negative in-module
+            hi = 0.0 if lim.maximum <= -tol else None  # convincingly non-positive in-module
+            if lo is not None or hi is not None:  # both sides fixed == blocked in-module
                 override[rid] = (lo, hi)
         return override
 
@@ -335,23 +335,19 @@ class SDProblem:
                 # Inequality: c_v · x_v + tol · c_dual · d <= 0  (actual >= tol * optimal)
                 n_v, n_ref, n_d = len(c_v), len(c_inner), len(c_inner_dual)
                 c_dual_scaled = [inner_opt_tol * c for c in c_inner_dual]
-                ineq_link = sparse.hstack((sparse.csr_matrix(c_v), sparse.csr_matrix((1, n_ref)),
-                                           sparse.csr_matrix(c_dual_scaled)))
-                eq_link = sparse.hstack((sparse.csr_matrix((1, n_v)), sparse.csr_matrix(c_inner),
-                                          sparse.csr_matrix(c_inner_dual)))
-                A_ineq_p = sparse.vstack((sparse.block_diag((A_ineq_v, A_ineq_inner, A_ineq_dual)),
-                                          ineq_link)).tocsr()
+                ineq_link = sparse.hstack((sparse.csr_matrix(c_v), sparse.csr_matrix((1, n_ref)), sparse.csr_matrix(c_dual_scaled)))
+                eq_link = sparse.hstack((sparse.csr_matrix((1, n_v)), sparse.csr_matrix(c_inner), sparse.csr_matrix(c_inner_dual)))
+                A_ineq_p = sparse.vstack((sparse.block_diag((A_ineq_v, A_ineq_inner, A_ineq_dual)), ineq_link)).tocsr()
                 b_ineq_p = b_ineq_v + b_ineq_inner + b_ineq_dual + [0.0]
-                A_eq_p = sparse.vstack((sparse.block_diag((A_eq_v, A_eq_inner, A_eq_dual)),
-                                        eq_link)).tocsr()
+                A_eq_p = sparse.vstack((sparse.block_diag((A_eq_v, A_eq_inner, A_eq_dual)), eq_link)).tocsr()
                 b_eq_p = b_eq_v + b_eq_inner + b_eq_dual + [0.0]
                 lb_p = lb_v + lb_inner + lb_dual
                 ub_p = ub_v + ub_inner + ub_dual
                 z_map_vars_p = sparse.hstack((z_map_vars_v, z_map_vars_inner, z_map_vars_dual))
-                z_map_constr_ineq_p = sparse.hstack((z_map_constr_ineq_v, z_map_constr_ineq_inner,
-                    z_map_constr_ineq_dual, sparse.csc_matrix((self.num_z, 1))))
-                z_map_constr_eq_p = sparse.hstack((z_map_constr_eq_v, z_map_constr_eq_inner,
-                    z_map_constr_eq_dual, sparse.csc_matrix((self.num_z, 1))))
+                z_map_constr_ineq_p = sparse.hstack(
+                    (z_map_constr_ineq_v, z_map_constr_ineq_inner, z_map_constr_ineq_dual, sparse.csc_matrix((self.num_z, 1))))
+                z_map_constr_eq_p = sparse.hstack(
+                    (z_map_constr_eq_v, z_map_constr_eq_inner, z_map_constr_eq_dual, sparse.csc_matrix((self.num_z, 1))))
             else:
                 # Exact inner optimality (original code)
                 A_ineq_p = sparse.block_diag((A_ineq_v, A_ineq_dual)).tocsr()
@@ -679,12 +675,10 @@ class SDProblem:
                 A_eq_base = sparse.block_diag((A_eq_p, A_eq_p, A_eq_dl))
                 b_eq_ext = b_eq_p + b_eq_p + b_eq_dl
                 # Equality anchor: c_out · x_ref + c_dl · d_out = 0
-                eq_link = sparse.hstack((sparse.csr_matrix((1, n_p)),
-                    sparse.csr_matrix(c_out_in_p), sparse.csr_matrix(c_dl)))
+                eq_link = sparse.hstack((sparse.csr_matrix((1, n_p)), sparse.csr_matrix(c_out_in_p), sparse.csr_matrix(c_dl)))
                 # Relaxed inequality: c_out · x_actual + tol * c_dl · d_out <= 0
                 c_dl_scaled = [outer_opt_tol * v for v in c_dl]
-                iq_link = sparse.hstack((sparse.csr_matrix(c_out_in_p),
-                    sparse.csr_matrix((1, n_p)), sparse.csr_matrix(c_dl_scaled)))
+                iq_link = sparse.hstack((sparse.csr_matrix(c_out_in_p), sparse.csr_matrix((1, n_p)), sparse.csr_matrix(c_dl_scaled)))
                 A_eq_p = sparse.vstack((A_eq_base, eq_link)).tocsr()
                 b_eq_p = b_eq_ext + [0.0]
                 A_ineq_p = sparse.vstack((A_ineq_ext, iq_link)).tocsr()
@@ -692,16 +686,16 @@ class SDProblem:
                 lb_p = lb_p + lb_p + lb_dl
                 ub_p = ub_p + ub_p + ub_dl
                 z_map_vars_p = sparse.hstack((z_map_vars_p, z_map_vars_p, z_map_vars_dl))
-                z_map_constr_ineq_p = sparse.hstack((z_map_constr_ineq_p, z_map_constr_ineq_p,
-                    z_map_constr_ineq_dl, sparse.csc_matrix((self.num_z, 1))))
-                z_map_constr_eq_p = sparse.hstack((z_map_constr_eq_p, z_map_constr_eq_p,
-                    z_map_constr_eq_dl, sparse.csc_matrix((self.num_z, 1))))
+                z_map_constr_ineq_p = sparse.hstack(
+                    (z_map_constr_ineq_p, z_map_constr_ineq_p, z_map_constr_ineq_dl, sparse.csc_matrix((self.num_z, 1))))
+                z_map_constr_eq_p = sparse.hstack(
+                    (z_map_constr_eq_p, z_map_constr_eq_p, z_map_constr_eq_dl, sparse.csc_matrix((self.num_z, 1))))
             else:
                 # Exact outer optimality (original code)
                 A_ineq_p = sparse.block_diag((A_ineq_p, A_ineq_dl)).tocsr()
                 b_ineq_p = b_ineq_p + b_ineq_dl
-                A_eq_p = sparse.vstack((sparse.block_diag((A_eq_p, A_eq_dl)),
-                    sparse.hstack((sparse.csr_matrix(c_out_in_p), sparse.csr_matrix(c_dl))))).tocsr()
+                A_eq_p = sparse.vstack((sparse.block_diag(
+                    (A_eq_p, A_eq_dl)), sparse.hstack((sparse.csr_matrix(c_out_in_p), sparse.csr_matrix(c_dl))))).tocsr()
                 b_eq_p = b_eq_p + b_eq_dl + [0.0]
                 lb_p = lb_p + lb_dl
                 ub_p = ub_p + ub_dl
@@ -817,7 +811,7 @@ class SDProblem:
         #    constraint (gurobi/cplex) or the constant self.M (glpk/user-M).
         knockable_constr_ineq = np.unique(self.z_map_constr_ineq.nonzero()[1])
 
-        _idxz = set(self.idx_z)                                          # O(1) membership in the scan below
+        _idxz = set(self.idx_z)  # O(1) membership in the scan below
         cont_vars = [i not in _idxz for i in range(0, numvars)]
         M_lb = [self.lb[i] for i in np.nonzero(cont_vars)[0]]
         M_ub = [self.ub[i] for i in np.nonzero(cont_vars)[0]]
@@ -849,7 +843,7 @@ class SDProblem:
                 max_Ax[i] = np.inf
                 n_multi += 1
         logging.info('  Bounding MILP: %d constraints (%d zero, %d single-var, %d multi-var->indicator/M).' %
-                      (num_Ms, n_zero, n_single, n_multi))
+                     (num_Ms, n_zero, n_single, n_multi))
 
         # round Ms up to 5 digits
         Ms = [np.ceil(M * 1e5) / 1e5 if not isinf(M) else self.M for M in max_Ax]
@@ -1038,9 +1032,9 @@ class SDProblem:
                 continue
             col = Aic.getcol(z).tocoo()
             if any((r not in budget_rows) and v != 0 for r, v in zip(col.row.tolist(), col.data.tolist())):
-                continue                       # finite-M z-link -> controls a row
+                continue  # finite-M z-link -> controls a row
             if Aec is not None and Aec.getcol(z).nnz:
-                continue                       # equality z-link
+                continue  # equality z-link
             self.ub[z] = 0.0
             n_free += 1
         if n_free:
@@ -1126,7 +1120,7 @@ def build_primal_from_cbm(model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None,
                     lb[i] = max(lb[i], float(lo))
                 if hi is not None:
                     ub[i] = min(ub[i], float(hi))
-                if lb[i] > ub[i]:            # numeric guard: never emit an inconsistent block
+                if lb[i] > ub[i]:  # numeric guard: never emit an inconsistent block
                     lb[i], ub[i] = float(lo), float(hi)
     z_map_vars = sparse.identity(numr, 'd', format="csc")
     z_map_constr_eq = sparse.csc_matrix((numr, A_eq.shape[0]))
