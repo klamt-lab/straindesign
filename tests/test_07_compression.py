@@ -1,4 +1,4 @@
-"""Compression tests: unit tests, compression_backend parity, FVA equivalence, and MCS validation."""
+"""Compression tests: unit tests, map correctness, FVA equivalence, and MCS validation."""
 import sys
 import pytest
 import numpy as np
@@ -33,29 +33,8 @@ def model_small_example():
 
 
 # =============================================================================
-# Unit tests (Python-only, no Java required)
+# Unit tests
 # =============================================================================
-
-
-def test_no_jpype_loaded():
-    """Verify that jpype is not loaded when importing straindesign."""
-    jpype_before = [m for m in sys.modules if 'jpype' in m.lower()]
-    # Save and remove straindesign modules to test a fresh import
-    saved_modules = {m: sys.modules[m] for m in list(sys.modules) if m.startswith('straindesign')}
-    for m in saved_modules:
-        del sys.modules[m]
-    try:
-        import straindesign as sd_fresh
-        jpype_after = [m for m in sys.modules if 'jpype' in m.lower()]
-        new_jpype = set(jpype_after) - set(jpype_before)
-        assert len(new_jpype) == 0, f"straindesign loaded jpype modules: {new_jpype}"
-    finally:
-        # Restore original modules so function identity is preserved for
-        # multiprocessing pickle (SDPool serialises fva_worker_init by reference).
-        for m in list(sys.modules):
-            if m.startswith('straindesign'):
-                del sys.modules[m]
-        sys.modules.update(saved_modules)
 
 
 def test_python_compression_basic(model_gpr):
@@ -68,10 +47,10 @@ def test_python_compression_basic(model_gpr):
 
 
 def test_python_compression_coupled_function(model_small_example):
-    """compress_model_coupled with compression_backend='sparse_rref' returns a dict."""
+    """compress_model_coupled returns a dict."""
     nt.stoichmat_coeff_to_fraction(model_small_example)
     nt.remove_conservation_relations(model_small_example)
-    reac_map = nt.compress_model_coupled(model_small_example, compression_backend='sparse_rref')
+    reac_map = nt.compress_model_coupled(model_small_example)
     assert isinstance(reac_map, dict)
 
 
@@ -79,7 +58,7 @@ def test_compression_coefficient_type(model_small_example):
     """Compression coefficients are exact rational number types."""
     nt.stoichmat_coeff_to_fraction(model_small_example)
     nt.remove_conservation_relations(model_small_example)
-    reac_map = nt.compress_model_coupled(model_small_example, compression_backend='sparse_rref')
+    reac_map = nt.compress_model_coupled(model_small_example)
     for new_reac, old_reacs in reac_map.items():
         for old_reac, coeff in old_reacs.items():
             assert is_rational_type(coeff), (f"Coefficient for {old_reac} in {new_reac}: expected rational, got {type(coeff)}")
@@ -93,11 +72,11 @@ def test_stoichmat_coeff_to_fraction_uses_rational_type(model_small_example):
             assert is_rational_type(coeff), (f"Coefficient for {metabolite.id} in {reaction.id}: expected rational, got {type(coeff)}")
 
 
-def test_basic_columns_rat_python():
-    """basic_columns_rat returns correct pivot count for a rank-2 matrix."""
-    import straindesign.efmtool_cmp_interface as efm
+def test_basic_columns_from_numpy():
+    """basic_columns_from_numpy returns correct pivot count for a rank-2 matrix."""
+    from straindesign.compression import basic_columns_from_numpy
     mx = np.array([[1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [1.0, 1.0, 2.0]])
-    basic_cols = efm.basic_columns_rat(mx)
+    basic_cols = basic_columns_from_numpy(mx)
     assert len(basic_cols) == 2, f"Expected 2 basic columns, got {len(basic_cols)}"
 
 
@@ -119,46 +98,24 @@ def test_compression_preserves_flux_space(model_small_example):
 
 
 @pytest.mark.timeout(30)
-def test_full_strain_design_without_java(model_gpr):
-    """A full strain design computation completes using only the sparse backend."""
+def test_full_strain_design_compressed(model_gpr):
+    """A full strain design computation completes with compression enabled."""
     from straindesign.names import SUPPRESS, ANY
     sd.extend_model_gpr(model_gpr, use_names=False)
     module = sd.SDModule(model_gpr, module_type=SUPPRESS, constraints='r_bm >= 0.1')
-    try:
-        sd.compute_strain_designs(
-            model_gpr,
-            sd_modules=[module],
-            max_solutions=1,
-            max_cost=2,
-            compress=True,
-            solution_approach=ANY,
-        )
-    except ImportError as e:
-        if 'jpype' in str(e).lower():
-            pytest.fail(f"Java/jpype was required but should not be: {e}")
-        raise
+    sd.compute_strain_designs(
+        model_gpr,
+        sd_modules=[module],
+        max_solutions=1,
+        max_cost=2,
+        compress=True,
+        solution_approach=ANY,
+    )
 
 
 # =============================================================================
-# Backend parity tests (Java required; skipped if jpype unavailable)
+# Compression correctness through the reaction map
 # =============================================================================
-
-
-@pytest.fixture
-def jpype_available():
-    jpype = pytest.importorskip("jpype", reason="jpype not installed; skipping Java parity tests")
-    return jpype
-
-
-@pytest.mark.java
-def test_compression_parity_reaction_count(jpype_available):
-    """Both compression backends compress e_coli_core to the same number of reactions."""
-    model_py = load_model("e_coli_core")
-    nt.compress_model(model_py, compression_backend='sparse_rref')
-    model_java = load_model("e_coli_core")
-    nt.compress_model(model_java, compression_backend='efmtool_rref')
-    assert len(model_py.reactions) == len(
-        model_java.reactions), (f"Reaction count mismatch: sparse_rref={len(model_py.reactions)}, efmtool_rref={len(model_java.reactions)}")
 
 
 def _trace_lump(cmp_maps, orig_id):
@@ -176,36 +133,28 @@ def _trace_lump(cmp_maps, orig_id):
     return cur, factor
 
 
-@pytest.mark.java
-def test_fba_equivalence(jpype_available):
-    """Both backends preserve the uncompressed optimum once the lump factor is applied.
+def test_fba_optimum_recovered_through_map():
+    """Compression preserves the uncompressed optimum once the lump factor is applied.
 
     A lump's overall scale is free: only its ratios are fixed, so the raw objective value of a
-    lumped reaction is backend-specific and not a meaningful thing to compare. sparse_rref
-    re-expresses each lump in one member's units, efmtool_rref does not, so their biomass columns
-    differ by a constant factor. What must agree -- and what a caller actually relies on -- is the
-    flux recovered through the compression map.
+    lumped reaction is not meaningful on its own. What a caller relies on is the flux recovered
+    through the compression map, which must reproduce the uncompressed optimum exactly. This also
+    exercises the map itself -- it would catch factors drifting out of step with the column
+    scaling applied when a lump is re-expressed in one member's units.
     """
     base = load_model("e_coli_core")
     biomass = next((r.id for r in base.reactions if 'biomass' in r.id.lower()), None)
     assert biomass, "Could not find biomass reaction"
     ref = sd.fba(base, obj={biomass: 1}, obj_sense='maximize').objective_value
 
-    recovered = {}
-    for backend in ('sparse_rref', 'efmtool_rref'):
-        model = load_model("e_coli_core")
-        cmp_maps = nt.compress_model(model, compression_backend=backend)
-        cmp_id, factor = _trace_lump(cmp_maps, biomass)
-        assert cmp_id in [r.id for r in model.reactions], (
-            f"{backend}: compression map names {cmp_id}, which is not in the compressed model")
-        val = sd.fba(model, obj={cmp_id: 1}, obj_sense='maximize').objective_value
-        recovered[backend] = factor * val
-
-    for backend, val in recovered.items():
-        assert abs(val - ref) < 1e-6, (
-            f"{backend}: recovered optimum {val} != uncompressed {ref}")
-    assert abs(recovered['sparse_rref'] - recovered['efmtool_rref']) < 1e-6, (
-        f"Backend mismatch after mapping back: {recovered}")
+    model = load_model("e_coli_core")
+    cmp_maps = nt.compress_model(model)
+    cmp_id, factor = _trace_lump(cmp_maps, biomass)
+    assert cmp_id in [r.id for r in model.reactions], (
+        f"compression map names {cmp_id}, which is not in the compressed model")
+    val = sd.fba(model, obj={cmp_id: 1}, obj_sense='maximize').objective_value
+    assert abs(factor * val - ref) < 1e-6, (
+        f"recovered optimum {factor * val} != uncompressed {ref}")
 
 
 def test_cobra_optimize_after_compression():
@@ -223,7 +172,7 @@ def test_cobra_optimize_after_compression():
     val_orig = model_orig.optimize().objective_value
 
     model_cmp = load_model("e_coli_core")
-    cmp_map = nt.compress_model(model_cmp, compression_backend='sparse_rref')
+    cmp_map = nt.compress_model(model_cmp)
 
     # Find biomass in compressed model via compression map
     biomass_cmp_id = None
@@ -243,34 +192,6 @@ def test_cobra_optimize_after_compression():
         f"Expanded objective mismatch: original={val_orig}, expanded={val_expanded}")
 
 
-@pytest.mark.java
-def test_fva_equivalence(jpype_available):
-    """Both compression backends produce flux spaces with no true FVA mismatches.
-
-    Sign-convention differences (Python = -Java for some lumped reactions) are
-    mathematically equivalent and are not counted as mismatches.
-    """
-    model_py = load_model("e_coli_core")
-    nt.compress_model(model_py, compression_backend='sparse_rref')
-    model_java = load_model("e_coli_core")
-    nt.compress_model(model_java, compression_backend='efmtool_rref')
-
-    fva_py = flux_variability_analysis(model_py, fraction_of_optimum=0.0, processes=1)
-    fva_java = flux_variability_analysis(model_java, fraction_of_optimum=0.0, processes=1)
-
-    common = set(fva_py.index) & set(fva_java.index)
-    true_mismatches = []
-    for r_id in common:
-        py_min, py_max = fva_py.loc[r_id, 'minimum'], fva_py.loc[r_id, 'maximum']
-        java_min, java_max = fva_java.loc[r_id, 'minimum'], fva_java.loc[r_id, 'maximum']
-        direct = abs(py_min - java_min) < 1e-6 and abs(py_max - java_max) < 1e-6
-        flipped = abs(py_min - (-java_max)) < 1e-6 and abs(py_max - (-java_min)) < 1e-6
-        if not direct and not flipped:
-            true_mismatches.append(r_id)
-
-    assert len(true_mismatches) == 0, (f"True FVA mismatches between sparse_rref and efmtool_rref backends: {true_mismatches}")
-
-
 # =============================================================================
 # FVA back-mapping test (sparse only)
 # =============================================================================
@@ -283,7 +204,7 @@ def test_fva_expansion():
     fva_orig = flux_variability_analysis(model_orig, fraction_of_optimum=0.0, processes=1)
 
     model_cmp = load_model("e_coli_core")
-    cmp_map = nt.compress_model(model_cmp, compression_backend='sparse_rref')
+    cmp_map = nt.compress_model(model_cmp)
     fva_cmp = flux_variability_analysis(model_cmp, fraction_of_optimum=0.0, processes=1)
 
     # Build inverse map: orig_id -> (compressed_id, coefficient)
@@ -317,21 +238,12 @@ def test_fva_expansion():
 # =============================================================================
 
 
-@pytest.mark.parametrize("compression_backend", [
-    "sparse_rref",
-    pytest.param("efmtool_rref", marks=pytest.mark.java),
-])
-def test_mcs_e_coli_core(compression_backend):
+def test_mcs_e_coli_core():
     """MCS computation on e_coli_core returns the expected 455 solutions.
-
-    Parametrized over both compression backends so regressions in either
-    are caught. The efmtool_rref variant is skipped when jpype is not installed.
 
     Requires a strong MILP solver (Gurobi, CPLEX, or SCIP). GLPK cannot
     reliably enumerate all solutions via POPULATE and is excluded.
     """
-    if compression_backend == "efmtool_rref":
-        pytest.importorskip("jpype", reason="jpype not installed; skipping efmtool backend")
     from straindesign.names import SUPPRESS, POPULATE, GLPK, SCIP, GUROBI, CPLEX
     # Solver priority: SCIP (no size limit) > CPLEX > GUROBI (both have free-tier limits)
     strong_solvers = sd.avail_solvers - {GLPK}
@@ -346,51 +258,7 @@ def test_mcs_e_coli_core(compression_backend):
                                      max_cost=3,
                                      gene_kos=True,
                                      solver=solver,
-                                     compression_backend=compression_backend)
+)
     assert len(sols.reaction_sd) == 455, (
-        f"Expected 455 MCS for e_coli_core (compression_backend={compression_backend}), got {len(sols.reaction_sd)}")
+        f"Expected 455 MCS for e_coli_core, got {len(sols.reaction_sd)}")
 
-
-@pytest.mark.timeout(300)
-@pytest.mark.large
-def test_imlcore_compression_parity(jpype_available):
-    """Both compression backends compress iMLcore to the same number of reactions.
-
-    Marked --large: JPype's JNI bridge crashes (SIGBUS/SIGSEGV) on GitHub Actions
-    runners when processing iMLcore-sized matrices through the Java RREF.
-    The e_coli_core parity tests above cover the same code path on a smaller matrix.
-    Run locally with: pytest --large -k test_imlcore_compression_parity
-    """
-    model_py = read_sbml_model(dirname(abspath(__file__)) + r"/iMLcore.xml")
-    nt.compress_model(model_py, compression_backend='sparse_rref')
-    model_java = read_sbml_model(dirname(abspath(__file__)) + r"/iMLcore.xml")
-    nt.compress_model(model_java, compression_backend='efmtool_rref')
-    assert len(model_py.reactions) == len(
-        model_java.reactions), (f"iMLcore reaction count mismatch: sparse_rref={len(model_py.reactions)}, efmtool_rref={len(model_java.reactions)}")
-
-
-@pytest.mark.timeout(600)
-@pytest.mark.large
-def test_mcs_imlcore_parity(jpype_available):
-    """MCS on iMLcore returns the same solutions with both compression backends.
-
-    Marked --large: JPype's JNI bridge crashes on CI runners with iMLcore-sized
-    matrices (see test_imlcore_compression_parity docstring).
-    Run locally with: pytest --large -k test_mcs_imlcore_parity
-    """
-    from straindesign.names import SUPPRESS, POPULATE, GLPK
-    strong_solvers = sd.avail_solvers - {GLPK}
-    if not strong_solvers:
-        pytest.skip("iMLcore MCS parity test requires Gurobi, CPLEX, or SCIP")
-    solver = next(iter(strong_solvers))
-    results = {}
-    for backend in ['sparse_rref', 'efmtool_rref']:
-        model = read_sbml_model(dirname(abspath(__file__)) + r"/iMLcore.xml")
-        modules = [sd.SDModule(model, SUPPRESS,
-                               constraints='BIOMASS_Ec_iML1515_core_75p37M >= 0.001')]
-        sols = sd.compute_strain_designs(model, sd_modules=modules, solution_approach=POPULATE,
-                                         max_cost=3, solver=solver,
-                                         compression_backend=backend)
-        results[backend] = len(sols.reaction_sd)
-    assert results['sparse_rref'] == results['efmtool_rref'], (
-        f"iMLcore MCS count mismatch: sparse_rref={results['sparse_rref']}, efmtool_rref={results['efmtool_rref']}")

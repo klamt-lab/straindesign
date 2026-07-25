@@ -389,52 +389,6 @@ def fva_legacy(model, **kwargs) -> DataFrame:
     )
 
 
-def remove_redundant_bounds(model, **kwargs) -> DataFrame:
-    """Remove non-binding bounds from a model using FVA.
-
-    Runs FVA and relaxes bounds that never bind at steady state:
-    - If fva_min > lb + tol: set lb = -inf  (lower bound is not binding)
-    - If fva_max < ub - tol: set ub = +inf  (upper bound is not binding)
-
-    Modifies the model IN-PLACE. Returns the FVA DataFrame.
-
-    Args:
-        model (cobra.Model):
-            A metabolic model. Modified in-place.
-
-        solver (optional (str)):
-            Solver for FVA.
-
-        constraints (optional):
-            Constraints passed through to fva().
-
-        compress (optional (bool)):
-            Compress before FVA (passed through).
-
-        threads (optional (int)):
-            Parallel threads for FVA (passed through).
-
-        tol (optional (float)): (Default: 1e-6)
-            Tolerance for considering a bound as binding.
-
-    Returns:
-        (pandas.DataFrame):
-            FVA results with 'minimum' and 'maximum' columns.
-    """
-    tol = kwargs.pop('tol', 1e-6)
-    fva_result = fva(model, **kwargs)
-
-    for rxn in model.reactions:
-        fva_min = fva_result.loc[rxn.id, 'minimum']
-        fva_max = fva_result.loc[rxn.id, 'maximum']
-        if fva_min > rxn.lower_bound + tol:
-            rxn.lower_bound = -float('inf')
-        if fva_max < rxn.upper_bound - tol:
-            rxn.upper_bound = float('inf')
-
-    return fva_result
-
-
 def fba(model, **kwargs) -> Solution:
     """Flux Balance Analysis (FBA), parsimonius Flux Balance Analysis (pFBA),
     

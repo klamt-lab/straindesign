@@ -23,7 +23,7 @@ To get started, check out the [StrainDesign documentation](https://straindesign.
   <img src="https://raw.githubusercontent.com/klamt-lab/straindesign/host_gifs/docs/plot.gif" width="340" alt="Flux-space animation">
 </p>
 
-Parts of the compression routine are done by efmtool's compression function ([csb.ethz.ch/tools/software/efmtool.html](https://csb.ethz.ch/tools/software/efmtool.html)<a href="#ref6"><sup>[6]</sup></a>). Therefore some source code from the [efmtool_link](https://github.com/cnapy-org/efmtool_link) package was adopted.
+The compression routine follows the approach of efmtool's compression function ([csb.ethz.ch/tools/software/efmtool.html](https://csb.ethz.ch/tools/software/efmtool.html)<a href="#ref6"><sup>[6]</sup></a>), reimplemented in pure Python with exact rational arithmetic.
 
 ## Installation
 
@@ -50,10 +50,6 @@ pip install -e .
 ```
 
 in the main folder. Through the installation with `-e`, updates from a `git pull` are at once available in your Python environment without the need for a reinstallation.
-
-### Legacy Java backend (optional)
-
-Java is not required for the default compression (`compression_backend='sparse_rref'`). A legacy Java-based EFMTool backend (`compression_backend='efmtool_rref'`) is optionally available via `pip install straindesign[java]`. For setup help see the [Legacy Methods](https://straindesign.readthedocs.io/en/latest/legacy_methods.html) documentation page.
 
 ## Install additional solvers
 

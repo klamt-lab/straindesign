@@ -484,7 +484,6 @@ def _silent_io():
 from straindesign.compression import (
     compress_model,
     compress_model_coupled,
-    compress_model_efmtool,  # backward-compat alias
     compress_model_parallel,
     remove_blocked_reactions,
     remove_ext_mets,
@@ -1381,21 +1380,6 @@ def modules_coeff_to_fraction(sd_modules):
                 if param in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                     for reac in module[param].keys():
                         module[param][reac] = float_to_fraction(module[param][reac])
-    return sd_modules
-
-
-def modules_coeff2float(sd_modules):
-    """Convert coefficients occurring in SDModule objects to floats"""
-    for i, module in enumerate(sd_modules):
-        for param in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
-            if param in module and module[param] is not None:
-                if param == CONSTRAINTS:
-                    for constr in module[CONSTRAINTS]:
-                        for reac in constr[0].keys():
-                            constr[0][reac] = float(constr[0][reac])
-                if param in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
-                    for reac in module[param].keys():
-                        module[param][reac] = float(module[param][reac])
     return sd_modules
 
 

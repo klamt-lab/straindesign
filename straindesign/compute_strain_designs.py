@@ -386,7 +386,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
-        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'compression_backend', 'dump_preprocessed'
+        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'dump_preprocessed'
     }
     logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
@@ -564,7 +564,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             # also exempt them from parallel merging so their names stay stable across the
             # compression passes (keeps the coupled-exemption matching them by name)
             no_par_compress_reacs.update(no_coupled_compress_reacs)
-        compression_backend = kwargs.get('compression_backend', 'sparse_rref')
         # --- Reversibility pre-tightening (BEFORE compress #1) ---
         # Sign-only FVA (cheaper than full FVA): fix lb/ub to 0 for directions carrying no flux in the
         # base polytope. Design-neutral (a base-infeasible direction stays infeasible under any module
@@ -586,7 +585,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         logging.info('Compressing Network (' + str(len(cmp_model.reactions)) + ' reactions).')
         t0 = time.time()
         cmp_mapReac_1 = compress_model(cmp_model, no_par_compress_reacs,
-                                        compression_backend=compression_backend,
                                         propagate_gpr=True,
                                         no_coupled_compress_reacs=no_coupled_compress_reacs)
         sd_modules = compress_modules(sd_modules, cmp_mapReac_1)
@@ -671,7 +669,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         t0 = time.time()
         no_par_compress_reacs = _collect_no_par_compress_reacs(sd_modules)
         cmp_mapReac_2 = compress_model(cmp_model, no_par_compress_reacs,
-                                        compression_backend=compression_backend)
+)
         sd_modules = compress_modules(sd_modules, cmp_mapReac_2)
         cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2 = compress_ki_ko_cost(
             cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2)
