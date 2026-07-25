@@ -1,12 +1,12 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "straindesign"
 version = "1.18"
 description = "Computational strain design package for the COBRApy framework"
-readme = {text = "Computational strain design package for the COBRApy framework, offering standard and advanced tools for the analysis and redesign of biological networks", content-type = "text/plain"}
+readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [
