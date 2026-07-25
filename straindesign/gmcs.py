@@ -15,7 +15,7 @@ is judged by matching the gadget's gene-MCS SET.
 import logging
 import numpy as np
 from scipy import sparse
-from . import gpr_bitmask as _gb
+from .compression import simplify_model_gprs as _simplify_model_gprs, _gpr_parse
 from .strainDesignProblem import SDProblem
 from .strainDesignMILP import SDMILP
 from .solver_interface import MILP_LP
@@ -84,7 +84,7 @@ def build_gspace(model, max_ko=3):
     for r in model.reactions:
         if not r.gene_reaction_rule:
             continue
-        iv = _tree_interventions(_gb.parse(r.gene_reaction_rule), max_ko)
+        iv = _tree_interventions(_gpr_parse(r.gene_reaction_rule), max_ko)
         if iv:
             interv[r.id] = iv
     logging.info('  [gmcs] G-space: %d GPR reactions, %d interventions'
@@ -223,8 +223,8 @@ class GMCSMILP(SDMILP):
 def compute_gmcs(model, sd_modules, max_ko=3, reversibility=False, compress=True,
                  solver=None, seed=None, milp_threads=None, max_solutions=np.inf):
     import time as _t
-    from .networktools import copy_model_suppressed
-    m = copy_model_suppressed(model)  # cheap copy (~0.3s): no solver rebuild. Compression is stub-safe
+    from .networktools import _suppressed_copy
+    m = _suppressed_copy(model)  # cheap copy (~0.3s): no solver rebuild. Compression is stub-safe
                                       # (compress_model_coupled runs under suppress_lp_context); SDProblem
                                       # builds its MILP from stoichiometry (empty-objective primal), so no
                                       # populated optlang solver is ever needed on the copy.
@@ -250,7 +250,7 @@ def compute_gmcs(model, sd_modules, max_ko=3, reversibility=False, compress=True
             cmp_map = compress_model(m, set(), propagate_gpr=True)  # full routine
         sd_modules = compress_modules(sd_modules, cmp_map)          # remap module ids/coeffs to lumped model
         logging.info('  [gmcs] step1 compress (%s): %.1fs' % (compress, _t.time() - _t0))
-    _t0 = _t.time(); _gb.simplify_model_gprs(m)                     # step 2
+    _t0 = _t.time(); _simplify_model_gprs(m)                     # step 2
     logging.info('  [gmcs] step2 simplify GPR: %.1fs' % (_t.time() - _t0))
     _t0 = _t.time(); interv = build_gspace(m, max_ko=max_ko)        # step 3
     logging.info('  [gmcs] step3 build_gspace: %.1fs' % (_t.time() - _t0))
