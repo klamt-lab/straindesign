@@ -223,11 +223,12 @@ class GMCSMILP(SDMILP):
 def compute_gmcs(model, sd_modules, max_ko=3, reversibility=False, compress=True,
                  solver=None, seed=None, milp_threads=None, max_solutions=np.inf):
     import time as _t
-    from .networktools import _suppressed_copy
-    m = _suppressed_copy(model)  # cheap copy (~0.3s): no solver rebuild. Compression is stub-safe
-                                      # (compress_model_coupled runs under suppress_lp_context); SDProblem
-                                      # builds its MILP from stoichiometry (empty-objective primal), so no
-                                      # populated optlang solver is ever needed on the copy.
+    from .networktools import suppress_lp_context
+    # Under suppression `Model.copy` is the backend-free copy (~0.3s rather than ~3s, since the live
+    # solver is not deep-copied). Only the copy needs the context here: compression enters its own,
+    # and SDProblem builds its MILP from stoichiometry, so the copy never needs a populated solver.
+    with suppress_lp_context(model):
+        m = model.copy()
     if reversibility:                                               # step 0
         _t0 = _t.time()
         from .speedy_fva import fast_reversibility
