@@ -125,6 +125,28 @@ def lineq2list(equations, reaction_ids) -> List:
     return D
 
 
+def lineqlist2str(D):
+    """Translates a *linear* (in)equality from the list format [lhs,sign,rhs] to a string
+
+    E.g. input: D=[{"a":3.0,"b":-1.0,"c":2.0},"<=",2.0]] is translated to: out="3.0 a - 1.0 b + 2.0 c <= 2"
+
+    Args:
+        D (list):
+            (In)equality in list form, e.g.: D=[{"a":3.0,"b":-1.0,"c":2.0},"<=",2.0]]
+
+    Returns:
+        (str):
+        A list of (in)equalities in string form
+
+    """
+    if D[0]:
+        return linexprdict2str(D[0]) + " " + D[1] + " " + str(D[2])
+    elif D[1] and D[2]:
+        return D[1] + " " + str(D[2])
+    else:
+        return ""
+
+
 def lineqlist2mat(D, reaction_ids) -> Tuple[sparse.csr_matrix, Tuple, sparse.csr_matrix, Tuple]:
     """Translates *linear* (in)equalities presented in the list of lists format to matrices
     
