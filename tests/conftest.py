@@ -4,7 +4,8 @@ from cobra import Configuration
 from straindesign.names import *
 
 # ---------------------------------------------------------------------------
-# Custom CLI flags for test_performance.py tiered benchmarks
+# Custom CLI flags for opt-in tests: the tiered benchmarks in
+# test_09_performance.py and the downstream check in test_13_public_api.py
 # ---------------------------------------------------------------------------
 
 
@@ -12,6 +13,7 @@ def pytest_addoption(parser):
     for name, help_text in [
         ("--medium", "Run iMLcore genome-scale benchmarks (~4 min total)."),
         ("--large", "Run iML1515 large-model benchmarks (several min/solver)."),
+        ("--downstream", "Check the names CNApy imports against this package (needs network)."),
     ]:
         try:
             parser.addoption(name, action="store_true", default=False, help=help_text)
@@ -23,6 +25,7 @@ def pytest_configure(config):
     for marker, desc in [
         ("medium", "genome-scale benchmark; enable with --medium"),
         ("large", "large-model benchmark; enable with --large"),
+        ("downstream", "downstream consumer check; enable with --downstream"),
     ]:
         config.addinivalue_line("markers", f"{marker}: {desc}")
     # Suppress known third-party warnings
@@ -31,9 +34,9 @@ def pytest_configure(config):
 
 
 def pytest_collection_modifyitems(config, items):
-    for flag, marker in [("--medium", "medium"), ("--large", "large")]:
+    for flag, marker in [("--medium", "medium"), ("--large", "large"), ("--downstream", "downstream")]:
         if not config.getoption(flag, default=False):
-            skip = pytest.mark.skip(reason=f"pass {flag} to enable this benchmark")
+            skip = pytest.mark.skip(reason=f"pass {flag} to enable this test")
             for item in items:
                 if marker in item.keywords:
                     item.add_marker(skip)

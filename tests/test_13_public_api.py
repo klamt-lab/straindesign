@@ -6,9 +6,16 @@ it at startup in gui_elements/strain_design_dialog.py, so the removal broke the
 application. These names are re-checked here because grepping this repository
 cannot see that.
 """
+import ast
 import importlib
+import io
+import tarfile
+import urllib.request
+import warnings
 
 import pytest
+
+CNAPY_TARBALL = "https://github.com/cnapy-org/CNApy/archive/refs/heads/master.tar.gz"
 
 # Imported by CNApy; see cnapy/gui_elements/strain_design_dialog.py and siblings.
 CNAPY_IMPORTS = {
@@ -37,6 +44,55 @@ def test_public_names_are_importable(module, names):
     mod = importlib.import_module(module)
     missing = [n for n in names if not hasattr(mod, n)]
     assert not missing, f"{module} no longer exports: {', '.join(missing)}"
+
+
+def _straindesign_names_imported_by(source):
+    """Yield (module, name) for every straindesign import in a source file."""
+    with warnings.catch_warnings():
+        # Parsing someone else's source can raise SyntaxWarning for things like
+        # invalid escape sequences. Those are CNApy's to fix, not signal here.
+        warnings.simplefilter("ignore", SyntaxWarning)
+        tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module and node.module.split(".")[0] == "straindesign":
+                for alias in node.names:
+                    if alias.name != "*":
+                        yield node.module, alias.name
+
+
+@pytest.mark.downstream
+def test_cnapy_master_imports_still_exist():
+    """Every straindesign name CNApy imports must still be exported.
+
+    CNApy is read rather than installed: it depends on Qt, a JVM via jpype, and
+    CPLEX, none of which belong in this matrix. Reading the source catches names
+    CNApy has newly imported, which the hardcoded list above cannot.
+    """
+    try:
+        with urllib.request.urlopen(CNAPY_TARBALL, timeout=120) as response:
+            payload = response.read()
+    except Exception as exc:  # offline, rate-limited, or the branch moved
+        pytest.skip(f"could not fetch CNApy source: {exc}")
+
+    wanted = set()
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as tar:
+        for member in tar.getmembers():
+            if not member.name.endswith(".py"):
+                continue
+            handle = tar.extractfile(member)
+            if handle is None:
+                continue
+            wanted.update(_straindesign_names_imported_by(handle.read().decode("utf-8", "replace")))
+
+    assert wanted, "found no straindesign imports in CNApy; the parser or the URL is wrong"
+
+    missing = []
+    for module, name in sorted(wanted):
+        mod = importlib.import_module(module)
+        if not hasattr(mod, name):
+            missing.append(f"{module}.{name}")
+    assert not missing, ("CNApy imports names this package no longer exports: " + ", ".join(missing))
 
 
 def test_lineqlist2str_formats_an_inequality():
