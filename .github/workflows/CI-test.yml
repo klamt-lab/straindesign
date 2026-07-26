@@ -131,5 +131,8 @@ jobs:
         if: matrix.package-manager == 'conda'
         run: |
           micromamba install pytest pytest-timeout
+      # --downstream reads CNApy's source to check the names it imports from this
+      # package. It needs network and tracks a branch we do not control, so it is
+      # limited to the quarterly scheduled run rather than gating pull requests.
       - name: Test with pytest
-        run: pytest tests -v --medium --log-cli-level=INFO
+        run: pytest tests -v --medium ${{ github.event_name == 'schedule' && '--downstream' || '' }} --log-cli-level=INFO
