@@ -767,7 +767,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
 
     # remove ko-costs (and thus knockability) of essential reactions
     [cmp_ko_cost.pop(er) for er in essential_reacs if er in cmp_ko_cost]
-    essential_kis = set(cmp_ki_cost[er] for er in essential_reacs if er in cmp_ki_cost)
+    essential_kis = set(er for er in essential_reacs if er in cmp_ki_cost)
     # Build MILP
     kwargs1 = kwargs
     kwargs1[KOCOST] = cmp_ko_cost
