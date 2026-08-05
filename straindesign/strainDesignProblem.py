@@ -154,19 +154,26 @@ class SDProblem:
         for i in [i for i, x in enumerate(self.cost) if np.isnan(x)]:
             self.cost[i] = 0.0
         # Top 3 fixed rows of A_ineq (with the b_ineq values assembled just below):
-        #   row 0 (idx_row_maxcost):  -cost . z <= 0        -> total intervention cost >= 0
+        #   row 0 (idx_row_maxcost):  -cost . z <= inf      -> left open, see below
         #   row 1 (idx_row_mincost):   cost . z <= max_cost -> total intervention cost <= max_cost (budget cap)
         #   row 2 (idx_row_obj):       objective placeholder row (set later via fixObjective)
         # NOTE: the maxcost/mincost names are historical and read counter-intuitively -- row 0 is the
-        # >= 0 lower bracket, row 1 is the <= max_cost upper cap.
+        # lower bracket on total cost, row 1 is the <= max_cost upper cap.
+        # Row 0 used to read `total cost >= 0`. That is implied whenever every cost is
+        # non-negative, and z is binary, so the objective is bounded without it. Its only
+        # effect was on negative intervention costs, which are a documented way of forcing
+        # a reaction into every solution: give it a large negative cost and set max_cost
+        # accordingly, so any solution omitting it is unaffordable. The bracket made that
+        # infeasible by construction. The row is kept so that row indices -- and the
+        # z_map_constr_ineq columns aligned to them -- stay put.
         self.idx_row_maxcost = 0
         self.idx_row_mincost = 1
         self.idx_row_obj = 2
         self.A_ineq = sparse.csr_matrix([[-i for i in self.cost], self.cost, [0 for _ in range(self.num_z)]])
         if self.max_cost is None:
-            self.b_ineq = [0.0, float(np.sum(np.abs(self.cost))), np.inf]
+            self.b_ineq = [np.inf, float(np.sum(np.abs(self.cost))), np.inf]
         else:
-            self.b_ineq = [0.0, float(self.max_cost), np.inf]
+            self.b_ineq = [np.inf, float(self.max_cost), np.inf]
         self.z_map_constr_ineq = sparse.csc_matrix((numr, 3))
         self.lb = [1.0 if r.id in self.essential_kis else 0.0 for r in model.reactions]
         self.ub = [1.0 - float(i) for i in self.z_non_targetable]
@@ -199,7 +206,16 @@ class SDProblem:
 
         # Save continous part of MILP for easy strain design validation
         cont_vars = [i for i in range(0, self.A_ineq.shape[1]) if not i in self.idx_z]
-        self.cont_MILP = ContMILP(self.A_ineq[:, cont_vars], self.b_ineq.copy(), self.A_eq[:, cont_vars], self.b_eq.copy(),
+        # The three leading rows constrain z alone (both cost brackets and the objective
+        # placeholder). Once the z columns are dropped they read 0 <= rhs, which says
+        # nothing about the continuous system but turns every verification infeasible as
+        # soon as a cost is negative enough to make max_cost negative. Neutralise their
+        # right-hand sides here rather than dropping the rows, since z_map_constr_ineq
+        # columns are indexed by row position.
+        cont_b_ineq = self.b_ineq.copy()
+        for r in (self.idx_row_maxcost, self.idx_row_mincost, self.idx_row_obj):
+            cont_b_ineq[r] = np.inf
+        self.cont_MILP = ContMILP(self.A_ineq[:, cont_vars], cont_b_ineq, self.A_eq[:, cont_vars], self.b_eq.copy(),
                                   [self.lb[i] for i in cont_vars], [self.ub[i] for i in cont_vars], [self.c[i] for i in cont_vars],
                                   self.z_map_constr_ineq.tocoo(), self.z_map_constr_eq.tocoo(), self.z_map_vars[:, cont_vars].tocoo())
 

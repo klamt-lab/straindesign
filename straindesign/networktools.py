@@ -1361,11 +1361,22 @@ def filter_sd_maxcost(sd, max_cost, kocost, kicost):
     # introduced KIs and KOs carry values of +1.0 and -1.0 respectively
     # non-made KIs are marked by 0.0 and non-made KOs don't appear.
     # We count costs of interventions made, which are marked by v != 0.
+    # A reaction may occur in both cost dicts (kocost defaults to all reactions).
+    # The value's sign says which kind of intervention was made, so it selects
+    # the cost dict, matching how SDProblem prices interventions.
+    def itv_cost(k, v):
+        if v == 0:
+            return 0
+        if v > 0:  # knock-in
+            return kicost[k] if k in kicost else kocost.get(k, 0)
+        return kocost[k] if k in kocost else kicost.get(k, 0)  # knock-out
+
     if max_cost:
-        costs = [np.sum([(kocost[k] if k in kocost else kicost.get(k, 0)) if v != 0 else 0 for k, v in m.items()]) for m in sd]
-        sd = [sd[i] for i in range(len(sd)) if costs[i] <= max_cost + 1e-8]
+        costs = [np.sum([itv_cost(k, v) for k, v in m.items()]) for m in sd]
+        keep = [i for i in range(len(sd)) if costs[i] <= max_cost + 1e-8]
+        sd = [sd[i] for i in keep]
         # sort strain designs by intervention costs
-        [s.update({'**cost**': c}) for s, c in zip(sd, costs)]
+        [sd[j].update({'**cost**': costs[i]}) for j, i in enumerate(keep)]
         sd.sort(key=lambda x: x.pop('**cost**'))
     return sd
 
