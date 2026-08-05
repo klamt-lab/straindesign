@@ -86,9 +86,10 @@ class SDProblem:
             the big-M method by default (with COBRA standard M=1000). M should be chosen 'sufficiently large' 
             to avoid computational artifacts and 'sufficiently small' to avoid numerical issues.
             
-        essential_kis (optional (set)):
-            A set of reactions that are marked as addable and that are essential for at least one of the
-            strain design modules. Providing such "essential knock-ins" may speed up the strain design computation.
+        essential_kis (optional (set of str)):
+            Reaction identifiers that are marked as addable and that are essential for at least one of the
+            strain design modules. Their intervention binaries are fixed to 1, since a solution that omits
+            them cannot satisfy the module they are essential for.
             
     Returns:
         (SDProblem):
@@ -167,7 +168,7 @@ class SDProblem:
         else:
             self.b_ineq = [0.0, float(self.max_cost), np.inf]
         self.z_map_constr_ineq = sparse.csc_matrix((numr, 3))
-        self.lb = [1.0 if r in self.essential_kis else 0.0 for r in model.reactions]
+        self.lb = [1.0 if r.id in self.essential_kis else 0.0 for r in model.reactions]
         self.ub = [1.0 - float(i) for i in self.z_non_targetable]
         self.idx_z = [i for i in range(0, numr)]
         self.c = [0.0] * numr

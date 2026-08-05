@@ -275,6 +275,17 @@ class SDMILP(SDProblem, MILP_LP):
                             if np.logical_xor(sol[0,z_i],sense==-1) ]
             active_eqs = [i for i in range(self.cont_MILP.z_map_constr_eq.shape[1]) if i not in inactive_eqs]
 
+            # Zeroing a variable whose bounds exclude zero contradicts that bound, so the
+            # region is empty whatever the remaining system does. This has to be tested
+            # here rather than left to the LP: prevent_boundary_knockouts keeps such a
+            # bound (e.g. ATPM >= 3.15) as a row with no z-mapping so that a knockout
+            # contradicts it, but reassign_lb_ub_from_ineq later folds single-variable
+            # rows back into variable bounds, and those vanish together with the column.
+            if any(self.cont_MILP.lb[j] > 0.0 or self.cont_MILP.ub[j] < 0.0 for j in inactive_vars):
+                valid[i] = False
+                continue
+            # Otherwise drop the columns outright. Absence is a stronger statement than an
+            # interval of [0, 0], since it owes nothing to feasibility tolerances.
             lp = MILP_LP(A_ineq=self.cont_MILP.A_ineq[active_ineqs, :][:, active_vars],
                          b_ineq=[self.cont_MILP.b_ineq[i] for i in active_ineqs],
                          A_eq=self.cont_MILP.A_eq[active_eqs, :][:, active_vars],
