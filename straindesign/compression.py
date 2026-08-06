@@ -2152,7 +2152,20 @@ def simplify_model_gprs(model, budget=50000):
     logging.info('  GPR rule simplification: %d rules, %d rewritten.' % (n, nchg))
 
 
-def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False, no_coupled_compress_reacs=set()):
+def _rename_lumped(reac_set, reac_map_exp):
+    """Carry a set of reaction ids through one compression step, in place."""
+    if reac_set is None:
+        return
+    for new_reac, old_reac_val in reac_map_exp.items():
+        old_reacs = [r for r in reac_set if r in old_reac_val]
+        if old_reacs:
+            for r in old_reacs:
+                reac_set.discard(r)
+            reac_set.add(new_reac)
+
+
+def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False, no_coupled_compress_reacs=set(),
+                   targetable_rxns=None):
     """Compress a metabolic model using multiple techniques.
 
     Performs blocked reaction removal, conservation relation removal, and
@@ -2178,6 +2191,7 @@ def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False, no_c
     """
     from straindesign.networktools import suppress_lp_context, _is_lp_suppressed
     no_coupled_compress_reacs = set(no_coupled_compress_reacs)
+    targetable = None if targetable_rxns is None else set(targetable_rxns)
     with suppress_lp_context(model):
         cmp_mapReac = []
         LOG.info('  Removing blocked reactions.')
@@ -2191,11 +2205,13 @@ def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False, no_c
 
             # 1. Parallel (cheap — hash-based, no RREF)
             LOG.info(f'  Compression {run}: Lumping parallel reactions.')
-            reac_map_exp = compress_model_parallel(model, no_par_compress_reacs, propagate_gpr=propagate_gpr)
+            reac_map_exp = compress_model_parallel(model, no_par_compress_reacs, propagate_gpr=propagate_gpr,
+                                                   targetable_rxns=targetable)
             parallel_changed = numr > len(reac_map_exp)
             if parallel_changed:
                 LOG.info(f'  Reduced to {len(reac_map_exp)} reactions.')
                 cmp_mapReac.append({"reac_map_exp": reac_map_exp, "parallel": True})
+                _rename_lumped(targetable, reac_map_exp)
 
             # 2. Conservation relation removal (reduces S rows for RREF)
             remove_conservation_relations(model)
@@ -2212,12 +2228,8 @@ def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False, no_c
             numr_pre = len(model.reactions)
             LOG.info(f'  Compression {run}: Lumping coupled reactions.')
             reac_map_exp = compress_model_coupled(model, propagate_gpr=propagate_gpr, protected_reactions=no_coupled_compress_reacs)
-            for new_reac, old_reac_val in reac_map_exp.items():
-                old_reacs = [r for r in no_par_compress_reacs if r in old_reac_val]
-                if old_reacs:
-                    for r in old_reacs:
-                        no_par_compress_reacs.remove(r)
-                    no_par_compress_reacs.add(new_reac)
+            _rename_lumped(no_par_compress_reacs, reac_map_exp)
+            _rename_lumped(targetable, reac_map_exp)
             coupled_changed = numr_pre > len(reac_map_exp)
             if coupled_changed:
                 LOG.info(f'  Reduced to {len(reac_map_exp)} reactions.')
@@ -2284,7 +2296,7 @@ def compress_model_coupled(model, propagate_gpr=False, protected_reactions=set()
     return reaction_map
 
 
-def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
+def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False, targetable_rxns=None):
     """Compress by lumping parallel reactions.
 
     Args:
@@ -2292,6 +2304,11 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
         protected_rxns: Reactions exempt from parallel compression
         propagate_gpr: If True, OR-combine GPR rules of lumped reactions
             (with sympy simplification). Default False.
+        targetable_rxns: Reactions that carry an intervention binary. When given,
+            targetable and non-targetable reactions are never lumped together: the
+            lump's binary would force the non-targetable member's flux to zero, an
+            intervention the original model cannot perform. Pass None to lump purely
+            by stoichiometry.
 
     Returns:
         dict: Mapping {compressed_id: {orig_id: factor, ...}}
@@ -2316,13 +2333,16 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
     # scale factor share a key (e.g. -1 A -> 2 B and -3 A -> 6 B both give ((A, 1), (B, -2))). The
     # reversibility (fwd/rev) and inhomogeneous-bound (inh) flags are part of the key so only
     # reactions with matching bound structure are lumped.
+    tgt = [0] * len(model.reactions) if targetable_rxns is None else \
+        [1 if r.id in targetable_rxns else 0 for r in model.reactions]
+
     def _parallel_key(i):
         cols, vals = stoichmat_T.rows[i], stoichmat_T.data[i]
         if not vals:
-            return ((), fwd[i], rev[i], inh[i])
+            return ((), fwd[i], rev[i], inh[i], tgt[i])
         f0 = float_to_fraction(vals[0])
         stoich = tuple((int(c), float_to_fraction(v) / f0) for c, v in zip(cols, vals))
-        return (stoich, fwd[i], rev[i], inh[i])
+        return (stoich, fwd[i], rev[i], inh[i], tgt[i])
 
     # Find parallel reactions by exact key comparison (hash pre-filter, then full compare)
     protected = [r.id in protected_rxns for r in model.reactions]

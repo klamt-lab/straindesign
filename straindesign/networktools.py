@@ -1206,14 +1206,18 @@ def compress_ki_ko_cost(kocost, kicost, cmp_mapReac):
         reac_map_exp = cmp["reac_map_exp"]
         parallel = cmp["parallel"]
         cmp.update({KOCOST: kocost, KICOST: kicost})
+        # Both blocks below decide by which original reactions a lump contains, so they must
+        # read the vectors as they entered this step. The KO block rebinds kocost to a vector
+        # keyed by lump names, against which the original ids in reac_map_exp never match.
+        kocost_in = kocost
         if kocost:
             ko_cost_new = {}
             for r in reac_map_exp:
-                if np.any([s in kocost for s in reac_map_exp[r]]):
+                if np.any([s in kocost_in for s in reac_map_exp[r]]):
                     if not parallel and not np.any([s in kicost for s in reac_map_exp[r]]):
-                        ko_cost_new[r] = np.min([kocost[s] for s in reac_map_exp[r] if s in kocost])
+                        ko_cost_new[r] = np.min([kocost_in[s] for s in reac_map_exp[r] if s in kocost_in])
                     elif parallel:
-                        ko_cost_new[r] = np.sum([kocost[s] for s in reac_map_exp[r] if s in kocost])
+                        ko_cost_new[r] = np.sum([kocost_in[s] for s in reac_map_exp[r] if s in kocost_in])
             kocost = ko_cost_new
         if kicost:
             ki_cost_new = {}
@@ -1221,7 +1225,7 @@ def compress_ki_ko_cost(kocost, kicost, cmp_mapReac):
                 if np.any([s in kicost for s in reac_map_exp[r]]):
                     if not parallel:
                         ki_cost_new[r] = np.sum([kicost[s] for s in reac_map_exp[r] if s in kicost])
-                    elif parallel and not np.any([s in kocost for s in reac_map_exp[r]]):
+                    elif parallel and not np.any([s in kocost_in for s in reac_map_exp[r]]):
                         ki_cost_new[r] = np.min([kicost[s] for s in reac_map_exp[r] if s in kicost])
             kicost = ki_cost_new
     return kocost, kicost, cmp_mapReac
@@ -1348,6 +1352,38 @@ def expand_sd(sd, cmp_mapReac):
                             sd += [new_m]
                         sd.remove(m)
     return sd
+
+
+def filter_sd_dominated(sd, kocost, kicost):
+    """Drop strain designs that a comparable, strictly cheaper design dominates.
+
+    A design is reported when no other design that is a subset or a superset of it costs
+    strictly less. With only positive intervention costs every superset is more expensive,
+    so this reduces to keeping the inclusion-minimal designs -- which the exclusion
+    constraints already guarantee, making the filter a no-op. It earns its keep once an
+    intervention is free or rewarding: then taking it can pay for itself, and the smaller
+    design is the dominated one. Designs of equal cost are all kept.
+
+    Returns:
+        (list): The non-dominated strain designs, order preserved.
+    """
+    def itv_cost(k, v):
+        if v == 0:
+            return 0
+        if v > 0:  # knock-in
+            return kicost[k] if k in kicost else kocost.get(k, 0)
+        return kocost[k] if k in kocost else kicost.get(k, 0)  # knock-out
+
+    sets = [frozenset(k for k, v in m.items() if v != 0 and k != '**cost**') for m in sd]
+    costs = [np.sum([itv_cost(k, v) for k, v in m.items() if k != '**cost**']) for m in sd]
+    keep = []
+    for i, si in enumerate(sets):
+        if not any(costs[j] < costs[i] - 1e-8 and (sj <= si or sj >= si)
+                   for j, sj in enumerate(sets) if j != i):
+            keep.append(i)
+    if len(keep) < len(sd):
+        logging.info('  Discarded %d strain design(s) dominated by a cheaper comparable one.' % (len(sd) - len(keep)))
+    return [sd[i] for i in keep]
 
 
 def filter_sd_maxcost(sd, max_cost, kocost, kicost):

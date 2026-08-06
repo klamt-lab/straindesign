@@ -520,3 +520,57 @@ def test_knockin_candidates_are_not_also_knockout_candidates(curr_solver):
                                     solver=curr_solver,
                                     compress=False)
     assert not [k for d in sol.get_reaction_sd() for k, v in d.items() if v < 0]
+
+
+@pytest.mark.timeout(30)
+def test_rewarding_intervention_beats_the_design_without_it(curr_solver):
+    """A design is reported only when no comparable design costs less.
+
+    With a negative cost, taking R2 costs less than not taking it, so the design that
+    takes it dominates the one that does not -- the reverse of the usual case, where a
+    larger design always costs more and the smaller one wins.
+    """
+    model = _two_route_network()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, PROTECT, constraints=['R4 >= 1'])],
+                                    max_cost=3,
+                                    ki_cost={'R1': 1.0, 'R2': -5.0, 'R3': 1.0, 'R4': 1.0},
+                                    solution_approach='populate',
+                                    solver=curr_solver,
+                                    compress=False)
+    designs = _designs(sol)
+    assert designs, 'expected at least one design'
+    assert all('R2' in d for d in designs), designs
+
+
+@pytest.mark.timeout(30)
+def test_zero_cost_intervention_ties_instead_of_dominating(curr_solver):
+    """At zero cost neither variant is cheaper, so both are reported."""
+    model = _two_route_network()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, PROTECT, constraints=['R4 >= 1'])],
+                                    max_cost=3,
+                                    ki_cost={'R1': 1.0, 'R2': 0.0, 'R3': 1.0, 'R4': 1.0},
+                                    solution_approach='populate',
+                                    solver=curr_solver,
+                                    compress=False)
+    designs = _designs(sol)
+    assert ['R1', 'R2', 'R4'] in designs, designs
+    assert ['R1', 'R3', 'R4'] in designs, designs
+
+
+@pytest.mark.timeout(60)
+def test_positive_costs_keep_the_smaller_design_only(curr_solver):
+    """The classical rule is unchanged: no reported design contains another."""
+    model = _two_route_network()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, SUPPRESS, constraints=['R4 >= 1'])],
+                                    max_cost=3,
+                                    ko_cost={'R1': 1.0, 'R2': 1.0, 'R3': 1.0, 'R4': 1.0},
+                                    solution_approach='populate',
+                                    solver=curr_solver,
+                                    compress=False)
+    designs = [set(d) for d in _designs(sol)]
+    for i, a in enumerate(designs):
+        for j, b in enumerate(designs):
+            assert i == j or not a < b, (a, b)
