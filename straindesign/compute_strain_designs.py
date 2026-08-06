@@ -473,8 +473,15 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     else:
         kwargs['gene_kos'] = False
         has_gene_names = False
+    # With no knockout costs given, every reaction is a knockout candidate -- except those
+    # the caller named as knock-in candidates. Knock-ins override knockouts in the MILP
+    # (SDProblem masks ko_cost wherever ki_cost is set), so listing such a reaction in both
+    # dicts described a state that could never be solved, and left the downstream cost
+    # lookups to disambiguate it. Reactions the caller did not name stay knockable, which
+    # keeps mixed problems -- "R2 may be added, anything else may be removed" -- intact.
     if KOCOST not in kwargs and not kwargs['gene_kos']:
-        uncmp_ko_cost = {k: 1.0 for k in model.reactions.list_attr('id')}
+        named_ki = set(kwargs.get(KICOST) or {})
+        uncmp_ko_cost = {k: 1.0 for k in model.reactions.list_attr('id') if k not in named_ki}
     elif KOCOST not in kwargs or not kwargs[KOCOST]:
         uncmp_ko_cost = {}
     if KICOST not in kwargs or not kwargs[KICOST]:
