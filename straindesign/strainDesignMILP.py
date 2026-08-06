@@ -101,8 +101,9 @@ class SDMILP(SDProblem, MILP_LP):
                 logging.info('  Rewarding intervention %s cannot invalidate a design here and is '
                              'taken in every one of them.' % model.reactions[i].id)
         if _forced:
-            # as a row rather than by fixing the bound: a binary pinned by lb == ub sends SCIP's
-            # populate into a loop where it re-reports the same design indefinitely
+            # as a row rather than by fixing the bound: with the bound form SCIP's populate
+            # re-reports the same design instead of reporting infeasible once the designs are
+            # exhausted, which never terminates (measured; the other solvers accept either form)
             rows = sparse.lil_matrix((len(_forced), self.A_ineq.shape[1]))
             for k, i in enumerate(_forced):
                 rows[k, i] = -1.0
