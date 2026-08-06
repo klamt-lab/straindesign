@@ -93,7 +93,7 @@ class SDMILP(SDProblem, MILP_LP):
         _types = {m[MODULE_TYPE] for m in sd_modules}
         _forced = []
         for i in range(self.num_z):
-            if self.z_non_targetable[i] or np.isnan(self.cost[i]) or self.cost[i] >= 0.0:
+            if self.z_non_targetable[i] or self.cost[i] >= 0.0:
                 continue
             if (self.z_inverted[i] and _types == {PROTECT}) or \
                (not self.z_inverted[i] and _types == {SUPPRESS}):

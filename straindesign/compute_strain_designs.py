@@ -33,7 +33,7 @@ from straindesign.names import *
 from straindesign.networktools import   remove_ext_mets, bound_blocked_or_irrevers_fva, \
                                         extend_model_gpr, extend_model_regulatory, evaluate_gpr_ast, \
                                         compress_model, compress_modules, compress_ki_ko_cost, expand_sd, filter_sd_maxcost, \
-                                        filter_sd_dominated, \
+                                        nondominated_sd, \
                                         estimate_expansion_size, with_suppressed_lp, _silent_io
 from straindesign.compression import simplify_model_gprs
 
@@ -958,6 +958,22 @@ def postprocess_reg_sd(reg_cost, sd):
 LAZY_EXPANSION_THRESHOLD = 100_000
 
 
+def _drop_dominated(sd, group_map, cmp_size1_mcs, uncmp_ko_cost, uncmp_ki_cost):
+    """Remove designs a comparable, cheaper design dominates, keeping group_map aligned.
+
+    The exclusion constraints already keep the MILP's own designs free of dominated ones while
+    every intervention costs something, so this scan is only needed where that breaks down:
+    free or rewarding interventions, and size-1 MCS, which are injected past the constraints.
+    """
+    if not sd or not (cmp_size1_mcs or
+                      any(c <= 0.0 for c in list(uncmp_ko_cost.values()) + list(uncmp_ki_cost.values()))):
+        return sd, group_map
+    keep = nondominated_sd(sd, uncmp_ko_cost, uncmp_ki_cost)
+    if len(keep) == len(sd):
+        return sd, group_map
+    return [sd[i] for i in keep], [group_map[i] for i in keep]
+
+
 def _decompress_solutions(cmp_sd_solution, cmp_mapReac, cmp_size1_mcs, max_cost, uncmp_ko_cost, uncmp_ki_cost, uncmp_reg_cost, orig_model,
                           setup, gene_kos, orig_gko_cost, orig_gki_cost):
     """Decompress MILP solutions, using lazy expansion if estimated count exceeds threshold."""
@@ -977,6 +993,9 @@ def _decompress_solutions(cmp_sd_solution, cmp_mapReac, cmp_size1_mcs, max_cost,
         logging.info('  Estimated %d expanded solutions - using lazy expansion.' % estimated)
         sd, group_map, compressed_sd = _build_lazy_representatives(cmp_sds, cmp_size1_mcs, cmp_mapReac, max_cost, uncmp_ko_cost,
                                                                    uncmp_ki_cost, uncmp_reg_cost)
+        # only the representatives can be compared here; the rest of each group is never
+        # materialised, so a dominated design inside an unexpanded group is not caught
+        sd, group_map = _drop_dominated(sd, group_map, cmp_size1_mcs, uncmp_ko_cost, uncmp_ki_cost)
 
         status = cmp_sd_solution.status
         if status not in [OPTIMAL, TIME_LIMIT_W_SOL] and sd:
@@ -1029,16 +1048,7 @@ def _decompress_solutions(cmp_sd_solution, cmp_mapReac, cmp_size1_mcs, max_cost,
         if cmp_sd_solution.status not in [OPTIMAL, TIME_LIMIT_W_SOL] and sd:
             cmp_sd_solution.status = OPTIMAL
 
-    # The exclusion constraints already keep the MILP's own designs free of dominated ones when
-    # every intervention costs something, so this scan is only needed where that breaks down:
-    # free or rewarding interventions, and size-1 MCS, which are injected past the constraints.
-    if sd and (cmp_size1_mcs or
-               any(c <= 0.0 for c in list(uncmp_ko_cost.values()) + list(uncmp_ki_cost.values()))):
-        kept = filter_sd_dominated(sd, uncmp_ko_cost, uncmp_ki_cost)
-        if len(kept) < len(sd):
-            keep_ids = {id(s) for s in kept}
-            group_map = [g for s, g in zip(sd, group_map) if id(s) in keep_ids]
-            sd = kept
+    sd, group_map = _drop_dominated(sd, group_map, cmp_size1_mcs, uncmp_ko_cost, uncmp_ki_cost)
 
     sd_solutions = SDSolutions(orig_model, sd, cmp_sd_solution.status, setup)
     sd_solutions.compressed_sd = compressed_sd
