@@ -506,7 +506,9 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     with _silent_io():
         orig_model = model
         model = model.copy()
-    _free = [k for k, v in list(uncmp_ko_cost.items()) + list(uncmp_ki_cost.items()) if v == 0.0]
+    _free = [k for k, v in list(uncmp_ko_cost.items()) + list(uncmp_ki_cost.items()) +
+             list(locals().get('uncmp_gko_cost', {}).items()) + list(locals().get('uncmp_gki_cost', {}).items())
+             if v == 0.0]
     if _free:
         logging.warning('%d intervention(s) entered at zero cost (%s%s). Adding one to a design '
                         'changes no cost, so designs that differ only in these are all reported and '
@@ -605,12 +607,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         targetable_rxns = set(uncmp_ko_cost) | set(uncmp_ki_cost)
         if kwargs['gene_kos']:
             targetable_rxns |= {r.id for r in cmp_model.reactions if r.gene_reaction_rule}
-        # A lump mixing knockout and knock-in candidates keeps only one of the two kinds, which
-        # is sound only while the dropped one costs something. A free or rewarding intervention
-        # belongs in designs of its own, so keep those candidates out of both kinds of lump.
-        _free_cands = {k for k, v in list(uncmp_ko_cost.items()) + list(uncmp_ki_cost.items()) if v <= 0.0}
-        no_par_compress_reacs |= _free_cands
-        no_coupled_compress_reacs |= _free_cands
+        no_par_compress_reacs |= _free_par_reacs(uncmp_ko_cost, uncmp_ki_cost)
+        no_coupled_compress_reacs |= _free_coupled_reacs(uncmp_ko_cost, uncmp_ki_cost)
         cmp_mapReac_1 = compress_model(cmp_model,
                                        no_par_compress_reacs,
                                        propagate_gpr=True,
@@ -697,12 +695,11 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         logging.info('Compressing after GPR extension (' + str(len(cmp_model.reactions)) + ' reactions).')
         t0 = time.time()
         no_par_compress_reacs = _collect_no_par_compress_reacs(sd_modules)
-        _free_cands = {k for k, v in list(cmp_ko_cost.items()) + list(cmp_ki_cost.items()) if v <= 0.0}
         cmp_mapReac_2 = compress_model(
             cmp_model,
-            no_par_compress_reacs | _free_cands,
+            no_par_compress_reacs | _free_par_reacs(cmp_ko_cost, cmp_ki_cost),
             targetable_rxns=set(cmp_ko_cost) | set(cmp_ki_cost),
-            no_coupled_compress_reacs=_free_cands,
+            no_coupled_compress_reacs=_free_coupled_reacs(cmp_ko_cost, cmp_ki_cost),
         )
         sd_modules = compress_modules(sd_modules, cmp_mapReac_2)
         cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2 = compress_ki_ko_cost(cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2)
@@ -956,6 +953,36 @@ def postprocess_reg_sd(reg_cost, sd):
 
 
 LAZY_EXPANSION_THRESHOLD = 100_000
+
+
+def _free_par_reacs(kocost, kicost):
+    """Candidates that must stay out of parallel lumps because their cost is not positive.
+
+    A parallel lump carries flux while any member does. Switching it off means knocking out
+    every knockout candidate in it, so its cost is their sum -- which stops being the cheapest
+    way to leave it on once one of them is free or rewarding, since knocking only that one is
+    cheaper still and leaves the lump on. The lump also drops its knock-in members, whose own
+    designs are worth reporting at that point. Both kinds are therefore kept out.
+    """
+    return {k for k, v in kocost.items() if v <= 0.0} | {k for k, v in kicost.items() if v <= 0.0}
+
+
+def _free_coupled_reacs(kocost, kicost):
+    """The same for coupled lumps, where slightly less has to be excluded.
+
+    A coupled lump dies with any one of its members, so its knockout cost is the cheapest of
+    them -- but expanding it offers every member as an alternative design, each at its own
+    price. That is harmless while the members cost the same and the cheapest is representative;
+    a free or rewarding member breaks it, and the siblings come back at prices the lump never
+    searched at. Knockout candidates are therefore excluded outright.
+
+    A knock-in member instead makes the lump an addition candidate costing the sum of its
+    knock-ins, with no such choice at expansion time. One on its own is safe; only a second one
+    that could join it in the same lump makes exclusion necessary.
+    """
+    ko = {k for k, v in kocost.items() if v <= 0.0}
+    ki = {k for k, v in kicost.items() if v <= 0.0} if len(kicost) > 1 else set()
+    return ko | ki
 
 
 def _drop_dominated(sd, group_map, cmp_size1_mcs, uncmp_ko_cost, uncmp_ki_cost):

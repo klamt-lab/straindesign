@@ -38,8 +38,12 @@ def test_gpr_extension_compression1(model_gpr):
     cmp_map = sd.compress_model(model_gpr)
     assert (len(model_gpr.reactions) == 16)
     gkocost, gkicost, cmp_map = sd.compress_ki_ko_cost(gkocost, gkicost, cmp_map)
-    assert (len(gkocost) == 4)
-    assert (len(gkicost) == 3)
+    # The second compression step lumps g7's block in parallel with g5/g9's. A parallel lump
+    # carries flux while any member does, so it is switched off only by knocking out all its
+    # knockout candidates, and the knock-in among them cannot turn it on -- it is a knockout
+    # candidate costing the sum of those, and g7 stops being an addition candidate.
+    assert (len(gkocost) == 5)
+    assert (len(gkicost) == 2)
 
 
 @pytest.mark.timeout(15)
