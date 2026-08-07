@@ -33,6 +33,7 @@ from straindesign.names import *
 from straindesign.networktools import   remove_ext_mets, bound_blocked_or_irrevers_fva, \
                                         extend_model_gpr, extend_model_regulatory, evaluate_gpr_ast, \
                                         compress_model, compress_modules, compress_ki_ko_cost, expand_sd, filter_sd_maxcost, \
+                                        nondominated_sd, \
                                         estimate_expansion_size, with_suppressed_lp, _silent_io
 from straindesign.compression import simplify_model_gprs
 
@@ -473,8 +474,15 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     else:
         kwargs['gene_kos'] = False
         has_gene_names = False
+    # With no knockout costs given, every reaction is a knockout candidate -- except those
+    # the caller named as knock-in candidates. Knock-ins override knockouts in the MILP
+    # (SDProblem masks ko_cost wherever ki_cost is set), so listing such a reaction in both
+    # dicts described a state that could never be solved, and left the downstream cost
+    # lookups to disambiguate it. Reactions the caller did not name stay knockable, which
+    # keeps mixed problems -- "R2 may be added, anything else may be removed" -- intact.
     if KOCOST not in kwargs and not kwargs['gene_kos']:
-        uncmp_ko_cost = {k: 1.0 for k in model.reactions.list_attr('id')}
+        named_ki = set(kwargs.get(KICOST) or {})
+        uncmp_ko_cost = {k: 1.0 for k in model.reactions.list_attr('id') if k not in named_ki}
     elif KOCOST not in kwargs or not kwargs[KOCOST]:
         uncmp_ko_cost = {}
     if KICOST not in kwargs or not kwargs[KICOST]:
@@ -498,6 +506,15 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     with _silent_io():
         orig_model = model
         model = model.copy()
+    _free = [k for k, v in list(uncmp_ko_cost.items()) + list(uncmp_ki_cost.items()) +
+             list(locals().get('uncmp_gko_cost', {}).items()) + list(locals().get('uncmp_gki_cost', {}).items())
+             if v == 0.0]
+    if _free:
+        logging.warning('%d intervention(s) entered at zero cost (%s%s). Adding one to a design '
+                        'changes no cost, so designs that differ only in these are all reported and '
+                        'the result set can grow accordingly. Give them a small positive cost to '
+                        'have the smaller design reported alone.' %
+                        (len(_free), ', '.join(sorted(_free)[:5]), ', ...' if len(_free) > 5 else ''))
     orig_ko_cost = deepcopy(uncmp_ko_cost)
     orig_ki_cost = deepcopy(uncmp_ki_cost)
     orig_reg_cost = deepcopy(uncmp_reg_cost)
@@ -585,18 +602,28 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         logging.info('  Reversibility pre-tightening fixed %d reaction directions (%.1fs).' % (_n_tight, time.time() - t0))
         logging.info('Compressing Network (' + str(len(cmp_model.reactions)) + ' reactions).')
         t0 = time.time()
+        # Reactions carrying an intervention binary must not be lumped in parallel with ones
+        # that carry none; in gene mode a reaction is targetable through its GPR.
+        targetable_rxns = set(uncmp_ko_cost) | set(uncmp_ki_cost)
+        if kwargs['gene_kos']:
+            targetable_rxns |= {r.id for r in cmp_model.reactions if r.gene_reaction_rule}
+        no_par_compress_reacs |= _free_par_reacs(uncmp_ko_cost, uncmp_ki_cost)
+        no_coupled_compress_reacs |= _free_coupled_reacs(uncmp_ko_cost, uncmp_ki_cost)
         cmp_mapReac_1 = compress_model(cmp_model,
                                        no_par_compress_reacs,
                                        propagate_gpr=True,
-                                       no_coupled_compress_reacs=no_coupled_compress_reacs)
+                                       no_coupled_compress_reacs=no_coupled_compress_reacs,
+                                       targetable_rxns=targetable_rxns)
         sd_modules = compress_modules(sd_modules, cmp_mapReac_1)
         # Compress reaction + regulatory costs only (gene costs not yet added)
         cmp_ko_cost, cmp_ki_cost, cmp_mapReac_1 = compress_ki_ko_cost(uncmp_ko_cost, uncmp_ki_cost, cmp_mapReac_1)
         logging.info('  Compressed to ' + str(len(cmp_model.reactions)) + ' reactions (%.1fs).' % (time.time() - t0))
     else:
         cmp_mapReac_1 = []
-        cmp_ko_cost = uncmp_ko_cost
-        cmp_ki_cost = uncmp_ki_cost
+        # copy: the compressed vectors get essential and size-1-MCS reactions popped out of
+        # them, while the uncompressed ones must keep every cost for filter_sd_maxcost
+        cmp_ko_cost = dict(uncmp_ko_cost)
+        cmp_ki_cost = dict(uncmp_ki_cost)
     # --- FVAs on (possibly compressed) model ---
     logging.info('  FVA(s) to identify essential reactions.')
     essential_reacs = set()
@@ -670,7 +697,9 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         no_par_compress_reacs = _collect_no_par_compress_reacs(sd_modules)
         cmp_mapReac_2 = compress_model(
             cmp_model,
-            no_par_compress_reacs,
+            no_par_compress_reacs | _free_par_reacs(cmp_ko_cost, cmp_ki_cost),
+            targetable_rxns=set(cmp_ko_cost) | set(cmp_ki_cost),
+            no_coupled_compress_reacs=_free_coupled_reacs(cmp_ko_cost, cmp_ki_cost),
         )
         sd_modules = compress_modules(sd_modules, cmp_mapReac_2)
         cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2 = compress_ki_ko_cost(cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2)
@@ -752,6 +781,11 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         size1_mcs = suppress_essential - essential_reacs
         # Filter to only knockable reactions (in ko_cost, not ki_cost or regulatory)
         size1_mcs_knockable = {r for r in size1_mcs if r in cmp_ko_cost}
+        # A rewarding intervention makes a size-1 MCS that can absorb it the dominated design,
+        # and this shortcut hands solutions to the caller without consulting the exclusion
+        # constraints that would settle that. Leave those cases to the MILP.
+        if any(c < 0.0 for c in list(cmp_ko_cost.values()) + list(cmp_ki_cost.values())):
+            size1_mcs_knockable = set()
         if size1_mcs_knockable:
             cmp_size1_mcs = [{r: -1} for r in size1_mcs_knockable]
             logging.info('  Found ' + str(len(cmp_size1_mcs)) + ' size-1 MCS via SUPPRESS FVA.')
@@ -762,8 +796,12 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         # They are already found; any larger MCS containing them is non-minimal.
         # But we only remove pure KO candidates — reactions with regulatory or KI
         # interventions may still participate in non-KO solutions.
-        for r in size1_mcs_knockable:
-            cmp_ko_cost.pop(r, None)
+        # Larger designs containing them are only redundant while every intervention costs
+        # something. Once one is free or rewarding, such a design can cost no more than the
+        # size-1 one, so the candidates have to stay in the MILP for it to be reachable.
+        if not any(c <= 0.0 for c in list(cmp_ko_cost.values()) + list(cmp_ki_cost.values())):
+            for r in size1_mcs_knockable:
+                cmp_ko_cost.pop(r, None)
 
     # remove ko-costs (and thus knockability) of essential reactions
     [cmp_ko_cost.pop(er) for er in essential_reacs if er in cmp_ko_cost]
@@ -917,6 +955,52 @@ def postprocess_reg_sd(reg_cost, sd):
 LAZY_EXPANSION_THRESHOLD = 100_000
 
 
+def _free_par_reacs(kocost, kicost):
+    """Candidates that must stay out of parallel lumps because their cost is not positive.
+
+    A parallel lump carries flux while any member does. Switching it off means knocking out
+    every knockout candidate in it, so its cost is their sum -- which stops being the cheapest
+    way to leave it on once one of them is free or rewarding, since knocking only that one is
+    cheaper still and leaves the lump on. The lump also drops its knock-in members, whose own
+    designs are worth reporting at that point. Both kinds are therefore kept out.
+    """
+    return {k for k, v in kocost.items() if v <= 0.0} | {k for k, v in kicost.items() if v <= 0.0}
+
+
+def _free_coupled_reacs(kocost, kicost):
+    """The same for coupled lumps, where slightly less has to be excluded.
+
+    A coupled lump dies with any one of its members, so its knockout cost is the cheapest of
+    them -- but expanding it offers every member as an alternative design, each at its own
+    price. That is harmless while the members cost the same and the cheapest is representative;
+    a free or rewarding member breaks it, and the siblings come back at prices the lump never
+    searched at. Knockout candidates are therefore excluded outright.
+
+    A knock-in member instead makes the lump an addition candidate costing the sum of its
+    knock-ins, with no such choice at expansion time. One on its own is safe; only a second one
+    that could join it in the same lump makes exclusion necessary.
+    """
+    ko = {k for k, v in kocost.items() if v <= 0.0}
+    ki = {k for k, v in kicost.items() if v <= 0.0} if len(kicost) > 1 else set()
+    return ko | ki
+
+
+def _drop_dominated(sd, group_map, cmp_size1_mcs, uncmp_ko_cost, uncmp_ki_cost):
+    """Remove designs a comparable, cheaper design dominates, keeping group_map aligned.
+
+    The exclusion constraints already keep the MILP's own designs free of dominated ones while
+    every intervention costs something, so this scan is only needed where that breaks down:
+    free or rewarding interventions, and size-1 MCS, which are injected past the constraints.
+    """
+    if not sd or not (cmp_size1_mcs or
+                      any(c <= 0.0 for c in list(uncmp_ko_cost.values()) + list(uncmp_ki_cost.values()))):
+        return sd, group_map
+    keep = nondominated_sd(sd, uncmp_ko_cost, uncmp_ki_cost)
+    if len(keep) == len(sd):
+        return sd, group_map
+    return [sd[i] for i in keep], [group_map[i] for i in keep]
+
+
 def _decompress_solutions(cmp_sd_solution, cmp_mapReac, cmp_size1_mcs, max_cost, uncmp_ko_cost, uncmp_ki_cost, uncmp_reg_cost, orig_model,
                           setup, gene_kos, orig_gko_cost, orig_gki_cost):
     """Decompress MILP solutions, using lazy expansion if estimated count exceeds threshold."""
@@ -936,6 +1020,9 @@ def _decompress_solutions(cmp_sd_solution, cmp_mapReac, cmp_size1_mcs, max_cost,
         logging.info('  Estimated %d expanded solutions - using lazy expansion.' % estimated)
         sd, group_map, compressed_sd = _build_lazy_representatives(cmp_sds, cmp_size1_mcs, cmp_mapReac, max_cost, uncmp_ko_cost,
                                                                    uncmp_ki_cost, uncmp_reg_cost)
+        # only the representatives can be compared here; the rest of each group is never
+        # materialised, so a dominated design inside an unexpanded group is not caught
+        sd, group_map = _drop_dominated(sd, group_map, cmp_size1_mcs, uncmp_ko_cost, uncmp_ki_cost)
 
         status = cmp_sd_solution.status
         if status not in [OPTIMAL, TIME_LIMIT_W_SOL] and sd:
@@ -987,6 +1074,8 @@ def _decompress_solutions(cmp_sd_solution, cmp_mapReac, cmp_size1_mcs, max_cost,
             compressed_sd.append(cmp_s)
         if cmp_sd_solution.status not in [OPTIMAL, TIME_LIMIT_W_SOL] and sd:
             cmp_sd_solution.status = OPTIMAL
+
+    sd, group_map = _drop_dominated(sd, group_map, cmp_size1_mcs, uncmp_ko_cost, uncmp_ki_cost)
 
     sd_solutions = SDSolutions(orig_model, sd, cmp_sd_solution.status, setup)
     sd_solutions.compressed_sd = compressed_sd

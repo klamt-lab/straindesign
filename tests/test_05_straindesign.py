@@ -427,3 +427,150 @@ def test_lazy_expansion(model_small_example):
             pass
     finally:
         csd.LAZY_EXPANSION_THRESHOLD = orig_threshold
+
+
+def _two_route_network():
+    """R1: -> A, R2/R3: A -> B, R4: B ->.
+
+    Two elementary flux vectors, {R1,R2,R4} and {R1,R3,R4}; exactly one uses R2.
+    Small enough that the expected answer can be written down rather than computed.
+    """
+    from cobra import Model, Reaction, Metabolite
+    m = Model('two_route')
+    A, B = Metabolite('A'), Metabolite('B')
+    for rid, stoich in [('R1', {A: 1.0}), ('R2', {A: -1.0, B: 1.0}),
+                        ('R3', {A: -1.0, B: 1.0}), ('R4', {B: -1.0})]:
+        r = Reaction(rid)
+        r.lower_bound, r.upper_bound = 0.0, 10.0
+        m.add_reactions([r])
+        r.add_metabolites(stoich)
+    m.objective = 'R4'
+    return m
+
+
+def _designs(solution):
+    return sorted(sorted(k for k, v in d.items() if v != 0) for d in solution.get_reaction_sd())
+
+
+@pytest.mark.timeout(30)
+def test_efv_enumeration_via_knockins(curr_solver):
+    """A PROTECT module with every reaction addable enumerates minimal supports.
+
+    A minimal set of reactions whose presence keeps the region inhabited is an
+    elementary flux vector, so both routes must come back and neither may be padded.
+    """
+    model = _two_route_network()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, PROTECT, constraints=['R4 >= 1'])],
+                                    max_cost=3,
+                                    ki_cost={r: 1.0 for r in ['R1', 'R2', 'R3', 'R4']},
+                                    solution_approach='populate',
+                                    solver=curr_solver,
+                                    compress=False)
+    assert _designs(sol) == [['R1', 'R2', 'R4'], ['R1', 'R3', 'R4']]
+
+
+@pytest.mark.timeout(30)
+def test_negative_cost_forces_reaction_into_every_design(curr_solver):
+    """A large negative cost forces a reaction in while the budget still bounds the rest.
+
+    Omitting R2 leaves only positive costs, which cannot reach a negative budget, so
+    the route through R3 is excluded and only the R2 route survives.
+    """
+    model = _two_route_network()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, PROTECT, constraints=['R4 >= 1'])],
+                                    max_cost=-97,
+                                    ki_cost={'R1': 1.0, 'R2': -100.0, 'R3': 1.0, 'R4': 1.0},
+                                    solution_approach='populate',
+                                    solver=curr_solver,
+                                    compress=False)
+    assert _designs(sol) == [['R1', 'R2', 'R4']]
+    assert list(sol.sd_cost) == [-98.0]
+
+
+@pytest.mark.timeout(30)
+def test_intervention_costs_are_not_counted_twice(curr_solver):
+    """A reaction named as a knock-in is billed once, not once per cost dictionary."""
+    model = _two_route_network()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, PROTECT, constraints=['R4 >= 1'])],
+                                    max_cost=3,
+                                    ki_cost={r: 1.0 for r in ['R1', 'R2', 'R3', 'R4']},
+                                    solution_approach='populate',
+                                    solver=curr_solver,
+                                    compress=False)
+    for design, cost in zip(sol.get_reaction_sd(), sol.sd_cost):
+        assert cost == len([k for k, v in design.items() if v != 0])
+
+
+@pytest.mark.timeout(30)
+def test_knockin_candidates_are_not_also_knockout_candidates(curr_solver):
+    """Naming a reaction addable must not leave it removable as well.
+
+    Reactions the caller did not name stay knockable, so mixed problems are unaffected;
+    but when every reaction is a knock-in candidate no design may propose a knockout.
+    """
+    model = _two_route_network()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, SUPPRESS, constraints=['R4 >= 1'])],
+                                    max_cost=3,
+                                    ki_cost={r: 1.0 for r in ['R1', 'R2', 'R3', 'R4']},
+                                    solution_approach='populate',
+                                    solver=curr_solver,
+                                    compress=False)
+    assert not [k for d in sol.get_reaction_sd() for k, v in d.items() if v < 0]
+
+
+@pytest.mark.timeout(30)
+def test_rewarding_intervention_beats_the_design_without_it(curr_solver):
+    """A design is reported only when no comparable design costs less.
+
+    With a negative cost, taking R2 costs less than not taking it, so the design that
+    takes it dominates the one that does not -- the reverse of the usual case, where a
+    larger design always costs more and the smaller one wins.
+    """
+    model = _two_route_network()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, PROTECT, constraints=['R4 >= 1'])],
+                                    max_cost=3,
+                                    ki_cost={'R1': 1.0, 'R2': -5.0, 'R3': 1.0, 'R4': 1.0},
+                                    solution_approach='populate',
+                                    solver=curr_solver,
+                                    compress=False)
+    designs = _designs(sol)
+    assert designs, 'expected at least one design'
+    assert all('R2' in d for d in designs), designs
+
+
+@pytest.mark.timeout(30)
+def test_zero_cost_intervention_ties_instead_of_dominating(curr_solver):
+    """At zero cost neither variant is cheaper, so both are reported."""
+    model = _two_route_network()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, PROTECT, constraints=['R4 >= 1'])],
+                                    max_cost=3,
+                                    ki_cost={'R1': 1.0, 'R2': 0.0, 'R3': 1.0, 'R4': 1.0},
+                                    solution_approach='populate',
+                                    solver=curr_solver,
+                                    compress=False)
+    designs = _designs(sol)
+    assert ['R1', 'R2', 'R4'] in designs, designs
+    assert ['R1', 'R3', 'R4'] in designs, designs
+
+
+@pytest.mark.timeout(60)
+def test_positive_costs_keep_the_smaller_design_only(curr_solver):
+    """The classical rule is unchanged: no reported design contains another."""
+    model = _two_route_network()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, SUPPRESS, constraints=['R4 >= 1'])],
+                                    max_cost=3,
+                                    ko_cost={'R1': 1.0, 'R2': 1.0, 'R3': 1.0, 'R4': 1.0},
+                                    solution_approach='populate',
+                                    solver=curr_solver,
+                                    compress=False)
+    designs = [set(d) for d in _designs(sol)]
+    for i, a in enumerate(designs):
+        for j, b in enumerate(designs):
+            assert i == j or not a < b, (a, b)

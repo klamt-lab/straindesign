@@ -175,7 +175,7 @@ class SDProblem:
         else:
             self.b_ineq = [np.inf, float(self.max_cost), np.inf]
         self.z_map_constr_ineq = sparse.csc_matrix((numr, 3))
-        self.lb = [1.0 if r.id in self.essential_kis else 0.0 for r in model.reactions]
+        self.lb = [0.0 for _ in model.reactions]
         self.ub = [1.0 - float(i) for i in self.z_non_targetable]
         self.idx_z = [i for i in range(0, numr)]
         self.c = [0.0] * numr
@@ -221,6 +221,19 @@ class SDProblem:
 
         # 4. Link LP module to z-variables
         self.link_z()
+
+        # An essential knock-in has to be part of every design. Required by a row rather than by
+        # pinning the binary's lower bound: with the bound form SCIP's populate re-reports the
+        # same design instead of reporting infeasible once the designs are exhausted (measured;
+        # the other three solvers are indifferent to which form is used). link_z's step 7 leaves
+        # inverted z's alone, so nothing downstream depends on the pinned bound.
+        _ess = [i for i, r in enumerate(model.reactions) if r.id in self.essential_kis]
+        if _ess:
+            _rows = sparse.lil_matrix((len(_ess), self.A_ineq.shape[1]))
+            for _k, _i in enumerate(_ess):
+                _rows[_k, _i] = -1.0
+            self.A_ineq = sparse.vstack((self.A_ineq, _rows.tocsr()), format='csr')
+            self.b_ineq = list(self.b_ineq) + [-1.0] * len(_ess)
 
         # if there are only mcs modules, minimize the knockout costs,
         # otherwise use objective function(s) from modules

@@ -1206,14 +1206,18 @@ def compress_ki_ko_cost(kocost, kicost, cmp_mapReac):
         reac_map_exp = cmp["reac_map_exp"]
         parallel = cmp["parallel"]
         cmp.update({KOCOST: kocost, KICOST: kicost})
+        # Both blocks below decide by which original reactions a lump contains, so they must
+        # read the vectors as they entered this step. The KO block rebinds kocost to a vector
+        # keyed by lump names, against which the original ids in reac_map_exp never match.
+        kocost_in = kocost
         if kocost:
             ko_cost_new = {}
             for r in reac_map_exp:
-                if np.any([s in kocost for s in reac_map_exp[r]]):
+                if np.any([s in kocost_in for s in reac_map_exp[r]]):
                     if not parallel and not np.any([s in kicost for s in reac_map_exp[r]]):
-                        ko_cost_new[r] = np.min([kocost[s] for s in reac_map_exp[r] if s in kocost])
+                        ko_cost_new[r] = np.min([kocost_in[s] for s in reac_map_exp[r] if s in kocost_in])
                     elif parallel:
-                        ko_cost_new[r] = np.sum([kocost[s] for s in reac_map_exp[r] if s in kocost])
+                        ko_cost_new[r] = np.sum([kocost_in[s] for s in reac_map_exp[r] if s in kocost_in])
             kocost = ko_cost_new
         if kicost:
             ki_cost_new = {}
@@ -1221,7 +1225,7 @@ def compress_ki_ko_cost(kocost, kicost, cmp_mapReac):
                 if np.any([s in kicost for s in reac_map_exp[r]]):
                     if not parallel:
                         ki_cost_new[r] = np.sum([kicost[s] for s in reac_map_exp[r] if s in kicost])
-                    elif parallel and not np.any([s in kocost for s in reac_map_exp[r]]):
+                    elif parallel and not np.any([s in kocost_in for s in reac_map_exp[r]]):
                         ki_cost_new[r] = np.min([kicost[s] for s in reac_map_exp[r] if s in kicost])
             kicost = ki_cost_new
     return kocost, kicost, cmp_mapReac
@@ -1350,6 +1354,43 @@ def expand_sd(sd, cmp_mapReac):
     return sd
 
 
+def itv_cost(k, v, kocost, kicost):
+    """Cost of one intervention, picking the dict by the sign of the entry.
+
+    A reaction may appear in both dicts, since kocost defaults to every reaction. The value's
+    sign says which kind of intervention was made: positive is an addition, negative a removal.
+    """
+    if v == 0:
+        return 0
+    if v > 0:  # knock-in
+        return kicost[k] if k in kicost else kocost.get(k, 0)
+    return kocost[k] if k in kocost else kicost.get(k, 0)  # knock-out
+
+
+def nondominated_sd(sd, kocost, kicost):
+    """Indices of the strain designs no comparable, strictly cheaper design dominates.
+
+    A design is reported when no other design that is a subset or a superset of it costs
+    strictly less. With only positive intervention costs every superset is more expensive,
+    so this reduces to keeping the inclusion-minimal designs -- which the exclusion
+    constraints already guarantee, making the scan a no-op. It earns its keep once an
+    intervention is free or rewarding: then taking it can pay for itself, and the smaller
+    design is the dominated one. Designs of equal cost are all kept.
+
+    Returns:
+        (list of int): Indices into sd to keep, in order.
+    """
+    sets = [frozenset(k for k, v in m.items() if v != 0 and k != '**cost**') for m in sd]
+    costs = [np.sum([itv_cost(k, v, kocost, kicost) for k, v in m.items() if k != '**cost**']) for m in sd]
+    keep = [
+        i for i, si in enumerate(sets)
+        if not any(costs[j] < costs[i] - 1e-8 and (sj <= si or sj >= si) for j, sj in enumerate(sets) if j != i)
+    ]
+    if len(keep) < len(sd):
+        logging.info('  Discarded %d strain design(s) dominated by a cheaper comparable one.' % (len(sd) - len(keep)))
+    return keep
+
+
 def filter_sd_maxcost(sd, max_cost, kocost, kicost):
     """Filter out strain designs that exceed the maximum allowed intervention costs
     
@@ -1361,18 +1402,8 @@ def filter_sd_maxcost(sd, max_cost, kocost, kicost):
     # introduced KIs and KOs carry values of +1.0 and -1.0 respectively
     # non-made KIs are marked by 0.0 and non-made KOs don't appear.
     # We count costs of interventions made, which are marked by v != 0.
-    # A reaction may occur in both cost dicts (kocost defaults to all reactions).
-    # The value's sign says which kind of intervention was made, so it selects
-    # the cost dict, matching how SDProblem prices interventions.
-    def itv_cost(k, v):
-        if v == 0:
-            return 0
-        if v > 0:  # knock-in
-            return kicost[k] if k in kicost else kocost.get(k, 0)
-        return kocost[k] if k in kocost else kicost.get(k, 0)  # knock-out
-
     if max_cost:
-        costs = [np.sum([itv_cost(k, v) for k, v in m.items()]) for m in sd]
+        costs = [np.sum([itv_cost(k, v, kocost, kicost) for k, v in m.items()]) for m in sd]
         keep = [i for i in range(len(sd)) if costs[i] <= max_cost + 1e-8]
         sd = [sd[i] for i in keep]
         # sort strain designs by intervention costs

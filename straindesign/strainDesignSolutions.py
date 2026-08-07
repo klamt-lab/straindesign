@@ -214,18 +214,21 @@ class SDSolutions(object):
         Returns:
             (sd_cost, itv_bounds, has_complex_regul_itv)
         """
-        # compute intervention costs
+        # compute intervention costs.
+        # A reaction may appear in both the knockout and the knock-in dict, since ko_cost
+        # defaults to every reaction whenever only ki_cost is given. Charging each dict
+        # separately would then bill one intervention twice, so the sign of the entry
+        # picks the dict: positive is an addition, negative a removal. This matches how
+        # SDProblem prices interventions and how filter_sd_maxcost selects the cost.
         sd_cost = [0 for _ in range(len(cost_sd))]
-        if KOCOST in sd_setup:
-            for k, v in sd_setup[KOCOST].items():
-                for i, s in enumerate(cost_sd):
-                    if k in s and s[k] != 0:
-                        sd_cost[i] += float(v)
-        if KICOST in sd_setup:
-            for k, v in sd_setup[KICOST].items():
-                for i, s in enumerate(cost_sd):
-                    if k in s and s[k] != 0:
-                        sd_cost[i] += float(v)
+        ko_c, ki_c = sd_setup.get(KOCOST, {}), sd_setup.get(KICOST, {})
+        for i, s in enumerate(cost_sd):
+            for k, v in s.items():
+                if v == 0:
+                    continue
+                src = (ki_c if k in ki_c else ko_c) if v > 0 else (ko_c if k in ko_c else ki_c)
+                if k in src:
+                    sd_cost[i] += float(src[k])
         if GKOCOST in sd_setup:
             for k, v in sd_setup[GKOCOST].items():
                 for i, s in enumerate(cost_sd):
