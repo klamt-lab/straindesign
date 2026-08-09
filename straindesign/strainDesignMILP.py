@@ -177,7 +177,9 @@ class SDMILP(SDProblem, MILP_LP):
 
         # Trim indicator constraints
         if hasattr(self.indic_constr, 'A') and self.indic_constr.A is not None:
-            old_to_new = {old: new for new, old in enumerate(keep_z)}
+            # over all kept columns, not just the z-block: an indicator may key on a binary
+            # that sits past the interventions, and it still has to follow the renumbering
+            old_to_new = {old: new for new, old in enumerate(keep_cols)}
             self.indic_constr.A = self.indic_constr.A[:, keep_cols]
             self.indic_constr.binv = [old_to_new[b] for b in self.indic_constr.binv]
 
@@ -188,7 +190,9 @@ class SDMILP(SDProblem, MILP_LP):
         self.z_non_targetable = [self.z_non_targetable[i] for i in keep_z]
         self.idx_z = list(range(new_num_z))
         self.num_z = new_num_z
-        self.vtype = 'B' * new_num_z + 'C' * n_cont
+        # carry each kept column's own type across rather than rebuilding from the z-count,
+        # which silently retypes any binary past the interventions as continuous
+        self.vtype = ''.join(self.vtype[i] for i in keep_cols)
         self.c_bu = [float(i) for i in self.c]
 
         logging.info(f'  Trimmed z-variables: {self._orig_num_z} -> {new_num_z} '
