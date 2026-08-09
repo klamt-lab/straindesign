@@ -574,3 +574,49 @@ def test_positive_costs_keep_the_smaller_design_only(curr_solver):
     for i, a in enumerate(designs):
         for j, b in enumerate(designs):
             assert i == j or not a < b, (a, b)
+
+
+@pytest.mark.timeout(30)
+def test_trim_preserves_binaries_outside_the_intervention_block(curr_solver):
+    """A binary that is not an intervention must survive trimming, and stay binary.
+
+    _trim_z_variables remapped indicator binaries through the z-block alone and rebuilt vtype
+    from the z-count, so a binary appended past the interventions either raised a KeyError or
+    was silently retyped as continuous -- and a continuous variable driving an indicator
+    constraint relaxes its row fractionally instead of switching it.
+    """
+    from scipy import sparse as _sp
+
+    model = _two_route_network()
+    seen = {}
+
+    class _Probe(sd.SDMILP):
+
+        def _trim_z_variables(self):
+            col = self.A_ineq.shape[1]
+
+            def pad(m):
+                return _sp.hstack((m, _sp.csr_matrix((m.shape[0], 1))), format='csr')
+
+            self.A_ineq = pad(self.A_ineq)
+            self.A_eq = pad(self.A_eq)
+            self.indic_constr.A = pad(_sp.csr_matrix(self.indic_constr.A))
+            self.c = list(self.c) + [0.0]
+            self.lb = list(self.lb) + [0.0]
+            self.ub = list(self.ub) + [1.0]
+            self.vtype += 'B'
+            if len(self.indic_constr.binv):          # glpk uses big-M and has no indicators
+                self.indic_constr.binv[0] = col      # key one on it, as a row gate would
+                seen['keyed'] = True
+            super()._trim_z_variables()
+            seen['vtype'] = self.vtype
+            seen['binv'] = [int(b) for b in self.indic_constr.binv]
+
+    _Probe(model, [sd.SDModule(model, SUPPRESS, constraints=['R4 >= 1'])],
+           ko_cost={'R1': 1.0, 'R2': 1.0}, solver=curr_solver)
+
+    # the appended column is the last one and must still be binary after renumbering
+    assert seen['vtype'][-1] == 'B', seen['vtype'][-8:]
+    if seen.get('keyed'):
+        assert seen['binv'][0] == len(seen['vtype']) - 1
+        assert seen['vtype'][seen['binv'][0]] == 'B'
