@@ -324,19 +324,19 @@ class SDMILP(SDProblem, MILP_LP):
         """Verify computed strain design"""
         sols_orig = self._expand_z_to_orig(sols)
         valid = [False] * sols_orig.shape[0]
+        def _split(z_map, sol_row):
+            """Columns of z_map the solution switches off, and the complement."""
+            inactive = [col for z_i, col, sense in zip(z_map.row, z_map.col, z_map.data)
+                        if np.logical_xor(sol_row[z_i], sense == -1)]
+            keep = np.ones(z_map.shape[1], dtype=bool)
+            keep[inactive] = False
+            return inactive, np.nonzero(keep)[0].tolist()
+
         for i, sol in zip(range(sols_orig.shape[0]), sols_orig):
-            inactive_vars = [var for z_i,var,sense in \
-                            zip(self.cont_MILP.z_map_vars.row,self.cont_MILP.z_map_vars.col,self.cont_MILP.z_map_vars.data)\
-                            if np.logical_xor(sol[0,z_i],sense==-1)]
-            active_vars = [i for i in range(self.cont_MILP.z_map_vars.shape[1]) if i not in inactive_vars]
-            inactive_ineqs = [ineq for z_i,ineq,sense in \
-                            zip(self.cont_MILP.z_map_constr_ineq.row,self.cont_MILP.z_map_constr_ineq.col,self.cont_MILP.z_map_constr_ineq.data)\
-                            if np.logical_xor(sol[0,z_i],sense==-1) ]
-            active_ineqs = [i for i in range(self.cont_MILP.z_map_constr_ineq.shape[1]) if i not in inactive_ineqs]
-            inactive_eqs = [eq for z_i,eq,sense in \
-                            zip(self.cont_MILP.z_map_constr_eq.row,self.cont_MILP.z_map_constr_eq.col,self.cont_MILP.z_map_constr_eq.data)\
-                            if np.logical_xor(sol[0,z_i],sense==-1) ]
-            active_eqs = [i for i in range(self.cont_MILP.z_map_constr_eq.shape[1]) if i not in inactive_eqs]
+            sol_row = np.ravel(sol.toarray() if hasattr(sol, 'toarray') else np.asarray(sol))
+            inactive_vars, active_vars = _split(self.cont_MILP.z_map_vars, sol_row)
+            inactive_ineqs, active_ineqs = _split(self.cont_MILP.z_map_constr_ineq, sol_row)
+            inactive_eqs, active_eqs = _split(self.cont_MILP.z_map_constr_eq, sol_row)
 
             # Zeroing a variable whose bounds exclude zero contradicts that bound, so the
             # region is empty whatever the remaining system does. This has to be tested
