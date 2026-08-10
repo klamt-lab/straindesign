@@ -22,7 +22,6 @@ from cobra.core import Solution
 from cobra.util import create_stoichiometric_matrix, linear_reaction_coefficients
 from cobra import Configuration
 from scipy import sparse
-from scipy.spatial import ConvexHull
 from math import log2
 from straindesign import MILP_LP, parse_constraints, parse_linexpr, lineqlist2mat, linexpr2dict, \
                          linexprdict2mat, SDPool, IndicatorConstraints, avail_solvers
@@ -34,12 +33,29 @@ from numpy import floor, sign, mod, nan, isnan, unique, inf, isinf, full, linspa
                   prod, array, mean, flip, ceil, floor, arctan2
 from contextlib import redirect_stdout, redirect_stderr
 from io import StringIO
-import matplotlib.pyplot as plt
-from matplotlib import use as set_matplotlib_backend
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import logging
 
 from straindesign.parse_constr import linexpr2mat, linexprdict2str
+
+# Plotting stack, bound on first use. Importing pyplot costs about half a second and
+# scipy.spatial another third of one, and only plot_flux_space and its helpers touch either --
+# computing a strain design should not pay for a plotting library it never calls.
+plt = None
+set_matplotlib_backend = None
+Poly3DCollection = None
+ConvexHull = None
+
+
+def _ensure_plotting():
+    """Import the plotting stack and bind it at module level."""
+    global plt, set_matplotlib_backend, Poly3DCollection, ConvexHull
+    if plt is not None:
+        return
+    import matplotlib.pyplot as _plt
+    from matplotlib import use as _use
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection as _poly3d
+    from scipy.spatial import ConvexHull as _hull
+    plt, set_matplotlib_backend, Poly3DCollection, ConvexHull = _plt, _use, _poly3d, _hull
 
 
 def model_objective(model):
@@ -1183,6 +1199,7 @@ def _trace_polytope_3d_rate(model, axes, constraints, solver):
     by optimizing along each face's outward normal. Converges when no face
     produces a new vertex.
     """
+    _ensure_plotting()
     coeffs = [axes[i][0] for i in range(3)]
     tol = 1e-8
 
@@ -1245,6 +1262,7 @@ def _hull_face_polygons(hull):
     Returns a list of faces, each face being a list of vertex indices
     ordered counterclockwise (viewed from outside).
     """
+    _ensure_plotting()
     from collections import defaultdict
     # Group simplices by face equation (rounded for coplanarity check)
     face_groups = defaultdict(set)
@@ -1434,6 +1452,7 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
             variable contains information about which datapoints need to be connected in triangles to
             render a closed surface. The last variable contains the matplotlib object.
     """
+    _ensure_plotting()
 
     cmp_model = kwargs.pop('cmp_model', None)
     cmp_map = kwargs.pop('cmp_map', None)
