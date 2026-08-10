@@ -19,7 +19,7 @@
 """A collection of functions for the LP-based analysis of metabolic networks"""
 
 from cobra.core import Solution
-from cobra.util import create_stoichiometric_matrix
+from cobra.util import create_stoichiometric_matrix, linear_reaction_coefficients
 from cobra import Configuration
 from scipy import sparse
 from scipy.spatial import ConvexHull
@@ -454,7 +454,10 @@ def fba(model, **kwargs) -> Solution:
             kwargs['obj'] = linexpr2dict(kwargs['obj'], reaction_ids)
         c = linexprdict2mat(kwargs['obj'], reaction_ids).toarray()[0].tolist()
     else:
-        c = [i.objective_coefficient for i in model.reactions]
+        # reaction.objective_coefficient re-reads the solver's objective expression once per
+        # reaction; linear_reaction_coefficients reads it once for the whole model
+        obj_coeffs = linear_reaction_coefficients(model)
+        c = [float(obj_coeffs.get(r, 0.0)) for r in model.reactions]
 
     if ('obj_sense' not in kwargs and model.objective_direction == 'max') or \
        ('obj_sense' in kwargs and kwargs['obj_sense'] not in ['min','minimize']):
