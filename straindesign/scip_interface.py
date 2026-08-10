@@ -131,22 +131,15 @@ class SCIP_MILP(pso.Model):
         self.trms = [list(x[i].terms.items())[0][0] for i in range(numvars)]
 
         self.constr = []
-        # add inequality constraints
-        ineqs = [self.addCons(pso.Expr() <= b_i, modifiable=True) for b_i in b_ineq]
-        for row, a_ineq in zip(ineqs, A_ineq):
-            X = [x[i] for i in a_ineq.indices]
-            for col, coeff in zip(X, a_ineq.data):
-                self.addConsCoeff(row, col, coeff)
-        self.constr += ineqs
-        # add equality constraints
-        eqs = [self.addCons(pso.Expr() == b_i, modifiable=True) for b_i in b_eq]
-        for row, a_eq in zip(eqs, A_eq):
-            X = [x[i] for i in a_eq.indices]
-            for col, coeff in zip(X, a_eq.data):
-                self.addConsCoeff(row, col, coeff)
-        self.constr += eqs
+        # Each row goes in as a single expression built from the terms cached above. Adding an
+        # empty row and then one addConsCoeff per nonzero costs a PySCIPOpt call per matrix
+        # entry, which at genome scale is hundreds of thousands of them. The rows stay
+        # modifiable because set_ineq_constraint() and the exclusion constraints edit them later.
+        self.constr += self._add_rows(A_ineq, b_ineq, '<=')
+        self.constr += self._add_rows(A_eq, b_eq, '==')
 
         self.setMinimize()
+
         # add indicator constraints
         if indic_constr is not None:
             for i in range(len(indic_constr.sense)):
@@ -205,9 +198,31 @@ class SCIP_MILP(pso.Model):
         # SCIP_PARAMEMPHASIS_PHASEIMPROVE= 8,        /**< improvement phase settings during 3-phase solving approach */
         # SCIP_PARAMEMPHASIS_PHASEPROOF  = 9         /**< proof phase settings during 3-phase solving approach */
 
+    def _add_rows(self, A, b, sense):
+        """Add the rows of A ~ b to the model, one expression per row.
+
+        Args:
+            A (sparse matrix): coefficient matrix, one row per constraint
+            b (list of float): right hand side
+            sense (str): '<=' or '=='
+
+        Returns:
+            (list): the constraint handles, in row order
+        """
+        A = sparse.csr_matrix(A)
+        indptr, indices, data = A.indptr, A.indices, A.data
+        rows = []
+        for i in range(A.shape[0]):
+            start, end = indptr[i], indptr[i + 1]
+            e = pso.scip.Expr({self.trms[j]: float(d) for j, d in zip(indices[start:end], data[start:end])})
+            rhs = float(b[i])
+            f = pso.scip.ExprCons(e, lhs=rhs, rhs=rhs) if sense == '==' else pso.scip.ExprCons(e, lhs=None, rhs=rhs)
+            rows.append(self.addCons(f, modifiable=True))
+        return rows
+
     def solve(self) -> Tuple[List, float, float]:
         """Solve the MILP
-        
+
         Example:
             sol_x, optim, status = scip.solve()
         
@@ -422,12 +437,7 @@ class SCIP_MILP(pso.Model):
                 The right hand side vector
         """
         self.freeTransform()
-        ineqs = [self.addCons(pso.Expr() <= b_i, modifiable=True) for b_i in b_ineq]
-        for row, a_ineq in zip(ineqs, A_ineq):
-            X = [self.vars[i] for i in a_ineq.indices]
-            for col, coeff in zip(X, a_ineq.data):
-                self.addConsCoeff(row, col, float(coeff))
-        self.constr += ineqs
+        self.constr += self._add_rows(A_ineq, b_ineq, '<=')
 
     def add_eq_constraints(self, A_eq, b_eq):
         """Add equality constraints to the model
@@ -444,12 +454,7 @@ class SCIP_MILP(pso.Model):
                 The right hand side vector
         """
         self.freeTransform()
-        eqs = [self.addCons(pso.Expr() == b_i, modifiable=True) for b_i in b_eq]
-        for row, a_eq in zip(eqs, A_eq):
-            X = [self.vars[i] for i in a_eq.indices]
-            for col, coeff in zip(X, a_eq.data):
-                self.addConsCoeff(row, col, float(coeff))
-        self.constr += eqs
+        self.constr += self._add_rows(A_eq, b_eq, '==')
 
     def set_ineq_constraint(self, idx, a_ineq, b_ineq):
         """Replace a specific inequality constraint

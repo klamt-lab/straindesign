@@ -149,11 +149,14 @@ class Gurobi_MILP_LP(gp.Model):
         self._has_indicator_constr = indic_constr is not None
         if indic_constr is not None:
             A_csr = sparse.csr_matrix(indic_constr.A)
+            # LinExpr(coeffs, vars) builds the row in one call; quicksum walks it term by term in
+            # Python, which is where a genome-scale build spends most of its time
+            xvars = x.tolist()
             for i in range(len(indic_constr.sense)):
                 start, end = A_csr.indptr[i], A_csr.indptr[i + 1]
                 cols = A_csr.indices[start:end]
                 vals = A_csr.data[start:end]
-                lhs = gp.quicksum(float(val) * x[int(col)] for col, val in zip(cols, vals))
+                lhs = gp.LinExpr(vals.tolist(), [xvars[int(col)] for col in cols])
                 self.addGenConstrIndicator(x[indic_constr.binv[i]], bool(indic_constr.indicval[i]), lhs,
                                            '=' if indic_constr.sense[i] == 'E' else '<', indic_constr.b[i])
 
