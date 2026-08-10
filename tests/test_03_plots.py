@@ -2,6 +2,14 @@
 from .test_01_load_models_and_solvers import *
 import straindesign as sd
 
+# StrainDesign imports the plotting stack on first use, so without this the first test to plot
+# pays for it inside its own timeout. On a runner with no matplotlib font cache that build alone
+# takes longer than the 15 s budget, and because the test is killed part-way the cache is never
+# written -- so every following plot test starts the build again and dies the same way. Paying
+# for it here, at collection, puts it outside every test's clock, which is where it sat when the
+# import was still at module level in lptools.
+sd.lptools._ensure_plotting()
+
 
 @pytest.mark.timeout(15)
 def test_plot_2d_flux_space(curr_solver, model_weak_coupling):
