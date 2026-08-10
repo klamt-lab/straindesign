@@ -42,6 +42,31 @@ import logging
 from straindesign.parse_constr import linexpr2mat, linexprdict2str
 
 
+def model_objective(model):
+    """The model's linear objective, without going through the solver where possible.
+
+    Returns the coefficients keyed by reaction id together with the optimisation direction.
+    A model built inside :func:`straindesign.networktools.suppress_lp_context` has no optlang
+    problem to ask -- there are no variables registered and reading ``model.objective`` raises
+    -- so the objective recorded on the model is used instead. On an ordinary model the live
+    objective is read once for the whole model rather than once per reaction.
+
+    Args:
+        model (cobra.Model):
+
+            The model to read the objective from.
+
+    Returns:
+        (Tuple[Dict, str]):
+
+        The objective coefficients by reaction id, and 'max' or 'min'.
+    """
+    recorded = getattr(model, '_suppressed_obj', None)
+    if recorded is not None:
+        return dict(recorded), getattr(model, '_suppressed_obj_direction', 'max')
+    return ({r.id: float(v) for r, v in linear_reaction_coefficients(model).items()}, model.objective_direction)
+
+
 def select_solver(solver=None, model=None) -> str:
     """Select a solver for subsequent MILP/LP computations
     
@@ -449,17 +474,15 @@ def fba(model, **kwargs) -> Solution:
     else:
         kwargs[CONSTRAINTS] = []
 
+    model_obj, model_obj_direction = model_objective(model)
     if 'obj' in kwargs and kwargs['obj'] is not None:
         if type(kwargs['obj']) is str:
             kwargs['obj'] = linexpr2dict(kwargs['obj'], reaction_ids)
         c = linexprdict2mat(kwargs['obj'], reaction_ids).toarray()[0].tolist()
     else:
-        # reaction.objective_coefficient re-reads the solver's objective expression once per
-        # reaction; linear_reaction_coefficients reads it once for the whole model
-        obj_coeffs = linear_reaction_coefficients(model)
-        c = [float(obj_coeffs.get(r, 0.0)) for r in model.reactions]
+        c = [model_obj.get(r.id, 0.0) for r in model.reactions]
 
-    if ('obj_sense' not in kwargs and model.objective_direction == 'max') or \
+    if ('obj_sense' not in kwargs and model_obj_direction == 'max') or \
        ('obj_sense' in kwargs and kwargs['obj_sense'] not in ['min','minimize']):
         obj_sense = 'maximize'
         c = [-i for i in c]
@@ -620,12 +643,13 @@ def slim_fba_via_cmp(model, cmp_model, cmp_map, **kwargs) -> float:
     # --- Map objective to compressed space ---
     # Build factor map: orig_id -> (cmp_id, cumulative_factor)
     # Only for reactions appearing in the objective (cheap).
+    model_obj, model_obj_direction = model_objective(model)
     if 'obj' in kwargs and kwargs['obj'] is not None:
         obj = kwargs['obj']
         if isinstance(obj, str):
             obj = linexpr2dict(obj, orig_reaction_ids)
     else:
-        obj = {r.id: r.objective_coefficient for r in model.reactions if r.objective_coefficient != 0}
+        obj = {r_id: v for r_id, v in model_obj.items() if v != 0}
 
     # Trace each objective reaction through compression
     obj_cmp = {}
@@ -646,7 +670,7 @@ def slim_fba_via_cmp(model, cmp_model, cmp_map, **kwargs) -> float:
     c = linexprdict2mat(obj_cmp, cmp_reaction_ids).toarray()[0].tolist()
 
     # --- Handle obj_sense ---
-    if ('obj_sense' not in kwargs and model.objective_direction == 'max') or \
+    if ('obj_sense' not in kwargs and model_obj_direction == 'max') or \
        ('obj_sense' in kwargs and kwargs['obj_sense'] not in ['min', 'minimize']):
         obj_sense = 'maximize'
         c = [-i for i in c]
