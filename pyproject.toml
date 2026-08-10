@@ -25,7 +25,12 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 dependencies = [
-    "cobra",
+    # 0.32.0 cannot be imported on a default install: cobra/sampling/hopsy.py annotates a class
+    # attribute with `hopsy.Proposal` at class-definition time, but hopsy is an optional extra
+    # (`hopsy; extra == "chrr"`), so `import cobra` raises NameError. Excluding the one broken
+    # release is not a version bound in the sense of the note below -- drop it once cobra ships
+    # a fix. Upstream: https://pypi.org/project/cobra/0.32.0/
+    "cobra!=0.32.0",
     "scipy",
     "matplotlib",
     "psutil",

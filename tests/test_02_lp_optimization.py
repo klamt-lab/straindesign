@@ -162,3 +162,29 @@ def test_fva_wrapper_matches_speedy(ecoli_core, fva_solver):
 def test_fva_all_reactions_present(ecoli_core, res_compressed):
     """FVA result must contain every reaction in the model."""
     assert set(res_compressed.index) == {r.id for r in ecoli_core.reactions}
+
+
+def test_indicator_is_one_directional(curr_solver):
+    """An indicator gates its row in one direction only.
+
+    z = indicval enforces the row; the other value leaves it out entirely, and in particular
+    does NOT force the row to be violated. Minimal cut sets rely on exactly this: a knockout
+    must be able to drop a constraint, but a constraint that happens to hold must not force
+    the knockout binary back to zero. All backends have to agree on it.
+    """
+    from scipy import sparse
+
+    def max_v(indicval, fix_z):
+        ic = sd.IndicatorConstraints([1], sparse.csr_matrix([[1.0, 0.0]]), [0.0], 'L', [indicval])
+        milp = sd.MILP_LP(c=[-1.0, 0.0],
+                          A_ineq=sparse.csr_matrix((0, 2)), b_ineq=[],
+                          A_eq=sparse.csr_matrix((0, 2)), b_eq=[],
+                          lb=[0.0, float(fix_z)], ub=[10.0, float(fix_z)],
+                          vtype='CB', indic_constr=ic, solver=curr_solver)
+        x, _, status = milp.solve()
+        assert status == sd.names.OPTIMAL
+        return x[0]
+
+    for indicval in (0, 1):
+        assert max_v(indicval, indicval) == pytest.approx(0.0)       # row enforced: v <= 0
+        assert max_v(indicval, 1 - indicval) == pytest.approx(10.0)  # row absent: v free

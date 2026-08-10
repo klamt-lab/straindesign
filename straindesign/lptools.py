@@ -19,10 +19,9 @@
 """A collection of functions for the LP-based analysis of metabolic networks"""
 
 from cobra.core import Solution
-from cobra.util import create_stoichiometric_matrix
+from cobra.util import create_stoichiometric_matrix, linear_reaction_coefficients
 from cobra import Configuration
 from scipy import sparse
-from scipy.spatial import ConvexHull
 from math import log2
 from straindesign import MILP_LP, parse_constraints, parse_linexpr, lineqlist2mat, linexpr2dict, \
                          linexprdict2mat, SDPool, IndicatorConstraints, avail_solvers
@@ -34,12 +33,54 @@ from numpy import floor, sign, mod, nan, isnan, unique, inf, isinf, full, linspa
                   prod, array, mean, flip, ceil, floor, arctan2
 from contextlib import redirect_stdout, redirect_stderr
 from io import StringIO
-import matplotlib.pyplot as plt
-from matplotlib import use as set_matplotlib_backend
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import logging
 
 from straindesign.parse_constr import linexpr2mat, linexprdict2str
+
+# Plotting stack, bound on first use. Importing pyplot costs about half a second and
+# scipy.spatial another third of one, and only plot_flux_space and its helpers touch either --
+# computing a strain design should not pay for a plotting library it never calls.
+plt = None
+set_matplotlib_backend = None
+Poly3DCollection = None
+ConvexHull = None
+
+
+def _ensure_plotting():
+    """Import the plotting stack and bind it at module level."""
+    global plt, set_matplotlib_backend, Poly3DCollection, ConvexHull
+    if plt is not None:
+        return
+    import matplotlib.pyplot as _plt
+    from matplotlib import use as _use
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection as _poly3d
+    from scipy.spatial import ConvexHull as _hull
+    plt, set_matplotlib_backend, Poly3DCollection, ConvexHull = _plt, _use, _poly3d, _hull
+
+
+def model_objective(model):
+    """The model's linear objective, without going through the solver where possible.
+
+    Returns the coefficients keyed by reaction id together with the optimisation direction.
+    A model built inside :func:`straindesign.networktools.suppress_lp_context` has no optlang
+    problem to ask -- there are no variables registered and reading ``model.objective`` raises
+    -- so the objective recorded on the model is used instead. On an ordinary model the live
+    objective is read once for the whole model rather than once per reaction.
+
+    Args:
+        model (cobra.Model):
+
+            The model to read the objective from.
+
+    Returns:
+        (Tuple[Dict, str]):
+
+        The objective coefficients by reaction id, and 'max' or 'min'.
+    """
+    recorded = getattr(model, '_suppressed_obj', None)
+    if recorded is not None:
+        return dict(recorded), getattr(model, '_suppressed_obj_direction', 'max')
+    return ({r.id: float(v) for r, v in linear_reaction_coefficients(model).items()}, model.objective_direction)
 
 
 def select_solver(solver=None, model=None) -> str:
@@ -449,14 +490,15 @@ def fba(model, **kwargs) -> Solution:
     else:
         kwargs[CONSTRAINTS] = []
 
+    model_obj, model_obj_direction = model_objective(model)
     if 'obj' in kwargs and kwargs['obj'] is not None:
         if type(kwargs['obj']) is str:
             kwargs['obj'] = linexpr2dict(kwargs['obj'], reaction_ids)
         c = linexprdict2mat(kwargs['obj'], reaction_ids).toarray()[0].tolist()
     else:
-        c = [i.objective_coefficient for i in model.reactions]
+        c = [model_obj.get(r.id, 0.0) for r in model.reactions]
 
-    if ('obj_sense' not in kwargs and model.objective_direction == 'max') or \
+    if ('obj_sense' not in kwargs and model_obj_direction == 'max') or \
        ('obj_sense' in kwargs and kwargs['obj_sense'] not in ['min','minimize']):
         obj_sense = 'maximize'
         c = [-i for i in c]
@@ -617,12 +659,13 @@ def slim_fba_via_cmp(model, cmp_model, cmp_map, **kwargs) -> float:
     # --- Map objective to compressed space ---
     # Build factor map: orig_id -> (cmp_id, cumulative_factor)
     # Only for reactions appearing in the objective (cheap).
+    model_obj, model_obj_direction = model_objective(model)
     if 'obj' in kwargs and kwargs['obj'] is not None:
         obj = kwargs['obj']
         if isinstance(obj, str):
             obj = linexpr2dict(obj, orig_reaction_ids)
     else:
-        obj = {r.id: r.objective_coefficient for r in model.reactions if r.objective_coefficient != 0}
+        obj = {r_id: v for r_id, v in model_obj.items() if v != 0}
 
     # Trace each objective reaction through compression
     obj_cmp = {}
@@ -643,7 +686,7 @@ def slim_fba_via_cmp(model, cmp_model, cmp_map, **kwargs) -> float:
     c = linexprdict2mat(obj_cmp, cmp_reaction_ids).toarray()[0].tolist()
 
     # --- Handle obj_sense ---
-    if ('obj_sense' not in kwargs and model.objective_direction == 'max') or \
+    if ('obj_sense' not in kwargs and model_obj_direction == 'max') or \
        ('obj_sense' in kwargs and kwargs['obj_sense'] not in ['min', 'minimize']):
         obj_sense = 'maximize'
         c = [-i for i in c]
@@ -1156,6 +1199,7 @@ def _trace_polytope_3d_rate(model, axes, constraints, solver):
     by optimizing along each face's outward normal. Converges when no face
     produces a new vertex.
     """
+    _ensure_plotting()
     coeffs = [axes[i][0] for i in range(3)]
     tol = 1e-8
 
@@ -1218,6 +1262,7 @@ def _hull_face_polygons(hull):
     Returns a list of faces, each face being a list of vertex indices
     ordered counterclockwise (viewed from outside).
     """
+    _ensure_plotting()
     from collections import defaultdict
     # Group simplices by face equation (rounded for coplanarity check)
     face_groups = defaultdict(set)
@@ -1407,6 +1452,7 @@ def plot_flux_space(model, axes, **kwargs) -> Tuple[list, list, list]:
             variable contains information about which datapoints need to be connected in triangles to
             render a closed surface. The last variable contains the matplotlib object.
     """
+    _ensure_plotting()
 
     cmp_model = kwargs.pop('cmp_model', None)
     cmp_map = kwargs.pop('cmp_map', None)

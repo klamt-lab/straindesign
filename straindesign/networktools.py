@@ -401,6 +401,33 @@ def _is_lp_suppressed():
     return _ORIG_SLC is not None or _ORIG_SB is not None or _ORIG_OSLC is not None or len(_ORIG_COBRA) > 0
 
 
+def set_suppressed_objective(model, coefficients, direction='max'):
+    """Record a linear objective on a model whose solver was never populated.
+
+    ``model.objective = ...`` writes into the optlang problem, which is exactly what
+    :func:`suppress_lp_context` exists to avoid -- and on a model assembled inside that context
+    there are no variables to write to, so the objective is silently lost and later reads raise.
+    This records it on the model instead, where StrainDesign's LP tools look for it
+    (:func:`straindesign.lptools.model_objective`). Unlike the objective the context manager
+    captures for itself, this one outlives the context.
+
+    Args:
+        model (cobra.Model):
+
+            The model to record the objective on.
+
+        coefficients (dict):
+
+            Objective coefficients, keyed by reaction id.
+
+        direction (str): (Default: 'max')
+
+            'max' or 'min'.
+    """
+    model._suppressed_obj = {str(k): float(v) for k, v in coefficients.items()}
+    model._suppressed_obj_direction = direction
+
+
 @contextmanager
 def suppress_lp_context(model):
     """Context manager that suppresses all solver-touching operations.
@@ -414,13 +441,24 @@ def suppress_lp_context(model):
     """
     entered_here = not _is_lp_suppressed()
     if entered_here:
-        # Capture objective and reaction IDs before suppression (solver still live)
-        obj_dict = {}
-        for rxn in model.reactions:
+        # Capture objective and reaction IDs before suppression (solver still live). A model that
+        # already carries a recorded objective -- one built by set_suppressed_objective, whose
+        # solver was never populated -- keeps it: there is nothing live to re-read, and reading
+        # would either raise or quietly report no objective at all.
+        recorded = getattr(model, '_suppressed_obj', None)
+        if recorded is not None:
+            obj_dict = dict(recorded)
+        else:
+            obj_dict = {}
+            for rxn in model.reactions:
+                try:
+                    c = rxn.objective_coefficient
+                    if c != 0:
+                        obj_dict[rxn.id] = float(c)
+                except Exception:
+                    pass
             try:
-                c = rxn.objective_coefficient
-                if c != 0:
-                    obj_dict[rxn.id] = float(c)
+                model._suppressed_obj_direction = model.objective_direction
             except Exception:
                 pass
         _pre_ids = {r.id for r in model.reactions}
@@ -436,7 +474,9 @@ def suppress_lp_context(model):
             current_ids = {r.id for r in model.reactions}
             # Use the stored objective (compression may have updated it)
             final_obj = getattr(model, '_suppressed_obj', obj_dict)
-            if hasattr(model, '_suppressed_obj'):
+            if recorded is not None:
+                model._suppressed_obj = dict(final_obj)  # the record outlives the context
+            elif hasattr(model, '_suppressed_obj'):
                 del model._suppressed_obj
             if current_ids != _pre_ids:
                 if model.groups:

@@ -843,35 +843,33 @@ class SDProblem:
 
         _idxz = set(self.idx_z)  # O(1) membership in the scan below
         cont_vars = [i not in _idxz for i in range(0, numvars)]
-        M_lb = [self.lb[i] for i in np.nonzero(cont_vars)[0]]
-        M_ub = [self.ub[i] for i in np.nonzero(cont_vars)[0]]
+        _cont_idx = np.nonzero(cont_vars)[0]
+        M_lb = np.array([self.lb[i] for i in _cont_idx], dtype=float)
+        M_ub = np.array([self.ub[i] for i in _cont_idx], dtype=float)
         M_A = self.A_ineq[knockable_constr_ineq, :][:, cont_vars].tocsr()
 
         num_Ms = M_A.shape[0]
-        max_Ax = [np.nan] * num_Ms
 
         # max(a*x) from bounds: zero rows -> 0; single-variable rows -> coeff*(ub if coeff>0 else lb),
         # or +inf if that bound is infinite; multi-variable rows -> +inf (unbounded dual constraint).
-        n_zero = 0
-        n_single = 0
-        n_multi = 0
-        for i in range(num_Ms):
-            row = M_A.getrow(i)
-            nnz = row.nnz
-            if nnz == 0:
-                max_Ax[i] = 0.0
-                n_zero += 1
-            elif nnz == 1:
-                col_idx = row.indices[0]
-                coeff = row.data[0]
-                if coeff > 0:
-                    max_Ax[i] = coeff * M_ub[col_idx] if not isinf(M_ub[col_idx]) else np.inf
-                else:
-                    max_Ax[i] = coeff * M_lb[col_idx] if not isinf(M_lb[col_idx]) else np.inf
-                n_single += 1
-            else:
-                max_Ax[i] = np.inf
-                n_multi += 1
+        # Row arity comes from the index pointers, so this reads the whole matrix once instead of
+        # slicing out one row object per constraint.
+        _indptr = M_A.indptr
+        row_nnz = np.diff(_indptr)
+        max_Ax = np.full(num_Ms, np.inf)
+        max_Ax[row_nnz == 0] = 0.0
+        single = np.nonzero(row_nnz == 1)[0]
+        if single.size:
+            _at = _indptr[single]
+            col_idx = M_A.indices[_at]
+            coeff = M_A.data[_at]
+            bnd = np.where(coeff > 0, M_ub[col_idx], M_lb[col_idx])
+            # an infinite bound gives +inf whatever the coefficient's sign; zero it out first so
+            # the product never evaluates inf*0
+            max_Ax[single] = np.where(np.isinf(bnd), np.inf, coeff * np.where(np.isinf(bnd), 0.0, bnd))
+        n_zero = int(np.count_nonzero(row_nnz == 0))
+        n_single = int(single.size)
+        n_multi = num_Ms - n_zero - n_single
         logging.info('  Bounding MILP: %d constraints (%d zero, %d single-var, %d multi-var->indicator/M).' %
                      (num_Ms, n_zero, n_single, n_multi))
 
@@ -966,7 +964,11 @@ class SDProblem:
         #   where every first entry of a row is positive
         # - search for row duplicates
         # - delete one if their first row entry had the same sign, lump to equality if they had opposite signs
-        first_entry_A_ineq_sign = [np.sign(a.data[0]) if a.nnz > 0 else 0 for a in self.A_ineq]
+        _ineq_indptr = self.A_ineq.indptr
+        _ineq_nnz = np.diff(_ineq_indptr)
+        first_entry_A_ineq_sign = np.zeros(self.A_ineq.shape[0])
+        _nonempty = np.nonzero(_ineq_nnz)[0]
+        first_entry_A_ineq_sign[_nonempty] = np.sign(self.A_ineq.data[_ineq_indptr[_nonempty]])
         Ab_find_dupl = sparse.hstack((sparse.diags(first_entry_A_ineq_sign) * self.A_ineq, \
                                       sparse.coo_matrix(
                                           sparse.diags(first_entry_A_ineq_sign) * self.b_ineq).transpose(), \
@@ -978,9 +980,13 @@ class SDProblem:
         ident_rows = []  # duplicate rows as Tuple (i,j,k): first row, second row, positive or negative duplicate
         row_key = {}
         dupl_groups = {}
+        Ab_find_dupl.sort_indices()  # so a row's key does not depend on the order entries were stored in
+        _dupl_indptr = Ab_find_dupl.indptr
+        _dupl_indices = Ab_find_dupl.indices
+        _dupl_data = Ab_find_dupl.data
         for i in knockable_constr_ineq_ic:
-            row = Ab_find_dupl.getrow(i)
-            key = (row.indices.tobytes(), row.data.tobytes())
+            start, end = _dupl_indptr[i], _dupl_indptr[i + 1]
+            key = (_dupl_indices[start:end].tobytes(), _dupl_data[start:end].tobytes())
             row_key[i] = key
             dupl_groups.setdefault(key, []).append(i)
         for i in knockable_constr_ineq_ic:  # ascending
@@ -989,13 +995,17 @@ class SDProblem:
                     ident_rows += [(i, j, first_entry_A_ineq_sign[i] * first_entry_A_ineq_sign[j])]
         # replace two ineqs by one eq
         self.z_map_constr_ineq = self.z_map_constr_ineq.tocsc()
-        A_eq = sparse.csr_matrix((0, self.A_ineq.shape[1]))
-        z_eq = sparse.csc_matrix((self.num_z, 0))
-        b_eq = []
-        for j in [i for i in range(len(ident_rows)) if ident_rows[i][2] == -1]:
-            A_eq = sparse.vstack((A_eq, self.A_ineq[ident_rows[j][0]]))
-            b_eq += [self.b_ineq[ident_rows[j][0]]]
-            z_eq = sparse.hstack((z_eq, self.z_map_constr_ineq[:, ident_rows[j][0]]))
+        # gather the rows to lump in one slice each: stacking inside the loop rebuilds the whole
+        # matrix on every iteration
+        lump_rows = [ir[0] for ir in ident_rows if ir[2] == -1]
+        if lump_rows:
+            A_eq = self.A_ineq[lump_rows, :]
+            b_eq = [self.b_ineq[i] for i in lump_rows]
+            z_eq = self.z_map_constr_ineq[:, lump_rows]
+        else:
+            A_eq = sparse.csr_matrix((0, self.A_ineq.shape[1]))
+            z_eq = sparse.csc_matrix((self.num_z, 0))
+            b_eq = []
         # Add to global equality problem part
         knockable_constr_eq_ic = [i + len(self.b_eq) for i in range(len(b_eq))]
         self.A_eq = sparse.vstack((self.A_eq, A_eq), 'csr')
@@ -1007,9 +1017,11 @@ class SDProblem:
             remove_ineq = np.array([], 'int')
         else:
             remove_ineq = np.unique(np.hstack([[ir[0], ir[1]] if ir[2] == -1 else [ir[1]] for ir in ident_rows]))
-        keep_ineq = [i for i in range(self.A_ineq.shape[0]) if i not in remove_ineq]
-        knockable_constr_ineq_ic = [True if i in knockable_constr_ineq_ic else False for i in range(self.A_ineq.shape[0])]
-        knockable_constr_ineq_ic = np.nonzero([knockable_constr_ineq_ic[i] for i in keep_ineq])[0]
+        _remove = set(int(i) for i in remove_ineq)
+        _is_ic = np.zeros(self.A_ineq.shape[0], dtype=bool)
+        _is_ic[list(knockable_constr_ineq_ic)] = True
+        keep_ineq = [i for i in range(self.A_ineq.shape[0]) if i not in _remove]
+        knockable_constr_ineq_ic = np.nonzero(_is_ic[keep_ineq])[0]
         self.A_ineq = self.A_ineq[keep_ineq, :]
         self.b_ineq = [self.b_ineq[i] for i in keep_ineq]
         self.z_map_constr_ineq = self.z_map_constr_ineq[:, keep_ineq]
@@ -1030,10 +1042,12 @@ class SDProblem:
         self.indic_constr = IndicatorConstraints(ic_binv, ic_A, ic_b, ic_sense, ic_indicval)
 
         # b6. Remove knockable (in)equalities from static problem, as they are now indicator constraints
-        keep_ineq = [False if i in knockable_constr_ineq_ic else True for i in range(self.A_ineq.shape[0])]
+        _drop_ineq = set(int(i) for i in knockable_constr_ineq_ic)
+        _drop_eq = set(int(i) for i in knockable_constr_eq_ic)
+        keep_ineq = [i not in _drop_ineq for i in range(self.A_ineq.shape[0])]
         self.A_ineq = self.A_ineq[keep_ineq, :]
         self.b_ineq = [self.b_ineq[i] for i in range(len(keep_ineq)) if keep_ineq[i]]
-        keep_eq = [False if i in knockable_constr_eq_ic else True for i in range(self.A_eq.shape[0])]
+        keep_eq = [i not in _drop_eq for i in range(self.A_eq.shape[0])]
         self.A_eq = self.A_eq[keep_eq, :]
         self.b_eq = [self.b_eq[i] for i in range(len(keep_eq)) if keep_eq[i]]
 
@@ -1054,16 +1068,25 @@ class SDProblem:
         Aec = self.A_eq.tocsc() if self.A_eq.shape[0] else None
         budget_rows = {self.idx_row_maxcost, self.idx_row_mincost, self.idx_row_obj}
         z_with_ind = set(int(b) for b in self.indic_constr.binv) if self.indic_constr is not None else set()
+        # which columns carry a z-link: one pass over the stored entries rather than a column
+        # slice per binary
+        _is_budget = np.zeros(Aic.shape[0], dtype=bool)
+        for r in budget_rows:
+            if r is not None and 0 <= r < Aic.shape[0]:
+                _is_budget[r] = True
+        _col_of = np.repeat(np.arange(Aic.shape[1]), np.diff(Aic.indptr))
+        _links = np.zeros(Aic.shape[1], dtype=bool)
+        _links[_col_of[~_is_budget[Aic.indices] & (Aic.data != 0)]] = True
+        _links_eq = np.diff(Aec.indptr) > 0 if Aec is not None else np.zeros(Aic.shape[1], dtype=bool)
         n_free = 0
         for z in range(self.num_z):
             if self.z_non_targetable[z] or self.z_inverted[z] or self.lb[z] > 0 or self.ub[z] == 0:
                 continue
             if z in z_with_ind:
                 continue
-            col = Aic.getcol(z).tocoo()
-            if any((r not in budget_rows) and v != 0 for r, v in zip(col.row.tolist(), col.data.tolist())):
+            if _links[z]:
                 continue  # finite-M z-link -> controls a row
-            if Aec is not None and Aec.getcol(z).nnz:
+            if _links_eq[z]:
                 continue  # equality z-link
             self.ub[z] = 0.0
             n_free += 1
