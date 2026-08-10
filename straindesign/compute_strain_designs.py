@@ -508,9 +508,10 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             if _fba(model, constraints=m[CONSTRAINTS], solver=kwargs[SOLVER]).status == INFEASIBLE:
                 raise Exception("There is no feasible solution of the model under the given constraints.")
     logging.info('  Using ' + kwargs[SOLVER] + ' for solving LPs during preprocessing.')
-    with _silent_io():
-        orig_model = model
-        model = model.copy()
+    # No defensive copy here: between this point and `cmp_model = model.copy()` below, `model` is
+    # only read, and every mutation from then on goes to `cmp_model`. Copying twice cost a second
+    # full deepcopy of the model for nothing (0.8 s of a 3.6 s gap-filling call).
+    orig_model = model
     # FVA only ever *narrows* the problem handed to the MILP: it removes blocked reactions,
     # marks essential ones unknockable and pre-extracts size-1 MCS. The MILP finds the same
     # designs without any of it, so this is a speed/precomputation trade, not a semantic one.

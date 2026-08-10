@@ -620,3 +620,54 @@ def test_trim_preserves_binaries_outside_the_intervention_block(curr_solver):
     if seen.get('keyed'):
         assert seen['binv'][0] == len(seen['vtype']) - 1
         assert seen['vtype'][seen['binv'][0]] == 'B'
+
+
+@pytest.mark.parametrize('gene_kos', [False, True])
+def test_caller_model_is_left_untouched(curr_solver, model_gpr, gene_kos):
+    """compute_strain_designs must not modify the model it was handed.
+
+    Preprocessing works on its own copy: compression lumps reactions, the GPR extension adds
+    pseudo-reactions and the FVAs retighten bounds, none of which the caller asked for. Only
+    one copy is taken, so this is the invariant that keeps that safe.
+    """
+
+    def snapshot(m):
+        return ([r.id for r in m.reactions], [g.id for g in m.genes], [x.id for x in m.metabolites],
+                [(r.lower_bound, r.upper_bound) for r in m.reactions],
+                [r.gene_reaction_rule for r in m.reactions],
+                {r.id: r.objective_coefficient for r in m.reactions if r.objective_coefficient != 0},
+                [sorted((x.id, v) for x, v in r.metabolites.items()) for r in m.reactions])
+
+    before = snapshot(model_gpr)
+    sd.compute_strain_designs(model_gpr,
+                              sd_modules=[sd.SDModule(model_gpr, SUPPRESS, constraints=['r_bm >= 0.5'])],
+                              max_cost=2, max_solutions=3, solution_approach=POPULATE,
+                              gene_kos=gene_kos, compress=True, solver=curr_solver, seed=1)
+    assert snapshot(model_gpr) == before
+
+
+def test_objective_survives_a_suppressed_build(curr_solver, model_gpr):
+    """A model assembled under suppression carries its objective outside the solver.
+
+    ``model.objective = ...`` writes into the optlang problem, so a model built inside
+    suppress_lp_context -- which is the point of the context -- would silently lose it and
+    raise on the next read. set_suppressed_objective records it where the LP tools look.
+    """
+    import cobra
+    from straindesign.networktools import suppress_lp_context, set_suppressed_objective
+    from straindesign.lptools import model_objective
+
+    reference = sd.fba(model_gpr, obj={'r_bm': 1.0}, obj_sense='maximize', solver=curr_solver)
+
+    with suppress_lp_context(cobra.Model('shell')):
+        bare = cobra.Model('bare')
+        bare.add_metabolites([cobra.Metabolite(m.id) for m in model_gpr.metabolites])
+        bare.add_reactions([cobra.Reaction(r.id) for r in model_gpr.reactions])
+        for r in model_gpr.reactions:
+            new = bare.reactions.get_by_id(r.id)
+            new.add_metabolites({m.id: v for m, v in r.metabolites.items()})
+            new.bounds = r.bounds
+        set_suppressed_objective(bare, {'r_bm': 1.0}, 'max')
+
+    assert model_objective(bare) == ({'r_bm': 1.0}, 'max')
+    assert sd.fba(bare, solver=curr_solver).objective_value == pytest.approx(reference.objective_value)
