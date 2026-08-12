@@ -157,7 +157,14 @@ class SDMILP(SDProblem, MILP_LP):
         solver carries these dead variables. This trims them at construction
         time. Stores _z_orig_indices for expanding solutions back.
         """
-        keep_z = [i for i in range(self.num_z) if self.ub[i] > 0]
+        # A binary an indicator constraint keys on must survive even when it is fixed to zero:
+        # the row it gates is still part of the problem (an indicator with indicval 0 is then
+        # permanently active), and dropping its column would leave the indicator keyed on a
+        # variable that no longer exists.
+        keyed_by_indicator = set()
+        if getattr(self.indic_constr, 'binv', None) is not None:
+            keyed_by_indicator = {int(b) for b in self.indic_constr.binv}
+        keep_z = [i for i in range(self.num_z) if self.ub[i] > 0 or i in keyed_by_indicator]
         if len(keep_z) == self.num_z:
             self._z_orig_indices = None  # no trimming needed
             return

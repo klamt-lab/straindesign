@@ -227,6 +227,32 @@ class SDProblem:
         # same design instead of reporting infeasible once the designs are exhausted (measured;
         # the other three solvers are indifferent to which form is used). link_z's step 7 leaves
         # inverted z's alone, so nothing downstream depends on the pinned bound.
+        # A CarveMe core reaction that cannot carry flux under its module's constraints was
+        # dropped from the core during preprocessing, so nothing obliges it to run any more. Left
+        # buyable it would still be bought whenever its cost is a reward, and would then sit in
+        # the result blocked -- the exact defect the module type exists to rule out. Forbid the
+        # purchase instead. This is scoped to the module's own conditions: the reaction is dead
+        # under them, so no design satisfying them can have a use for it.
+        # Forbidden by a row rather than by pinning the binary's upper bound, for the same reason
+        # essential_kis is: SCIP does not treat a pinned binary bound as binding here (measured --
+        # it reports the reaction bought anyway), whereas a row holds across all four solvers.
+        _forbidden = set()
+        for mod in sd_modules:
+            if mod[MODULE_TYPE] == CARVEME:
+                _forbidden.update(mod['unreachable_core'] or [])
+        _forbid = [i for i, r in enumerate(model.reactions)
+                   if r.id in _forbidden and not self.z_non_targetable[i]]
+        if _forbid:
+            _rows = sparse.lil_matrix((len(_forbid), self.A_ineq.shape[1]))
+            for _k, _i in enumerate(_forbid):
+                _rows[_k, _i] = 1.0
+            self.A_ineq = sparse.vstack((self.A_ineq, _rows.tocsr()), format='csr')
+            self.b_ineq = list(self.b_ineq) + [0.0] * len(_forbid)
+            self.z_map_constr_ineq = sparse.hstack(
+                (self.z_map_constr_ineq, sparse.csc_matrix((self.num_z, len(_forbid))))).tocsc()
+            logging.info('  %d core reactions cannot carry flux and are excluded from purchase.' %
+                         len(_forbid))
+
         _ess = [i for i, r in enumerate(model.reactions) if r.id in self.essential_kis]
         if _ess:
             _rows = sparse.lil_matrix((len(_ess), self.A_ineq.shape[1]))
@@ -237,7 +263,9 @@ class SDProblem:
 
         # if there are only mcs modules, minimize the knockout costs,
         # otherwise use objective function(s) from modules
-        if all([mod[MODULE_TYPE] in [PROTECT, SUPPRESS, DOUBLEOPT] for mod in sd_modules]):
+        # A CarveMe module minimises sum(cost * z) like an MCS computation does -- that IS its
+        # objective, with a negative ki_cost rewarding a reaction rather than charging for it.
+        if all([mod[MODULE_TYPE] in [PROTECT, SUPPRESS, DOUBLEOPT, CARVEME] for mod in sd_modules]):
             for i in self.idx_z:
                 self.c[i] = self.cost[i]
             self.is_mcs_computation = True
@@ -314,6 +342,100 @@ class SDProblem:
                 override[rid] = (lo, hi)
         return override
 
+    def _add_carveme_core(self, sd_module, A_ineq, b_ineq, A_eq, b_eq, lb, ub, z_map_constr_ineq,
+                          z_map_constr_eq, z_map_vars):
+        """Add the must-run rows (and optional loopless block) of a CarveMe module to its primal.
+
+        Two things are stated here that no other module type states.
+
+        **A core reaction that was bought must run.** One row per core reaction,
+
+            -d_r * v_r <= -t_r
+
+        mapped to that reaction's own z. The sign written into z_map_constr_ineq is +1, which
+        reads as "z = 1 knocks this row out" -- and that is deliberate, because __init__ has not
+        applied z_kos_kis yet. A candidate is a knock-in, so its column is multiplied by -1 there
+        and the row ends up enforced exactly when the reaction is bought. Writing -1 here would
+        invert on a knock-in and demand flux through reactions nobody bought.
+
+        The row is single-variable, so link_z's step 3 gives it a finite M read straight off the
+        variable's own bound, and step 4 links it as -d*v + (M + t)*z <= M. For an irreversible
+        reaction that M is 0 and the link is exact. It is worth being clear that this is big-M
+        and not an indicator: it is sound because StrainDesign pins the solvers' integrality
+        tolerance (CPLEX to 0, Gurobi to 1e-9), so a binary cannot rest fractionally far enough
+        from 1 to buy back M * tol units of slack.
+
+        **Bought reactions may not run in a thermodynamically infeasible cycle.** With loopless
+        set, a free potential mu_m per metabolite and, per core reaction, the gated row
+
+            d_r * sum_m S_mr * mu_m <= -1
+
+        Without it a core reaction can satisfy its must-run condition by spinning against its
+        neighbours at no net cost, which is precisely the "it carries flux" letter of the
+        requirement without its spirit. These rows are multi-variable, so link_z realises them as
+        genuine indicator constraints.
+        """
+        reac_ids = self.model.reactions.list_attr('id')
+        idx = {r: i for i, r in enumerate(reac_ids)}
+        directions = sd_module[CORE_DIRECTIONS] or {}
+        thresholds = sd_module[CORE_THRESHOLDS] or {}
+        min_flux = sd_module[MIN_FLUX] if sd_module[MIN_FLUX] is not None else 1e-3
+        core = [r for r in sd_module[CORE_REACTIONS] if r in idx and r in directions]
+        missing = [r for r in sd_module[CORE_REACTIONS] if r in idx and r not in directions]
+        if missing:
+            raise Exception('No direction for %d core reactions (%s). Build them with '
+                            'straindesign.build_witness, or pass core_directions explicitly.' %
+                            (len(missing), ', '.join(missing[:5])))
+        unbuyable = [r for r in core if np.isnan(self.ki_cost[idx[r]])]
+        if unbuyable:
+            # Not an error: a core reaction that is not a candidate is simply always present, so
+            # its must-run row would be unconditional. Say so rather than enforce it silently.
+            logging.warning('  %d core reactions carry no ki_cost and are therefore always '
+                            'present; their must-run condition is unconditional: %s' %
+                            (len(unbuyable), ', '.join(unbuyable[:5])))
+
+        n_before = A_ineq.shape[1]
+        n_mu = len(self.model.metabolites) if sd_module[LOOPLESS] else 0
+        S = sparse.csc_matrix(create_stoichiometric_matrix(self.model))
+
+        rows, rhs, z_cols = [], [], []
+        for rid in core:
+            j = idx[rid]
+            d = float(directions[rid])
+            t = float(thresholds.get(rid, 1.0)) * min_flux
+            rows.append(sparse.csr_matrix(([-d], ([0], [j])), shape=(1, n_before + n_mu)))
+            rhs.append(-t)
+            z_cols.append(j)
+            if not n_mu:
+                continue
+            col = S[:, j]
+            if col.nnz == 0:
+                continue
+            gibbs = sparse.csr_matrix((d * col.data, ([0] * col.nnz, n_before + col.indices)),
+                                      shape=(1, n_before + n_mu))
+            rows.append(gibbs)
+            rhs.append(-1.0)
+            z_cols.append(j)
+
+        # widen the existing system to make room for the potentials
+        if n_mu:
+            A_ineq = sparse.hstack((A_ineq, sparse.csr_matrix((A_ineq.shape[0], n_mu)))).tocsr()
+            A_eq = sparse.hstack((A_eq, sparse.csr_matrix((A_eq.shape[0], n_mu)))).tocsr()
+            z_map_vars = sparse.hstack((z_map_vars, sparse.csc_matrix((self.num_z, n_mu)))).tocsc()
+            lb = list(lb) + [-1e3] * n_mu
+            ub = list(ub) + [1e3] * n_mu
+
+        if rows:
+            A_ineq = sparse.vstack([A_ineq] + rows).tocsr()
+            b_ineq = list(b_ineq) + rhs
+            z_new = sparse.csc_matrix((np.ones(len(z_cols)), (z_cols, range(len(z_cols)))),
+                                      shape=(self.num_z, len(z_cols)))
+            z_map_constr_ineq = sparse.hstack((z_map_constr_ineq, z_new)).tocsc()
+            logging.info('  CarveMe module: %d core reactions, %d must-run rows%s.' %
+                         (len(core), len(rows),
+                          ', loopless' if n_mu else ''))
+        return (A_ineq, b_ineq, A_eq, b_eq, lb, ub, z_map_constr_ineq, z_map_constr_eq, z_map_vars)
+
     def addModule(self, sd_module):
         """Generate module LP and z-linking-matrix for each module and add them to the strain design MILP
 
@@ -341,6 +463,24 @@ class SDProblem:
             bound_override = self._module_bound_override(sd_module)
             A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p \
                 = build_primal_from_cbm(self.model, V_ineq, v_ineq, V_eq, v_eq, bound_override=bound_override)
+        elif sd_module[MODULE_TYPE] == CARVEME:
+            # Reconstruction, not intervention: keep an annotated core and buy the cheapest
+            # additions that let it run. The primal is a PROTECT primal -- the module's
+            # constraints must remain feasible -- so the whole gating half comes for free from
+            # the knock-in machinery: a candidate is a KI, z_kos_kis inverts its z-map, and
+            # link_z's step 2 emits v_r = 0 for every candidate that was not bought.
+            #
+            # What this branch adds is the other half, the one no other module type states: a
+            # core reaction that WAS bought must demonstrably carry flux. That is one row per
+            # core reaction, mapped to the same z, so link_z gates it exactly like any other
+            # knockable row (finite M from the bounds where the row is single-variable, an
+            # indicator where it is not).
+            A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p \
+                = build_primal_from_cbm(self.model, V_ineq, v_ineq, V_eq, v_eq)
+            A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p \
+                = self._add_carveme_core(sd_module, A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
+                                         z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
+            c_p = c_p + [0.0] * (A_ineq_p.shape[1] - len(c_p))
         elif sd_module[MODULE_TYPE] in [PROTECT, SUPPRESS, OPTKNOCK, OPTCOUPLE]:
             c_in = linexprdict2mat(sd_module[INNER_OBJECTIVE], self.model.reactions.list_attr('id'))
             # by default, assume maximization of the inner objective
@@ -734,7 +874,7 @@ class SDProblem:
                 z_map_constr_eq_p = sparse.hstack((z_map_constr_eq_p, z_map_constr_eq_dl, sparse.csc_matrix((self.num_z, 1))))
 
         # 3. Prepare module as undesired, desired or other
-        if sd_module[MODULE_TYPE] == PROTECT:
+        if sd_module[MODULE_TYPE] in [PROTECT, CARVEME]:
             A_ineq_i, b_ineq_i, A_eq_i, b_eq_i, lb_i, ub_i, z_map_constr_ineq_i, z_map_constr_eq_i = reassign_lb_ub_from_ineq(
                 A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p)
             z_map_vars_i = z_map_vars_p

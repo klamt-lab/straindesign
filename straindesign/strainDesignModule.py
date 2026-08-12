@@ -138,14 +138,15 @@ class SDModule(Dict):
 
         Reconstruct rather than intervene. Given a universe of candidate reactions and a core that
         the genome supports, keep the core and buy the cheapest additions that let it carry flux.
-        Two constraints do the work: a reaction that was not bought carries no flux, and a core
-        reaction that was kept must run (d_r*v_r >= t_r). Together they mean the completed network
-        contains no blocked reactions. Candidates and their prices come from ki_cost, where a
-        negative cost rewards keeping a reaction; a reaction absent from ki_cost is not a candidate
-        and stays unconditionally. Unlike the other module types this is a primal MILP -- there is
-        no undesired region to dualize -- so a 'complete' module cannot be combined with others.
+        This is the StrainDesign backend for CarveMe's draft-model reconstruction. Two constraints
+        do the work: a reaction that was not bought carries no flux, and a core reaction that was
+        kept must run (d_r*v_r >= t_r). Together they mean the reconstructed network contains no
+        blocked reactions. Candidates and their prices come from ki_cost, where a negative cost
+        rewards keeping a reaction; a reaction absent from ki_cost is not a candidate and stays
+        unconditionally. The module's objective IS the intervention cost, so no objective needs to
+        be given, and it combines with the other module types like any other.
 
-        mandatory arguments: model, module_type='complete', core_reactions
+        mandatory arguments: model, module_type='carveme', core_reactions
         optional arguments: constraints, core_directions, core_thresholds, loopless, min_flux,
         skip_checks, reac_ids
         (Detailed description of the arguments follow below)
@@ -163,7 +164,7 @@ class SDModule(Dict):
         module_type (str):
         
             A string that specifies the module type. Allowed values are 'optknock', 'robustknock',
-            'optcouple', 'doubleopt', 'protect', 'suppress', 'complete'. Depending on the specified module
+            'optcouple', 'doubleopt', 'protect', 'suppress', 'carveme'. Depending on the specified module
             type, other parameters must be set accordingly (see description above).
             
         constraints (optional (str) or (list of str) or (list of [dict,str,float])): (Default: '')
@@ -218,13 +219,13 @@ class SDModule(Dict):
             prod_id='EX_etoh'
             prod_id={'EX_etoh': 1}
             
-        core_reactions (mandatory for 'complete' (list of str)):
+        core_reactions (mandatory for 'carveme' (list of str)):
 
             Reactions that must carry flux whenever they are kept. Reactions that cannot carry flux
             under the module's constraints at any price are reported and left out, since they have no
             must-run condition to satisfy and rewarding them would buy a reaction dead in the result.
 
-        core_directions (optional for 'complete' (dict)): (Default: computed)
+        core_directions (optional for 'carveme' (dict)): (Default: computed)
 
             {reaction: +1|-1}. "The reaction runs" means |v_r| >= t_r, which is not linear, so a
             direction is fixed per reaction and d_r*v_r >= t_r demanded instead. Directions cannot be
@@ -232,16 +233,16 @@ class SDModule(Dict):
             jointly consistent. Omit this and compute_strain_designs derives a consistent set from a
             single flux state carrying the whole core (see straindesign.build_witness).
 
-        core_thresholds (optional for 'complete' (dict)): (Default: computed)
+        core_thresholds (optional for 'carveme' (dict)): (Default: computed)
 
             {reaction: minimum |flux| when kept}, scaled by min_flux.
 
-        loopless (optional for 'complete' (bool)): (Default: True)
+        loopless (optional for 'carveme' (bool)): (Default: True)
 
             Add free metabolite potentials so a core reaction cannot satisfy its must-run condition
             by cycling in a thermodynamically infeasible loop with its neighbours.
 
-        min_flux (optional for 'complete' (float)): (Default: 1e-3)
+        min_flux (optional for 'carveme' (float)): (Default: 1e-3)
 
             Threshold applied when core_thresholds is not given.
 
@@ -276,7 +277,8 @@ class SDModule(Dict):
         allowed_keys = {
             CONSTRAINTS, INNER_OBJECTIVE, INNER_OPT_SENSE, OUTER_OBJECTIVE, OUTER_OPT_SENSE, INNER_OPT_TOL, OUTER_OPT_TOL, PROD_ID,
             'skip_checks', MIN_GCP, 'reac_ids',
-            CORE_REACTIONS, CORE_DIRECTIONS, CORE_THRESHOLDS, LOOPLESS, MIN_FLUX
+            CORE_REACTIONS, CORE_DIRECTIONS, CORE_THRESHOLDS, LOOPLESS, MIN_FLUX,
+            'unreachable_core'
         }
         # set all keys passed in kwargs as properties of the SD_Module object
         for key, value in kwargs.items():
@@ -295,9 +297,9 @@ class SDModule(Dict):
                             'reaction list.')
 
         # check if there is sufficient information for each module type
-        if self[MODULE_TYPE] not in [PROTECT, SUPPRESS, OPTKNOCK, ROBUSTKNOCK, OPTCOUPLE, DOUBLEOPT, COMPLETE]:
+        if self[MODULE_TYPE] not in [PROTECT, SUPPRESS, OPTKNOCK, ROBUSTKNOCK, OPTCOUPLE, DOUBLEOPT, CARVEME]:
             raise Exception('"' + MODULE_TYPE + '" must be "' + PROTECT + '", "' + SUPPRESS + '", "' + OPTKNOCK + '", "' + ROBUSTKNOCK +
-                            '", "' + OPTCOUPLE + '", "' + DOUBLEOPT + '" or "' + COMPLETE + '".')
+                            '", "' + OPTCOUPLE + '", "' + DOUBLEOPT + '" or "' + CARVEME + '".')
         if (self[MODULE_TYPE] in [OPTKNOCK, ROBUSTKNOCK, DOUBLEOPT]):
             if self[INNER_OPT_SENSE] is None:
                 self[INNER_OPT_SENSE] = MAXIMIZE
@@ -336,9 +338,9 @@ class SDModule(Dict):
         if not self['reac_ids']:
             self['reac_ids'] = model.reactions.list_attr('id')
 
-        if self[MODULE_TYPE] == COMPLETE:
+        if self[MODULE_TYPE] == CARVEME:
             if not self[CORE_REACTIONS]:
-                raise Exception('When module type is "' + COMPLETE + '", "' + CORE_REACTIONS +
+                raise Exception('When module type is "' + CARVEME + '", "' + CORE_REACTIONS +
                                 '" must list the reactions that have to carry flux when kept.')
             unknown = [r for r in self[CORE_REACTIONS] if r not in self['reac_ids']]
             if unknown:
