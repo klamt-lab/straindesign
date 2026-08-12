@@ -18,7 +18,6 @@ import cobra
 from cobra.flux_analysis import flux_variability_analysis
 import straindesign as sd
 from straindesign.names import *
-from straindesign.carveme import build_witness
 
 BIO = 'BIOMASS_Ecoli_core_w_GAM'
 TOL = 1e-7
@@ -73,29 +72,40 @@ def test_reconstruction_leaves_nothing_blocked(universe, curr_solver):
 
 
 def test_kept_core_reactions_carry_flux(universe, curr_solver):
-    """Jointly, not merely one at a time: individually feasible directions need not be mutually
-    consistent, so the demand is only meaningful when imposed on the whole kept core at once."""
+    """Jointly, not merely one at a time.
+
+    The check must not read directions off per-reaction FVA ranges: individually feasible
+    directions need not be jointly consistent, which is the whole reason the module lets the MILP
+    choose them. Instead it constructs one flux state that carries the entire kept core --
+    maximise each reaction in turn, normalise, and sum. The feasible set is convex so the sum is
+    feasible, and it is non-zero wherever any summand was.
+    """
+    import numpy as np
     annotated, _, cost = _setup(universe)
-    directions, thresholds, unreachable = build_witness(universe, annotated, [BIO + ' >= 0.1'],
-                                                        solver=curr_solver)
-    core = [r for r in annotated if r not in unreachable]
-    module = sd.SDModule(universe, CARVEME, constraints=[BIO + ' >= 0.1'], core_reactions=core,
-                         core_directions=directions, core_thresholds=thresholds)
+    module = sd.SDModule(universe, CARVEME, constraints=[BIO + ' >= 0.1'],
+                         core_reactions=annotated)
     design = _reconstruct(universe, [module], cost, curr_solver).reaction_sd[0]
-    kept_core = [r for r in core if design.get(r)]
+    kept_core = [r for r in annotated if design.get(r)]
     assert kept_core, 'no annotated reaction survived'
 
     sub = _rebuild(universe, design, cost)
-    with sub:
-        for rid in kept_core:
-            rxn = sub.reactions.get_by_id(rid)
-            if directions[rid] > 0:
-                rxn.lower_bound = max(rxn.lower_bound, 1e-5)
-            else:
-                rxn.upper_bound = min(rxn.upper_bound, -1e-5)
-        growth = sub.slim_optimize()
-    assert growth is not None and growth == growth, \
-        'the kept core cannot carry flux in its assigned directions simultaneously'
+    state = np.zeros(len(sub.reactions))
+    order = {r.id: i for i, r in enumerate(sub.reactions)}
+    for rid in kept_core:
+        for sense in ('max', 'min'):
+            with sub:
+                sub.objective = sub.reactions.get_by_id(rid)
+                sub.objective_direction = sense
+                solution = sub.optimize()
+            if solution.status != 'optimal':
+                continue
+            values = solution.fluxes.values
+            if abs(values[order[rid]]) > 1e-9:
+                state += values / (np.abs(values).max() + 1e-12)
+                break
+
+    dead = [r for r in kept_core if abs(state[order[r]]) < TOL]
+    assert dead == [], 'kept core reactions carrying no flux in a common state: %s' % dead[:5]
 
 
 def test_unbought_reactions_are_gated_off(universe, curr_solver):
@@ -154,9 +164,8 @@ def test_module_rejects_bad_setups(universe):
 
 
 def test_unreachable_core_reactions_are_not_bought(universe, curr_solver):
-    """A core reaction that cannot carry flux under the module's constraints is dropped from the
-    core, which leaves nothing obliging it to run. Rewarded, it would then be bought and sit in
-    the result blocked -- so the purchase is forbidden outright."""
+    """A core reaction that cannot carry flux has no satisfiable must-run row, so z = 0 is the
+    only feasible choice for it. No detection pass is involved -- the formulation does it."""
     annotated, _, cost = _setup(universe)
     module = sd.SDModule(universe, CARVEME, constraints=[BIO + ' >= 0.1'],
                          core_reactions=annotated)
@@ -182,3 +191,32 @@ def test_positive_lower_bounds_are_not_overridden(universe, curr_solver):
     assert design.get('ATPM'), 'a reaction with a positive lower bound was dropped'
     sub = _rebuild(universe, design, cost)
     assert sub.reactions.ATPM.lower_bound == universe.reactions.ATPM.lower_bound
+
+
+@pytest.mark.parametrize('compress', [False, COUPLED, True])
+@pytest.mark.parametrize('skip_fvas', [False, True])
+def test_pipeline_options_do_not_change_the_answer(universe, compress, skip_fvas):
+    """Compression and the preprocessing FVAs are ordinary pipeline options here, not something
+    this module type bypasses -- so every combination has to reach the same objective.
+
+    The FVA setting is not merely cosmetic for this module type: bound_blocked_or_irrevers_fva
+    widens a bound to infinity once it proves the bound never binds, and the must-run rows then
+    take their finite relaxation value from the FVA range instead. Leaving both settings under
+    test keeps that interaction honest.
+    """
+    annotated, _, cost = _setup(universe)
+    module = sd.SDModule(universe, CARVEME, constraints=[BIO + ' >= 0.1'],
+                         core_reactions=annotated)
+    solution = sd.compute_strain_designs(universe, sd_modules=[module], ki_cost=cost,
+                                         solution_approach=BEST, max_solutions=1,
+                                         compress=compress, skip_preprocessing_fvas=skip_fvas)
+    assert solution.status == OPTIMAL
+    design = solution.reaction_sd[0]
+    kept = {r for r in cost if design.get(r)}
+    assert sum(cost[r] for r in kept) == pytest.approx(-47.0)
+
+    sub = _rebuild(universe, design, cost)
+    ranges = flux_variability_analysis(sub, fraction_of_optimum=0.0)
+    blocked = [r for r in ranges.index
+               if max(abs(ranges.minimum[r]), abs(ranges.maximum[r])) < TOL]
+    assert blocked == []

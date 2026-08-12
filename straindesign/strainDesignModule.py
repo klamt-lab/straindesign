@@ -134,7 +134,7 @@ class SDModule(Dict):
         optional arguments: constraints,inner_objective, inner_opt_sense, skip_checks, reac_ids
         (Detailed description of the arguments follow below)
 
-    Module type: complete
+    Module type: carveme
 
         Reconstruct rather than intervene. Given a universe of candidate reactions and a core that
         the genome supports, keep the core and buy the cheapest additions that let it carry flux.
@@ -225,17 +225,18 @@ class SDModule(Dict):
             under the module's constraints at any price are reported and left out, since they have no
             must-run condition to satisfy and rewarding them would buy a reaction dead in the result.
 
-        core_directions (optional for 'carveme' (dict)): (Default: computed)
+        core_directions (optional for 'carveme' (dict)): (Default: chosen by the MILP)
 
-            {reaction: +1|-1}. "The reaction runs" means |v_r| >= t_r, which is not linear, so a
-            direction is fixed per reaction and d_r*v_r >= t_r demanded instead. Directions cannot be
-            read off each reaction's own FVA range -- individually feasible directions need not be
-            jointly consistent. Omit this and compute_strain_designs derives a consistent set from a
-            single flux state carrying the whole core (see straindesign.build_witness).
+            {reaction: +1|-1}, to pin the direction a core reaction must run in. Normally leave this
+            out: "the reaction runs" means |v_r| >= t_r, which is not linear, and the module resolves
+            it by letting the MILP choose the direction per reversible reaction. Pinning directions in
+            advance removes solutions, because which direction a reaction must run in depends on which
+            other reactions were bought -- the very thing being decided.
 
-        core_thresholds (optional for 'carveme' (dict)): (Default: computed)
+        core_thresholds (optional for 'carveme' (dict)): (Default: 1 for every reaction)
 
-            {reaction: minimum |flux| when kept}, scaled by min_flux.
+            {reaction: multiplier on min_flux}, to demand more flux through some core reactions than
+            others.
 
         loopless (optional for 'carveme' (bool)): (Default: True)
 
@@ -277,8 +278,7 @@ class SDModule(Dict):
         allowed_keys = {
             CONSTRAINTS, INNER_OBJECTIVE, INNER_OPT_SENSE, OUTER_OBJECTIVE, OUTER_OPT_SENSE, INNER_OPT_TOL, OUTER_OPT_TOL, PROD_ID,
             'skip_checks', MIN_GCP, 'reac_ids',
-            CORE_REACTIONS, CORE_DIRECTIONS, CORE_THRESHOLDS, LOOPLESS, MIN_FLUX,
-            'unreachable_core'
+            CORE_REACTIONS, CORE_DIRECTIONS, CORE_THRESHOLDS, LOOPLESS, MIN_FLUX
         }
         # set all keys passed in kwargs as properties of the SD_Module object
         for key, value in kwargs.items():

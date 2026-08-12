@@ -184,6 +184,8 @@ class SDProblem:
         self.b_eq = []
         self.z_map_constr_eq = sparse.csc_matrix((numr, 0))
         self.num_modules = 0
+        self.module_binaries = []  # columns past the interventions that must be typed binary
+        self._pending_module_binaries = []
         self.indic_constr = []  # Add instances of the class 'Indicator_constraint' later
         # Initialize association between z and variables and variables
         self.z_map_vars = sparse.csc_matrix((numr, numr))
@@ -233,26 +235,6 @@ class SDProblem:
         # the result blocked -- the exact defect the module type exists to rule out. Forbid the
         # purchase instead. This is scoped to the module's own conditions: the reaction is dead
         # under them, so no design satisfying them can have a use for it.
-        # Forbidden by a row rather than by pinning the binary's upper bound, for the same reason
-        # essential_kis is: SCIP does not treat a pinned binary bound as binding here (measured --
-        # it reports the reaction bought anyway), whereas a row holds across all four solvers.
-        _forbidden = set()
-        for mod in sd_modules:
-            if mod[MODULE_TYPE] == CARVEME:
-                _forbidden.update(mod['unreachable_core'] or [])
-        _forbid = [i for i, r in enumerate(model.reactions)
-                   if r.id in _forbidden and not self.z_non_targetable[i]]
-        if _forbid:
-            _rows = sparse.lil_matrix((len(_forbid), self.A_ineq.shape[1]))
-            for _k, _i in enumerate(_forbid):
-                _rows[_k, _i] = 1.0
-            self.A_ineq = sparse.vstack((self.A_ineq, _rows.tocsr()), format='csr')
-            self.b_ineq = list(self.b_ineq) + [0.0] * len(_forbid)
-            self.z_map_constr_ineq = sparse.hstack(
-                (self.z_map_constr_ineq, sparse.csc_matrix((self.num_z, len(_forbid))))).tocsc()
-            logging.info('  %d core reactions cannot carry flux and are excluded from purchase.' %
-                         len(_forbid))
-
         _ess = [i for i, r in enumerate(model.reactions) if r.id in self.essential_kis]
         if _ess:
             _rows = sparse.lil_matrix((len(_ess), self.A_ineq.shape[1]))
@@ -288,7 +270,10 @@ class SDProblem:
         # b = self.b_ineq + [np.nan] + self.b_eq + [np.nan] + self.indic_constr.b + [np.nan, np.nan, np.nan]
         # Ab = sparse.hstack((A,sparse.csr_matrix([np.nan]*len(b)).transpose(),sparse.csr_matrix(b).transpose()))
         # np.savetxt("Ab_py.tsv", Ab.todense(), delimiter='\t')
-        self.vtype = 'B' * self.num_z + 'C' * (self.z_map_vars.shape[1] - self.num_z)
+        _vtype = ['B'] * self.num_z + ['C'] * (self.z_map_vars.shape[1] - self.num_z)
+        for i in self.module_binaries:
+            _vtype[i] = 'B'
+        self.vtype = ''.join(_vtype)
 
     def _module_bound_override(self, sd_module):
         """Per-module bound override for a classical-MCS module (PROTECT or SUPPRESS).
@@ -346,94 +331,188 @@ class SDProblem:
                           z_map_constr_eq, z_map_vars):
         """Add the must-run rows (and optional loopless block) of a CarveMe module to its primal.
 
-        Two things are stated here that no other module type states.
+        This is the one thing no other module type states: a core reaction that was bought must
+        demonstrably carry flux. Stated as ``|v_r| >= t_r`` it is not linear, so it becomes
+        ``d_r * v_r >= t_r`` for a direction d_r -- and where that direction comes from is the
+        whole design question.
 
-        **A core reaction that was bought must run.** One row per core reaction,
+        **The direction is chosen by the MILP, not fixed in advance.** For a reaction whose bounds
+        already admit only one sign there is nothing to choose. For a genuinely reversible one the
+        module adds a pair of binaries, zf_r and zr_r, tied to the reaction's own z by
 
-            -d_r * v_r <= -t_r
+            zf_r + zr_r = z_r
 
-        mapped to that reaction's own z. The sign written into z_map_constr_ineq is +1, which
-        reads as "z = 1 knocks this row out" -- and that is deliberate, because __init__ has not
-        applied z_kos_kis yet. A candidate is a knock-in, so its column is multiplied by -1 there
-        and the row ends up enforced exactly when the reaction is bought. Writing -1 here would
-        invert on a knock-in and demand flux through reactions nobody bought.
+        so that buying the reaction picks exactly one direction and not buying it picks neither.
+        Each direction's must-run row is then relaxed by its own binary:
 
-        The row is single-variable, so link_z's step 3 gives it a finite M read straight off the
-        variable's own bound, and step 4 links it as -d*v + (M + t)*z <= M. For an irreversible
-        reaction that M is 0 and the link is exact. It is worth being clear that this is big-M
-        and not an indicator: it is sound because StrainDesign pins the solvers' integrality
-        tolerance (CPLEX to 0, Gurobi to 1e-9), so a binary cannot rest fractionally far enough
-        from 1 to buy back M * tol units of slack.
+            -v_r + (M + t) * zf_r <= M          forward,  M = -lb_r
+             v_r + (M' + t) * zr_r <= M'        reverse,  M' =  ub_r
+
+        Both M's are read straight off the reaction's own bounds, so each row is exactly tight:
+        at the binary's 0 value it says no more than the bound already says. Where preprocessing
+        has *widened* a bound to infinity -- which bound_blocked_or_irrevers_fva does deliberately,
+        for bounds FVA proved never bind -- the module's own FVA range supplies the finite M
+        instead. That is still redundant at the relaxed value, so the row stays exactly tight, and
+        it is why the preprocessing FVAs are worth leaving on for this module type.
+
+        Fixing directions ahead of time -- by FVA, or from a witness flux state -- looks cheaper
+        and is wrong twice over. It removes solutions, because the direction that a reaction must
+        run in depends on which *other* reactions were bought, which is the very thing being
+        decided. And a direction read off each reaction's own range need not be jointly consistent
+        with the others, so demanding them together can be infeasible when the module is not.
+        ``core_directions`` remains available for a caller who genuinely wants to pin one.
+
+        Note what this buys for free: a core reaction that cannot carry flux under the module's
+        constraints simply is not bought. Its must-run row can never be satisfied, so z_r = 0 is
+        the only feasible choice, and it needs no detection pass and no special case. Which
+        annotated reactions could not be connected is then read off the result.
 
         **Bought reactions may not run in a thermodynamically infeasible cycle.** With loopless
-        set, a free potential mu_m per metabolite and, per core reaction, the gated row
+        set, a free potential mu_m per metabolite and, per direction, a row relaxed by the same
+        binary:
 
-            d_r * sum_m S_mr * mu_m <= -1
+            sum_m S_mr * mu_m + (G + 1) * zf_r <= G
 
         Without it a core reaction can satisfy its must-run condition by spinning against its
-        neighbours at no net cost, which is precisely the "it carries flux" letter of the
-        requirement without its spirit. These rows are multi-variable, so link_z realises them as
-        genuine indicator constraints.
+        neighbours at no net cost -- the letter of "it carries flux" without its spirit.
+
+        The rows that tie zf_r + zr_r to z_r are the only ones mapped to z. The sign written into
+        z_map_constr_ineq is +1 for "enforced when bought": that reads as "z = 1 knocks this row
+        out", and is deliberate, because __init__ has not applied z_kos_kis yet. A candidate is a
+        knock-in, so its column is multiplied by -1 there and the sense inverts to what is meant.
         """
         reac_ids = self.model.reactions.list_attr('id')
         idx = {r: i for i, r in enumerate(reac_ids)}
-        directions = sd_module[CORE_DIRECTIONS] or {}
+        pinned = sd_module[CORE_DIRECTIONS] or {}
         thresholds = sd_module[CORE_THRESHOLDS] or {}
         min_flux = sd_module[MIN_FLUX] if sd_module[MIN_FLUX] is not None else 1e-3
-        core = [r for r in sd_module[CORE_REACTIONS] if r in idx and r in directions]
-        missing = [r for r in sd_module[CORE_REACTIONS] if r in idx and r not in directions]
-        if missing:
-            raise Exception('No direction for %d core reactions (%s). Build them with '
-                            'straindesign.build_witness, or pass core_directions explicitly.' %
-                            (len(missing), ', '.join(missing[:5])))
-        unbuyable = [r for r in core if np.isnan(self.ki_cost[idx[r]])]
-        if unbuyable:
-            # Not an error: a core reaction that is not a candidate is simply always present, so
-            # its must-run row would be unconditional. Say so rather than enforce it silently.
+        core = [r for r in sd_module[CORE_REACTIONS] if r in idx]
+
+        misused = [r for r in core if not np.isnan(self.ko_cost[idx[r]])]
+        if misused:
+            raise Exception('CarveMe core reactions are bought, so they belong in ki_cost, but '
+                            'these carry a ko_cost: ' + ', '.join(misused[:5]))
+        always_present = [r for r in core if np.isnan(self.ki_cost[idx[r]])]
+        if always_present:
+            # Not an error: a core reaction that is not a candidate is simply never absent, so its
+            # must-run condition is unconditional. Say so rather than enforce it silently.
             logging.warning('  %d core reactions carry no ki_cost and are therefore always '
                             'present; their must-run condition is unconditional: %s' %
-                            (len(unbuyable), ', '.join(unbuyable[:5])))
+                            (len(always_present), ', '.join(always_present[:5])))
 
-        n_before = A_ineq.shape[1]
+        limits = sd_module.get('fva_bounds')
+        fva_range = {}
+        if limits is not None:
+            fva_range = {rid: (float(lim.minimum), float(lim.maximum))
+                         for rid, lim in limits.iterrows()}
+
+        def relaxed_bound(rid, j, forward):
+            """A finite value the must-run row may relax to, i.e. an upper bound on -v (or v)."""
+            declared = -float(lb[j]) if forward else float(ub[j])
+            if not isinf(declared):
+                return declared
+            if rid in fva_range:
+                lo, hi = fva_range[rid]
+                widest = -lo if forward else hi
+                if not isinf(widest):
+                    return widest
+            raise Exception(
+                'Cannot bound the must-run condition for %s: its %s bound is infinite and no '
+                'finite flux range is known for it. Give the reaction a finite bound, or leave '
+                'the preprocessing FVAs on (skip_preprocessing_fvas=False) so a range is '
+                'available.' % (rid, 'lower' if forward else 'upper'))
+
+        n_v = A_ineq.shape[1]
         n_mu = len(self.model.metabolites) if sd_module[LOOPLESS] else 0
         S = sparse.csc_matrix(create_stoichiometric_matrix(self.model))
+        mu_at = n_v
 
-        rows, rhs, z_cols = [], [], []
+        def direction_of(rid):
+            """+1 / -1 where the bounds or the caller leave no choice, None where the MILP picks."""
+            if rid in pinned:
+                return float(pinned[rid])
+            j = idx[rid]
+            if lb[j] >= 0.0:
+                return 1.0
+            if ub[j] <= 0.0:
+                return -1.0
+            return None  # genuinely two-sided: the MILP picks
+
+        free = [r for r in core if direction_of(r) is None]
+        zf_at = {r: mu_at + n_mu + k for k, r in enumerate(free)}
+        zr_at = {r: mu_at + n_mu + len(free) + k for k, r in enumerate(free)}
+        n_total = mu_at + n_mu + 2 * len(free)
+
+        rows, rhs, mapped = [], [], []  # mapped: (row position within `rows`, z index, sense)
+
+        def row(entries, value, z=None, sense=None):
+            data, cols = zip(*[(c, j) for j, c in entries]) if entries else ((), ())
+            rows.append(sparse.csr_matrix((list(data), ([0] * len(cols), list(cols))),
+                                          shape=(1, n_total)))
+            rhs.append(value)
+            if z is not None:
+                mapped.append((len(rows) - 1, z, sense))
+
         for rid in core:
             j = idx[rid]
-            d = float(directions[rid])
             t = float(thresholds.get(rid, 1.0)) * min_flux
-            rows.append(sparse.csr_matrix(([-d], ([0], [j])), shape=(1, n_before + n_mu)))
-            rhs.append(-t)
-            z_cols.append(j)
-            if not n_mu:
-                continue
+            fixed = direction_of(rid)
             col = S[:, j]
-            if col.nnz == 0:
-                continue
-            gibbs = sparse.csr_matrix((d * col.data, ([0] * col.nnz, n_before + col.indices)),
-                                      shape=(1, n_before + n_mu))
-            rows.append(gibbs)
-            rhs.append(-1.0)
-            z_cols.append(j)
+            gibbs = [(mu_at + int(m), float(c)) for m, c in zip(col.indices, col.data)]
+            gibbs_span = 1e3 * float(np.abs(col.data).sum()) if col.nnz else 0.0
 
-        # widen the existing system to make room for the potentials
-        if n_mu:
-            A_ineq = sparse.hstack((A_ineq, sparse.csr_matrix((A_ineq.shape[0], n_mu)))).tocsr()
-            A_eq = sparse.hstack((A_eq, sparse.csr_matrix((A_eq.shape[0], n_mu)))).tocsr()
-            z_map_vars = sparse.hstack((z_map_vars, sparse.csc_matrix((self.num_z, n_mu)))).tocsc()
-            lb = list(lb) + [-1e3] * n_mu
-            ub = list(ub) + [1e3] * n_mu
+            if fixed is not None:
+                # one row, gated by z itself: no direction binary is needed
+                row([(j, -fixed)], -t, z=j, sense=1.0)
+                if n_mu and gibbs:
+                    row([(m, fixed * c) for m, c in gibbs], -1.0, z=j, sense=1.0)
+                continue
+
+            M_fwd, M_rev = relaxed_bound(rid, j, True), relaxed_bound(rid, j, False)
+            row([(j, -1.0), (zf_at[rid], M_fwd + t)], M_fwd)
+            row([(j, 1.0), (zr_at[rid], M_rev + t)], M_rev)
+            row([(zf_at[rid], 1.0), (zr_at[rid], 1.0)], 1.0)          # at most one direction
+            if rid in always_present:
+                row([(zf_at[rid], -1.0), (zr_at[rid], -1.0)], -1.0)   # and always exactly one
+            else:
+                # exactly one when bought, neither when not
+                row([(zf_at[rid], -1.0), (zr_at[rid], -1.0)], -1.0, z=j, sense=1.0)
+                row([(zf_at[rid], 1.0), (zr_at[rid], 1.0)], 0.0, z=j, sense=-1.0)
+            if n_mu and gibbs:
+                row([(m, c) for m, c in gibbs] + [(zf_at[rid], gibbs_span + 1.0)], gibbs_span)
+                row([(m, -c) for m, c in gibbs] + [(zr_at[rid], gibbs_span + 1.0)], gibbs_span)
+
+        # widen the existing system for the potentials and the direction binaries
+        pad = n_total - n_v
+        if pad:
+            A_ineq = sparse.hstack((A_ineq, sparse.csr_matrix((A_ineq.shape[0], pad)))).tocsr()
+            A_eq = sparse.hstack((A_eq, sparse.csr_matrix((A_eq.shape[0], pad)))).tocsr()
+            z_map_vars = sparse.hstack((z_map_vars, sparse.csc_matrix((self.num_z, pad)))).tocsc()
+            lb = list(lb) + [-1e3] * n_mu + [0.0] * (2 * len(free))
+            ub = list(ub) + [1e3] * n_mu + [1.0] * (2 * len(free))
 
         if rows:
+            n_existing = A_ineq.shape[0]
             A_ineq = sparse.vstack([A_ineq] + rows).tocsr()
             b_ineq = list(b_ineq) + rhs
-            z_new = sparse.csc_matrix((np.ones(len(z_cols)), (z_cols, range(len(z_cols)))),
-                                      shape=(self.num_z, len(z_cols)))
-            z_map_constr_ineq = sparse.hstack((z_map_constr_ineq, z_new)).tocsc()
-            logging.info('  CarveMe module: %d core reactions, %d must-run rows%s.' %
-                         (len(core), len(rows),
-                          ', loopless' if n_mu else ''))
+            if mapped:
+                positions = [n_existing + p for p, _, _ in mapped]
+                z_new = sparse.csc_matrix(
+                    ([sense for _, _, sense in mapped],
+                     ([z for _, z, _ in mapped], range(len(mapped)))),
+                    shape=(self.num_z, len(mapped)))
+                z_block = sparse.lil_matrix((self.num_z, len(rows)))
+                for k, p in enumerate(positions):
+                    z_block[:, p - n_existing] = z_new[:, k]
+                z_map_constr_ineq = sparse.hstack((z_map_constr_ineq, z_block.tocsc())).tocsc()
+            else:
+                z_map_constr_ineq = sparse.hstack(
+                    (z_map_constr_ineq, sparse.csc_matrix((self.num_z, len(rows))))).tocsc()
+
+        # the direction binaries must be typed as such in the global MILP
+        self._pending_module_binaries = [zf_at[r] for r in free] + [zr_at[r] for r in free]
+        logging.info('  CarveMe module: %d core reactions (%d with a free direction), %d rows%s.' %
+                     (len(core), len(free), len(rows), ', loopless' if n_mu else ''))
         return (A_ineq, b_ineq, A_eq, b_eq, lb, ub, z_map_constr_ineq, z_map_constr_eq, z_map_vars)
 
     def addModule(self, sd_module):
@@ -896,6 +975,12 @@ class SDProblem:
             c_i = c_i.toarray()[0].tolist()
 
         # 3. Add module to global MILP
+        # A module's own binaries (a CarveMe module's direction pair) are local to its block, so
+        # their global positions are only known here, once the block's offset is fixed.
+        _offset = self.z_map_vars.shape[1]
+        if getattr(self, '_pending_module_binaries', None):
+            self.module_binaries += [_offset + i for i in self._pending_module_binaries]
+            self._pending_module_binaries = []
         self.z_map_constr_ineq = sparse.hstack((self.z_map_constr_ineq, z_map_constr_ineq_i)).tocsc()
         self.z_map_constr_eq = sparse.hstack((self.z_map_constr_eq, z_map_constr_eq_i)).tocsc()
         self.z_map_vars = sparse.hstack((self.z_map_vars, z_map_vars_i)).tocsc()

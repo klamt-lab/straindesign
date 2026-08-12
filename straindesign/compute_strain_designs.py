@@ -60,36 +60,6 @@ def _collect_no_par_compress_reacs(sd_modules):
     return reacs
 
 
-def _resolve_carveme_directions(model, sd_module, solver, threads):
-    """Fill in a CarveMe module's core directions from a flux witness.
-
-    Run on the model the MILP is built from and under that module's own constraints, because a
-    direction only means anything together with the conditions it was derived under.
-
-    Core reactions that cannot carry flux at all are dropped from the core rather than demanded:
-    they have no reachable must-run condition, so keeping them would make the module infeasible.
-    They are named, since "this reaction could not be connected at any price" is a result about
-    the annotation and not an implementation detail.
-    """
-    from straindesign.carveme import build_witness
-    t0 = time.time()
-    core = [r for r in sd_module[CORE_REACTIONS] if r in model.reactions]
-    logging.info('  Building a flux witness for %d core reactions.' % len(core))
-    directions, thresholds, unreachable = build_witness(model, core, sd_module[CONSTRAINTS],
-                                                        solver=solver, threads=threads)
-    if unreachable:
-        logging.warning('  %d core reactions cannot carry flux under this module\'s constraints '
-                        'at any price and are dropped from the core: %s' %
-                        (len(unreachable), ', '.join(unreachable[:8]) +
-                         ('...' if len(unreachable) > 8 else '')))
-    sd_module[CORE_DIRECTIONS] = directions
-    if sd_module[CORE_THRESHOLDS] is None:
-        sd_module[CORE_THRESHOLDS] = thresholds
-    sd_module[CORE_REACTIONS] = [r for r in core if r in directions]
-    sd_module['unreachable_core'] = unreachable
-    logging.info('  Witness done (%.1fs).' % (time.time() - t0))
-
-
 # ── GPR reduction (pipeline-only: needs essential reactions + gene KO/KI costs) ──
 # A module's flux range must exclude zero by more than this to count as essential. Ten times the
 # backends' 1e-9 feasibility tolerance: below that a reported range is indistinguishable from one
@@ -609,7 +579,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         uncmp_reg_cost.clear()
         uncmp_reg_cost.update(_immediate_reg)
     # --- COMPRESS #1: on model WITHOUT gene pseudoreactions ---
-    if kwargs['compress'] is True or kwargs['compress'] is None:
+    if kwargs['compress'] in (True, None, COUPLED):
         no_par_compress_reacs = _collect_no_par_compress_reacs(sd_modules)
         # Keep reactions controlled by a gene that carries a REGULATORY intervention intact
         # through COMPRESS#1 (exempt from merging). Otherwise, if a gene controls several
@@ -663,7 +633,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                                        no_par_compress_reacs,
                                        propagate_gpr=True,
                                        no_coupled_compress_reacs=no_coupled_compress_reacs,
-                                       targetable_rxns=targetable_rxns)
+                                       targetable_rxns=targetable_rxns,
+                                       mode=COUPLED if kwargs['compress'] == COUPLED else 'full')
         sd_modules = compress_modules(sd_modules, cmp_mapReac_1)
         # Compress reaction + regulatory costs only (gene costs not yet added)
         cmp_ko_cost, cmp_ki_cost, cmp_mapReac_1 = compress_ki_ko_cost(uncmp_ko_cost, uncmp_ki_cost, cmp_mapReac_1)
@@ -693,7 +664,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         # before the count log, lets that log reflect the fully reduced gene/gpr counts and the
         # combined elapsed time.
         t_gpr = time.time()
-        compress_gpr = kwargs['compress'] is True or kwargs['compress'] is None
+        compress_gpr = kwargs['compress'] in (True, None, COUPLED)
         if compress_gpr:
             num_genes = len(cmp_model.genes)
             num_gpr = len([True for r in cmp_model.reactions if r.gene_reaction_rule])
@@ -741,7 +712,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         uncmp_ko_cost.update(reg_costs)
         uncmp_reg_cost.update(_deferred_reg)  # now mutated by extend_model_regulatory
     # --- COMPRESS #2: after GPR extension ---
-    if kwargs['compress'] is True or kwargs['compress'] is None:
+    if kwargs['compress'] in (True, None, COUPLED):
         logging.info('Compressing after GPR extension (' + str(len(cmp_model.reactions)) + ' reactions).')
         t0 = time.time()
         no_par_compress_reacs = _collect_no_par_compress_reacs(sd_modules)
@@ -750,6 +721,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             no_par_compress_reacs | _free_par_reacs(cmp_ko_cost, cmp_ki_cost),
             targetable_rxns=set(cmp_ko_cost) | set(cmp_ki_cost),
             no_coupled_compress_reacs=_free_coupled_reacs(cmp_ko_cost, cmp_ki_cost),
+            mode=COUPLED if kwargs['compress'] == COUPLED else 'full',
         )
         sd_modules = compress_modules(sd_modules, cmp_mapReac_2)
         cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2 = compress_ki_ko_cost(cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2)
@@ -878,10 +850,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     logging.info("Finished preprocessing:")
     logging.info("  Model size: " + str(len(cmp_model.reactions)) + " reactions, " + str(len(cmp_model.metabolites)) + " metabolites")
     logging.info("  " + str(len(cmp_ko_cost) + len(cmp_ki_cost) - len(essential_kis)) + " targetable reactions")
-
-    for module in sd_modules:
-        if module[MODULE_TYPE] == CARVEME and module[CORE_DIRECTIONS] is None:
-            _resolve_carveme_directions(cmp_model, module, kwargs[SOLVER], kwargs.get(MILP_THREADS))
 
     t0 = time.time()
     sd_milp = SDMILP(cmp_model, sd_modules, **kwargs_milp)

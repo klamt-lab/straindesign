@@ -69,19 +69,20 @@ Its primal is a PROTECT primal -- the module's constraints must remain feasible 
 **gating half comes for free from the knock-in machinery**. A candidate is a knock-in, so
 ``z_kos_kis`` inverts its column in the z-maps and :meth:`straindesign.SDProblem.link_z` emits
 :math:`v_r = 0` for every candidate that was not bought. The module adds only the half no other
-module type states: one row per core reaction,
+module type states: the must-run condition.
 
-.. math::
+For a core reaction whose direction the bounds already settle, that is a single row
+:math:`-d_r v_r \le -t_r` mapped to the reaction's own binary, which ``link_z`` gates exactly like
+any other knockable row -- with a finite big-M read straight off the variable's own bound, which
+for an irreversible reaction is zero, so the link is exact. For a reversible one the module adds
+the direction pair described below, and the rows tying :math:`z^f_r + z^r_r = z_r` are what carry
+the z-mapping instead.
 
-   -d_r v_r \le -t_r
-
-mapped to that reaction's own binary, which ``link_z`` then gates exactly like any other knockable
-row. Because that row is single-variable, ``link_z`` gives it a finite big-M read straight off the
-variable's own bound; for an irreversible reaction that M is zero and the link is exact. This is
-sound rather than merely conventional because StrainDesign pins the solvers' integrality tolerance
-(CPLEX to 0, Gurobi to 1e-9), so a binary cannot rest fractionally far enough from 1 to buy back
-:math:`M \cdot \text{tol}` units of slack. Tools that use big-M gating at default tolerances do
-leak here, and the leak is large enough to carry a pathway.
+Where a row does use a big-M rather than an indicator, that is sound rather than merely
+conventional, because StrainDesign pins the solvers' integrality tolerance (CPLEX to 0, Gurobi to
+1e-9): a binary cannot rest fractionally far enough from 1 to buy back :math:`M \cdot \text{tol}`
+units of slack. Tools that gate with big-M at default tolerances do leak here, and the leak is
+large enough to carry a pathway.
 
 Since the objective is exactly :math:`\min \sum_r c_r z_r`, a CarveMe module needs no objective of
 its own: it minimises the intervention cost the same way an MCS computation does, with a negative
@@ -116,8 +117,8 @@ bound, and a CarveMe module is no exception. A candidate whose lower bound is po
 carry zero flux, so it cannot be dropped at all -- it is mandatory by construction, and it is paid
 for. A maintenance reaction such as ``ATPM`` is the usual case.
 
-Directions and thresholds
--------------------------
+Directions are chosen, not fixed
+--------------------------------
 
 "The reaction runs" means :math:`|v_r| \ge t_r`, which is not linear. There are two ways around
 that and only one of them works:
@@ -128,19 +129,34 @@ that and only one of them works:
 * Fix a direction :math:`d_r` per reaction and demand :math:`d_r v_r \ge t_r`. Linear, and it
   means what it says.
 
-A direction cannot be read off each reaction's own FVA range. Individually feasible directions
-need not be jointly consistent, and demanding all of them together is then infeasible. Instead
-:func:`straindesign.build_witness` maximises each core reaction's flux in turn and sums the
-normalised solutions. The feasible set is convex, so the sum is feasible; and it is non-zero
-wherever any summand was, so one flux state carries the whole core and its signs are consistent by
-construction. ``compute_strain_designs`` runs this during preprocessing, on the model the MILP is
-built from and under the module's own constraints; pass ``core_directions`` to supply your own.
+So a direction has to be picked -- and **the MILP picks it**, rather than anything deciding in
+advance. For a reaction whose bounds already admit one sign there is nothing to choose. For a
+genuinely reversible one the module adds a pair of binaries tied to the reaction's own
+:math:`z_r` by :math:`z^f_r + z^r_r = z_r`, so buying the reaction picks exactly one direction and
+not buying it picks neither. Each direction's must-run row is relaxed by its own binary, with the
+relaxation value read off that reaction's own bound, so the row says no more than the bound
+already says when the binary is zero.
 
-Core reactions that cannot carry flux under the module's constraints at any price are reported as
-a warning and dropped from the core -- there is no reachable must-run condition for them, so
-demanding it would make the module infeasible. They are also excluded from purchase, since a
-reward would otherwise buy a reaction that sits in the result blocked, which is the defect this
-module type exists to rule out.
+Deciding directions ahead of time -- by FVA, or from a precomputed witness flux state -- looks
+cheaper and is wrong twice over. It removes solutions, because which direction a reaction must run
+in depends on which *other* reactions were bought, and that is the very thing being decided. And a
+direction read off each reaction's own range need not be jointly consistent with the others, so
+demanding them together can be infeasible when the module is not. ``core_directions`` remains
+available for a caller who genuinely wants to pin one.
+
+One thing this buys for free: a core reaction that cannot carry flux under the module's
+constraints is simply not bought. Its must-run row can never be satisfied, so :math:`z_r = 0` is
+the only feasible choice. No detection pass, no special case -- and which annotated reactions
+could not be connected is read off the result rather than predicted before it.
+
+Where preprocessing has *widened* a bound to infinity -- which
+``bound_blocked_or_irrevers_fva`` does deliberately, for bounds it proved never bind -- the
+module's FVA range supplies the finite relaxation value instead. That range is still redundant at
+the relaxed value, so the row stays exactly tight, and it is a reason to leave the preprocessing
+FVAs on for this module type.
+
+``core_thresholds`` scales ``min_flux`` per reaction if some core reactions should be required to
+carry more flux than others.
 
 Loops
 -----
@@ -152,3 +168,14 @@ cannot satisfy its must-run condition by spinning in a thermodynamically impossi
 neighbours -- the letter of "it carries flux" without its spirit. These rows are multi-variable,
 so ``link_z`` realises them as genuine indicator constraints. The cost is one continuous variable
 per metabolite and one indicator per core reaction.
+
+Pipeline options
+----------------
+
+Compression and the preprocessing FVAs are ordinary options, not something this module type opts
+out of. ``compress=True`` (the default) alternates parallel and coupled lumping to a fixed point;
+``compress='coupled'`` runs a single coupled pass and no parallel lumping, which is much cheaper
+and leaves intervention costs alone -- lumping two parallel reactions produces a group whose
+knockout cost is the sum of its members, whereas a coupled group is knocked out by knocking out
+any one member. On a universe, ``compress=False`` is usually right: there is little to compress
+and the attempt costs more than it saves.

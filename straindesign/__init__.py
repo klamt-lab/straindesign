@@ -56,4 +56,3 @@ from .strainDesignProblem import *
 from .strainDesignMILP import *
 from .compute_strain_designs import *
 from .compression import sparse_nullspace, RationalMatrix, ExactCOO
-from .carveme import build_witness

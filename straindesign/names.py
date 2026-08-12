@@ -177,6 +177,7 @@ CORE_REACTIONS = 'core_reactions'      # must carry flux whenever they are kept
 CORE_DIRECTIONS = 'core_directions'    # {reaction: +1|-1}; omit to let the MILP choose
 CORE_THRESHOLDS = 'core_thresholds'    # {reaction: minimum |flux| when kept}
 LOOPLESS = 'loopless'                  # forbid thermodynamically infeasible cycles
+COUPLED = 'coupled'                    # compress='coupled': one coupled pass, no parallel lumping
 MIN_FLUX = 'min_flux'                  # default threshold when core_thresholds is omitted
 
 # LP method selection
