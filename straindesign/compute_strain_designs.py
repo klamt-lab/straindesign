@@ -391,6 +391,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
+        EXTRA_BLOCKS,
         SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'dump_preprocessed',
         'skip_preprocessing_fvas'
     }
@@ -451,6 +452,17 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             uncmp_gki_cost = value
         if key == REGCOST:
             uncmp_reg_cost = value
+    # Completion modules take their own path: there is no undesired region to dualize, so none of
+    # the MCS machinery below (compression, module dualization, size-1 MCS) applies to them.
+    completion_modules = [m for m in sd_modules if m[MODULE_TYPE] == COMPLETE]
+    if completion_modules:
+        if len(completion_modules) != len(sd_modules):
+            raise Exception('A "' + COMPLETE + '" module cannot be combined with other module '
+                            'types. Pass additional flux conditions as extra constraint blocks.')
+        if len(completion_modules) > 1:
+            raise Exception('Only one "' + COMPLETE + '" module can be defined per setup.')
+        return _compute_completion_designs(model, completion_modules[0], orig_sd_modules, kwargs)
+
     if (GKOCOST in kwargs or GKICOST in kwargs or
         ('gene_kos' in kwargs and kwargs['gene_kos'])) and hasattr(model, 'genes') and model.genes:
         kwargs['gene_kos'] = True
@@ -953,6 +965,63 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         (' (lazy, estimated %d total).' % sd_solutions.get_num_sols() if sd_solutions.is_lazy else '.'))
 
     return sd_solutions
+
+
+def _compute_completion_designs(model, sd_module, orig_sd_modules, kwargs):
+    """Solve a completion module and wrap the kept/dropped candidates as strain designs.
+
+    Candidates and their prices come from ki_cost: a reaction listed there may be bought into the
+    network at that cost (negative to reward keeping it), a reaction absent from it is not a
+    candidate and stays unconditionally. The returned intervention set marks each candidate as
+    added (1) or not added (0).
+    """
+    from straindesign.completion import compute_completion, build_witness
+    t0 = time.time()
+    ki_cost = kwargs.get(KICOST) or {}
+    if not ki_cost:
+        raise Exception('A "' + COMPLETE + '" module needs ki_cost to say which reactions are '
+                        'candidates and what each costs (negative cost rewards keeping it).')
+    unknown = [r for r in ki_cost if r not in model.reactions]
+    if unknown:
+        raise Exception('These ki_cost reactions are not in the model: ' + ', '.join(unknown[:5]) +
+                        ('...' if len(unknown) > 5 else ''))
+    solver, threads = kwargs[SOLVER], kwargs.get(MILP_THREADS)
+    core, unreachable = list(sd_module[CORE_REACTIONS]), []
+    if sd_module[CORE_DIRECTIONS] is None:
+        logging.info('  Building a flux witness for %d core reactions.' % len(core))
+        blocks = [sd_module[CONSTRAINTS]] + list(kwargs.get(EXTRA_BLOCKS) or [])
+        directions, thresholds, unreachable = build_witness(model, core, blocks[0], solver=solver,
+                                                            threads=threads)
+        for block in blocks[1:]:
+            # a reaction must be reachable in EVERY condition, otherwise its must-run constraint
+            # makes one of them infeasible; and the directions must agree across all of them
+            d_i, _, unreach_i = build_witness(model, list(directions), block, solver=solver,
+                                              threads=threads)
+            unreachable += [r for r in unreach_i if r not in unreachable]
+            unreachable += [r for r in d_i if directions.get(r) not in (None, d_i[r])
+                            and r not in unreachable]
+            directions = {r: d for r, d in directions.items() if r not in unreachable}
+        if unreachable:
+            logging.warning('  %d core reactions cannot carry flux under the module conditions at '
+                            'any price and are therefore left out: %s' %
+                            (len(unreachable), ', '.join(unreachable[:8]) +
+                             ('...' if len(unreachable) > 8 else '')))
+        sd_module[CORE_DIRECTIONS] = directions
+        if sd_module[CORE_THRESHOLDS] is None:
+            sd_module[CORE_THRESHOLDS] = thresholds
+        sd_module[CORE_REACTIONS] = [r for r in core if r in directions]
+        logging.info('  Witness done (%.1fs).' % (time.time() - t0))
+
+    keep, status, obj = compute_completion(model, sd_module, cost=ki_cost, solver=solver,
+                                           threads=threads, time_limit=kwargs.get(TIME_LIMIT),
+                                           extra_blocks=kwargs.get(EXTRA_BLOCKS),
+                                           drop=set(unreachable))
+    logging.info('  Completion done (%.1fs): %d of %d candidates kept, objective %s.' %
+                 (time.time() - t0, len(keep), len(ki_cost), obj))
+    sd = [{r: (1 if r in keep else 0) for r in ki_cost}] if keep else []
+    setup = {k: v for k, v in kwargs.items() if k in [SOLVER, KICOST, TIME_LIMIT, SEED, MAX_COST]}
+    setup.update({MODEL_ID: model.id, MODULES: orig_sd_modules, MAX_SOLUTIONS: 1})
+    return SDSolutions(model, sd, status, setup)
 
 
 def postprocess_reg_sd(reg_cost, sd):

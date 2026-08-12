@@ -125,6 +125,10 @@ OPTKNOCK = 'optknock'
 ROBUSTKNOCK = 'robustknock'
 OPTCOUPLE = 'optcouple'
 DOUBLEOPT = 'doubleopt'
+# Reconstruct rather than intervene: keep an annotated core of reactions and buy the cheapest
+# additions that let it carry flux. Unlike the MCS module types this is a primal MILP -- there is
+# no undesired region to dualize -- so it takes its own path through compute_strain_designs.
+COMPLETE = 'complete'
 MODULE_TYPE = 'module_type'
 CONSTRAINTS = 'constraints'
 INNER_OBJECTIVE = 'inner_objective'
@@ -167,6 +171,14 @@ BEST = 'best'
 POPULATE = 'populate'
 SEED = 'seed'
 MILP_THREADS = 'milp_threads'
+
+# Completion modules ('complete')
+CORE_REACTIONS = 'core_reactions'      # must carry flux whenever they are kept
+CORE_DIRECTIONS = 'core_directions'    # {reaction: +1|-1}; omit to let the MILP choose
+CORE_THRESHOLDS = 'core_thresholds'    # {reaction: minimum |flux| when kept}
+LOOPLESS = 'loopless'                  # forbid thermodynamically infeasible cycles
+MIN_FLUX = 'min_flux'                  # default threshold when core_thresholds is omitted
+EXTRA_BLOCKS = 'extra_blocks'          # further constraint lists, each its own flux system
 
 # LP method selection
 LP_METHOD_AUTO = 'auto'
