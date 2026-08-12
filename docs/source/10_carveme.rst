@@ -75,8 +75,8 @@ For a core reaction whose direction the bounds already settle, that is a single 
 :math:`-d_r v_r \le -t_r` mapped to the reaction's own binary, which ``link_z`` gates exactly like
 any other knockable row -- with a finite big-M read straight off the variable's own bound, which
 for an irreversible reaction is zero, so the link is exact. For a reversible one the module adds
-the direction pair described below, and the rows tying :math:`z^f_r + z^r_r = z_r` are what carry
-the z-mapping instead.
+the direction pair described below; the rows tying :math:`z^f_r + z^r_r = z_r` carry the
+z-mapping, and the must-run conditions themselves become indicators on the direction binaries.
 
 Where a row does use a big-M rather than an indicator, that is sound rather than merely
 conventional, because StrainDesign pins the solvers' integrality tolerance (CPLEX to 0, Gurobi to
@@ -133,9 +133,8 @@ So a direction has to be picked -- and **the MILP picks it**, rather than anythi
 advance. For a reaction whose bounds already admit one sign there is nothing to choose. For a
 genuinely reversible one the module adds a pair of binaries tied to the reaction's own
 :math:`z_r` by :math:`z^f_r + z^r_r = z_r`, so buying the reaction picks exactly one direction and
-not buying it picks neither. Each direction's must-run row is relaxed by its own binary, with the
-relaxation value read off that reaction's own bound, so the row says no more than the bound
-already says when the binary is zero.
+not buying it picks neither. Each direction's must-run condition is then carried by its own
+binary.
 
 Deciding directions ahead of time -- by FVA, or from a precomputed witness flux state -- looks
 cheaper and is wrong twice over. It removes solutions, because which direction a reaction must run
@@ -149,11 +148,13 @@ constraints is simply not bought. Its must-run row can never be satisfied, so :m
 the only feasible choice. No detection pass, no special case -- and which annotated reactions
 could not be connected is read off the result rather than predicted before it.
 
-Where preprocessing has *widened* a bound to infinity -- which
-``bound_blocked_or_irrevers_fva`` does deliberately, for bounds it proved never bind -- the
-module's FVA range supplies the finite relaxation value instead. That range is still redundant at
-the relaxed value, so the row stays exactly tight, and it is a reason to leave the preprocessing
-FVAs on for this module type.
+The direction rows are **indicator constraints keyed on those binaries**, not big-M rows. A big-M
+would need a finite bound on the reaction's flux to relax to, and in a prepared StrainDesign model
+there usually is none: ``bound_blocked_or_irrevers_fva`` deliberately widens every bound it proves
+non-binding to infinity, so after preprocessing only the genuinely binding bounds are still finite
+-- 4 of 95 on e_coli_core. Keying the relaxation on the binary needs no bound at all, and it is
+exact. A module may declare indicator constraints on its own binaries for exactly this purpose;
+``link_z`` builds indicators only from the z-maps, which address intervention binaries.
 
 ``core_thresholds`` scales ``min_flux`` per reaction if some core reactions should be required to
 carry more flux than others.

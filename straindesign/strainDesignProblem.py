@@ -186,6 +186,12 @@ class SDProblem:
         self.num_modules = 0
         self.module_binaries = []  # columns past the interventions that must be typed binary
         self._pending_module_binaries = []
+        # Indicator constraints a module keys on its OWN binaries. link_z only builds indicators
+        # from the z-maps, which address intervention binaries; these are collected here and
+        # appended once link_z has run. Held as (binary, [(column, coefficient)], rhs, sense,
+        # value) with module-local column indices until the block's offset is known.
+        self.module_indicators = []
+        self._pending_module_indicators = []
         self.indic_constr = []  # Add instances of the class 'Indicator_constraint' later
         # Initialize association between z and variables and variables
         self.z_map_vars = sparse.csc_matrix((numr, numr))
@@ -223,6 +229,33 @@ class SDProblem:
 
         # 4. Link LP module to z-variables
         self.link_z()
+
+        # 4b. Indicators a module keys on its own binaries. link_z addresses only intervention
+        # binaries, so these are added here; it adds rows and never columns, so the offsets
+        # recorded during addModule are still valid.
+        if self.module_indicators:
+            width = self.A_ineq.shape[1]
+            rows = [sparse.csr_matrix(([c for _, c in entries],
+                                       ([0] * len(entries), [j for j, _ in entries])),
+                                      shape=(1, width))
+                    for _, entries, _, _, _ in self.module_indicators]
+            extra_A = sparse.vstack(rows).tocsr()
+            extra_binv = [b for b, _, _, _, _ in self.module_indicators]
+            extra_b = [rhs for _, _, rhs, _, _ in self.module_indicators]
+            extra_sense = ''.join(sense for _, _, _, sense, _ in self.module_indicators)
+            extra_val = [value for _, _, _, _, value in self.module_indicators]
+            if self.indic_constr is not None and getattr(self.indic_constr, 'A', None) is not None \
+                    and self.indic_constr.A.shape[0]:
+                self.indic_constr = IndicatorConstraints(
+                    np.append(self.indic_constr.binv, np.array(extra_binv)),
+                    sparse.vstack((self.indic_constr.A, extra_A)).tocsr(),
+                    list(self.indic_constr.b) + extra_b,
+                    ''.join(self.indic_constr.sense) + extra_sense,
+                    np.append(self.indic_constr.indicval, np.array(extra_val)))
+            else:
+                self.indic_constr = IndicatorConstraints(np.array(extra_binv), extra_A, extra_b,
+                                                         extra_sense, np.array(extra_val))
+            logging.info('  %d module indicator constraints added.' % len(extra_binv))
 
         # An essential knock-in has to be part of every design. Required by a row rather than by
         # pinning the binary's lower bound: with the bound form SCIP's populate re-reports the
@@ -348,12 +381,12 @@ class SDProblem:
             -v_r + (M + t) * zf_r <= M          forward,  M = -lb_r
              v_r + (M' + t) * zr_r <= M'        reverse,  M' =  ub_r
 
-        Both M's are read straight off the reaction's own bounds, so each row is exactly tight:
-        at the binary's 0 value it says no more than the bound already says. Where preprocessing
-        has *widened* a bound to infinity -- which bound_blocked_or_irrevers_fva does deliberately,
-        for bounds FVA proved never bind -- the module's own FVA range supplies the finite M
-        instead. That is still redundant at the relaxed value, so the row stays exactly tight, and
-        it is why the preprocessing FVAs are worth leaving on for this module type.
+        Those two are **indicator constraints keyed on the direction binaries**, not big-M rows.
+        A big-M would need a finite bound on the reaction's flux to relax to, and in a prepared
+        StrainDesign model there usually is none: bound_blocked_or_irrevers_fva deliberately
+        widens every bound it proves non-binding to infinity, so after preprocessing only the
+        genuinely binding bounds are finite (4 of 95 on e_coli_core). Keying the relaxation on the
+        binary instead needs no bound at all, and it is exact.
 
         Fixing directions ahead of time -- by FVA, or from a witness flux state -- looks cheaper
         and is wrong twice over. It removes solutions, because the direction that a reaction must
@@ -400,28 +433,6 @@ class SDProblem:
                             'present; their must-run condition is unconditional: %s' %
                             (len(always_present), ', '.join(always_present[:5])))
 
-        limits = sd_module.get('fva_bounds')
-        fva_range = {}
-        if limits is not None:
-            fva_range = {rid: (float(lim.minimum), float(lim.maximum))
-                         for rid, lim in limits.iterrows()}
-
-        def relaxed_bound(rid, j, forward):
-            """A finite value the must-run row may relax to, i.e. an upper bound on -v (or v)."""
-            declared = -float(lb[j]) if forward else float(ub[j])
-            if not isinf(declared):
-                return declared
-            if rid in fva_range:
-                lo, hi = fva_range[rid]
-                widest = -lo if forward else hi
-                if not isinf(widest):
-                    return widest
-            raise Exception(
-                'Cannot bound the must-run condition for %s: its %s bound is infinite and no '
-                'finite flux range is known for it. Give the reaction a finite bound, or leave '
-                'the preprocessing FVAs on (skip_preprocessing_fvas=False) so a range is '
-                'available.' % (rid, 'lower' if forward else 'upper'))
-
         n_v = A_ineq.shape[1]
         n_mu = len(self.model.metabolites) if sd_module[LOOPLESS] else 0
         S = sparse.csc_matrix(create_stoichiometric_matrix(self.model))
@@ -444,6 +455,7 @@ class SDProblem:
         n_total = mu_at + n_mu + 2 * len(free)
 
         rows, rhs, mapped = [], [], []  # mapped: (row position within `rows`, z index, sense)
+        indicators = []                 # (binary, [(column, coefficient)], rhs, sense, value)
 
         def row(entries, value, z=None, sense=None):
             data, cols = zip(*[(c, j) for j, c in entries]) if entries else ((), ())
@@ -459,7 +471,6 @@ class SDProblem:
             fixed = direction_of(rid)
             col = S[:, j]
             gibbs = [(mu_at + int(m), float(c)) for m, c in zip(col.indices, col.data)]
-            gibbs_span = 1e3 * float(np.abs(col.data).sum()) if col.nnz else 0.0
 
             if fixed is not None:
                 # one row, gated by z itself: no direction binary is needed
@@ -468,9 +479,8 @@ class SDProblem:
                     row([(m, fixed * c) for m, c in gibbs], -1.0, z=j, sense=1.0)
                 continue
 
-            M_fwd, M_rev = relaxed_bound(rid, j, True), relaxed_bound(rid, j, False)
-            row([(j, -1.0), (zf_at[rid], M_fwd + t)], M_fwd)
-            row([(j, 1.0), (zr_at[rid], M_rev + t)], M_rev)
+            indicators.append((zf_at[rid], [(j, -1.0)], -t, 'L', 1))
+            indicators.append((zr_at[rid], [(j, 1.0)], -t, 'L', 1))
             row([(zf_at[rid], 1.0), (zr_at[rid], 1.0)], 1.0)          # at most one direction
             if rid in always_present:
                 row([(zf_at[rid], -1.0), (zr_at[rid], -1.0)], -1.0)   # and always exactly one
@@ -479,8 +489,8 @@ class SDProblem:
                 row([(zf_at[rid], -1.0), (zr_at[rid], -1.0)], -1.0, z=j, sense=1.0)
                 row([(zf_at[rid], 1.0), (zr_at[rid], 1.0)], 0.0, z=j, sense=-1.0)
             if n_mu and gibbs:
-                row([(m, c) for m, c in gibbs] + [(zf_at[rid], gibbs_span + 1.0)], gibbs_span)
-                row([(m, -c) for m, c in gibbs] + [(zr_at[rid], gibbs_span + 1.0)], gibbs_span)
+                indicators.append((zf_at[rid], list(gibbs), -1.0, 'L', 1))
+                indicators.append((zr_at[rid], [(m, -c) for m, c in gibbs], -1.0, 'L', 1))
 
         # widen the existing system for the potentials and the direction binaries
         pad = n_total - n_v
@@ -509,10 +519,14 @@ class SDProblem:
                 z_map_constr_ineq = sparse.hstack(
                     (z_map_constr_ineq, sparse.csc_matrix((self.num_z, len(rows))))).tocsc()
 
-        # the direction binaries must be typed as such in the global MILP
+        # the direction binaries must be typed as such in the global MILP, and their indicator
+        # constraints attached once the module block's offset is known
         self._pending_module_binaries = [zf_at[r] for r in free] + [zr_at[r] for r in free]
-        logging.info('  CarveMe module: %d core reactions (%d with a free direction), %d rows%s.' %
-                     (len(core), len(free), len(rows), ', loopless' if n_mu else ''))
+        self._pending_module_indicators = indicators
+        logging.info('  CarveMe module: %d core reactions (%d with a free direction), %d rows, '
+                     '%d indicators%s.' %
+                     (len(core), len(free), len(rows), len(indicators),
+                      ', loopless' if n_mu else ''))
         return (A_ineq, b_ineq, A_eq, b_eq, lb, ub, z_map_constr_ineq, z_map_constr_eq, z_map_vars)
 
     def addModule(self, sd_module):
@@ -981,6 +995,12 @@ class SDProblem:
         if getattr(self, '_pending_module_binaries', None):
             self.module_binaries += [_offset + i for i in self._pending_module_binaries]
             self._pending_module_binaries = []
+        if getattr(self, '_pending_module_indicators', None):
+            self.module_indicators += [(_offset + b, [(_offset + j, c) for j, c in entries],
+                                        rhs, sense, value)
+                                       for b, entries, rhs, sense, value in
+                                       self._pending_module_indicators]
+            self._pending_module_indicators = []
         self.z_map_constr_ineq = sparse.hstack((self.z_map_constr_ineq, z_map_constr_ineq_i)).tocsc()
         self.z_map_constr_eq = sparse.hstack((self.z_map_constr_eq, z_map_constr_eq_i)).tocsc()
         self.z_map_vars = sparse.hstack((self.z_map_vars, z_map_vars_i)).tocsc()
