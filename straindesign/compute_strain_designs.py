@@ -502,6 +502,11 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     # keeps mixed problems -- "R2 may be added, anything else may be removed" -- intact.
     if KOCOST not in kwargs and not kwargs['gene_kos']:
         named_ki = set(kwargs.get(KICOST) or {})
+        # A CarveMe core reaction must run whenever it is present, so it cannot also be a knockout
+        # candidate -- knocking it out is the one thing its must-run condition forbids. Left in the
+        # default ko_cost, a core reaction the caller did not name as a candidate became knockable
+        # by accident and the module rejected the setup, blaming a ko_cost the caller never set.
+        named_ki |= _collect_core_reacs(sd_modules)
         uncmp_ko_cost = {k: 1.0 for k in model.reactions.list_attr('id') if k not in named_ki}
     elif KOCOST not in kwargs or not kwargs[KOCOST]:
         uncmp_ko_cost = {}

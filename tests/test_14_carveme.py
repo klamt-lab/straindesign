@@ -220,3 +220,82 @@ def test_pipeline_options_do_not_change_the_answer(universe, compress, skip_fvas
     blocked = [r for r in ranges.index
                if max(abs(ranges.minimum[r]), abs(ranges.maximum[r])) < TOL]
     assert blocked == []
+
+
+def test_thermodynamic_none_is_weaker_but_still_unblocked(universe, curr_solver):
+    """Dropping the loopless block buys back reward -- a core reaction may then satisfy its
+    must-run condition inside a cycle -- but must not leave the network blocked."""
+    annotated, _, cost = _setup(universe)
+    loose = sd.SDModule(universe, CARVEME, constraints=[BIO + ' >= 0.1'],
+                        core_reactions=annotated, thermodynamic=None)
+    design = _reconstruct(universe, [loose], cost, curr_solver).reaction_sd[0]
+    kept = {r for r in cost if design.get(r)}
+    assert sum(cost[r] for r in kept) <= -47.0, 'the looser problem cannot be worse'
+
+    sub = _rebuild(universe, design, cost)
+    ranges = flux_variability_analysis(sub, fraction_of_optimum=0.0)
+    assert [r for r in ranges.index
+            if max(abs(ranges.minimum[r]), abs(ranges.maximum[r])) < TOL] == []
+
+
+def test_core_reaction_without_a_ki_cost_is_always_present(universe):
+    """A core reaction the caller did not price is not a candidate: it is simply never absent,
+    and its must-run condition is unconditional. It must not become a knockout candidate by way
+    of the default ko_cost, which would contradict the must-run condition outright."""
+    annotated, _, cost = _setup(universe)
+    cost.pop('PGI')
+    module = sd.SDModule(universe, CARVEME, constraints=[BIO + ' >= 0.1'],
+                         core_reactions=annotated)
+    solution = sd.compute_strain_designs(universe, sd_modules=[module], ki_cost=cost,
+                                         solution_approach=BEST, max_solutions=1, compress=False)
+    assert solution.status == OPTIMAL
+    design = solution.reaction_sd[0]
+    assert 'PGI' not in design, 'an unpriced core reaction is not an intervention'
+    sub = _rebuild(universe, design, cost)
+    assert 'PGI' in {r.id for r in sub.reactions}
+
+
+def test_core_reaction_may_not_be_a_knockout_candidate(universe):
+    annotated, _, cost = _setup(universe)
+    module = sd.SDModule(universe, CARVEME, constraints=[BIO + ' >= 0.1'],
+                         core_reactions=annotated)
+    with pytest.raises(Exception, match='knockout candidate'):
+        sd.compute_strain_designs(universe, sd_modules=[module], ki_cost={},
+                                  ko_cost={r: 1.0 for r in annotated},
+                                  solution_approach=BEST, max_solutions=1, compress=False)
+
+
+def test_rewarding_a_non_core_reaction_is_reported(universe, caplog):
+    """Nothing requires a non-core reaction to carry flux, so a reward buys it whether or not it
+    can run -- the very defect this module type removes for the core. It cannot be refused, since
+    costs are the caller's to set, but it must not pass silently."""
+    annotated, _, cost = _setup(universe)
+    reversible = [r for r in annotated
+                  if universe.reactions.get_by_id(r).lower_bound < 0 <
+                  universe.reactions.get_by_id(r).upper_bound]
+    assert reversible, 'need a rewarded reaction to leave out of the core'
+    module = sd.SDModule(universe, CARVEME, constraints=[BIO + ' >= 0.1'],
+                         core_reactions=[r for r in annotated if r not in reversible])
+    import logging as _logging
+    with caplog.at_level(_logging.WARNING):
+        sd.compute_strain_designs(universe, sd_modules=[module], ki_cost=cost,
+                                  solution_approach=BEST, max_solutions=1, compress=False)
+    assert any('not core reactions' in rec.message for rec in caplog.records)
+
+
+def test_two_carveme_modules_share_the_binaries(universe):
+    """Two reconstruction conditions, one set of interventions: the network must satisfy both."""
+    annotated, _, cost = _setup(universe)
+    modules = [sd.SDModule(universe, CARVEME, constraints=[BIO + ' >= 0.1'],
+                           core_reactions=annotated),
+               sd.SDModule(universe, CARVEME, constraints=['EX_ac_e >= 1'],
+                           core_reactions=annotated)]
+    solution = sd.compute_strain_designs(universe, sd_modules=modules, ki_cost=cost,
+                                         solution_approach=BEST, max_solutions=1, compress=False)
+    assert solution.status == OPTIMAL
+    design = solution.reaction_sd[0]
+    sub = _rebuild(universe, design, cost)
+    assert sub.slim_optimize() >= 0.1 - 1e-6
+    with sub:
+        sub.reactions.EX_ac_e.lower_bound = 1.0
+        assert sub.slim_optimize() is not None

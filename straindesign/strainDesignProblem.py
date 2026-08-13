@@ -433,8 +433,21 @@ class SDProblem:
 
         misused = [r for r in core if not np.isnan(self.ko_cost[idx[r]])]
         if misused:
-            raise Exception('CarveMe core reactions are bought, so they belong in ki_cost, but '
-                            'these carry a ko_cost: ' + ', '.join(misused[:5]))
+            raise Exception('A CarveMe core reaction must run whenever it is present, so it cannot '
+                            'also be a knockout candidate. These carry a ko_cost: ' +
+                            ', '.join(misused[:5]))
+        # A reaction that is rewarded but has no must-run condition is the defect this module type
+        # exists to rule out: nothing obliges it to carry flux, and the reward buys it anyway. The
+        # module cannot refuse it -- costs are the caller's to set -- but it must not stay quiet.
+        rewarded_non_core = [r for i, r in enumerate(reac_ids)
+                             if not np.isnan(self.ki_cost[i]) and self.ki_cost[i] < 0
+                             and r not in set(core)]
+        if rewarded_non_core:
+            logging.warning('  %d reactions carry a rewarding ki_cost but are not core reactions. '
+                            'Nothing requires them to carry flux, so they can be bought and sit in '
+                            'the result blocked: %s' %
+                            (len(rewarded_non_core), ', '.join(rewarded_non_core[:5]) +
+                             ('...' if len(rewarded_non_core) > 5 else '')))
         always_present = [r for r in core if np.isnan(self.ki_cost[idx[r]])]
         if always_present:
             # Not an error: a core reaction that is not a candidate is simply never absent, so its
@@ -516,22 +529,14 @@ class SDProblem:
             ub = list(ub) + [1e3] * n_mu + [1.0] * (2 * len(free))
 
         if rows:
-            n_existing = A_ineq.shape[0]
             A_ineq = sparse.vstack([A_ineq] + rows).tocsr()
             b_ineq = list(b_ineq) + rhs
-            if mapped:
-                positions = [n_existing + p for p, _, _ in mapped]
-                z_new = sparse.csc_matrix(
-                    ([sense for _, _, sense in mapped],
-                     ([z for _, z, _ in mapped], range(len(mapped)))),
-                    shape=(self.num_z, len(mapped)))
-                z_block = sparse.lil_matrix((self.num_z, len(rows)))
-                for k, p in enumerate(positions):
-                    z_block[:, p - n_existing] = z_new[:, k]
-                z_map_constr_ineq = sparse.hstack((z_map_constr_ineq, z_block.tocsc())).tocsc()
-            else:
-                z_map_constr_ineq = sparse.hstack(
-                    (z_map_constr_ineq, sparse.csc_matrix((self.num_z, len(rows))))).tocsc()
+            # one column per row added, carrying the z-link of the rows that have one
+            z_block = sparse.csc_matrix(
+                ([sense for _, _, sense in mapped],
+                 ([z for _, z, _ in mapped], [position for position, _, _ in mapped])),
+                shape=(self.num_z, len(rows)))
+            z_map_constr_ineq = sparse.hstack((z_map_constr_ineq, z_block)).tocsc()
 
         # the direction binaries must be typed as such in the global MILP, and their indicator
         # constraints attached once the module block's offset is known
