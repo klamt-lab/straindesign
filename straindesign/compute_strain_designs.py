@@ -480,15 +480,41 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             has_gene_names = True
         else:
             has_gene_names = False
+        # Whether costs are keyed by gene name or by gene id is inferred, and a single gene whose
+        # name happens to equal its id is enough to tip that inference. Keys that then match
+        # nothing are dropped in silence: those genes are never targetable, and the search returns
+        # a design that looks optimal because it was never offered the alternatives. Measured on
+        # e_coli_core, where s0001.name == s0001.id: 136 of 137 gene costs were discarded and the
+        # reported optimum was -0.3 against a true -69.
+        # Only the gene cost dicts: regulatory entries are expressions ('g1 <= 0'), not gene keys.
+        _gene_cost_keys = set(kwargs.get(GKOCOST) or {}) | set(kwargs.get(GKICOST) or {})
+        if _gene_cost_keys:
+            _known = {g.name for g in model.genes} if has_gene_names else {g.id for g in model.genes}
+            _unmatched = sorted(_gene_cost_keys - _known)
+            if _unmatched:
+                raise Exception(
+                    '%d of %d gene cost entries match no gene by %s: %s. StrainDesign keys gene '
+                    'costs by %s here; keying them the other way silently drops them.' %
+                    (len(_unmatched), len(_gene_cost_keys), 'name' if has_gene_names else 'id',
+                     ', '.join(_unmatched[:5]) + ('...' if len(_unmatched) > 5 else ''),
+                     'name' if has_gene_names else 'id'))
         if has_gene_names and any([True for g in model.genes if g.name[0].isdigit()]):
             logging.warning("Gene names must not start with a digit. Inserting prefix 'g' where necessary.")
             for g, v in {g.id: 'g' + g.name for g in model.genes if g.name[0].isdigit()}.items():
                 model.genes.get_by_id(g).name = v
-        if GKOCOST not in kwargs or not kwargs[GKOCOST]:
+        # Every gene is a knockout candidate by default -- but only when the caller has not asked
+        # for gene knock-INS, and only when they did not pass a gko_cost of their own. Defaulting
+        # regardless made an empty dict indistinguishable from an omitted one, so "gene knock-ins
+        # and no gene knockouts" could not be expressed at all: the defaulted knockouts collided
+        # with the knock-ins and the overlap check rejected the setup. This mirrors what the
+        # reaction-level costs already do.
+        if GKOCOST not in kwargs and not (GKICOST in kwargs and kwargs[GKICOST]):
             if has_gene_names:  # if gene names are defined, use them instead of ids
                 uncmp_gko_cost = {k: 1.0 for k in model.genes.list_attr('name')}
             else:
                 uncmp_gko_cost = {k: 1.0 for k in model.genes.list_attr('id')}
+        elif GKOCOST not in kwargs or not kwargs[GKOCOST]:
+            uncmp_gko_cost = {}
         if GKICOST not in kwargs or not kwargs[GKICOST]:
             uncmp_gki_cost = {}
     else:
