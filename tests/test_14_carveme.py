@@ -28,6 +28,22 @@ def universe():
     return cobra.io.load_model('e_coli_core')
 
 
+@pytest.fixture(scope='module')
+def capable_solver():
+    """A deterministic, capable backend for the tests that are not about solver behaviour.
+
+    Not the ambient default: that is whatever earlier tests happened to leave configured, so the
+    same test can land on GLPK in a full-suite run and on CPLEX when the file is run alone. GLPK
+    substitutes every indicator constraint with a big-M and does not finish two combined CarveMe
+    modules at all, which is how this surfaced.
+    """
+    from straindesign import avail_solvers
+    for candidate in (CPLEX, GUROBI, SCIP, GLPK):
+        if candidate in avail_solvers:
+            return candidate
+    return GLPK
+
+
 def _setup(model):
     """Annotated reactions are rewarded and must run; unannotated ones cost."""
     annotated = [r.id for r in model.reactions if r.gene_reaction_rule]
@@ -38,8 +54,10 @@ def _setup(model):
 
 
 def _reconstruct(model, modules, cost, solver):
-    return sd.compute_strain_designs(model, sd_modules=modules, ki_cost=cost, solver=solver,
-                                     solution_approach=BEST, max_solutions=1, compress=False)
+    kwargs = {} if solver is None else {'solver': solver}
+    return sd.compute_strain_designs(model, sd_modules=modules, ki_cost=cost,
+                                     solution_approach=BEST, max_solutions=1, compress=False,
+                                     **kwargs)
 
 
 def _rebuild(model, design, candidates):
@@ -119,15 +137,20 @@ def test_unbought_reactions_are_gated_off(universe, curr_solver):
     assert not (set(dropped) & {r.id for r in sub.reactions})
 
 
-def test_reward_keeps_more_than_penalty(universe, curr_solver):
+def test_reward_keeps_more_than_penalty(universe, capable_solver):
     """The economics have to bite: pricing annotated reactions above heterologous ones must keep
-    fewer of them than rewarding them does."""
+    fewer of them than rewarding them does.
+
+    Not run per solver: this is a property of the cost function, not of any backend, and the
+    all-positive-cost variant is pathologically slow on GLPK (150 s against 5 s elsewhere) for no
+    added coverage.
+    """
     annotated, _, cheap = _setup(universe)
     module = sd.SDModule(universe, CARVEME, constraints=[BIO + ' >= 0.1'],
                          core_reactions=annotated)
-    rewarded = _reconstruct(universe, [module], cheap, curr_solver).reaction_sd[0]
+    rewarded = _reconstruct(universe, [module], cheap, capable_solver).reaction_sd[0]
     dear = {r: (5.0 if c < 0 else 1.0) for r, c in cheap.items()}
-    penalised = _reconstruct(universe, [module], dear, curr_solver).reaction_sd[0]
+    penalised = _reconstruct(universe, [module], dear, capable_solver).reaction_sd[0]
     n_rewarded = sum(1 for r in annotated if rewarded.get(r))
     n_penalised = sum(1 for r in annotated if penalised.get(r))
     assert n_penalised < n_rewarded
@@ -175,7 +198,7 @@ def test_unreachable_core_reactions_are_not_bought(universe, curr_solver):
         assert not design.get(rid), '%s cannot run but was bought' % rid
 
 
-def test_positive_lower_bounds_are_not_overridden(universe, curr_solver):
+def test_positive_lower_bounds_are_not_overridden(universe, capable_solver):
     """StrainDesign does not let an intervention relax a model bound, and a CarveMe module is no
     exception: ATPM's maintenance demand still holds, which costs one annotated reaction here."""
     annotated, _, cost = _setup(universe)
@@ -183,7 +206,7 @@ def test_positive_lower_bounds_are_not_overridden(universe, curr_solver):
                          core_reactions=annotated)
     assert universe.reactions.ATPM.lower_bound > 0
     assert cost['ATPM'] > 0, 'ATPM must be priced as a penalty for this test to mean anything'
-    design = _reconstruct(universe, [module], cost, curr_solver).reaction_sd[0]
+    design = _reconstruct(universe, [module], cost, capable_solver).reaction_sd[0]
 
     # Dropping ATPM would mean v = 0, which its own lower bound forbids. StrainDesign will not
     # relax a model bound to make an intervention possible, so ATPM is bought even though it is
@@ -238,7 +261,7 @@ def test_thermodynamic_none_is_weaker_but_still_unblocked(universe, curr_solver)
             if max(abs(ranges.minimum[r]), abs(ranges.maximum[r])) < TOL] == []
 
 
-def test_core_reaction_without_a_ki_cost_is_always_present(universe):
+def test_core_reaction_without_a_ki_cost_is_always_present(universe, capable_solver):
     """A core reaction the caller did not price is not a candidate: it is simply never absent,
     and its must-run condition is unconditional. It must not become a knockout candidate by way
     of the default ko_cost, which would contradict the must-run condition outright."""
@@ -247,7 +270,8 @@ def test_core_reaction_without_a_ki_cost_is_always_present(universe):
     module = sd.SDModule(universe, CARVEME, constraints=[BIO + ' >= 0.1'],
                          core_reactions=annotated)
     solution = sd.compute_strain_designs(universe, sd_modules=[module], ki_cost=cost,
-                                         solution_approach=BEST, max_solutions=1, compress=False)
+                                         solver=capable_solver, solution_approach=BEST,
+                                         max_solutions=1, compress=False)
     assert solution.status == OPTIMAL
     design = solution.reaction_sd[0]
     assert 'PGI' not in design, 'an unpriced core reaction is not an intervention'
@@ -255,17 +279,17 @@ def test_core_reaction_without_a_ki_cost_is_always_present(universe):
     assert 'PGI' in {r.id for r in sub.reactions}
 
 
-def test_core_reaction_may_not_be_a_knockout_candidate(universe):
+def test_core_reaction_may_not_be_a_knockout_candidate(universe, capable_solver):
     annotated, _, cost = _setup(universe)
     module = sd.SDModule(universe, CARVEME, constraints=[BIO + ' >= 0.1'],
                          core_reactions=annotated)
     with pytest.raises(Exception, match='knockout candidate'):
         sd.compute_strain_designs(universe, sd_modules=[module], ki_cost={},
-                                  ko_cost={r: 1.0 for r in annotated},
+                                  ko_cost={r: 1.0 for r in annotated}, solver=capable_solver,
                                   solution_approach=BEST, max_solutions=1, compress=False)
 
 
-def test_rewarding_a_non_core_reaction_is_reported(universe, caplog):
+def test_rewarding_a_non_core_reaction_is_reported(universe, caplog, capable_solver):
     """Nothing requires a non-core reaction to carry flux, so a reward buys it whether or not it
     can run -- the very defect this module type removes for the core. It cannot be refused, since
     costs are the caller's to set, but it must not pass silently."""
@@ -279,11 +303,12 @@ def test_rewarding_a_non_core_reaction_is_reported(universe, caplog):
     import logging as _logging
     with caplog.at_level(_logging.WARNING):
         sd.compute_strain_designs(universe, sd_modules=[module], ki_cost=cost,
-                                  solution_approach=BEST, max_solutions=1, compress=False)
+                                  solver=capable_solver, solution_approach=BEST,
+                                  max_solutions=1, compress=False)
     assert any('not core reactions' in rec.message for rec in caplog.records)
 
 
-def test_two_carveme_modules_share_the_binaries(universe):
+def test_two_carveme_modules_share_the_binaries(universe, capable_solver):
     """Two reconstruction conditions, one set of interventions: the network must satisfy both."""
     annotated, _, cost = _setup(universe)
     modules = [sd.SDModule(universe, CARVEME, constraints=[BIO + ' >= 0.1'],
@@ -291,7 +316,8 @@ def test_two_carveme_modules_share_the_binaries(universe):
                sd.SDModule(universe, CARVEME, constraints=['EX_ac_e >= 1'],
                            core_reactions=annotated)]
     solution = sd.compute_strain_designs(universe, sd_modules=modules, ki_cost=cost,
-                                         solution_approach=BEST, max_solutions=1, compress=False)
+                                         solver=capable_solver, solution_approach=BEST,
+                                         max_solutions=1, compress=False)
     assert solution.status == OPTIMAL
     design = solution.reaction_sd[0]
     sub = _rebuild(universe, design, cost)

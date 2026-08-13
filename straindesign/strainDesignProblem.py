@@ -439,9 +439,10 @@ class SDProblem:
         # A reaction that is rewarded but has no must-run condition is the defect this module type
         # exists to rule out: nothing obliges it to carry flux, and the reward buys it anyway. The
         # module cannot refuse it -- costs are the caller's to set -- but it must not stay quiet.
+        core_set = set(core)
         rewarded_non_core = [r for i, r in enumerate(reac_ids)
                              if not np.isnan(self.ki_cost[i]) and self.ki_cost[i] < 0
-                             and r not in set(core)]
+                             and r not in core_set]
         if rewarded_non_core:
             logging.warning('  %d reactions carry a rewarding ki_cost but are not core reactions. '
                             'Nothing requires them to carry flux, so they can be bought and sit in '
