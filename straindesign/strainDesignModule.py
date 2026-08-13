@@ -143,12 +143,15 @@ class SDModule(Dict):
         kept must run (d_r*v_r >= t_r). Together they mean the reconstructed network contains no
         blocked reactions. Candidates and their prices come from ki_cost, where a negative cost
         rewards keeping a reaction; a reaction absent from ki_cost is not a candidate and stays
-        unconditionally. The module's objective IS the intervention cost, so no objective needs to
-        be given, and it combines with the other module types like any other.
+        unconditionally. Its objective is the same one an MCS computation minimises -- the total
+        intervention cost -- so no objective needs to be given, and it combines with the other
+        module types like any other.
+
+        Conditions the reconstructed network must satisfy, such as a growth threshold, go in
+        constraints like they do for any other module type.
 
         mandatory arguments: model, module_type='carveme', core_reactions
-        optional arguments: constraints, core_directions, core_thresholds, loopless, min_flux,
-        skip_checks, reac_ids
+        optional arguments: constraints, thermodynamic, min_core_flux, skip_checks, reac_ids
         (Detailed description of the arguments follow below)
 
     Example:
@@ -221,31 +224,29 @@ class SDModule(Dict):
             
         core_reactions (mandatory for 'carveme' (list of str)):
 
-            Reactions that must carry flux whenever they are kept. Reactions that cannot carry flux
-            under the module's constraints at any price are reported and left out, since they have no
-            must-run condition to satisfy and rewarding them would buy a reaction dead in the result.
+            Reactions that must carry flux whenever they are bought -- typically the ones the genome
+            supports. "Core" is used in the sense the constraint-based literature gives it: a set of
+            reactions required to be active, as in context-specific model extraction. A core reaction
+            that cannot carry flux under the module's constraints has no satisfiable must-run
+            condition and is therefore simply never bought; which ones those were is read off the
+            result.
 
-        core_directions (optional for 'carveme' (dict)): (Default: chosen by the MILP)
+            The direction each one runs in is chosen by the MILP, not given. To pin one, give the
+            reaction a one-sided bound in the model itself -- there is no separate parameter for it,
+            because a direction fixed in advance removes solutions: which way a reaction must run
+            depends on which other reactions were bought, and that is the very thing being decided.
 
-            {reaction: +1|-1}, to pin the direction a core reaction must run in. Normally leave this
-            out: "the reaction runs" means |v_r| >= t_r, which is not linear, and the module resolves
-            it by letting the MILP choose the direction per reversible reaction. Pinning directions in
-            advance removes solutions, because which direction a reaction must run in depends on which
-            other reactions were bought -- the very thing being decided.
+        thermodynamic (optional for 'carveme' (str)): (Default: 'loopless')
 
-        core_thresholds (optional for 'carveme' (dict)): (Default: 1 for every reaction)
+            Thermodynamic realism required of the core reactions. 'loopless' adds free metabolite
+            potentials so that a core reaction cannot satisfy its must-run condition by cycling in a
+            thermodynamically infeasible loop with its neighbours -- the letter of "it carries flux"
+            without its spirit. None omits them, which is cheaper and weaker. A Gibbs-energy variant
+            using measured dG0 (from ModelSEED or eQuilibrator) would fit here later.
 
-            {reaction: multiplier on min_flux}, to demand more flux through some core reactions than
-            others.
+        min_core_flux (optional for 'carveme' (float)): (Default: 1e-3)
 
-        loopless (optional for 'carveme' (bool)): (Default: True)
-
-            Add free metabolite potentials so a core reaction cannot satisfy its must-run condition
-            by cycling in a thermodynamically infeasible loop with its neighbours.
-
-        min_flux (optional for 'carveme' (float)): (Default: 1e-3)
-
-            Threshold applied when core_thresholds is not given.
+            How much flux a bought core reaction has to carry to count as running.
 
         min_gcp (optional (float)): (Default: 0.0)
         
@@ -278,7 +279,7 @@ class SDModule(Dict):
         allowed_keys = {
             CONSTRAINTS, INNER_OBJECTIVE, INNER_OPT_SENSE, OUTER_OBJECTIVE, OUTER_OPT_SENSE, INNER_OPT_TOL, OUTER_OPT_TOL, PROD_ID,
             'skip_checks', MIN_GCP, 'reac_ids',
-            CORE_REACTIONS, CORE_DIRECTIONS, CORE_THRESHOLDS, LOOPLESS, MIN_FLUX
+            CORE_REACTIONS, THERMODYNAMIC, MIN_CORE_FLUX
         }
         # set all keys passed in kwargs as properties of the SD_Module object
         for key, value in kwargs.items():
@@ -346,10 +347,12 @@ class SDModule(Dict):
             if unknown:
                 raise Exception('These "' + CORE_REACTIONS + '" are not in the model: ' +
                                 ', '.join(unknown[:5]) + ('...' if len(unknown) > 5 else ''))
-            if self[MIN_FLUX] is None:
-                self[MIN_FLUX] = 1e-3
-            if self[LOOPLESS] is None:
-                self[LOOPLESS] = True
+            if self[MIN_CORE_FLUX] is None:
+                self[MIN_CORE_FLUX] = 1e-3
+            if THERMODYNAMIC not in kwargs:
+                self[THERMODYNAMIC] = LOOPLESS
+            if self[THERMODYNAMIC] not in [None, LOOPLESS]:
+                raise Exception('"' + THERMODYNAMIC + '" must be "' + LOOPLESS + '" or None.')
 
         # parse constraints and ensure they have the form:
         # [ [{'r1': -1, 'r3': 2}, '<=', 3],
@@ -423,9 +426,7 @@ class SDModule(Dict):
                         prod_id=deepcopy(self[PROD_ID]),
                         min_gcp=self[MIN_GCP],
                         core_reactions=deepcopy(self[CORE_REACTIONS]),
-                        core_directions=deepcopy(self[CORE_DIRECTIONS]),
-                        core_thresholds=deepcopy(self[CORE_THRESHOLDS]),
-                        loopless=self[LOOPLESS],
-                        min_flux=self[MIN_FLUX],
+                        thermodynamic=self[THERMODYNAMIC],
+                        min_core_flux=self[MIN_CORE_FLUX],
                         skip_checks=True,
                         reac_ids=deepcopy(self['reac_ids']))

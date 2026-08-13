@@ -2187,11 +2187,13 @@ def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False, no_c
             Uses sympy for boolean simplification. Default False.
         mode: 'full' (default) alternates parallel and coupled lumping to a fixed point.
             'coupled' removes blocked reactions and conservation relations and runs a single
-            coupled pass, then stops -- no parallel lumping and no second cycle. That is much
-            cheaper, and it leaves intervention costs alone: lumping two parallel reactions
-            produces a group whose knockout cost is the sum of its members, which spreads the
-            cost levels a design search has to work through. A coupled group is knocked out by
-            knocking out any one of its members, so it does not have that effect.
+            coupled pass, then stops -- no parallel lumping and no second cycle. Much cheaper,
+            but note which intervention costs it compounds: a lump's cost is the SUM of its
+            members' where every member has to be intervened on to intervene on the lump, and
+            the MINIMUM where any one member suffices. That makes it knockouts that compound
+            under parallel lumping and knock-ins that compound under coupled lumping (see
+            compress_ki_ko_cost). So 'coupled' spares knockout costs and not knock-in costs;
+            for a knock-in-dominated problem it is parallel lumping that is the gentle one.
 
     Returns:
         list of dict: Compression maps for reversing each compression step
@@ -2205,34 +2207,28 @@ def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False, no_c
         remove_blocked_reactions(model)
         LOG.info('  Converting coefficients to rationals.')
         stoichmat_coeff_to_fraction(model)
-        if mode == 'coupled':
-            LOG.info('  Compression (coupled only): removing conservation relations.')
-            remove_conservation_relations(model)
-            numr = len(model.reactions)
-            reac_map_exp = compress_model_coupled(model, propagate_gpr=propagate_gpr,
-                                                  protected_reactions=no_coupled_compress_reacs)
-            _rename_lumped(no_par_compress_reacs, reac_map_exp)
-            _rename_lumped(targetable, reac_map_exp)
-            if numr > len(reac_map_exp):
-                LOG.info(f'  Reduced to {len(reac_map_exp)} reactions.')
-                cmp_mapReac.append({"reac_map_exp": reac_map_exp, "parallel": False})
-            if propagate_gpr:
-                simplify_model_gprs(model)
-            return cmp_mapReac
         coupled_changed = None  # None = not yet computed
         run = 1
         while True:
             numr = len(model.reactions)
 
             # 1. Parallel (cheap — hash-based, no RREF)
-            LOG.info(f'  Compression {run}: Lumping parallel reactions.')
-            reac_map_exp = compress_model_parallel(model, no_par_compress_reacs, propagate_gpr=propagate_gpr,
-                                                   targetable_rxns=targetable)
-            parallel_changed = numr > len(reac_map_exp)
-            if parallel_changed:
-                LOG.info(f'  Reduced to {len(reac_map_exp)} reactions.')
-                cmp_mapReac.append({"reac_map_exp": reac_map_exp, "parallel": True})
-                _rename_lumped(targetable, reac_map_exp)
+            parallel_changed = False
+            if mode != 'coupled':
+                LOG.info(f'  Compression {run}: Lumping parallel reactions.')
+                reac_map_exp = compress_model_parallel(model, no_par_compress_reacs, propagate_gpr=propagate_gpr,
+                                                       targetable_rxns=targetable)
+                parallel_changed = numr > len(reac_map_exp)
+                if parallel_changed:
+                    LOG.info(f'  Reduced to {len(reac_map_exp)} reactions.')
+                    cmp_mapReac.append({"reac_map_exp": reac_map_exp, "parallel": True})
+                    _rename_lumped(targetable, reac_map_exp)
+                    # Carry coupled-protection onto the lump. Without this a coupled-protected
+                    # reaction that gets parallel-merged here is coupled-merged in the next cycle
+                    # under its new name, which is exactly what the protection forbids. (The
+                    # mirror rename for no_par_compress_reacs already happens after the coupled
+                    # step below.)
+                    _rename_lumped(no_coupled_compress_reacs, reac_map_exp)
 
             # 2. Conservation relation removal (reduces S rows for RREF)
             remove_conservation_relations(model)
@@ -2255,6 +2251,9 @@ def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False, no_c
             if coupled_changed:
                 LOG.info(f'  Reduced to {len(reac_map_exp)} reactions.')
                 cmp_mapReac.append({"reac_map_exp": reac_map_exp, "parallel": False})
+
+            if mode == 'coupled':  # one coupled pass, nothing to alternate with
+                break
 
             run += 1
 

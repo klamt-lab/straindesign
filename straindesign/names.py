@@ -125,9 +125,6 @@ OPTKNOCK = 'optknock'
 ROBUSTKNOCK = 'robustknock'
 OPTCOUPLE = 'optcouple'
 DOUBLEOPT = 'doubleopt'
-# Reconstruct rather than intervene: keep an annotated core of reactions and buy the cheapest
-# additions that let it carry flux. Unlike the MCS module types this is a primal MILP -- there is
-# no undesired region to dualize -- so it takes its own path through compute_strain_designs.
 CARVEME = 'carveme'
 MODULE_TYPE = 'module_type'
 CONSTRAINTS = 'constraints'
@@ -169,16 +166,15 @@ SOLUTION_APPROACH = 'solution_approach'
 ANY = 'any'
 BEST = 'best'
 POPULATE = 'populate'
+COUPLED = 'coupled'
 SEED = 'seed'
 MILP_THREADS = 'milp_threads'
 
-# Completion modules ('carveme')
-CORE_REACTIONS = 'core_reactions'      # must carry flux whenever they are kept
-CORE_DIRECTIONS = 'core_directions'    # {reaction: +1|-1}; omit to let the MILP choose
-CORE_THRESHOLDS = 'core_thresholds'    # {reaction: minimum |flux| when kept}
-LOOPLESS = 'loopless'                  # forbid thermodynamically infeasible cycles
-COUPLED = 'coupled'                    # compress='coupled': one coupled pass, no parallel lumping
-MIN_FLUX = 'min_flux'                  # default threshold when core_thresholds is omitted
+# CarveMe modules
+CORE_REACTIONS = 'core_reactions'
+MIN_CORE_FLUX = 'min_core_flux'
+THERMODYNAMIC = 'thermodynamic'
+LOOPLESS = 'loopless'
 
 # LP method selection
 LP_METHOD_AUTO = 'auto'

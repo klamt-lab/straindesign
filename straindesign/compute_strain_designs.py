@@ -38,6 +38,20 @@ from straindesign.networktools import   remove_ext_mets, bound_blocked_or_irreve
 from straindesign.compression import simplify_model_gprs
 
 
+def _collect_core_reacs(sd_modules):
+    """CarveMe core reactions, which must survive compression as themselves.
+
+    Two reasons, and either alone is sufficient. Lumped into a group, "this reaction carries flux"
+    silently weakens to "the group does". And a lump's threshold has to be rescaled by the lumping
+    factor, which is how a demand of 1e-3 turns into one at the solver's feasibility tolerance.
+    """
+    reacs = set()
+    for m in sd_modules:
+        if m[MODULE_TYPE] == CARVEME and m[CORE_REACTIONS]:
+            reacs.update(m[CORE_REACTIONS])
+    return reacs
+
+
 def _collect_no_par_compress_reacs(sd_modules):
     """Collect reaction IDs referenced in SD modules that must not be parallel-compressed."""
     reacs = set()
@@ -52,11 +66,7 @@ def _collect_no_par_compress_reacs(sd_modules):
                 if p in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                     for k in param.keys():
                         reacs.add(k)
-        # A CarveMe module's core reactions must survive compression as themselves. Lumped into a
-        # group, "this reaction carries flux" would silently become "the group does", which is a
-        # weaker statement and no longer the one the annotation supports.
-        if m[MODULE_TYPE] == CARVEME and m[CORE_REACTIONS]:
-            reacs.update(m[CORE_REACTIONS])
+    reacs |= _collect_core_reacs(sd_modules)
     return reacs
 
 
@@ -522,9 +532,23 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     # designs without any of it, so this is a speed/precomputation trade, not a semantic one.
     # It pays to skip when the model is large and the design problem is easy -- gap-filling a
     # universe merge spends 252 s of 273 s in FVA for information the MILP does not need.
-    skip_fvas = bool(kwargs.pop('skip_preprocessing_fvas', False))
+    # A CarveMe module reconstructs from a universe, where there is little to compress and where
+    # the FVAs would scan reactions most of which will not be bought. Both default off for it --
+    # they stay available, and asking for either explicitly is honoured rather than overridden.
+    _is_carveme = any(m[MODULE_TYPE] == CARVEME for m in sd_modules)
+    skip_fvas = bool(kwargs.pop('skip_preprocessing_fvas', _is_carveme))
     if skip_fvas:
         logging.info('  Skipping preprocessing FVAs (skip_preprocessing_fvas).')
+    elif _is_carveme:
+        logging.warning('  The preprocessing FVAs are on for a CarveMe module. It does not need '
+                        'them -- its must-run conditions are indicator constraints and take no '
+                        'bound from them.')
+    if 'compress' not in kwargs:
+        kwargs['compress'] = not _is_carveme
+    elif _is_carveme and kwargs['compress']:
+        logging.warning('  Compression is on for a CarveMe module. Core reactions are kept out of '
+                        'both lumpings so the reconstruction stays exact, but on a universe this '
+                        'usually costs more time than it saves.')
 
     _free = [k for k, v in list(uncmp_ko_cost.items()) + list(uncmp_ki_cost.items()) +
              list(locals().get('uncmp_gko_cost', {}).items()) + list(locals().get('uncmp_gki_cost', {}).items())
@@ -538,8 +562,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     orig_ko_cost = deepcopy(uncmp_ko_cost)
     orig_ki_cost = deepcopy(uncmp_ki_cost)
     orig_reg_cost = deepcopy(uncmp_reg_cost)
-    if 'compress' not in kwargs:
-        kwargs['compress'] = True
     if kwargs['gene_kos']:
         orig_gko_cost = uncmp_gko_cost
         orig_gki_cost = uncmp_gki_cost
@@ -588,7 +610,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         # (g <= X / g >= X) is mis-scaled vs the uncompressed model. They are merged correctly
         # in COMPRESS#2 once the g_gene metabolite exists. Gene KOs (=0) and gene KIs
         # (unbounded when added) are unaffected, so only regulatory genes need protecting.
-        no_coupled_compress_reacs = set()
+        no_coupled_compress_reacs = _collect_core_reacs(sd_modules)
         if _deferred_reg:
             import re as _re
             _gene_by_id = {g.id: g for g in cmp_model.genes}
@@ -720,7 +742,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             cmp_model,
             no_par_compress_reacs | _free_par_reacs(cmp_ko_cost, cmp_ki_cost),
             targetable_rxns=set(cmp_ko_cost) | set(cmp_ki_cost),
-            no_coupled_compress_reacs=_free_coupled_reacs(cmp_ko_cost, cmp_ki_cost),
+            no_coupled_compress_reacs=_free_coupled_reacs(cmp_ko_cost, cmp_ki_cost) |
+            _collect_core_reacs(sd_modules),
             mode=COUPLED if kwargs['compress'] == COUPLED else 'full',
         )
         sd_modules = compress_modules(sd_modules, cmp_mapReac_2)

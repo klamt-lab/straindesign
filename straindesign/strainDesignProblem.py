@@ -393,15 +393,15 @@ class SDProblem:
         run in depends on which *other* reactions were bought, which is the very thing being
         decided. And a direction read off each reaction's own range need not be jointly consistent
         with the others, so demanding them together can be infeasible when the module is not.
-        ``core_directions`` remains available for a caller who genuinely wants to pin one.
+        A caller who wants to pin a direction gives the reaction a one-sided bound.
 
         Note what this buys for free: a core reaction that cannot carry flux under the module's
         constraints simply is not bought. Its must-run row can never be satisfied, so z_r = 0 is
         the only feasible choice, and it needs no detection pass and no special case. Which
         annotated reactions could not be connected is then read off the result.
 
-        **Bought reactions may not run in a thermodynamically infeasible cycle.** With loopless
-        set, a free potential mu_m per metabolite and, per direction, a row relaxed by the same
+        **Bought reactions may not run in a thermodynamically infeasible cycle.** With
+        thermodynamic='loopless', a free potential mu_m per metabolite and, per direction, a row relaxed by the same
         binary:
 
             sum_m S_mr * mu_m + (G + 1) * zf_r <= G
@@ -416,10 +416,20 @@ class SDProblem:
         """
         reac_ids = self.model.reactions.list_attr('id')
         idx = {r: i for i, r in enumerate(reac_ids)}
-        pinned = sd_module[CORE_DIRECTIONS] or {}
-        thresholds = sd_module[CORE_THRESHOLDS] or {}
-        min_flux = sd_module[MIN_FLUX] if sd_module[MIN_FLUX] is not None else 1e-3
+        min_core_flux = sd_module[MIN_CORE_FLUX] if sd_module[MIN_CORE_FLUX] is not None else 1e-3
         core = [r for r in sd_module[CORE_REACTIONS] if r in idx]
+        vanished = [r for r in sd_module[CORE_REACTIONS] if r not in idx]
+        if vanished:
+            # Said out loud rather than dropped quietly, because a core reaction without a
+            # must-run condition weakens the reconstruction invisibly. The benign cause is
+            # compression removing a blocked reaction, which could never have been bought in any
+            # case; core reactions are exempt from both lumpings, so being lumped away is not a
+            # cause and would be a bug.
+            logging.warning('  %d core reactions are absent from the model the MILP is built from '
+                            'and carry no must-run condition. Compression removes reactions that '
+                            'cannot carry flux at all, which is the usual reason: %s' %
+                            (len(vanished), ', '.join(vanished[:8]) +
+                             ('...' if len(vanished) > 8 else '')))
 
         misused = [r for r in core if not np.isnan(self.ko_cost[idx[r]])]
         if misused:
@@ -434,14 +444,16 @@ class SDProblem:
                             (len(always_present), ', '.join(always_present[:5])))
 
         n_v = A_ineq.shape[1]
-        n_mu = len(self.model.metabolites) if sd_module[LOOPLESS] else 0
+        n_mu = len(self.model.metabolites) if sd_module[THERMODYNAMIC] == LOOPLESS else 0
         S = sparse.csc_matrix(create_stoichiometric_matrix(self.model))
         mu_at = n_v
 
         def direction_of(rid):
-            """+1 / -1 where the bounds or the caller leave no choice, None where the MILP picks."""
-            if rid in pinned:
-                return float(pinned[rid])
+            """+1 / -1 where the reaction's own bounds leave no choice, None where the MILP picks.
+
+            A caller who wants to pin a direction gives the reaction a one-sided bound, which is
+            read here like any other; there is no separate parameter for it.
+            """
             j = idx[rid]
             if lb[j] >= 0.0:
                 return 1.0
@@ -467,20 +479,22 @@ class SDProblem:
 
         for rid in core:
             j = idx[rid]
-            t = float(thresholds.get(rid, 1.0)) * min_flux
+            t = min_core_flux
             fixed = direction_of(rid)
             col = S[:, j]
             gibbs = [(mu_at + int(m), float(c)) for m, c in zip(col.indices, col.data)]
 
             if fixed is not None:
-                # one row, gated by z itself: no direction binary is needed
+                # one z-mapped row, gated by the reaction's own intervention binary: link_z
+                # links it exactly as it links every other module type's knockable rows, and
+                # nothing here overrides that choice
                 row([(j, -fixed)], -t, z=j, sense=1.0)
                 if n_mu and gibbs:
                     row([(m, fixed * c) for m, c in gibbs], -1.0, z=j, sense=1.0)
                 continue
 
-            indicators.append((zf_at[rid], [(j, -1.0)], -t, 'L', 1))
-            indicators.append((zr_at[rid], [(j, 1.0)], -t, 'L', 1))
+            indicators.append((zf_at[rid], False, [(j, -1.0)], -t, 'L', 1))
+            indicators.append((zr_at[rid], False, [(j, 1.0)], -t, 'L', 1))
             row([(zf_at[rid], 1.0), (zr_at[rid], 1.0)], 1.0)          # at most one direction
             if rid in always_present:
                 row([(zf_at[rid], -1.0), (zr_at[rid], -1.0)], -1.0)   # and always exactly one
@@ -489,8 +503,8 @@ class SDProblem:
                 row([(zf_at[rid], -1.0), (zr_at[rid], -1.0)], -1.0, z=j, sense=1.0)
                 row([(zf_at[rid], 1.0), (zr_at[rid], 1.0)], 0.0, z=j, sense=-1.0)
             if n_mu and gibbs:
-                indicators.append((zf_at[rid], list(gibbs), -1.0, 'L', 1))
-                indicators.append((zr_at[rid], [(m, -c) for m, c in gibbs], -1.0, 'L', 1))
+                indicators.append((zf_at[rid], False, list(gibbs), -1.0, 'L', 1))
+                indicators.append((zr_at[rid], False, [(m, -c) for m, c in gibbs], -1.0, 'L', 1))
 
         # widen the existing system for the potentials and the direction binaries
         pad = n_total - n_v
@@ -996,9 +1010,12 @@ class SDProblem:
             self.module_binaries += [_offset + i for i in self._pending_module_binaries]
             self._pending_module_binaries = []
         if getattr(self, '_pending_module_indicators', None):
-            self.module_indicators += [(_offset + b, [(_offset + j, c) for j, c in entries],
+            # A module's own binary is block-local and takes the offset; an intervention binary is
+            # already a global column and must not be shifted.
+            self.module_indicators += [((b if b_global else _offset + b),
+                                        [(_offset + j, c) for j, c in entries],
                                         rhs, sense, value)
-                                       for b, entries, rhs, sense, value in
+                                       for b, b_global, entries, rhs, sense, value in
                                        self._pending_module_indicators]
             self._pending_module_indicators = []
         self.z_map_constr_ineq = sparse.hstack((self.z_map_constr_ineq, z_map_constr_ineq_i)).tocsc()

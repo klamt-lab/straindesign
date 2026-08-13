@@ -140,8 +140,8 @@ Deciding directions ahead of time -- by FVA, or from a precomputed witness flux 
 cheaper and is wrong twice over. It removes solutions, because which direction a reaction must run
 in depends on which *other* reactions were bought, and that is the very thing being decided. And a
 direction read off each reaction's own range need not be jointly consistent with the others, so
-demanding them together can be infeasible when the module is not. ``core_directions`` remains
-available for a caller who genuinely wants to pin one.
+demanding them together can be infeasible when the module is not. A caller who wants to pin a direction gives that reaction a
+one-sided bound in the model.
 
 One thing this buys for free: a core reaction that cannot carry flux under the module's
 constraints is simply not bought. Its must-run row can never be satisfied, so :math:`z_r = 0` is
@@ -156,13 +156,11 @@ non-binding to infinity, so after preprocessing only the genuinely binding bound
 exact. A module may declare indicator constraints on its own binaries for exactly this purpose;
 ``link_z`` builds indicators only from the z-maps, which address intervention binaries.
 
-``core_thresholds`` scales ``min_flux`` per reaction if some core reactions should be required to
-carry more flux than others.
 
 Loops
 -----
 
-With ``loopless=True`` (the default) the module also carries the Schellenberger thermodynamic
+With ``thermodynamic='loopless'`` (the default) the module also carries the Schellenberger thermodynamic
 constraint: a free potential :math:`\mu_m` per metabolite, and :math:`d_r \sum_m S_{mr}\mu_m < 0`
 whenever core reaction :math:`r` runs. This forbids internally cycling flux, so a core reaction
 cannot satisfy its must-run condition by spinning in a thermodynamically impossible loop with its
@@ -174,9 +172,15 @@ Pipeline options
 ----------------
 
 Compression and the preprocessing FVAs are ordinary options, not something this module type opts
-out of. ``compress=True`` (the default) alternates parallel and coupled lumping to a fixed point;
-``compress='coupled'`` runs a single coupled pass and no parallel lumping, which is much cheaper
-and leaves intervention costs alone -- lumping two parallel reactions produces a group whose
-knockout cost is the sum of its members, whereas a coupled group is knocked out by knocking out
-any one member. On a universe, ``compress=False`` is usually right: there is little to compress
-and the attempt costs more than it saves.
+out of -- but both **default to off** for a CarveMe module, because on a universe there is little
+to compress and most of what an FVA would scan will not be bought. Turning either on is honoured,
+with a warning.
+
+If you do compress, note which costs a lump compounds. A lump's intervention cost is the *sum* of
+its members' where every member must be intervened on to intervene on the lump, and the *minimum*
+where any one member suffices. That makes knockouts compound under parallel lumping and knock-ins
+compound under **coupled** lumping. A CarveMe module's candidates are all knock-ins, so
+``compress='coupled'`` is the wrong economy for it and plain parallel lumping is the gentle one.
+Core reactions are exempt from both lumpings regardless: lumped into a group, "this reaction
+carries flux" would weaken to "the group does", and the flux threshold would need rescaling by the
+lumping factor -- which is how a demand of 1e-3 ends up at the solver's feasibility tolerance.
