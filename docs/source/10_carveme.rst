@@ -79,10 +79,12 @@ the direction pair described below; the rows tying :math:`z^f_r + z^r_r = z_r` c
 z-mapping, and the must-run conditions themselves become indicators on the direction binaries.
 
 Where a row does use a big-M rather than an indicator, that is sound rather than merely
-conventional, because StrainDesign pins the solvers' integrality tolerance (CPLEX to 0, Gurobi to
-1e-9): a binary cannot rest fractionally far enough from 1 to buy back :math:`M \cdot \text{tol}`
-units of slack. Tools that gate with big-M at default tolerances do leak here, and the leak is
-large enough to carry a pathway.
+conventional, because StrainDesign pins every backend's integrality tolerance (CPLEX to 0, Gurobi
+and SCIP to 1e-9): a binary cannot rest fractionally far enough from 1 to buy back
+:math:`M \cdot \text{tol}` units of slack. This is not a hypothetical. SCIP ran at its 1e-6
+default until it was pinned, and at the :math:`M = 10^3` that cobra's default bounds produce that
+is :math:`10^{-3}` of slack -- the same size as the default ``min_core_flux``, and enough for SCIP
+to report a reconstruction as optimal in which a reaction it had bought carried no flux at all.
 
 Since the objective is exactly :math:`\min \sum_r c_r z_r`, a CarveMe module needs no objective of
 its own: it minimises the intervention cost the same way an MCS computation does, with a negative
