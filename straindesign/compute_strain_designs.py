@@ -38,6 +38,18 @@ from straindesign.networktools import   remove_ext_mets, bound_blocked_or_irreve
 from straindesign.compression import simplify_model_gprs
 
 
+def _protected_from_compression(kwargs):
+    """Reactions the caller wants kept intact through compression, by id.
+
+    Compression is free to lump anything it can prove equivalent, but a caller may need a
+    reaction to survive as ITSELF -- because something outside the model is stated in terms of it.
+    Gene-level reconstruction is the case this was added for: the gene pseudo-reactions carry the
+    evidence and the result, so they must not be merged, while the metabolic network around them
+    still can be.
+    """
+    return set(kwargs.get(PROTECTED_REACTIONS) or ())
+
+
 def _collect_core_reacs(sd_modules):
     """CarveMe core reactions, which must survive compression as themselves.
 
@@ -406,6 +418,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
+        PROTECTED_REACTIONS,
         SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'dump_preprocessed',
         'skip_preprocessing_fvas'
     }
@@ -634,6 +647,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     # --- COMPRESS #1: on model WITHOUT gene pseudoreactions ---
     if kwargs['compress'] in (True, None, COUPLED):
         no_par_compress_reacs = _collect_no_par_compress_reacs(sd_modules)
+        no_par_compress_reacs |= _protected_from_compression(kwargs)
         # Keep reactions controlled by a gene that carries a REGULATORY intervention intact
         # through COMPRESS#1 (exempt from merging). Otherwise, if a gene controls several
         # reactions that get merged before GPR integration, the merged reaction is hooked to
@@ -641,7 +655,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         # (g <= X / g >= X) is mis-scaled vs the uncompressed model. They are merged correctly
         # in COMPRESS#2 once the g_gene metabolite exists. Gene KOs (=0) and gene KIs
         # (unbounded when added) are unaffected, so only regulatory genes need protecting.
-        no_coupled_compress_reacs = _collect_core_reacs(sd_modules)
+        no_coupled_compress_reacs = _collect_core_reacs(sd_modules) | _protected_from_compression(kwargs)
         if _deferred_reg:
             import re as _re
             _gene_by_id = {g.id: g for g in cmp_model.genes}
@@ -769,12 +783,13 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         logging.info('Compressing after GPR extension (' + str(len(cmp_model.reactions)) + ' reactions).')
         t0 = time.time()
         no_par_compress_reacs = _collect_no_par_compress_reacs(sd_modules)
+        no_par_compress_reacs |= _protected_from_compression(kwargs)
         cmp_mapReac_2 = compress_model(
             cmp_model,
             no_par_compress_reacs | _free_par_reacs(cmp_ko_cost, cmp_ki_cost),
             targetable_rxns=set(cmp_ko_cost) | set(cmp_ki_cost),
             no_coupled_compress_reacs=_free_coupled_reacs(cmp_ko_cost, cmp_ki_cost) |
-            _collect_core_reacs(sd_modules),
+            _collect_core_reacs(sd_modules) | _protected_from_compression(kwargs),
             mode=COUPLED if kwargs['compress'] == COUPLED else 'full',
         )
         sd_modules = compress_modules(sd_modules, cmp_mapReac_2)
@@ -890,6 +905,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     kwargs1[KICOST] = cmp_ki_cost
     kwargs1['essential_kis'] = essential_kis
     kwargs1.pop('compress')
+    if PROTECTED_REACTIONS in kwargs1:
+        kwargs1.pop(PROTECTED_REACTIONS)
     if GKOCOST in kwargs1:
         kwargs1.pop(GKOCOST)
     if GKICOST in kwargs1:
