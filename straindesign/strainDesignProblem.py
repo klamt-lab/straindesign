@@ -507,8 +507,17 @@ class SDProblem:
                     row([(m, fixed * c) for m, c in gibbs], -1.0, z=j, sense=1.0)
                 continue
 
-            indicators.append((zf_at[rid], False, [(j, -1.0)], -t, 'L', 1))
-            indicators.append((zr_at[rid], False, [(j, 1.0)], -t, 'L', 1))
+            # Honour the problem's M like every other row does. With M given the direction
+            # conditions become plain big-M rows keyed on the direction binary; left as
+            # indicators regardless, this module would hand the solver thousands of them whatever
+            # the caller asked for -- measured: 11,077 indicators on an E. coli reconstruction,
+            # against none in the equivalent carving MILP.
+            if isinf(self.M):
+                indicators.append((zf_at[rid], False, [(j, -1.0)], -t, 'L', 1))
+                indicators.append((zr_at[rid], False, [(j, 1.0)], -t, 'L', 1))
+            else:
+                row([(j, -1.0), (zf_at[rid], self.M + t)], self.M)
+                row([(j, 1.0), (zr_at[rid], self.M + t)], self.M)
             row([(zf_at[rid], 1.0), (zr_at[rid], 1.0)], 1.0)          # at most one direction
             if rid in always_present:
                 row([(zf_at[rid], -1.0), (zr_at[rid], -1.0)], -1.0)   # and always exactly one
@@ -517,8 +526,13 @@ class SDProblem:
                 row([(zf_at[rid], -1.0), (zr_at[rid], -1.0)], -1.0, z=j, sense=1.0)
                 row([(zf_at[rid], 1.0), (zr_at[rid], 1.0)], 0.0, z=j, sense=-1.0)
             if n_mu and gibbs:
-                indicators.append((zf_at[rid], False, list(gibbs), -1.0, 'L', 1))
-                indicators.append((zr_at[rid], False, [(m, -c) for m, c in gibbs], -1.0, 'L', 1))
+                if isinf(self.M):
+                    indicators.append((zf_at[rid], False, list(gibbs), -1.0, 'L', 1))
+                    indicators.append((zr_at[rid], False, [(m, -c) for m, c in gibbs], -1.0, 'L', 1))
+                else:
+                    span = 1e3 * float(sum(abs(c) for _, c in gibbs))
+                    row([(m, c) for m, c in gibbs] + [(zf_at[rid], span + 1.0)], span)
+                    row([(m, -c) for m, c in gibbs] + [(zr_at[rid], span + 1.0)], span)
 
         # widen the existing system for the potentials and the direction binaries
         pad = n_total - n_v
