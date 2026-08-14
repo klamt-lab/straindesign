@@ -325,3 +325,21 @@ def test_two_carveme_modules_share_the_binaries(universe, capable_solver):
     with sub:
         sub.reactions.EX_ac_e.lower_bound = 1.0
         assert sub.slim_optimize() is not None
+
+
+def test_cost_dictionaries_are_not_edited(universe, capable_solver):
+    """The caller keeps its own dictionaries. Compression relabels reactions and gene handling
+    renames genes, both of which used to reach into whatever was passed in -- so a second
+    computation would run against costs the first one had rewritten."""
+    annotated, _, cost = _setup(universe)
+    module = sd.SDModule(universe, CARVEME, constraints=[BIO + ' >= 0.1'],
+                         core_reactions=annotated)
+    ki_cost = dict(cost)
+    ko_cost = {r.id: 1.0 for r in universe.reactions
+               if r.id not in cost and r.id != BIO}
+    before_ki, before_ko = dict(ki_cost), dict(ko_cost)
+    sd.compute_strain_designs(universe, sd_modules=[module], ki_cost=ki_cost, ko_cost=ko_cost,
+                              solver=capable_solver, solution_approach=BEST, max_solutions=1,
+                              compress=True)
+    assert ki_cost == before_ki
+    assert ko_cost == before_ko

@@ -469,16 +469,20 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     for key, value in dict(kwargs).items():
         if key not in allowed_keys:
             raise Exception("Key " + key + " is not supported.")
+        # the cost dictionaries are edited from here on -- genes are renamed, compressed
+        # reactions are relabelled, entries are dropped -- so they are copied rather than used
+        # in place. Without this a caller's dictionary comes back altered, which matters when
+        # the same one is used for a second computation.
         if key == KOCOST:
-            uncmp_ko_cost = value
+            uncmp_ko_cost = deepcopy(value)
         if key == KICOST:
-            uncmp_ki_cost = value
+            uncmp_ki_cost = deepcopy(value)
         if key == GKOCOST:
-            uncmp_gko_cost = value
+            uncmp_gko_cost = deepcopy(value)
         if key == GKICOST:
-            uncmp_gki_cost = value
+            uncmp_gki_cost = deepcopy(value)
         if key == REGCOST:
-            uncmp_reg_cost = value
+            uncmp_reg_cost = deepcopy(value)
     if (GKOCOST in kwargs or GKICOST in kwargs or
         ('gene_kos' in kwargs and kwargs['gene_kos'])) and hasattr(model, 'genes') and model.genes:
         kwargs['gene_kos'] = True
