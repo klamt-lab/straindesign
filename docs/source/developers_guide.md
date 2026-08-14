@@ -2516,6 +2516,21 @@ so that `z.indices` — the *support* — is exact set membership, which the exc
 `TIME_LIMIT_W_SOL`, `ERROR` (mapped from raw CPLEX/Gurobi codes in the backends). The loops below treat
 `OPTIMAL` and `TIME_LIMIT_W_SOL` as "a usable solution exists" and everything else as "stop".
 
+**What the final status means to a caller, and what changed.** `compute_strain_designs` used to
+rewrite *any* status other than `OPTIMAL`/`TIME_LIMIT_W_SOL` to `OPTIMAL` as soon as one design
+existed. The intent was to recognise exhaustion — an enumeration that finds nothing further ends
+`INFEASIBLE` — but the condition covered every other outcome, so a run that hit its time limit and
+a run whose solver failed mid-enumeration both reported a complete enumeration. `_final_status`
+now promotes only `INFEASIBLE` → `OPTIMAL`, maps `TIME_LIMIT` → `TIME_LIMIT_W_SOL`, and reports
+everything else — including `ERROR` — as it happened.
+
+This is a **behaviour change for callers**: a timed-out computation that previously returned
+`optimal` now returns `time_limit_w_sols`. Code that tests `solution.status == OPTIMAL` as a
+proxy for "did I get designs" should test the design list instead, or accept both constants. The
+old behaviour could not distinguish a proven-complete enumeration from a truncated one, which is
+the whole reason for the change: a dropped solver licence once returned 38 of 438 gene-MCS —
+a strict subset, only the size-1 cost level — with status `optimal`.
+
 ### 8.3 The three approaches, their objective setups, and *why*
 
 All three share the same skeleton: an outer `while` loop that repeatedly asks the solver for a design,
