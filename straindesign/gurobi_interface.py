@@ -344,6 +344,33 @@ class Gurobi_MILP_LP(gp.Model):
                 x = [nan] * len(self.getVars())
                 status = UNBOUNDED
                 return x, min_cx, status
+            elif status == gstatus.NUMERIC:
+                # solve() and slim_solve() already recover from this; populate() did not, so an
+                # enumeration that hit numerical trouble raised instead of returning the pool it
+                # had already built. Retry at maximum numerical focus, then keep whatever the
+                # pool holds.
+                self.params.PoolSearchMode = 2
+                self.params.NumericFocus = 3
+                self._safe_optimize()
+                self.params.PoolSearchMode = 0
+                self.params.NumericFocus = 0
+                status = self.Status
+                if status in [2, 10, 13, 15]:
+                    min_cx = self.ObjVal
+                    status = OPTIMAL
+                elif self.SolCount > 0:
+                    logging.warning('Gurobi reported numerical difficulties during enumeration; '
+                                    'returning the solutions found so far (the pool may be '
+                                    'incomplete).')
+                    min_cx = self.ObjVal
+                    status = TIME_LIMIT_W_SOL
+                else:
+                    logging.warning('Gurobi reported numerical difficulties during enumeration and '
+                                    'found no usable solution; treating as no solution.')
+                    x = [nan] * len(self.getVars())
+                    min_cx = nan
+                    status = TIME_LIMIT
+                    return x, min_cx, status
             else:
                 raise Exception('Status code ' + str(status) + " not yet handled.")
             x = self.getSolutions()
