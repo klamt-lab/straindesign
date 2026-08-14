@@ -270,6 +270,25 @@ def reduce_model_gprs(model, essential_reacs, gkis, gkos):
     return gkos
 
 
+def _final_status(status, has_designs):
+    """The status a completed enumeration should report.
+
+    Only two rewrites are sound. INFEASIBLE means the search found no further solution, which
+    for an enumeration is exhaustion, so with designs in hand it is OPTIMAL. TIME_LIMIT with
+    designs is TIME_LIMIT_W_SOL. Everything else is reported as it happened -- in particular
+    ERROR, which is what a solver that failed mid-enumeration returns: promoting that to OPTIMAL
+    presents a truncated pool as a complete one, and a licence dropped mid-run did exactly that
+    (38 of 438 designs, reported optimal).
+    """
+    if not has_designs:
+        return status
+    if status == INFEASIBLE:
+        return OPTIMAL
+    if status == TIME_LIMIT:
+        return TIME_LIMIT_W_SOL
+    return status
+
+
 @with_suppressed_lp
 def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """Computes strain designs for a user-defined strain design problem
@@ -1041,9 +1060,7 @@ def _decompress_solutions(cmp_sd_solution, cmp_mapReac, cmp_size1_mcs, max_cost,
         # materialised, so a dominated design inside an unexpanded group is not caught
         sd, group_map = _drop_dominated(sd, group_map, cmp_size1_mcs, uncmp_ko_cost, uncmp_ki_cost)
 
-        status = cmp_sd_solution.status
-        if status not in [OPTIMAL, TIME_LIMIT_W_SOL] and sd:
-            status = OPTIMAL
+        status = _final_status(cmp_sd_solution.status, bool(sd))
 
         lazy_meta = {
             'compressed_sd': compressed_sd,
@@ -1089,8 +1106,7 @@ def _decompress_solutions(cmp_sd_solution, cmp_mapReac, cmp_size1_mcs, max_cost,
                     group_map.append(next_grp + grp_idx)
                     existing.append(frozenset(s.items()))
             compressed_sd.append(cmp_s)
-        if cmp_sd_solution.status not in [OPTIMAL, TIME_LIMIT_W_SOL] and sd:
-            cmp_sd_solution.status = OPTIMAL
+        cmp_sd_solution.status = _final_status(cmp_sd_solution.status, bool(sd))
 
     sd, group_map = _drop_dominated(sd, group_map, cmp_size1_mcs, uncmp_ko_cost, uncmp_ki_cost)
 
