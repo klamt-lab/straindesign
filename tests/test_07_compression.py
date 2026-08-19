@@ -258,3 +258,90 @@ def test_mcs_e_coli_core():
         solver=solver,
     )
     assert len(sols.reaction_sd) == 455, (f"Expected 455 MCS for e_coli_core, got {len(sols.reaction_sd)}")
+
+
+# =============================================================================
+# Exact nullspace: arbitrary-precision input
+# =============================================================================
+
+
+def _kernel_columns(K):
+    """Kernel columns as {col: {row: Fraction}}, for either return type."""
+    from collections import defaultdict
+    cols = defaultdict(dict)
+    if isinstance(K, sd.ExactCOO):
+        for r, c, v in zip(K.rows, K.cols, K.data):
+            cols[int(c)][int(r)] = Fraction(int(v), int(K.denom))
+        return cols, K.shape
+    A = K.tocoo()
+    for r, c, v in zip(A.row, A.col, A.data):
+        cols[int(c)][int(r)] = Fraction(int(v))
+    return cols, A.shape
+
+
+def _assert_kernel_exact(entries, shape, K):
+    cols, kshape = _kernel_columns(K)
+    assert kshape[0] == shape[1]
+    rows = {}
+    for r, c, v in entries:
+        rows.setdefault(r, {})[c] = v
+    for j in range(kshape[1]):
+        kj = cols[j]
+        assert kj, f"kernel column {j} is empty"
+        for row in rows.values():
+            assert sum(v * kj.get(c, 0) for c, v in row.items()) == 0
+
+
+def test_rational_matrix_input_stays_int64_when_it_fits():
+    entries = [(0, 0, Fraction(1)), (0, 1, Fraction(-2)), (1, 1, Fraction(3)), (1, 2, Fraction(-1))]
+    rm = sd.RationalMatrix.from_fractions(entries, (2, 3))
+    assert not rm.is_bigint()
+    K = sd.sparse_nullspace(rm)
+    assert not isinstance(K, sd.ExactCOO)
+    _assert_kernel_exact(entries, (2, 3), K)
+
+
+def test_nullspace_accepts_coefficients_beyond_int64():
+    """A coefficient whose exact form needs more than 64 bits must not be rejected.
+
+    Genome-scale models carry 15-significant-digit decimals such as -7.73333333333333e-08,
+    whose exact rational has a denominator of 10**22. Clearing denominators across such a row
+    exceeds int64, which scipy sparse cannot store.
+    """
+    tiny = Fraction(-773333333333333, 10**22)
+    entries = [(0, 0, tiny), (0, 1, Fraction(-1)), (0, 2, Fraction(1)),
+               (1, 1, Fraction(1)), (1, 3, Fraction(-1))]
+    rm = sd.RationalMatrix.from_fractions(entries, (2, 4))
+    assert rm.is_bigint()
+    _assert_kernel_exact(entries, (2, 4), sd.sparse_nullspace(rm))
+
+
+def test_nullspace_round_trips_its_own_exact_output():
+    tiny = Fraction(-773333333333333, 10**22)
+    entries = [(0, 0, tiny), (0, 1, Fraction(-1)), (1, 1, Fraction(1)), (1, 2, Fraction(-1))]
+    K = sd.sparse_nullspace(sd.RationalMatrix.from_fractions(entries, (2, 3)))
+    assert isinstance(K, sd.ExactCOO)
+    sd.sparse_nullspace(K)
+
+
+def test_nullspace_keeps_exact_values_from_object_arrays():
+    tiny = Fraction(-773333333333333, 10**22)
+    A = np.empty((2, 3), dtype=object)
+    A[:] = Fraction(0)
+    A[0, 0], A[0, 1] = tiny, Fraction(-1)
+    A[1, 1], A[1, 2] = Fraction(1), Fraction(-1)
+    entries = [(0, 0, tiny), (0, 1, Fraction(-1)), (1, 1, Fraction(1)), (1, 2, Fraction(-1))]
+    _assert_kernel_exact(entries, (2, 3), sd.sparse_nullspace(A))
+
+
+def test_from_fractions_rejects_out_of_range_entries():
+    with pytest.raises(IndexError):
+        sd.RationalMatrix.from_fractions([(0, 5, Fraction(1))], (2, 3))
+
+
+def test_bigint_matrix_reports_unsupported_operations():
+    tiny = Fraction(-773333333333333, 10**22)
+    rm = sd.RationalMatrix.from_fractions([(0, 0, tiny), (0, 1, Fraction(-1))], (1, 2))
+    assert rm.is_bigint()
+    with pytest.raises(NotImplementedError):
+        rm.clone()
