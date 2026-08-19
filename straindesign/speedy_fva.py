@@ -78,6 +78,22 @@ _PARALLEL_PHASE2_MIN = 4000
 # ---------------------------------------------------------------------------
 
 
+def _pin_structurally_blocked(model) -> int:
+    """Fix reactions the structural sweep proves blocked to (0,0), in place.
+
+    `remove_blocked_reactions` filters on bounds and detects nothing itself, so without this it
+    has nothing to remove on a normally-bounded model.
+    """
+    af, ar = _rev_structural_sweep(model)
+    n = 0
+    for r in model.reactions:
+        if not af[r.id] and not ar[r.id] and (r.lower_bound, r.upper_bound) != (0.0, 0.0):
+            r.lower_bound = 0.0
+            r.upper_bound = 0.0
+            n += 1
+    return n
+
+
 def _compress_for_fva(model):
     """Copy and compress model for FVA (single-pass coupled compression + conservation removal).
 
@@ -96,6 +112,7 @@ def _compress_for_fva(model):
         # iML1515) and attaches a backend-free carrier.  Safe because speedy_fva builds its own
         # MILP_LP and the compression pipeline is solver-independent.
         cmp_model = model.copy()
+        _pin_structurally_blocked(cmp_model)
         remove_blocked_reactions(cmp_model)
         stoichmat_coeff_to_fraction(cmp_model)
         n_before = len(cmp_model.reactions)
@@ -423,6 +440,7 @@ def speedy_fva(model, **kwargs):
 
     # Stats
     lps_solved = 0
+    unresolved_bounds = []
     total_bound_resolved = 0
     t_solve = 0.0
     tol_bound = 1e-9
@@ -464,33 +482,11 @@ def speedy_fva(model, **kwargs):
         total_bound_resolved += int(newly_max.sum())
 
     if precheck:
-        # 1b: min(sum(|x|)) scan — pushes reactions toward zero
-        # Effective for resolving lb=0 / ub=0 bounds in one shot.
         scan_lp, n_scan = _build_abssum_lp(A_eq, b_eq, A_ineq, b_ineq, lb, ub, solver)
         scan_lp.set_lp_method(LP_METHOD_DUAL)
         n_ext = len(scan_lp.c)
 
-        t0 = _time.perf_counter()
-        x_list_scan, _, scan_status = scan_lp.solve()
-        t_solve += _time.perf_counter() - t0
-        lps_solved += 1
-        resolved_absmin = 0
-
-        if scan_status == OPTIMAL:
-            x_scan = np.array(x_list_scan[:n_scan], dtype=np.float64)
-            before = int(res_max.sum() + res_min.sum())
-            _bound_scan(x_scan)
-
-            np.maximum(incumbent_max, x_scan, out=incumbent_max)
-            np.minimum(incumbent_min, x_scan, out=incumbent_min)
-            resolved_absmin = int(res_max.sum() + res_min.sum()) - before
-
-        if verbose:
-            n_done_iter = int(res_max.sum() + res_min.sum())
-            logging.debug(f"  Phase 1 min|x|: +{resolved_absmin} "
-                          f"({n_done_iter}/{2*n_orig} resolved)")
-
-        # 1c: Iterative push-to-bounds — directed per-reaction objectives
+        # 1b: Iterative push-to-bounds — directed per-reaction objectives
         # Push unresolved-max reactions toward ub, unresolved-min toward lb.
         # Dual simplex warm-start makes re-optimization nearly free.
         push_iter = 0
@@ -622,13 +618,19 @@ def speedy_fva(model, **kwargs):
         # Collect parallel results
         for j in range(n_orig):
             i_max = 2 * j
-            if not res_max[j] and not np.isnan(x_par[i_max]):
-                res_max[j] = True
-                incumbent_max[j] = -x_par[i_max]
+            if not res_max[j]:
+                if np.isnan(x_par[i_max]):
+                    unresolved_bounds.append((reaction_ids[j], 1, 'nan'))
+                else:
+                    res_max[j] = True
+                    incumbent_max[j] = -x_par[i_max]
             i_min = 2 * j + 1
-            if not res_min[j] and not np.isnan(x_par[i_min]):
-                res_min[j] = True
-                incumbent_min[j] = x_par[i_min]
+            if not res_min[j]:
+                if np.isnan(x_par[i_min]):
+                    unresolved_bounds.append((reaction_ids[j], -1, 'nan'))
+                else:
+                    res_min[j] = True
+                    incumbent_min[j] = x_par[i_min]
 
     elif n_remaining > 0:
         # Sequential dispatch — simple loop, no hub-first, no dual check
@@ -654,21 +656,28 @@ def speedy_fva(model, **kwargs):
                     _rebuild_lp()
 
                 sig = -direction
-                if prev_col < 0 or prev_col == j:
-                    C = [[j, float(sig)]]
-                else:
-                    C = [[j, float(sig)], [prev_col, 0.0]]
-                if solver in ('cplex', 'gurobi'):
-                    lp.backend.set_objective_idx(C)
-                else:
-                    lp.set_objective_idx(C)
-                prev_col = j
+                for attempt in range(_MAX_STATUS_RETRIES + 1):
+                    if prev_col < 0 or prev_col == j:
+                        C = [[j, float(sig)]]
+                    else:
+                        C = [[j, float(sig)], [prev_col, 0.0]]
+                    if solver in ('cplex', 'gurobi'):
+                        lp.backend.set_objective_idx(C)
+                    else:
+                        lp.set_objective_idx(C)
+                    prev_col = j
 
-                t0 = _time.perf_counter()
-                x_list, obj_val, status = lp.solve()
-                t_solve += _time.perf_counter() - t0
-                lps_solved += 1
-                seq_count += 1
+                    t0 = _time.perf_counter()
+                    x_list, obj_val, status = lp.solve()
+                    t_solve += _time.perf_counter() - t0
+                    lps_solved += 1
+                    seq_count += 1
+
+                    # Feasibility was established once at setup and only the objective changes
+                    # here, so a non-optimal status is a solver artifact, not an answer.
+                    if status in (OPTIMAL, UNBOUNDED) or attempt == _MAX_STATUS_RETRIES:
+                        break
+                    _rebuild_lp()
 
                 if status == UNBOUNDED:
                     if direction == 1:
@@ -679,10 +688,13 @@ def speedy_fva(model, **kwargs):
                         incumbent_min[j] = -np.inf
                     continue
                 elif status != OPTIMAL:
+                    unresolved_bounds.append((reaction_ids[j], direction, status))
                     if direction == 1:
                         res_max[j] = True
+                        incumbent_max[j] = nan
                     else:
                         res_min[j] = True
+                        incumbent_min[j] = nan
                     continue
 
                 # Guard: LP optimum must not be worse than incumbent
@@ -727,6 +739,12 @@ def speedy_fva(model, **kwargs):
                     np.maximum(incumbent_max, x_arr, out=incumbent_max)
                     np.minimum(incumbent_min, x_arr, out=incumbent_min)
                     _bound_scan(x_arr)
+
+    if unresolved_bounds:
+        logging.warning(f"speedy_fva: {len(unresolved_bounds)} of {2*n_orig} bounds left unresolved after "
+                        f"{_MAX_STATUS_RETRIES} retries (solver '{solver}' reported "
+                        f"{sorted({st for _, _, st in unresolved_bounds})}); reported as NaN. "
+                        f"First: {unresolved_bounds[0][0]}")
 
     # ------------------------------------------------------------------
     # Assemble results
@@ -778,6 +796,7 @@ def speedy_fva(model, **kwargs):
 _REV_SCAN_TOL = 1e-3  # co-option certifies only on flux comfortably above solver noise
 _REV_REBUILD_EVERY = 200
 _ZERO_SNAP = 1e-11  # |flux| below this is solver noise, not a direction; 0 disables snapping
+_MAX_STATUS_RETRIES = 2  # fresh-LP retries before a bound is reported unresolved
 _DEGEN_TOL = 1e-6  # warm-start guard: fresh optimum must not fall below a known-achievable incumbent
 
 
