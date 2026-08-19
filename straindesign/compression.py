@@ -892,13 +892,25 @@ def sparse_nullspace(matrix):
             den = csr_matrix((np.ones(A.nnz, dtype=np.int64), A.indices.copy(), A.indptr.copy()), shape=A.shape)
             rm = RationalMatrix._from_sparse(num, den)
         else:
-            rm = RationalMatrix.from_numpy(A.toarray())
+            rows, cols, nums, dens = [], [], [], []
+            for r in range(A.shape[0]):
+                for i in range(A.indptr[r], A.indptr[r + 1]):
+                    frac = float_to_fraction(A.data[i])
+                    if frac:
+                        rows.append(r)
+                        cols.append(int(A.indices[i]))
+                        nums.append(frac.numerator)
+                        dens.append(frac.denominator)
+            rm = RationalMatrix._build_from_sparse_data(rows, cols, nums, dens, *A.shape)
     else:
         rm = RationalMatrix.from_numpy(np.asarray(matrix))
     K = nullspace(rm)
     if K.is_bigint():
         return K.to_coo_exact()
-    csr, _ = K.to_sparse_csr()
+    try:
+        csr, _ = K.to_sparse_csr()
+    except OverflowError:
+        return K.to_coo_exact()
     return csr
 
 

@@ -345,3 +345,32 @@ def test_bigint_matrix_reports_unsupported_operations():
     assert rm.is_bigint()
     with pytest.raises(NotImplementedError):
         rm.clone()
+
+
+def test_nullspace_falls_back_when_the_scaled_basis_exceeds_int64():
+    """The return type must follow what can actually be stored, not just the input's store.
+
+    to_sparse_csr scales the basis by a common denominator, and that product can exceed int64
+    even when every individual numerator fits.
+    """
+    from scipy import sparse as sp
+    rng = np.random.default_rng(0)
+    A = sp.random(300, 500, density=0.01, random_state=1, format="csr")
+    A.data = np.round(A.data, 3)
+    K = sd.sparse_nullspace(A)
+    assert isinstance(K, sd.ExactCOO)
+    assert K.shape[0] == 500
+
+
+def test_nullspace_of_float_sparse_matches_the_dense_route():
+    from scipy import sparse as sp
+    from straindesign.compression import RationalMatrix
+    A = sp.random(40, 60, density=0.08, random_state=3, format="csr")
+    A.data = np.round(A.data, 2)
+    viaseq = sd.sparse_nullspace(A)
+    viadense = sd.sparse_nullspace(RationalMatrix.from_numpy(A.toarray()))
+    to_set = lambda K: ({(int(r), int(c), Fraction(int(v), int(K.denom)))
+                         for r, c, v in zip(K.rows, K.cols, K.data)} if isinstance(K, sd.ExactCOO)
+                        else {(int(r), int(c), Fraction(int(v)))
+                              for r, c, v in zip(*[K.tocoo().row, K.tocoo().col, K.tocoo().data])})
+    assert to_set(viaseq) == to_set(viadense)
