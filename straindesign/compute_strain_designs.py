@@ -803,6 +803,10 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         # constraints that would settle that. Leave those cases to the MILP.
         if any(c < 0.0 for c in list(cmp_ko_cost.values()) + list(cmp_ki_cost.values())):
             size1_mcs_knockable = set()
+        # Non-essential here can mean "a knock-in covers for it", and a design has no knock-in
+        # unless it pays, so knocking it alone may break the protected region. Leave it to the MILP.
+        if cmp_ki_cost:
+            size1_mcs_knockable = set()
         if size1_mcs_knockable:
             cmp_size1_mcs = [{r: -1} for r in size1_mcs_knockable]
             logging.info('  Found ' + str(len(cmp_size1_mcs)) + ' size-1 MCS via SUPPRESS FVA.')

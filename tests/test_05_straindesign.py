@@ -671,3 +671,53 @@ def test_objective_survives_a_suppressed_build(curr_solver, model_gpr):
 
     assert model_objective(bare) == ({'r_bm': 1.0}, 'max')
     assert sd.fba(bare, solver=curr_solver).objective_value == pytest.approx(reference.objective_value)
+
+@pytest.fixture
+def model_ki_protect():
+    """Smallest network where a knock-in is the only way to keep PROTECT feasible.
+
+        R1: -> A    R2: A -> B    R3: B -> C    R4: B ->    R5: A -> C (knock-in)    R6: C ->
+
+    SUPPRESS R4, PROTECT R6. Knocking R4 solves it outright. The other way is to knock R2, which
+    starves B and so stops R4, but that also starves C -- unless the knock-in R5 is added to route
+    A to C directly. Brute-force enumeration over every intervention set of cost <= 3 gives exactly
+    two minimal designs: {R4} and {R2 knocked, R5 added}.
+    """
+    from cobra import Model, Reaction, Metabolite
+    m = Model('ki_protect')
+    A, B, C = (Metabolite(x) for x in 'ABC')
+
+    def rxn(i, stoich):
+        r = Reaction('R%d' % i)
+        r.lower_bound, r.upper_bound = 0.0, 1000.0
+        r.add_metabolites(stoich)
+        return r
+
+    m.add_reactions([rxn(1, {A: 1}), rxn(2, {A: -1, B: 1}), rxn(3, {B: -1, C: 1}),
+                     rxn(4, {B: -1}), rxn(5, {A: -1, C: 1}), rxn(6, {C: -1})])
+    return m
+
+
+@pytest.mark.parametrize('skip_fvas', [False, True])
+@pytest.mark.timeout(60)
+def test_knockin_keeps_protect_feasible(model_ki_protect, skip_fvas):
+    """A knock-in must be taken when PROTECT needs it, and a design that breaks PROTECT must not
+    be reported. Both directions matter: reporting {R2} alone is wrong because R6 cannot carry
+    flux without R5, and it also hides the real design {R2, R5} from the enumeration."""
+    solver = next(s for s in [CPLEX, GUROBI, SCIP, GLPK] if s in sd.avail_solvers)
+    modules = [sd.SDModule(model_ki_protect, PROTECT, constraints=['R6 >= 1']),
+               sd.SDModule(model_ki_protect, SUPPRESS, constraints=['R4 >= 1'])]
+    kwargs = dict(sd_modules=modules,
+                  ko_cost={'R1': 1.0, 'R2': 1.0, 'R3': 1.0, 'R4': 1.0, 'R6': 1.0},
+                  ki_cost={'R5': 1.0}, max_cost=3, max_solutions=inf,
+                  solution_approach='populate', solver=solver, compress=False)
+    if skip_fvas:
+        kwargs['skip_preprocessing_fvas'] = True
+    sols = sd.compute_strain_designs(model_ki_protect, **kwargs).get_reaction_sd()
+    got = {frozenset((k, float(v)) for k, v in d.items() if v != 0) for d in sols}
+    ko_only = frozenset({('R4', -1.0)})
+    ko_plus_ki = frozenset({('R2', -1.0), ('R5', 1.0)})
+    assert ko_only in got, 'the plain knock-out design {R4} is missing'
+    assert ko_plus_ki in got, 'the design that needs the knock-in {R2 KO, R5 KI} is missing'
+    assert got == {ko_only, ko_plus_ki}, \
+        'a design was reported that does not satisfy PROTECT: %s' % sorted(map(sorted, got))
