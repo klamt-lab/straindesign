@@ -344,10 +344,18 @@ class MILP_LP(object):
             row = A.getrow(k)
             idx, dat = list(row.indices), list(row.data)
             if sense == 'E':
-                sp, sn = add_col(0.0, inf, 'C'), add_col(0.0, inf, 'C')
-                eqrows.append((idx + [sp, sn], dat + [-1.0, 1.0])); eqrhs.append(b)
-                self.sos1.append([sp, sn])          # complementarity pins them to the two parts
-                self.sos1.append([g, sp, sn])
+                # An equality row defines its slack uniquely, so there is no continuum here to
+                # pin and the signed split the inequality gates need is pure overhead. One free
+                # slack in a two-member set is what gurobi's own presolve builds.
+                if os.environ.get('SD_SOS1_SPLIT_EQ'):
+                    sp, sn = add_col(0.0, inf, 'C'), add_col(0.0, inf, 'C')
+                    eqrows.append((idx + [sp, sn], dat + [-1.0, 1.0])); eqrhs.append(b)
+                    self.sos1.append([sp, sn])      # complementarity pins them to the two parts
+                    self.sos1.append([g, sp, sn])
+                else:
+                    sf = add_col(-inf, inf, 'C')
+                    eqrows.append((idx + [sf], dat + [-1.0])); eqrhs.append(b)
+                    self.sos1.append([g, sf])
             else:
                 # A one-sided gate needs slack, but a slack defined by an INEQUALITY is free above
                 # the row activity: it sits in one row with no objective, so every gate-off

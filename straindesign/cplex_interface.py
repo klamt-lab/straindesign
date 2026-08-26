@@ -300,6 +300,9 @@ class Cplex_MILP_LP(Cplex):
                 self.parameters.mip.limits.populate.set(int(n))
             self.populate_solution_pool()  # call parent solve function (that was overwritten in this class)
             status = self.solution.get_status()
+            # 129/130 (CPXMIP_OPTIMAL_POPULATED[_TOL]) say the pool holds every solution at the
+            # optimum, which is a level-exhaustion certificate wherever the level is pinned.
+            self.pool_exhausted = status in [129, 130]
             if status in [101, 102, 115, 128, 129, 130]:  # solution integer optimal
                 min_cx = self.solution.get_objective_value()
                 status = OPTIMAL

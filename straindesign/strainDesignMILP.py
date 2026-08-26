@@ -320,6 +320,7 @@ class SDMILP(SDProblem, MILP_LP):
     def populateZ(self, n) -> Tuple[List, int]:
         """Populate MILP, and return only binary variables rounded to 5 decimals (should return ints)"""
         x, _, status = self.populate(n)
+        self.pool_exhausted = bool(getattr(self.backend, 'pool_exhausted', False))
         if status in [OPTIMAL, TIME_LIMIT_W_SOL]:
             z = sparse.csr_matrix([[round(x[j][i], 5) for i in self.idx_z] for j in range(len(x))])
             z.resize((len(x), self.num_z))
@@ -853,6 +854,10 @@ class SDMILP(SDProblem, MILP_LP):
                             self.add_exclusion_constraints(z[i])
                     if status == TIME_LIMIT_W_SOL:
                         hit_timelimit = True
+                        break
+                    # the level is pinned, so a populate that certified its optimum exhausted
+                    # leaves nothing for the confirmatory pass to find
+                    if os.environ.get('SD_POOL_CERT') and self.pool_exhausted:
                         break
                 else:  # INFEASIBLE at this cardinality -> level exhausted, next k
                     break
