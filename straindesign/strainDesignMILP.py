@@ -26,6 +26,7 @@ from typing import Dict, List, Tuple
 from straindesign import SDProblem, SDSolutions, MILP_LP, SDModule, Model
 from straindesign.names import *
 import logging
+import os
 
 
 class SDMILP(SDProblem, MILP_LP):
@@ -105,10 +106,11 @@ class SDMILP(SDProblem, MILP_LP):
             # re-reports the same design instead of reporting infeasible once the designs are
             # exhausted, which never terminates (measured; the other solvers accept either form)
             rows = sparse.lil_matrix((len(_forced), self.A_ineq.shape[1]))
+            _fl = getattr(self, '_z_flipped', False)
             for k, i in enumerate(_forced):
-                rows[k, i] = -1.0
+                rows[k, i] = 1.0 if _fl else -1.0
             self.A_ineq = sparse.vstack((self.A_ineq, rows.tocsr()), format='csr')
-            self.b_ineq = list(self.b_ineq) + [-1.0] * len(_forced)
+            self.b_ineq = list(self.b_ineq) + [0.0 if _fl else -1.0] * len(_forced)
         # Remove non-knockable z-variables before solver sees them
         self._trim_z_variables()
         # Interventions that do not cost anything to take. Adding one to a design can only keep
@@ -121,6 +123,7 @@ class SDMILP(SDProblem, MILP_LP):
         self._rewarding_z = [i for i in self._free_z if self.cost[i] < 0.0]
         # Build MILP object from constructed problem
         MILP_LP.__init__(self,
+                         sos1_gates=self.is_mcs_computation,
                          c=self.c,
                          A_ineq=self.A_ineq,
                          b_ineq=self.b_ineq,
@@ -157,7 +160,9 @@ class SDMILP(SDProblem, MILP_LP):
         solver carries these dead variables. This trims them at construction
         time. Stores _z_orig_indices for expanding solutions back.
         """
-        keep_z = [i for i in range(self.num_z) if self.ub[i] > 0]
+        # a column pinned to a single value carries no decision; under the flipped
+        # convention the pinned value is 1 rather than 0, so test for width not for ub
+        keep_z = [i for i in range(self.num_z) if self.lb[i] < self.ub[i]]
         if len(keep_z) == self.num_z:
             self._z_orig_indices = None  # no trimming needed
             return
@@ -217,6 +222,18 @@ class SDMILP(SDProblem, MILP_LP):
         rewarding (cost <= 0), a superset taking one of those is not dominated by the design
         found here, so those literals enter the row negated and such supersets stay reachable.
         """
+        if self._z_flipped:
+            # a design is the set of z at 0; excluding it and every superset -- a superset holds
+            # all of D at 0 as well -- is "at least one of them back to 1"
+            for i in range(z.shape[0]):
+                idx = [j for j in self.idx_z if self._intervened(z[i], j)]
+                if not idx:
+                    continue
+                row = sparse.lil_matrix((1, self.A_ineq.shape[1]))
+                for j in idx:
+                    row[0, j] = -1.0
+                self.add_ineq_constraints(row.tocsr(), [-1.0])
+            return
         for i in range(z.shape[0]):
             free = [j for j in self._free_z if not z[i, j]]
             # introduce constraint to make MILP infeasible. Some solvers cannot handle empty rows
@@ -250,6 +267,14 @@ class SDMILP(SDProblem, MILP_LP):
         This excludes the exact pattern without blocking supersets or subsets.
         """
         z_dense = z.toarray()
+        if self._z_flipped:
+            for j in range(z.shape[0]):
+                act = [i for i in self.idx_z if self._intervened(z[j], i)]
+                coeffs = [-1.0 if i in set(act) else 1.0 for i in range(z.shape[1])]
+                A_row = sparse.csr_matrix([coeffs])
+                A_row.resize((1, self.A_ineq.shape[1]))
+                self.add_ineq_constraints(A_row, [float(len(coeffs) - len(act) - 1)])
+            return
         for j in range(z.shape[0]):
             n_active = int(np.sum(z_dense[j] != 0))
             if n_active == 0:
@@ -260,13 +285,24 @@ class SDMILP(SDProblem, MILP_LP):
             b_ineq = n_active - 1
             self.add_ineq_constraints(A_row, [b_ineq])
 
+    def _intervened(self, row, i):
+        """True if column i carries an intervention in this solution row.
+
+        Under the default convention that is a non-zero z; under the flipped one, where z = 1 means
+        the reaction is in its original state, it is a zero.
+        """
+        v = row[0, i] if hasattr(row, 'shape') and len(row.shape) == 2 else row[i]
+        if self._z_flipped:
+            return v < 0.5
+        return v != 0 and not np.isnan(v)
+
     def sd2dict(self, sol, *args) -> Dict:
         """Translate binary solution vector to dictionary for human-readable output"""
         output = {}
         reacID = self.model.reactions.list_attr("id")
         for i in self.idx_z:
             orig_i = self._z_orig_indices[i] if self._z_orig_indices is not None else i
-            if sol[0, i] != 0 and not np.isnan(sol[0, i]):
+            if self._intervened(sol, i):
                 if self.z_inverted[i]:
                     output[reacID[orig_i]] = sol[0, i]
                 else:
@@ -700,6 +736,201 @@ class SDMILP(SDProblem, MILP_LP):
             sd_dict += [self.sd2dict(sol, self.show_no_ki)]
         sd_solution = self.build_sd_solution(sd_dict, status, POPULATE)
         return sd_solution
+
+    def enumerate_ksweep(self, **kwargs):
+        """Enumerate minimal cut sets by an ascending-cardinality sweep (gMCSpy-style loop).
+
+        Standard ``enumerate`` runs a single populate over the whole budget
+        ``sum(cost*z) <= max_cost`` and loops until the pool is exhausted. This
+        variant instead pins the intervention-cost budget to EQUALITY at each level
+        ``k = 1 .. max_cost`` and exhausts the pool at that level before moving on::
+
+            for k in 1 .. max_cost:
+                set  sum(cost*z) == k          (both budget-bracket rows -> k)
+                while populate returns solutions:
+                    record + verify every pool solution
+                    add exclusion  sum_{j in K} z_j <= |K|-1  (and its supersets)
+
+        It returns the IDENTICAL set of minimal cut sets as ``enumerate`` -- only the
+        enumeration order (ascending size) and the loop structure differ. Ascending-
+        cardinality enumeration parallelizes far better at genome scale, which is the
+        whole point of the opt-in.
+
+        Design-identity relies on mirroring ``enumerate``'s per-solution handling
+        exactly (verify_sd, then ``add_exclusion_constraints`` for BOTH valid and
+        invalid solutions, which excludes the set and all its supersets).
+
+        Requires an MCS computation (``is_mcs_computation``) with a finite ``max_cost``.
+        Intervention costs are assumed integer (the default ko/ki cost of 1 satisfies
+        this); the sweep visits integer levels 1..ceil(max_cost). For non-MCS problems
+        or an infinite budget it transparently falls back to ``enumerate``.
+        """
+        keys = {MAX_SOLUTIONS, T_LIMIT, 'show_no_ki'}
+        # set keys passed in kwargs
+        for key, value in dict(kwargs).items():
+            if key in keys:
+                setattr(self, key, value)
+        # set all remaining keys to None
+        for key in keys:
+            if key not in dict(kwargs).keys():
+                setattr(self, key, None)
+        if self.max_solutions is None:
+            self.max_solutions = np.inf
+        if self.time_limit is None:
+            self.time_limit = np.inf
+        if self.show_no_ki is None:
+            self.show_no_ki = True
+        # k-sweep is only defined for MCS with a finite, INTEGER cost budget.
+        # The level loop pins sum(cost*z) == k for integer k, so it enumerates the
+        # pool completely only when every intervention cost is integer-valued: with
+        # fractional or mixed costs (ki/reg costs, non-unit ko costs) the achievable
+        # totals are non-integer and would be silently skipped between levels. Guard
+        # on cost integrality and fall back to the full-budget populate otherwise.
+        max_cost_finite = self.max_cost is not None and np.isfinite(self.max_cost)
+        finite_costs = [c for c in self.cost if np.isfinite(c)]
+        costs_integer = all(abs(c - round(c)) < 1e-9 for c in finite_costs)
+        if (not self.is_mcs_computation) or (not max_cost_finite) or (not costs_integer):
+            logging.warning("enum_method='ksweep' requires an MCS computation with a finite, "
+                            "integer-valued intervention cost budget; falling back to standard "
+                            "populate enumeration.")
+            return self.enumerate(**kwargs)
+        # first check if strain doesn't already fulfill the strain design setup
+        if self.verify_sd(sparse.csr_matrix((1, self.num_z)))[0]:
+            logging.warning('The strain already meets the requirements defined in the strain design setup. ' \
+                  'No interventions are needed.')
+            return self.build_sd_solution([{}], OPTIMAL, POPULATE)
+        # otherwise continue
+        if self.solver == 'scip':
+            logging.warning("SCIP does not natively support solution pool generation. "+ \
+                "An high-level implementation of populate is used. " + \
+                "Consider using compute_optimal instead of enumerate, as " + \
+                "it returns the same results but faster.")
+        if self.solver == 'glpk':
+            logging.warning("GLPK does not natively support solution pool generation. "+ \
+                "An instable high-level implementation of populate is used. "
+                "Consider using compute_optimal instead of enumerate, as " + \
+                "it returns the same results but faster." )
+        # Full-width cost vector for the two budget-bracket rows (z-cols carry cost,
+        # continuous cols carry 0). Rows: idx_row_mincost:  cost.z <= k  ;
+        #                                 idx_row_maxcost: -cost.z <= -k  (-> cost.z >= k).
+        # Together they pin sum(cost*z) == k for the current level.
+        n_cont = len(self.c) - self.num_z
+        cost_full = [float(c) for c in self.cost] + [0.0] * n_cont
+        neg_cost_full = [-c for c in cost_full]
+        k_max = int(np.floor(self.max_cost))  # a cost-k solution is within budget only if k <= max_cost
+        if os.environ.get('SD_ENUM_KSWEEP') == 'floor':
+            return self._enumerate_rising_floor(k_max)
+        endtime = time.time() + self.time_limit
+        status = OPTIMAL
+        hit_timelimit = False
+        sols = sparse.csr_matrix((0, self.num_z))
+        logging.info('Enumerating strain designs (k-sweep) ...')
+        for k in range(1, k_max + 1):
+            if sols.shape[0] >= self.max_solutions:
+                break
+            if endtime - time.time() <= 0:
+                hit_timelimit = True
+                break
+            # pin sum(cost*z) == k for this cardinality/cost level
+            self.set_ineq_constraint(self.idx_row_mincost, cost_full, float(k))
+            self.set_ineq_constraint(self.idx_row_maxcost, neg_cost_full, float(-k))
+            logging.info('  Enumerating minimal cut sets of cost ' + str(k))
+            while sols.shape[0] < self.max_solutions and \
+                    endtime - time.time() > 0:
+                self.set_time_limit(endtime - time.time())
+                z, status = self.populateZ(self.max_solutions - sols.shape[0])
+                if status in [OPTIMAL, TIME_LIMIT_W_SOL]:
+                    if z.shape[0] == 0:  # level exhausted
+                        break
+                    for i in range(z.shape[0]):
+                        output = [self.sd2dict(z[i])]
+                        if all(self.verify_sd(z[i])):
+                            logging.info('Strain designs with cost ' + str(round((z[i] * self.cost)[0], 6)) + ': ' + str(output))
+                            self.add_exclusion_constraints(z[i])
+                            sols = sparse.vstack((sols, z[i]))
+                        else:
+                            logging.warning('Invalid (minimal) solution found: ' + str(output))
+                            self.add_exclusion_constraints(z[i])
+                    if status == TIME_LIMIT_W_SOL:
+                        hit_timelimit = True
+                        break
+                else:  # INFEASIBLE at this cardinality -> level exhausted, next k
+                    break
+            if hit_timelimit or endtime - time.time() <= 0:
+                if endtime - time.time() <= 0:
+                    hit_timelimit = True
+                break
+        # Finalize status independently of the last populate's status.
+        if hit_timelimit and sols.shape[0] > 0:
+            status = TIME_LIMIT_W_SOL
+        elif hit_timelimit:
+            status = TIME_LIMIT
+        else:
+            status = OPTIMAL
+        if not hit_timelimit and sols.shape[0] > 0:
+            logging.info('Finished solving strain design MILP. ')
+            if 'strainDesignMILP' in self.__module__:
+                logging.info(str(sols.shape[0]) + ' solutions to MILP found.')
+        elif not hit_timelimit:
+            logging.info('Finished solving strain design MILP.')
+            if 'strainDesignMILP' in self.__module__:
+                logging.info(' No solutions exist.')
+        else:
+            logging.info('Time limit reached.')
+        # Translate solutions into dict
+        sd_dict = []
+        for sol in sols:
+            sd_dict += [self.sd2dict(sol, self.show_no_ki)]
+        return self.build_sd_solution(sd_dict, status, POPULATE)
+    def _enumerate_rising_floor(self, k_max):
+        """Enumerate with a rising cost floor instead of a pinned cost level.
+
+        The budget bracket keeps `cost.z <= max_cost` throughout and only its lower row moves:
+        after each populate the floor is raised to the cost that populate proved optimal, so the
+        objective stays available for pruning and the pool is exhausted once for the whole run
+        rather than once per level. Same solutions, same exclusion handling as `enumerate`.
+        """
+        n_cont = len(self.c) - self.num_z
+        cost_full = [float(c) for c in self.cost] + [0.0] * n_cont
+        neg_cost_full = [-c for c in cost_full]
+        self.set_ineq_constraint(self.idx_row_mincost, cost_full, float(k_max))
+        floor = 0.0
+        endtime = time.time() + self.time_limit
+        hit_timelimit = False
+        sols = sparse.csr_matrix((0, self.num_z))
+        logging.info('Enumerating strain designs (rising floor) ...')
+        while sols.shape[0] < self.max_solutions and endtime - time.time() > 0:
+            self.set_ineq_constraint(self.idx_row_maxcost, neg_cost_full, -floor)
+            self.set_time_limit(endtime - time.time())
+            z, status = self.populateZ(self.max_solutions - sols.shape[0])
+            if status not in [OPTIMAL, TIME_LIMIT_W_SOL] or z.shape[0] == 0:
+                break
+            costs = [float((z[i] * self.cost)[0]) for i in range(z.shape[0])]
+            for i in range(z.shape[0]):
+                output = [self.sd2dict(z[i])]
+                if all(self.verify_sd(z[i])):
+                    logging.info('Strain designs with cost ' + str(round(costs[i], 6)) + ': ' + str(output))
+                    self.add_exclusion_constraints(z[i])
+                    sols = sparse.vstack((sols, z[i]))
+                else:
+                    logging.warning('Invalid (minimal) solution found: ' + str(output))
+                    self.add_exclusion_constraints(z[i])
+            if status == TIME_LIMIT_W_SOL:
+                hit_timelimit = True
+                break
+            floor = max(floor, min(costs))
+            if floor > k_max:
+                break
+        if endtime - time.time() <= 0:
+            hit_timelimit = True
+        if hit_timelimit:
+            status = TIME_LIMIT_W_SOL if sols.shape[0] else TIME_LIMIT
+            logging.info('Time limit reached.')
+        else:
+            status = OPTIMAL
+            logging.info('Finished solving strain design MILP. ')
+        sd_dict = [self.sd2dict(sol, self.show_no_ki) for sol in sols]
+        return self.build_sd_solution(sd_dict, status, POPULATE)
 
     def build_sd_solution(self, sd_dict, status, solution_approach):
         """Build the strain design solution object"""

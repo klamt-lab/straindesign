@@ -356,6 +356,14 @@ class Gurobi_MILP_LP(gp.Model):
             x = [nan] * len(self.getVars())
             return x, min_cx, ERROR
 
+    def add_sos1(self, sets):
+        """Add SOS1 sets: at most one member of each may be nonzero."""
+        gvars = self.getVars()
+        for members in sets:
+            self.addSOS(grb.SOS_TYPE1, [gvars[int(i)] for i in members],
+                        [float(k + 1) for k in range(len(members))])
+        self.update()
+
     def set_objective(self, c):
         """Set the objective function with a vector"""
         gvars = self.getVars()

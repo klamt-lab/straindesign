@@ -27,6 +27,7 @@ and their individual counterparts in dual problems, which is essential when simu
 knockouts in dual problems. Most of the time, the sparse datatype is used to store and
 edit matrices for improved speed and memory."""
 
+import os
 from math import isinf
 import numpy as np
 from scipy import sparse
@@ -145,6 +146,8 @@ class SDProblem:
         self.ko_cost = [float(self.ko_cost.get(key)) if (key in self.ko_cost.keys()) else np.nan for key in reac_ids]
         self.ki_cost = [float(self.ki_cost.get(key)) if (key in self.ki_cost.keys()) else np.nan for key in reac_ids]
         self.ko_cost = [self.ko_cost[i] if np.isnan(self.ki_cost[i]) else np.nan for i in range(numr)]
+        self._z_flipped = False
+        self._cost_offset = 0.0
         self.num_z = numr
         self.cost = [i for i in self.ko_cost]
         for i in [i for i, x in enumerate(self.ki_cost) if not np.isnan(x)]:
@@ -230,16 +233,17 @@ class SDProblem:
         _ess = [i for i, r in enumerate(model.reactions) if r.id in self.essential_kis]
         if _ess:
             _rows = sparse.lil_matrix((len(_ess), self.A_ineq.shape[1]))
+            _flip = getattr(self, '_z_flipped', False)
             for _k, _i in enumerate(_ess):
-                _rows[_k, _i] = -1.0
+                _rows[_k, _i] = 1.0 if _flip else -1.0
             self.A_ineq = sparse.vstack((self.A_ineq, _rows.tocsr()), format='csr')
-            self.b_ineq = list(self.b_ineq) + [-1.0] * len(_ess)
+            self.b_ineq = list(self.b_ineq) + [0.0 if _flip else -1.0] * len(_ess)
 
         # if there are only mcs modules, minimize the knockout costs,
         # otherwise use objective function(s) from modules
         if all([mod[MODULE_TYPE] in [PROTECT, SUPPRESS, DOUBLEOPT] for mod in sd_modules]):
             for i in self.idx_z:
-                self.c[i] = self.cost[i]
+                self.c[i] = -self.cost[i] if getattr(self, '_z_flipped', False) else self.cost[i]
             self.is_mcs_computation = True
         else:
             self.is_mcs_computation = False
@@ -839,6 +843,52 @@ class SDProblem:
         #    Zero/single-variable rows take a finite M from the bounds; multi-variable rows are
         #    unbounded on the polytope (M = +inf), which the linker realizes as an indicator
         #    constraint (gurobi/cplex) or the constant self.M (glpk/user-M).
+        # Which polarity would cost fewer auxiliary columns? A gate whose indicval is 0 needs a
+        # complement column when it is realised as SOS1; one with indicval 1 gates z directly. The
+        # z-map sign decides that: +1 (knock-out) becomes indicval 0, -1 (knock-in) becomes 1. So
+        # the convention "z = 1 means intervened" is cheaper exactly when knock-ins outnumber
+        # knock-outs, which they essentially never do. Counted here because this is the first point
+        # where every module's map is complete.
+        _pos = int((self.z_map_constr_ineq.data > 0).sum() + (self.z_map_constr_eq.data > 0).sum()
+                   + (self.z_map_vars.data > 0).sum())
+        _neg = int((self.z_map_constr_ineq.data < 0).sum() + (self.z_map_constr_eq.data < 0).sum()
+                   + (self.z_map_vars.data < 0).sum())
+        logging.info('  Gate polarity: %d knock-out-style (+1) and %d knock-in-style (-1) map '
+                     'entries; as built that is %d gates needing a complement column, %d free.'
+                     % (_pos, _neg, _pos, _neg))
+        _mode = os.environ.get('SD_Z_POLARITY', 'A')
+        if _mode == 'auto':
+            _mode = 'B' if _pos > _neg else 'A'
+        if _mode == 'B':
+            self._z_flipped = True
+            # z now reads "reaction is in its ORIGINAL state"; the intervention is z = 0. Every
+            # gate polarity follows the map sign, so negating the maps flips all of them at once.
+            self.z_map_constr_ineq = -self.z_map_constr_ineq
+            self.z_map_constr_eq = -self.z_map_constr_eq
+            self.z_map_vars = -self.z_map_vars
+            # the intervention cost is now sum(cost) - cost.z, so the two bracket rows carry -cost
+            # and the budget rhs drops by that constant
+            self._cost_offset = float(np.sum([c for c in self.cost if not np.isnan(c)]))
+            # the bracket rows span the whole matrix by now, while cost covers only the z block
+            _w = self.A_ineq.shape[1]
+            _pos = np.zeros(_w); _neg = np.zeros(_w)
+            for _i, _c in enumerate(self.cost):
+                if not np.isnan(_c):
+                    _pos[_i], _neg[_i] = _c, -_c
+            A = self.A_ineq.tolil()
+            A[self.idx_row_maxcost] = sparse.lil_matrix(_pos)
+            A[self.idx_row_mincost] = sparse.lil_matrix(_neg)
+            self.A_ineq = A.tocsr()
+            if not isinf(self.b_ineq[self.idx_row_mincost]):
+                self.b_ineq[self.idx_row_mincost] -= self._cost_offset
+            # a reaction nobody may touch must read as "original state", i.e. z = 1, or sd2dict
+            # would report every one of them as an intervention
+            for i in range(self.num_z):
+                if self.z_non_targetable[i]:
+                    self.lb[i], self.ub[i] = 1.0, 1.0
+            logging.info('  z polarity B: z=1 means original state, intervention at z=0; '
+                         'cost offset %.6g.' % self._cost_offset)
+
         knockable_constr_ineq = np.unique(self.z_map_constr_ineq.nonzero()[1])
 
         _idxz = set(self.idx_z)  # O(1) membership in the scan below

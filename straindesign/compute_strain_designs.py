@@ -25,6 +25,7 @@ import ast
 import logging
 import json
 import time
+import os
 from copy import deepcopy
 from cobra import Model
 from cobra.manipulation import rename_genes
@@ -865,14 +866,15 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     else:
         solution_approach = BEST
 
-    # SDMILP.enumerate_ksweep is an alternative POPULATE loop, disabled for now. It is complete only
-    # for integer-valued intervention costs, and was faster on CPLEX gene-MCS but slower on gurobi.
-    # enum_method = kwargs.pop('enum_method', 'populate')
+    # enumerate_ksweep is an alternative POPULATE loop, complete only for integer-valued
+    # intervention costs. Opt in per run while it is being benchmarked against CNA's
+    # stepwise enumerator; it falls back to populate whenever its guards do not hold.
+    enum_ksweep = bool(os.environ.get('SD_ENUM_KSWEEP'))
 
     dump_preprocessed = kwargs.pop('dump_preprocessed', None)
 
     if dump_preprocessed:
-        import os, pickle as _pickle
+        import pickle as _pickle
         dump_path = dump_preprocessed
         with open(dump_path, 'wb') as f:
             _pickle.dump(
@@ -938,7 +940,10 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     elif solution_approach == BEST:
         cmp_sd_solution = sd_milp.compute_optimal(**kwargs_computation)
     elif solution_approach == POPULATE:
-        cmp_sd_solution = sd_milp.enumerate(**kwargs_computation)
+        if enum_ksweep:
+            cmp_sd_solution = sd_milp.enumerate_ksweep(**kwargs_computation)
+        else:
+            cmp_sd_solution = sd_milp.enumerate(**kwargs_computation)
     logging.info('  MILP solved (%.1fs).' % (time.time() - t0))
 
     # Decompress solutions

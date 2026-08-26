@@ -20,11 +20,12 @@
 
 from scipy import sparse
 from numpy import nan, inf, isinf, random
-from cplex import Cplex, infinity, _const
+from cplex import Cplex, infinity, _const, SparsePair
 from cplex.exceptions import CplexError
 from typing import Tuple, List
 import logging
 import io
+import os
 from psutil import virtual_memory
 from straindesign.names import *
 
@@ -151,7 +152,15 @@ class Cplex_MILP_LP(Cplex):
             indvar = [int(i) for i in indic_constr.binv]
             complem = [1 - int(i) for i in indic_constr.indicval]
             # call CPLEX function to add indicators
-            self.indicator_constraints.add_batch(lin_expr=A, sense=sense, rhs=b, indvar=indvar, complemented=complem)
+            # SD_GATE_IFF measures whether the reverse implication CellNetAnalyzer states
+            # (z = indicval <-> row) is what lets presolve decide its gates. It is not a
+            # relaxation of ours, so it has to be gated on a design-identity check.
+            if os.environ.get('SD_GATE_IFF'):
+                ind_t = [self.indicator_constraints.type_.iff] * len(A)
+                self.indicator_constraints.add_batch(lin_expr=A, sense=sense, rhs=b, indvar=indvar,
+                                                     complemented=complem, indtype=ind_t)
+            else:
+                self.indicator_constraints.add_batch(lin_expr=A, sense=sense, rhs=b, indvar=indvar, complemented=complem)
         # set parameters
         self.set_log_stream(io.StringIO())  # don't show output stream
         self.set_error_stream(io.StringIO())
@@ -174,7 +183,8 @@ class Cplex_MILP_LP(Cplex):
             self.parameters.mip.pool.absgap.set(0.0)
             self.parameters.mip.pool.relgap.set(0.0)
             self.parameters.mip.pool.intensity.set(4)
-            # intensity=2 was tried there as a lighter alternative to 4
+            # 3 is faster for MCS enumeration but breaks OPTCOUPLE (5 tests); left at 4 pending a
+            # per-module-type decision
             # no integrality tolerance
             self.parameters.mip.tolerances.integrality.set(0.0)
 
@@ -322,6 +332,32 @@ class Cplex_MILP_LP(Cplex):
             min_cx = nan
             x = []
             return x, min_cx, ERROR
+
+    def set_pool_intensity(self, level):
+        """Pool generation effort; only meaningful together with the SOS1 gates."""
+        self.parameters.mip.pool.intensity.set(int(level))
+
+    def relax_integrality_for_sos1(self):
+        """Lift the integrality tolerance off exactly zero, which SOS1 cannot work at.
+
+        CPLEX decides SOS1 membership by testing whether a member is nonzero, and that test uses
+        this tolerance. At 0.0 a continuous auxiliary sitting at round-off counts as nonzero, so
+        every set looks violated: measured on e_coli_core, one populate hits a 240 s limit and
+        returns 14 of 55 solutions, while 1e-11 through 1e-5 all return 55 in 0.5 s. The cliff is at
+        zero, so the smallest lift is enough; 1e-9 matches Gurobi's floor. Applied only alongside
+        the gates, so the exact pin still stands for every other model.
+        """
+        self.parameters.mip.tolerances.integrality.set(1e-9)
+
+    def add_sos1(self, sets):
+        """Add SOS1 sets: at most one member of each may be nonzero.
+
+        Weights only order the members for branching; distinct values are what CPLEX requires.
+        """
+        for members in sets:
+            self.SOS.add(type='1',
+                         SOS=SparsePair(ind=[int(i) for i in members],
+                                              val=[float(k + 1) for k in range(len(members))]))
 
     def set_objective(self, c):
         """Set the objective function with a vector"""
