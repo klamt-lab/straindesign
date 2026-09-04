@@ -366,7 +366,10 @@ class MILP_LP(object):
                 vp, vn = add_col(0.0, inf, 'C'), add_col(0.0, inf, 'C')
                 sgn = -1.0 if sense == 'L' else 1.0
                 eqrows.append((idx + [vp, vn], dat + [-sgn, sgn])); eqrhs.append(b)
-                self.sos1.append([vp, vn])
+                # SD_SOS1_NOPAIR drops this complementarity set. gurobi's presolve removes it
+                # anyway (1140 sets -> 597); cplex's keeps 1134, so it is measured separately.
+                if not os.environ.get('SD_SOS1_NOPAIR'):
+                    self.sos1.append([vp, vn])
                 # a*y = vn - vp after complementarity, so vn is the positive part: an 'L' gate
                 # (a*y <= 0 when on) kills vn, a 'G' gate kills vp
                 self.sos1.append([g, vn] if sense == 'L' else [g, vp])

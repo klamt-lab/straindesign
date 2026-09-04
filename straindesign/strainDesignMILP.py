@@ -303,11 +303,10 @@ class SDMILP(SDProblem, MILP_LP):
         for i in self.idx_z:
             orig_i = self._z_orig_indices[i] if self._z_orig_indices is not None else i
             if self._intervened(sol, i):
-                if self.z_inverted[i]:
-                    output[reacID[orig_i]] = sol[0, i]
-                else:
-                    output[reacID[orig_i]] = -sol[0, i]
-            elif args and args[0] and (sol[0, i] == 0) and self.z_inverted[i]:
+                # report the intervention's direction, +1 knock-in and -1 knock-out, rather than
+                # the z encoding: under the flipped convention an intervention carries z = 0.
+                output[reacID[orig_i]] = 1.0 if self.z_inverted[i] else -1.0
+            elif args and args[0] and self.z_inverted[i]:
                 output[reacID[orig_i]] = 0.0
         return output
 
@@ -818,6 +817,14 @@ class SDMILP(SDProblem, MILP_LP):
         n_cont = len(self.c) - self.num_z
         cost_full = [float(c) for c in self.cost] + [0.0] * n_cont
         neg_cost_full = [-c for c in cost_full]
+        # Under the flipped convention the design cost is offset - cost.z, not cost.z, so the two
+        # rows carry the negated vector and the level is offset - k. Writing the default form here
+        # pins the cost of the reactions NOT intervened, which is a different constraint entirely.
+        if self._z_flipped:
+            cost_full, neg_cost_full = neg_cost_full, cost_full
+            level = lambda k: (float(k) - self._cost_offset, self._cost_offset - float(k))
+        else:
+            level = lambda k: (float(k), -float(k))
         k_max = int(np.floor(self.max_cost))  # a cost-k solution is within budget only if k <= max_cost
         if os.environ.get('SD_ENUM_KSWEEP') == 'floor':
             return self._enumerate_rising_floor(k_max)
@@ -832,9 +839,10 @@ class SDMILP(SDProblem, MILP_LP):
             if endtime - time.time() <= 0:
                 hit_timelimit = True
                 break
-            # pin sum(cost*z) == k for this cardinality/cost level
-            self.set_ineq_constraint(self.idx_row_mincost, cost_full, float(k))
-            self.set_ineq_constraint(self.idx_row_maxcost, neg_cost_full, float(-k))
+            # pin the intervention cost to k for this level
+            _lo, _hi = level(k)
+            self.set_ineq_constraint(self.idx_row_mincost, cost_full, _lo)
+            self.set_ineq_constraint(self.idx_row_maxcost, neg_cost_full, _hi)
             logging.info('  Enumerating minimal cut sets of cost ' + str(k))
             while sols.shape[0] < self.max_solutions and \
                     endtime - time.time() > 0:
@@ -895,6 +903,8 @@ class SDMILP(SDProblem, MILP_LP):
         objective stays available for pruning and the pool is exhausted once for the whole run
         rather than once per level. Same solutions, same exclusion handling as `enumerate`.
         """
+        if self._z_flipped:
+            raise NotImplementedError('the rising-floor loop assumes the default z convention')
         n_cont = len(self.c) - self.num_z
         cost_full = [float(c) for c in self.cost] + [0.0] * n_cont
         neg_cost_full = [-c for c in cost_full]
