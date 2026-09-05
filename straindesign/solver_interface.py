@@ -396,7 +396,14 @@ class MILP_LP(object):
                 self.sos1.append([g, vn] if sense == 'L' else [g, vp])
 
         k_new = len(newcols_lb)
-        self.c += [0.0] * k_new
+        # SD_SOS1_SLACK_EPS puts a negligible cost on every gate slack so the LP prefers one
+        # representative among equally-feasible certificates. Only sound with the pool gap opened
+        # (the cplex backend does that when this is set): with a zero gap the perturbed objective
+        # would filter designs by their certificate's slack size, which is a silent truncation.
+        _eps = float(os.environ.get('SD_SOS1_SLACK_EPS', 0) or 0)
+        # only sign-constrained slacks: a cost on the FREE equality slack makes the LP unbounded
+        # (measured: iJO1366 p1 returned 54 of 249 designs with populate status 118/119)
+        self.c += [_eps if (vt == 'C' and lb_ >= 0.0) else 0.0 for vt, lb_ in zip(newcols_vt, newcols_lb)]
         self.lb += newcols_lb
         self.ub += newcols_ub
         self.vtype += ''.join(newcols_vt)

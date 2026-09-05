@@ -183,8 +183,11 @@ class Cplex_MILP_LP(Cplex):
             self.parameters.randomseed.set(seed)
             if milp_threads is not None:
                 self.parameters.threads.set(milp_threads)
-            self.parameters.mip.pool.absgap.set(0.0)
-            self.parameters.mip.pool.relgap.set(0.0)
+            # a perturbed objective on the gate slacks (SD_SOS1_SLACK_EPS) needs the pool open,
+            # otherwise absgap 0 would keep only the designs with the smallest slack sum
+            _open = bool(os.environ.get('SD_SOS1_SLACK_EPS'))
+            self.parameters.mip.pool.absgap.set(1e75 if _open else 0.0)
+            self.parameters.mip.pool.relgap.set(1e75 if _open else 0.0)
             self.parameters.mip.pool.intensity.set(4)
             # 3 is faster for MCS enumeration but breaks OPTCOUPLE (5 tests); left at 4 pending a
             # per-module-type decision
@@ -322,7 +325,12 @@ class Cplex_MILP_LP(Cplex):
             elif status in [13, 107, 113]:  # timeout/abort with solution
                 min_cx = self.solution.get_objective_value()
                 status = TIME_LIMIT_W_SOL
-            elif status in [118, 119]:  # solution unbounded
+            elif status in [118, 119]:  # unbounded, or infeasible-or-unbounded: never a result
+                # Reporting this as a solution silently truncates an enumeration (measured: 54 of 249
+                # designs with status 'optimal' once a free column carried an objective coefficient).
+                raise RuntimeError('CPLEX populate returned status %d (%s); the MILP is unbounded, '
+                                   'which is a formulation error, not an empty pool' %
+                                   (status, self.solution.get_status_string()))
                 min_cx = -inf
                 status = UNBOUNDED
             else:
