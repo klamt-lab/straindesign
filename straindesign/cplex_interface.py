@@ -171,7 +171,10 @@ class Cplex_MILP_LP(Cplex):
 
         if 'B' in vtype or 'I' in vtype:
             # set usable working memory to 3/4 of the total available memory
-            self.parameters.workmem.set(round(virtual_memory().total / 1024 / 1024 * 0.75))
+            # virtual_memory().total is the machine, not the cgroup, so under SLURM or a container
+            # this overstates what is allowed; SD_CPLEX_WORKMEM (MB) pins it explicitly.
+            _wm = os.environ.get('SD_CPLEX_WORKMEM')
+            self.parameters.workmem.set(int(_wm) if _wm else round(virtual_memory().total / 1024 / 1024 * 0.75))
             #self.parameters.threads.set(16)
             # yield only optimal solutions in pool
             if seed is None:

@@ -205,6 +205,25 @@ class MILP_LP(object):
            and self.solver in [CPLEX, GUROBI]:
             self._gates_as_sos1()
 
+        # Optional: let CPLEX certify a pinned cost level. populate reports 129/130 ("all reachable
+        # solutions enumerated") only when the objective varies over the integer variables; with the
+        # level pinned the design cost is constant and it reports a bare 101, so the k-sweep has to
+        # pay a confirmatory populate per level. One unconstrained binary with a negligible cost
+        # restores the certificate (measured: same pool, status 130) and is invisible to every
+        # reader of the solution, which index the z block only. Appended last so it sits after
+        # any gate-transform columns.
+        if getattr(self, 'sos1_gates', None) and os.environ.get('SD_POOL_CERT') and self.solver == CPLEX:
+            self.c = list(self.c) + [1e-6]
+            self.lb = list(self.lb) + [0.0]
+            self.ub = list(self.ub) + [1.0]
+            self.vtype = self.vtype + 'B'
+            for attr in ('A_ineq', 'A_eq'):
+                A = getattr(self, attr)
+                setattr(self, attr, sparse.hstack((A, sparse.csr_matrix((A.shape[0], 1))), format='csr'))
+            if self.indic_constr is not None and self.indic_constr.A.shape[0]:
+                Ai = sparse.csr_matrix(self.indic_constr.A)
+                self.indic_constr.A = sparse.hstack((Ai, sparse.csr_matrix((Ai.shape[0], 1))), format='csr')
+
         # Create backend
         if self.solver == CPLEX:
             from straindesign.cplex_interface import Cplex_MILP_LP
@@ -233,8 +252,10 @@ class MILP_LP(object):
             # SOS1-gated e_coli_core does not finish a problem indicators solve in 0.8 s, while at
             # 3 it matches them. 3 is not safe on its own either -- it breaks OPTCOUPLE -- so it is
             # applied here, where the gates are, and nowhere else.
+            # SD_SOS1_INTENSITY overrides the 3: the 129/130 exhaustion certificate needs 4, and
+            # the pathology that motivated 3 predates the integrality-tolerance fix.
             if hasattr(self.backend, 'set_pool_intensity'):
-                self.backend.set_pool_intensity(3)
+                self.backend.set_pool_intensity(int(os.environ.get('SD_SOS1_INTENSITY', 3)))
             if hasattr(self.backend, 'relax_integrality_for_sos1'):
                 self.backend.relax_integrality_for_sos1()
         if self.tlim is None:
