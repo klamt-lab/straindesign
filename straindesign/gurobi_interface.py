@@ -25,6 +25,7 @@ from gurobipy import GRB as grb
 from straindesign.names import *
 from typing import Tuple, List
 import logging
+import os
 
 gstatus = grb.Status
 
@@ -174,8 +175,12 @@ class Gurobi_MILP_LP(gp.Model):
                 self.params.Threads = milp_threads
             self.params.IntFeasTol = 1e-9  # (0 is not allowed by Gurobi)
             # yield only optimal solutions in pool
-            self.params.PoolGap = 1e-9
-            self.params.PoolGapAbs = 1e-9
+            # SD_POOL_OPEN: with a pinned or fully enumerated level every feasible design is wanted,
+            # so the gap has no filtering role; measured on cplex as the difference between a bare
+            # 101 and the 129 exhaustion certificate. Mirrored here so both solvers can be compared.
+            _open = bool(os.environ.get('SD_POOL_OPEN')) or bool(os.environ.get('SD_SOS1_SLACK_EPS'))
+            self.params.PoolGap = grb.INFINITY if _open else 1e-9
+            self.params.PoolGapAbs = grb.INFINITY if _open else 1e-9
             self.params.MIPFocus = 0
         self.update()
 
