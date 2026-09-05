@@ -185,7 +185,10 @@ class Cplex_MILP_LP(Cplex):
                 self.parameters.threads.set(milp_threads)
             # a perturbed objective on the gate slacks (SD_SOS1_SLACK_EPS) needs the pool open,
             # otherwise absgap 0 would keep only the designs with the smallest slack sum
-            _open = bool(os.environ.get('SD_SOS1_SLACK_EPS'))
+            # SD_POOL_OPEN opens it on its own: with the level pinned every feasible design is wanted,
+            # and an open gap is what makes populate return 129 there (measured: absgap AND relgap
+            # both open; absgap alone still returns 101)
+            _open = bool(os.environ.get('SD_SOS1_SLACK_EPS')) or bool(os.environ.get('SD_POOL_OPEN'))
             self.parameters.mip.pool.absgap.set(1e75 if _open else 0.0)
             self.parameters.mip.pool.relgap.set(1e75 if _open else 0.0)
             self.parameters.mip.pool.intensity.set(4)

@@ -212,7 +212,10 @@ class MILP_LP(object):
         # restores the certificate (measured: same pool, status 130) and is invisible to every
         # reader of the solution, which index the z block only. Appended last so it sits after
         # any gate-transform columns.
-        if getattr(self, 'sos1_gates', None) and os.environ.get('SD_POOL_CERT') and self.solver == CPLEX:
+        # SD_POOL_CERT=skip trusts the certificate without adding the column (an open pool gap can
+        # produce it on its own); any other value adds the dummy binary as well.
+        if getattr(self, 'sos1_gates', None) and os.environ.get('SD_POOL_CERT') not in (None, '', 'skip') \
+           and self.solver == CPLEX:
             self.c = list(self.c) + [1e-6]
             self.lb = list(self.lb) + [0.0]
             self.ub = list(self.ub) + [1.0]
