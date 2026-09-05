@@ -178,7 +178,7 @@ class Gurobi_MILP_LP(gp.Model):
             # SD_POOL_OPEN: with a pinned or fully enumerated level every feasible design is wanted,
             # so the gap has no filtering role; measured on cplex as the difference between a bare
             # 101 and the 129 exhaustion certificate. Mirrored here so both solvers can be compared.
-            _open = bool(os.environ.get('SD_POOL_OPEN')) or bool(os.environ.get('SD_SOS1_SLACK_EPS'))
+            _open = bool(os.environ.get('SD_POOL_OPEN'))   # eps is refused on gurobi, so it must not open the gap here
             self.params.PoolGap = grb.INFINITY if _open else 1e-9
             self.params.PoolGapAbs = grb.INFINITY if _open else 1e-9
             self.params.MIPFocus = 0

@@ -404,6 +404,15 @@ class MILP_LP(object):
         # (the cplex backend does that when this is set): with a zero gap the perturbed objective
         # would filter designs by their certificate's slack size, which is a silent truncation.
         _eps = float(os.environ.get('SD_SOS1_SLACK_EPS', 0) or 0)
+        # Measured scope: a large win on SUPPRESS-only problems on cplex under the k-sweep (the
+        # open gap it needs is cheap there), a 3-6x loss with a PROTECT module, and on gurobi the
+        # open gap turns one populate into ~85 (10x slower). Refuse it where it can only hurt.
+        if _eps and self.solver != CPLEX:
+            logging.warning('SD_SOS1_SLACK_EPS is cplex-only (measured 10x slower on gurobi); ignored.')
+            _eps = 0.0
+        if _eps and not os.environ.get('SD_ENUM_KSWEEP'):
+            logging.warning('SD_SOS1_SLACK_EPS without SD_ENUM_KSWEEP opens the pool gap on an unpinned '
+                            'budget: measured 17k pool entries per populate. Use the k-sweep with it.')
         # only sign-constrained slacks: a cost on the FREE equality slack makes the LP unbounded
         # (measured: iJO1366 p1 returned 54 of 249 designs with populate status 118/119)
         self.c += [_eps if (vt == 'C' and lb_ >= 0.0) else 0.0 for vt, lb_ in zip(newcols_vt, newcols_lb)]
