@@ -22,6 +22,10 @@ StrainDesign
    :target: https://pypi.org/project/straindesign/
    :alt: Current PyPI Version
    
+.. image:: https://img.shields.io/conda/vn/conda-forge/straindesign-cobra.svg
+   :target: https://anaconda.org/conda-forge/straindesign-cobra
+   :alt: Current conda-forge Version
+
 .. image:: https://anaconda.org/cnapy/straindesign/badges/version.svg
    :target: https://anaconda.org/cnapy/straindesign/
    :alt: Current Anaconda Version
@@ -80,13 +84,19 @@ Network compression uses a pure Python sparse RREF implementation with exact rat
 :html:`<a id="installation"></a>`\ Installation:
 ================================================
 
-The StrainDesign package is available on pip and Anaconda. To install the latest release, run:
+The StrainDesign package is available on PyPI, conda-forge and the ``cnapy`` Anaconda channel. To install the latest release, run:
 
 ``pip install straindesign``
 
 or
 
+``conda install -c conda-forge straindesign-cobra``
+
+or
+
 ``conda install -c cnapy straindesign``
+
+The conda-forge package is named ``straindesign-cobra`` because the name ``straindesign`` is taken on bioconda by an unrelated project. The Python package is ``straindesign`` in every case (``import straindesign``). Do not install ``straindesign-cobra`` and bioconda's ``straindesign`` into the same environment.
 
 Developer Installation:
 -----------------------
