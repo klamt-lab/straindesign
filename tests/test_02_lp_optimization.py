@@ -86,7 +86,7 @@ def test_yield_opt_infeasible(curr_solver, model_small_example):
 # ── FVA implementation correctness (e_coli_core) ─────────────────────
 # Compares speedy_fva (compressed + uncompressed), fva_legacy, and cobra FVA.
 
-from cobra.io import load_model
+from ._models import load_test_model
 from cobra.flux_analysis import flux_variability_analysis as cobra_fva
 from straindesign.lptools import fva, fva_legacy, select_solver
 from straindesign.speedy_fva import speedy_fva
@@ -96,7 +96,7 @@ FVA_TOL = 1e-6
 
 @pytest.fixture(scope="module")
 def ecoli_core():
-    return load_model("e_coli_core")
+    return load_test_model("e_coli_core")
 
 
 @pytest.fixture(scope="module")

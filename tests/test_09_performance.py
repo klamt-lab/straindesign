@@ -68,7 +68,8 @@ from numpy import inf
 
 warnings.filterwarnings("ignore")
 
-from cobra.io import read_sbml_model, load_model
+from cobra.io import read_sbml_model
+from ._models import load_test_model
 import straindesign as sd
 from straindesign.names import *
 
@@ -135,7 +136,7 @@ STRONG_SOLVERS = [s for s in [CPLEX, GUROBI] if s in sd.avail_solvers]
 
 @pytest.fixture(scope="session")
 def model_core():
-    return load_model("e_coli_core")
+    return load_test_model("e_coli_core")
 
 
 @pytest.fixture(scope="session")
@@ -399,7 +400,7 @@ def test_iml1515_mcs_393(solver):
     Only run with --large (takes several minutes per solver).
     """
     try:
-        m = load_model("iML1515")
+        m = load_test_model("iML1515")
     except Exception:
         pytest.skip("iML1515 not available in this COBRApy installation")
     t0 = time.perf_counter()
