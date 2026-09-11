@@ -4,8 +4,8 @@
 
 [![Current Release](https://img.shields.io/github/v/release/klamt-lab/straindesign.svg)](https://github.com/klamt-lab/straindesign/releases)
 [![Current PyPI Version](https://img.shields.io/pypi/v/straindesign.svg)](https://pypi.org/project/straindesign/)
-[![Current conda-forge Version](https://img.shields.io/conda/vn/conda-forge/straindesign-cobra.svg)](https://anaconda.org/conda-forge/straindesign-cobra)
-[![Current Anaconda Version](https://anaconda.org/cnapy/straindesign/badges/version.svg)](https://anaconda.org/cnapy/straindesign/)
+[![Current conda-forge Version](https://img.shields.io/conda/vn/conda-forge/straindesign-cobra.svg)](https://anaconda.org/channels/conda-forge/packages/straindesign-cobra/overview)
+[![Current Anaconda Version](https://img.shields.io/conda/vn/cnapy/straindesign.svg)](https://anaconda.org/channels/cnapy/packages/straindesign/overview)
 [![Documentation Status](https://readthedocs.org/projects/straindesign/badge/?version=latest)](https://readthedocs.org/projects/straindesign/builds/)
 [![Supported Python Versions](https://img.shields.io/pypi/pyversions/straindesign.svg)](https://pypi.org/project/straindesign/)
 [![CI-test Status](https://github.com/klamt-lab/straindesign/workflows/CI-test/badge.svg)](https://github.com/klamt-lab/straindesign/actions/workflows/CI-test.yml)

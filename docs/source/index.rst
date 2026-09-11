@@ -23,11 +23,11 @@ StrainDesign
    :alt: Current PyPI Version
    
 .. image:: https://img.shields.io/conda/vn/conda-forge/straindesign-cobra.svg
-   :target: https://anaconda.org/conda-forge/straindesign-cobra
+   :target: https://anaconda.org/channels/conda-forge/packages/straindesign-cobra/overview
    :alt: Current conda-forge Version
 
-.. image:: https://anaconda.org/cnapy/straindesign/badges/version.svg
-   :target: https://anaconda.org/cnapy/straindesign/
+.. image:: https://img.shields.io/conda/vn/cnapy/straindesign.svg
+   :target: https://anaconda.org/channels/cnapy/packages/straindesign/overview
    :alt: Current Anaconda Version
    
 .. image:: https://readthedocs.org/projects/straindesign/badge/?version=latest
