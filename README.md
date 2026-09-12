@@ -4,7 +4,8 @@
 
 [![Current Release](https://img.shields.io/github/v/release/klamt-lab/straindesign.svg)](https://github.com/klamt-lab/straindesign/releases)
 [![Current PyPI Version](https://img.shields.io/pypi/v/straindesign.svg)](https://pypi.org/project/straindesign/)
-[![Current Anaconda Version](https://anaconda.org/cnapy/straindesign/badges/version.svg)](https://anaconda.org/cnapy/straindesign/)
+[![Current conda-forge Version](https://img.shields.io/conda/vn/conda-forge/straindesign-cobra.svg)](https://anaconda.org/channels/conda-forge/packages/straindesign-cobra/overview)
+[![Current Anaconda Version](https://img.shields.io/conda/vn/cnapy/straindesign.svg)](https://anaconda.org/channels/cnapy/packages/straindesign/overview)
 [![Documentation Status](https://readthedocs.org/projects/straindesign/badge/?version=latest)](https://readthedocs.org/projects/straindesign/builds/)
 [![Supported Python Versions](https://img.shields.io/pypi/pyversions/straindesign.svg)](https://pypi.org/project/straindesign/)
 [![CI-test Status](https://github.com/klamt-lab/straindesign/workflows/CI-test/badge.svg)](https://github.com/klamt-lab/straindesign/actions/workflows/CI-test.yml)
@@ -27,7 +28,7 @@ The compression routine follows the approach of efmtool's compression function (
 
 ## Installation
 
-The StrainDesign package is available on pip and Anaconda. To install the latest release, run:
+The StrainDesign package is available on PyPI, conda-forge and the `cnapy` Anaconda channel. To install the latest release, run:
 
 ```bash
 pip install straindesign
@@ -36,8 +37,16 @@ pip install straindesign
 or
 
 ```bash
+conda install -c conda-forge straindesign-cobra
+```
+
+or
+
+```bash
 conda install -c cnapy straindesign
 ```
+
+The conda-forge package is named `straindesign-cobra` because the name `straindesign` is taken on bioconda by an unrelated project. The Python package is `straindesign` in every case (`import straindesign`). Do not install `straindesign-cobra` and bioconda's `straindesign` into the same environment.
 
 The StrainDesign package installation and operability is tested regularly in the most recent Windows, Ubuntu and Mac-OS distributions through continuous integration testing. Currently, these tests fail in Mac-OS due to conflicts within the cobrapy package in Mac-OS. If a workable cobrapy version is installed under Mac-OS, StrainDesign should work as well.
 

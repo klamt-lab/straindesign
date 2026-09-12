@@ -5,7 +5,8 @@ import sys
 import pickle
 from math import inf
 import pytest
-from cobra.io import load_model, read_sbml_model
+from cobra.io import read_sbml_model
+from ._models import load_test_model
 import straindesign as sd
 import straindesign.compute_strain_designs  # noqa: F401  (ensure submodule imported)
 # `straindesign.compute_strain_designs` the attribute is the *function* (star-
@@ -20,7 +21,7 @@ TOL = 1e-6
 
 @pytest.fixture(scope="module")
 def model():
-    return load_model("textbook")
+    return load_test_model("textbook")
 
 
 def _solver():

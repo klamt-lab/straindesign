@@ -1,13 +1,13 @@
 """Test gene knockout simulation via gene_kos_to_constraints and resolve_gene_constraints."""
 import pytest
-from cobra.io import load_model
+from ._models import load_test_model
 import straindesign as sd
 from straindesign.networktools import gene_kos_to_constraints, resolve_gene_constraints
 
 
 @pytest.fixture(scope="module")
 def ecoli_core():
-    return load_model('textbook')
+    return load_test_model('textbook')
 
 
 @pytest.fixture(scope="module")
