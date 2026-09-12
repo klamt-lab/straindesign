@@ -100,6 +100,9 @@ jobs:
         gh release create "v${{ github.event.inputs.version }}" \
           --title "v${{ github.event.inputs.version }}" \
           --notes "${{ github.event.inputs.description }}"
+    # The conda-forge package (straindesign-cobra) needs no step here: the
+    # conda-forge bot picks the new version up from PyPI and opens a pull
+    # request on the feedstock, which a feedstock maintainer merges.
     - name: Install conda dependencies
       run: conda install anaconda-client conda-build
     - name: Clean Anaconda build directories

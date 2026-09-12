@@ -169,15 +169,16 @@ class RationalMatrix:
             for c in range(cols):
                 val = arr[r, c]
                 if val != 0:
-                    frac = float_to_fraction(val, max_precision, max_denom)
+                    if isinstance(val, (Fraction, int, np.integer)):
+                        frac = Fraction(val)
+                    else:
+                        frac = float_to_fraction(val, max_precision, max_denom)
                     row_idx.append(r)
                     col_idx.append(c)
                     num_data.append(frac.numerator)
                     den_data.append(frac.denominator)
 
-        num_sparse = csr_matrix((num_data, (row_idx, col_idx)), shape=(rows, cols), dtype=np.int64)
-        den_sparse = csr_matrix((den_data, (row_idx, col_idx)), shape=(rows, cols), dtype=np.int64)
-        return cls._from_sparse(num_sparse, den_sparse)
+        return cls._build_from_sparse_data(row_idx, col_idx, num_data, den_data, rows, cols)
 
     @classmethod
     def from_cobra_model(cls, model, max_precision: int = 6, max_denom: int = 100) -> 'RationalMatrix':
@@ -206,9 +207,27 @@ class RationalMatrix:
                     num_data.append(frac.numerator)
                     den_data.append(frac.denominator)
 
-        num_sparse = csr_matrix((num_data, (row_idx, col_idx)), shape=(num_mets, num_rxns), dtype=np.int64)
-        den_sparse = csr_matrix((den_data, (row_idx, col_idx)), shape=(num_mets, num_rxns), dtype=np.int64)
-        return cls._from_sparse(num_sparse, den_sparse)
+        return cls._build_from_sparse_data(row_idx, col_idx, num_data, den_data, num_mets, num_rxns)
+
+    @classmethod
+    def from_fractions(cls, entries, shape: Tuple[int, int]) -> 'RationalMatrix':
+        """Build from exact entries ``(row, col, value)``, where value is a Fraction or an int.
+
+        Values of unlimited size are accepted; storage ratchets to arbitrary precision only when
+        the int64 sparse representation cannot hold them.
+        """
+        rows, cols, nums, dens = [], [], [], []
+        for r, c, v in entries:
+            frac = v if isinstance(v, Fraction) else Fraction(v)
+            if frac == 0:
+                continue
+            if not (0 <= r < shape[0] and 0 <= c < shape[1]):
+                raise IndexError(f"entry ({r}, {c}) outside shape {shape}")
+            rows.append(int(r))
+            cols.append(int(c))
+            nums.append(frac.numerator)
+            dens.append(frac.denominator)
+        return cls._build_from_sparse_data(rows, cols, nums, dens, shape[0], shape[1])
 
     @classmethod
     def _build_from_sparse_data(cls, row_indices: List[int], col_indices: List[int], numerators: List[int], denominators: List[int],
@@ -232,6 +251,47 @@ class RationalMatrix:
         result._dict_frac = dic
         return result
 
+    # Exact access, independent of which store backs the matrix
+
+    def _require_sparse_store(self, op: str) -> None:
+        if self._dict_frac is not None:
+            raise NotImplementedError(
+                f"{op} is not available on a big-integer RationalMatrix; its coefficients exceed "
+                "int64 and are held as exact Fractions. Use nullspace()/basic_columns(), or "
+                "to_coo_exact() to export.")
+
+    def _iter_row_fractions(self) -> Iterator[Tuple[int, Dict[int, Fraction]]]:
+        """Yield (row, {col: Fraction}) for every non-empty row."""
+        if self._dict_frac is not None:
+            for r, cd in self._dict_frac.items():
+                row = {c: v for c, v in cd.items() if v}
+                if row:
+                    yield int(r), row
+            return
+        num_csr = self._num_sparse.tocsr()
+        den_csr = self._den_sparse.tocsr()
+        for r in range(self._rows):
+            start, end = num_csr.indptr[r], num_csr.indptr[r + 1]
+            row = {}
+            for i in range(start, end):
+                num = int(num_csr.data[i])
+                if num == 0:
+                    continue
+                den = int(den_csr.data[i]) or 1
+                row[int(num_csr.indices[i])] = Fraction(num, den)
+            if row:
+                yield r, row
+
+    def _nnz_per_column(self) -> np.ndarray:
+        counts = np.zeros(self._cols, dtype=np.int64)
+        if self._dict_frac is not None:
+            for cd in self._dict_frac.values():
+                for c, v in cd.items():
+                    if v:
+                        counts[c] += 1
+            return counts
+        return np.diff(self._num_sparse.tocsc().indptr)
+
     # Size queries
 
     def get_row_count(self) -> int:
@@ -244,6 +304,7 @@ class RationalMatrix:
 
     def iter_column_fractions(self, col: int) -> Iterator[Tuple[int, Fraction]]:
         """Iterate over non-zero entries in column as (row, Fraction) pairs."""
+        self._require_sparse_store('iter_column_fractions')
         if self._csc_cache is None:
             self._csc_cache = self._num_sparse.tocsc()
             self._den_csc_cache = self._den_sparse.tocsc()
@@ -260,6 +321,7 @@ class RationalMatrix:
 
     def get_signum(self, row: int, col: int) -> int:
         """Return sign of element: -1, 0, or 1."""
+        self._require_sparse_store('get_signum')
         num = self._num_sparse[row, col]
         if num > 0:
             return 1
@@ -271,6 +333,7 @@ class RationalMatrix:
 
     def begin_batch_edit(self):
         """Enter batch edit mode - delays cache invalidation."""
+        self._require_sparse_store('begin_batch_edit')
         self._batch_mode = True
         self._num_sparse = self._num_sparse.tolil()
         self._den_sparse = self._den_sparse.tolil()
@@ -286,16 +349,19 @@ class RationalMatrix:
 
     def clone(self) -> 'RationalMatrix':
         """Create a deep copy."""
+        self._require_sparse_store('clone')
         return RationalMatrix._from_sparse(self._num_sparse.copy(), self._den_sparse.copy())
 
     def submatrix(self, rows: int, cols: int) -> 'RationalMatrix':
         """Extract top-left submatrix of given dimensions."""
+        self._require_sparse_store('submatrix')
         num_sub = self._num_sparse[:rows, :cols].copy()
         den_sub = self._den_sparse[:rows, :cols].copy()
         return RationalMatrix._from_sparse(num_sub, den_sub)
 
     def remove_rows(self, keep_indices: List[int]) -> None:
         """Keep only the specified rows."""
+        self._require_sparse_store('remove_rows')
         keep = np.array(keep_indices, dtype=np.intp)
         self._num_sparse = self._num_sparse[keep, :]
         self._den_sparse = self._den_sparse[keep, :]
@@ -304,6 +370,7 @@ class RationalMatrix:
 
     def remove_columns(self, keep_indices: List[int]) -> None:
         """Keep only the specified columns."""
+        self._require_sparse_store('remove_columns')
         keep = np.array(keep_indices, dtype=np.intp)
         self._num_sparse = self._num_sparse[:, keep]
         self._den_sparse = self._den_sparse[:, keep]
@@ -531,7 +598,7 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
 
     # Column sorting: sparse columns first
     # col_order[sorted_pos] = original_col
-    nnz_per_col = np.diff(rm._num_sparse.tocsc().indptr)
+    nnz_per_col = rm._nnz_per_column()
     col_order = np.argsort(nnz_per_col, kind='stable').tolist()
     col_inverse = [0] * cols
     for sorted_pos, orig_col in enumerate(col_order):
@@ -539,26 +606,12 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
 
     # Convert to integer matrix (scale each row by LCM of denominators)
     # Store column indices in sorted space
-    num_csr = rm._num_sparse.tocsr()
-    den_csr = rm._den_sparse.tocsr()
-
     data: Dict[int, Dict[int, int]] = {}
-    for r in range(rows):
-        start, end = num_csr.indptr[r], num_csr.indptr[r + 1]
-        if start == end:
-            continue
-
-        # Compute row LCM of denominators
-        row_dens = [int(den_csr.data[i]) for i in range(start, end) if den_csr.data[i] != 0]
-        row_lcm = reduce(lcm, row_dens, 1) if row_dens else 1
-
-        # Scale numerators; store using sorted column index
+    for r, row_fracs in rm._iter_row_fractions():
+        row_lcm = reduce(lcm, (f.denominator for f in row_fracs.values()), 1)
         row_data = {}
-        for i in range(start, end):
-            num = int(num_csr.data[i])
-            den = int(den_csr.data[i]) if den_csr.data[i] != 0 else 1
-            orig_col = int(num_csr.indices[i])
-            scaled = num * (row_lcm // den)
+        for orig_col, frac in row_fracs.items():
+            scaled = frac.numerator * (row_lcm // frac.denominator)
             if scaled != 0:
                 row_data[col_inverse[orig_col]] = scaled
         if row_data:
@@ -811,8 +864,10 @@ def sparse_nullspace(matrix):
 
     Parameters
     ----------
-    matrix : scipy.sparse matrix, numpy.ndarray, or RationalMatrix
+    matrix : scipy.sparse matrix, numpy.ndarray, RationalMatrix, or ExactCOO
         Input with integer or rational entries. Floats are converted to nearby rationals.
+        Entries too large for signed 64-bit integers are accepted through RationalMatrix
+        (see ``RationalMatrix.from_fractions``) or ExactCOO, which scipy sparse cannot hold.
 
     Returns
     -------
@@ -826,6 +881,10 @@ def sparse_nullspace(matrix):
     """
     if isinstance(matrix, RationalMatrix):
         rm = matrix
+    elif isinstance(matrix, ExactCOO):
+        rm = RationalMatrix.from_fractions(
+            ((r, c, Fraction(int(v), int(matrix.denom))) for r, c, v in zip(matrix.rows, matrix.cols, matrix.data)),
+            matrix.shape)
     elif sparse.issparse(matrix):
         A = matrix.tocsr()
         if np.issubdtype(A.dtype, np.integer):
@@ -833,13 +892,25 @@ def sparse_nullspace(matrix):
             den = csr_matrix((np.ones(A.nnz, dtype=np.int64), A.indices.copy(), A.indptr.copy()), shape=A.shape)
             rm = RationalMatrix._from_sparse(num, den)
         else:
-            rm = RationalMatrix.from_numpy(A.toarray())
+            rows, cols, nums, dens = [], [], [], []
+            for r in range(A.shape[0]):
+                for i in range(A.indptr[r], A.indptr[r + 1]):
+                    frac = float_to_fraction(A.data[i])
+                    if frac:
+                        rows.append(r)
+                        cols.append(int(A.indices[i]))
+                        nums.append(frac.numerator)
+                        dens.append(frac.denominator)
+            rm = RationalMatrix._build_from_sparse_data(rows, cols, nums, dens, *A.shape)
     else:
         rm = RationalMatrix.from_numpy(np.asarray(matrix))
     K = nullspace(rm)
     if K.is_bigint():
         return K.to_coo_exact()
-    csr, _ = K.to_sparse_csr()
+    try:
+        csr, _ = K.to_sparse_csr()
+    except OverflowError:
+        return K.to_coo_exact()
     return csr
 
 
