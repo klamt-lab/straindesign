@@ -29,6 +29,22 @@ import logging
 import os
 
 
+def _backend_pool_exhausted(backend):
+    """Read a backend's pool-exhaustion flag under either naming convention.
+
+    The CPLEX backend stores it as a plain attribute; the Gurobi backend must prefix it with an
+    underscore because gurobipy reserves plain attribute names for solver attributes.
+    """
+    for name in ('_pool_exhausted', 'pool_exhausted'):
+        try:
+            value = getattr(backend, name)
+        except Exception:
+            continue
+        if isinstance(value, bool):
+            return value
+    return False
+
+
 class SDMILP(SDProblem, MILP_LP):
     """Class that contains functions for the solution of the strain design MILP
      
@@ -319,7 +335,7 @@ class SDMILP(SDProblem, MILP_LP):
     def populateZ(self, n) -> Tuple[List, int]:
         """Populate MILP, and return only binary variables rounded to 5 decimals (should return ints)"""
         x, _, status = self.populate(n)
-        self.pool_exhausted = bool(getattr(self.backend, 'pool_exhausted', False))
+        self.pool_exhausted = _backend_pool_exhausted(self.backend)
         if status in [OPTIMAL, TIME_LIMIT_W_SOL]:
             z = sparse.csr_matrix([[round(x[j][i], 5) for i in self.idx_z] for j in range(len(x))])
             z.resize((len(x), self.num_z))
