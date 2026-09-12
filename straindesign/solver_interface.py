@@ -249,6 +249,11 @@ class MILP_LP(object):
             from straindesign.glpk_interface import GLPK_MILP_LP
             self.backend = GLPK_MILP_LP(self.c, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq, self.lb, self.ub, self.vtype,
                                         self.indic_constr, self.M)
+        _intensity = os.environ.get('SD_SOS1_INTENSITY')
+        if _intensity and not self.sos1 and hasattr(self.backend, 'set_pool_intensity'):
+            # the pool intensity governs how populate's second phase enumerates, which is worth
+            # measuring on the indicator formulation too, not only where the SOS1 sets are
+            self.backend.set_pool_intensity(int(_intensity))
         if self.sos1:
             self.backend.add_sos1(self.sos1)
             # SOS1 gates and the pool intensity are not separable: at CPLEX's default 4 an
