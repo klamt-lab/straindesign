@@ -71,9 +71,10 @@ from straindesign.compression import (
 )
 
 # Tunable threshold at which parallel FVA kicks in. Is compared against the number of
-# LPs that are left to be solved by Phase 2. Empirically, parallel is only worthwhile
-# at high LP counts.
-_PARALLEL_PHASE2_MIN = 4000
+# LPs that are left to be solved by Phase 2, and covers the pool's start-up: a worker pool
+# reaches its first result in about 3 s on a genome-scale LP and then solves roughly 6x
+# faster than the sequential loop, so it pays from a few hundred LPs upwards.
+_PARALLEL_PHASE2_MIN = 500
 
 # ---------------------------------------------------------------------------
 # Compression helpers
