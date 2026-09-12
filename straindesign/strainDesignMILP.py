@@ -319,7 +319,8 @@ class SDMILP(SDProblem, MILP_LP):
     def populateZ(self, n) -> Tuple[List, int]:
         """Populate MILP, and return only binary variables rounded to 5 decimals (should return ints)"""
         x, _, status = self.populate(n)
-        self.pool_exhausted = bool(getattr(self.backend, 'pool_exhausted', False))
+        # gurobipy models only accept custom attributes with a leading underscore
+        self.pool_exhausted = bool(getattr(self.backend, 'pool_exhausted', getattr(self.backend, '_pool_exhausted', False)))
         if status in [OPTIMAL, TIME_LIMIT_W_SOL]:
             z = sparse.csr_matrix([[round(x[j][i], 5) for i in self.idx_z] for j in range(len(x))])
             z.resize((len(x), self.num_z))

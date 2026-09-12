@@ -331,7 +331,7 @@ class Gurobi_MILP_LP(gp.Model):
             # A pool search that ended OPTIMAL with room left in the pool found every solution of
             # the level (PoolSearchMode 2 finds the n best); opt-in, the k-sweep decides whether to
             # trust it (SD_GRB_POOL_TRUST) instead of paying a confirmatory solve per level.
-            self.pool_exhausted = bool(os.environ.get('SD_GRB_POOL_TRUST')) and status == 2 and \
+            self._pool_exhausted = bool(os.environ.get('SD_GRB_POOL_TRUST')) and status == 2 and \
                 self.SolCount < self.params.PoolSolutions
             if status in [2, 10, 13, 15]:  # solution integer optimal
                 min_cx = self.ObjVal
