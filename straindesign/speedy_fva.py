@@ -67,6 +67,7 @@ from straindesign.compression import (
     stoichmat_coeff_to_fraction,
     stoichmat_coeff2float,
     remove_blocked_reactions,
+    _detach_gprs,
 )
 
 # Tunable threshold at which parallel FVA kicks in. Is compared against the number of
@@ -118,8 +119,7 @@ def _compress_for_fva(model):
         stoichmat_coeff_to_fraction(cmp_model)
         n_before = len(cmp_model.reactions)
         # Single-pass coupled compression (NULLSPACE only, no RECURSIVE iteration)
-        for r in cmp_model.reactions:
-            r.gene_reaction_rule = ''
+        _detach_gprs(cmp_model)
         result = compress_cobra_model(cmp_model, methods=[CompressionMethod.NULLSPACE], in_place=True)
         rmap = result.reaction_map
         if len(rmap) < n_before:

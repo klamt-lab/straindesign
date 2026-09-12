@@ -2248,6 +2248,25 @@ def simplify_model_gprs(model, budget=50000):
     logging.info('  GPR rule simplification: %d rules, %d rewritten.' % (n, nchg))
 
 
+def _detach_gprs(model):
+    """Clear every reaction's GPR and its gene links, as ``gene_reaction_rule = ''`` on each reaction
+    would, without parsing or copying a rule per reaction. Genes stay in the model."""
+    from cobra.core.gene import GPR
+    for r in model.reactions:
+        for g in r._genes:
+            g._reaction.discard(r)
+        r._genes = set()
+        r._gpr = GPR()
+
+
+def _reattach_gpr(rxn, gpr, genes):
+    """Give ``rxn`` back a GPR object and gene links taken from it before _detach_gprs."""
+    rxn._gpr = gpr
+    rxn._genes = set(genes)
+    for g in genes:
+        g._reaction.add(rxn)
+
+
 def _rename_lumped(reac_set, reac_map_exp):
     """Carry a set of reaction ids through one compression step, in place."""
     if reac_set is None:
@@ -2369,25 +2388,31 @@ def compress_model_coupled(model, propagate_gpr=False, protected_reactions=set()
     with suppress_lp_context(model):
         # Save GPR AST bodies before compression clears them
         if propagate_gpr:
-            saved_gpr_bodies = {r.id: r.gpr.body for r in model.reactions}
+            saved_gprs = {r.id: (r._gpr, r._genes, r.gene_reaction_rule) for r in model.reactions}
 
         # Gene rules are cleared here and re-derived below from the saved ASTs, so a lumped
         # reaction's rule is the AND-combination of its members rather than one member's.
-        for r in model.reactions:
-            r.gene_reaction_rule = ''
+        _detach_gprs(model)
 
         result = compress_cobra_model(model, methods=CompressionMethod.standard(), in_place=True, protected_reactions=protected_reactions)
         reaction_map = result.reaction_map
 
-        # Propagate GPR rules: AND-combine contributing reactions' GPR ASTs
+        # Propagate GPR rules: AND-combine contributing reactions' GPR ASTs. A reaction whose
+        # rule comes out unchanged gets its own GPR object and gene links back instead of a
+        # re-parse through the cobra setter.
         if propagate_gpr:
             for cmp_id, orig_map in reaction_map.items():
                 try:
                     rxn = model.reactions.get_by_id(cmp_id)
                 except KeyError:
                     continue
-                gpr_bodies = [saved_gpr_bodies.get(orig_id) for orig_id in orig_map]
-                rxn.gene_reaction_rule = _combine_gprs(gpr_bodies, 'and')
+                gpr_bodies = [saved_gprs[orig_id][0].body if orig_id in saved_gprs else None for orig_id in orig_map]
+                combined = _combine_gprs(gpr_bodies, 'and')
+                saved = saved_gprs.get(cmp_id) if len(orig_map) == 1 else None
+                if saved is not None and combined == saved[2]:
+                    _reattach_gpr(rxn, saved[0], saved[1])
+                else:
+                    rxn.gene_reaction_rule = combined
 
     return reaction_map
 
@@ -2487,18 +2512,16 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False, ta
     # Set combined GPR rules on surviving reactions
     if propagate_gpr:
         for rxn, combined_gpr in group_gpr:
-            rxn.gene_reaction_rule = combined_gpr
+            if combined_gpr != rxn.gene_reaction_rule:
+                rxn.gene_reaction_rule = combined_gpr
 
     # Build compression map with flux-split fractions.
     # For parallel reactions, the compressed flux is the total through all
     # members.  Each member's fraction is proportional to |first_coeff|
     # (its stoichiometric scale relative to the representative).
     rational_map = {}
-    subT = np.zeros((old_num_reac, len(model.reactions)))
-    for i in range(subT.shape[1]):
+    for i in range(len(model.reactions)):
         group = subset_list[i]
-        for j in group:
-            subT[j, i] = 1
         if len(group) == 1:
             rational_map[model.reactions[i].id] = {old_reac_ids[group[0]]: Fraction(1)}
         else:
