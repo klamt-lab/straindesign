@@ -174,13 +174,11 @@ class Gurobi_MILP_LP(gp.Model):
             if milp_threads is not None:
                 self.params.Threads = milp_threads
             self.params.IntFeasTol = 1e-9  # (0 is not allowed by Gurobi)
-            # yield only optimal solutions in pool
-            # SD_POOL_OPEN: with a pinned or fully enumerated level every feasible design is wanted,
-            # so the gap has no filtering role; measured on cplex as the difference between a bare
-            # 101 and the 129 exhaustion certificate. Mirrored here so both solvers can be compared.
-            _open = bool(os.environ.get('SD_POOL_OPEN'))   # eps is refused on gurobi, so it must not open the gap here
-            self.params.PoolGap = grb.INFINITY if _open else 1e-9
-            self.params.PoolGapAbs = grb.INFINITY if _open else 1e-9
+            # yield only optimal solutions in pool. SD_POOL_OPEN is not read here for the same
+            # reason as in the cplex backend: the gap loses its filtering role only where the design
+            # cost is pinned, so enumerate_ksweep's level loop opens it through set_pool_gap.
+            self.params.PoolGap = 1e-9
+            self.params.PoolGapAbs = 1e-9
             self.params.MIPFocus = 0
         self.update()
 
@@ -446,6 +444,12 @@ class Gurobi_MILP_LP(gp.Model):
             gvars[i].VBasis = v
         for i, v in enumerate(basis['cbasis']):
             constrs[i].CBasis = v
+        self.update()
+
+    def set_pool_gap(self, open_gap):
+        """Open or close the solution pool's optimality gap (see the cplex backend)."""
+        self.params.PoolGap = grb.INFINITY if open_gap else 1e-9
+        self.params.PoolGapAbs = grb.INFINITY if open_gap else 1e-9
         self.update()
 
     def set_time_limit(self, t):

@@ -852,6 +852,12 @@ class SDMILP(SDProblem, MILP_LP):
         hit_timelimit = False
         sols = sparse.csr_matrix((0, self.num_z))
         logging.info('Enumerating strain designs (k-sweep) ...')
+        # Only here is the design cost pinned to a single value, so only here can the pool's
+        # optimality gap be opened without losing the ascending-cost order that makes an emitted
+        # design minimal. Everything above this line -- including every fallback to enumerate() --
+        # runs with the gap closed.
+        if os.environ.get('SD_POOL_OPEN'):
+            self.set_pool_gap(True)
         for k in range(1, k_max + 1):
             if sols.shape[0] >= self.max_solutions:
                 break
@@ -892,6 +898,10 @@ class SDMILP(SDProblem, MILP_LP):
                 if endtime - time.time() <= 0:
                     hit_timelimit = True
                 break
+        # The level rows keep their last value on the object, so leave the pool as every other
+        # caller expects to find it.
+        if os.environ.get('SD_POOL_OPEN'):
+            self.set_pool_gap(False)
         # Finalize status independently of the last populate's status.
         if hit_timelimit and sols.shape[0] > 0:
             status = TIME_LIMIT_W_SOL

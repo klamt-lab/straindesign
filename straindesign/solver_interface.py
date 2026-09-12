@@ -564,6 +564,20 @@ class MILP_LP(object):
         self.ub = ub
         self.backend.set_ub(ub)
 
+    def set_pool_gap(self, open_gap):
+        """Open or close the solution pool's optimality gap, where the backend has one.
+
+        A closed gap keeps only pool members at the current optimum. ``enumerate`` depends on that:
+        it is what makes designs arrive in ascending intervention cost, and the exclusion of a
+        design together with all of its supersets is only a minimality argument under that order.
+        Callers may open it where the design cost is pinned by a constraint and the objective can
+        therefore no longer separate the pool members that are wanted from those that are not.
+        Backends without a solution pool (glpk, scip) ignore this.
+        """
+        setter = getattr(self.backend, 'set_pool_gap', None)
+        if setter is not None:
+            setter(bool(open_gap))
+
     def set_time_limit(self, t):
         """Set the computation time limit (in seconds)"""
         # Floor at 1 ms before dispatching to any backend. The remaining-time passed by the
