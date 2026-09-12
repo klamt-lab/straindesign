@@ -769,3 +769,31 @@ def test_sos1_gate_rewrite_keeps_the_objective_row_full_width(monkeypatch, model
     assert ({'R4': -1.0} in sols)
     assert ({'R7': -1.0} in sols)
     assert ({'R10': -1.0} in sols)
+
+
+@pytest.mark.parametrize('ki_cost,max_cost,expected', [
+    ({'R1': 1.0, 'R2': -5.0, 'R3': 1.0, 'R4': 1.0}, 3, ['R1', 'R2', 'R4']),
+    ({'R1': 1.0, 'R2': -100.0, 'R3': 1.0, 'R4': 1.0}, -97, ['R1', 'R2', 'R4']),
+])
+@pytest.mark.timeout(60)
+def test_ksweep_falls_back_when_an_intervention_is_not_positively_priced(monkeypatch, curr_solver, ki_cost, max_cost,
+                                                                        expected):
+    """The k-sweep walks cost levels 1, 2, ... upward and asks for each level in turn. A design
+    whose total cost is zero or negative -- which one rewarding intervention is enough to produce
+    -- lies below every level the sweep visits, so the sweep returns none of them and the
+    enumeration silently comes back short. Only a budget whose costs are all positive can be
+    swept, so anything else has to fall back to plain populate.
+
+    Every benchmark prices interventions at 1, which is why this never showed up there."""
+    monkeypatch.setenv('SD_ENUM_KSWEEP', '1')
+    model = _two_route_network()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, PROTECT, constraints=['R4 >= 1'])],
+                                    max_cost=max_cost,
+                                    ki_cost=ki_cost,
+                                    solution_approach='populate',
+                                    solver=curr_solver,
+                                    compress=False)
+    designs = _designs(sol)
+    assert designs, 'the k-sweep returned no design at all; it swept levels the design sits below'
+    assert expected in designs, designs

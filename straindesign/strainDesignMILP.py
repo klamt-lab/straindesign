@@ -808,10 +808,15 @@ class SDMILP(SDProblem, MILP_LP):
         max_cost_finite = self.max_cost is not None and np.isfinite(self.max_cost)
         finite_costs = [c for c in self.cost if np.isfinite(c)]
         costs_integer = all(abs(c - round(c)) < 1e-9 for c in finite_costs)
-        if (not self.is_mcs_computation) or (not max_cost_finite) or (not costs_integer):
+        # The sweep walks cost levels 1, 2, ... upward, so a design whose total cost is zero or
+        # negative -- reachable as soon as one intervention is free or rewarding -- sits below
+        # every level it visits and is returned by none of them.
+        costs_positive = all(c > 0 for c in finite_costs)
+        if (not self.is_mcs_computation) or (not max_cost_finite) or (not costs_integer) \
+                or (not costs_positive):
             logging.warning("enum_method='ksweep' requires an MCS computation with a finite, "
-                            "integer-valued intervention cost budget; falling back to standard "
-                            "populate enumeration.")
+                            "positive, integer-valued intervention cost budget; falling back to "
+                            "standard populate enumeration.")
             return self.enumerate(**kwargs)
         # first check if strain doesn't already fulfill the strain design setup
         if self.verify_sd(sparse.csr_matrix((1, self.num_z)))[0]:
