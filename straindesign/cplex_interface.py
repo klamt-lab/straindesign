@@ -162,10 +162,20 @@ class Cplex_MILP_LP(Cplex):
             else:
                 self.indicator_constraints.add_batch(lin_expr=A, sense=sense, rhs=b, indvar=indvar, complemented=complem)
         # set parameters
-        self.set_log_stream(io.StringIO())  # don't show output stream
+        _logpath = os.environ.get('SD_CPLEX_LOG')
+        if _logpath:
+            # diagnostic tap: CPLEX's own node log carries per-call node and iteration counts
+            # without the callback that switches off dual presolve reductions
+            _fh = open(_logpath, 'a', buffering=1)
+            self.set_log_stream(_fh)
+            self.set_results_stream(_fh)
+            self.set_warning_stream(_fh)
+            self.parameters.mip.display.set(2)
+        else:
+            self.set_log_stream(io.StringIO())  # don't show output stream
+            self.set_warning_stream(io.StringIO())
+            self.set_results_stream(io.StringIO())
         self.set_error_stream(io.StringIO())
-        self.set_warning_stream(io.StringIO())
-        self.set_results_stream(io.StringIO())
         self.parameters.simplex.tolerances.optimality.set(1e-9)
         self.parameters.simplex.tolerances.feasibility.set(1e-9)
 
