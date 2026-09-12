@@ -325,7 +325,9 @@ def speedy_fva(model, **kwargs):
         running FVA, then expand results back.  None = auto (True if n >= 200).
     precheck : bool or None, optional (default None)
         Run global scan LPs (min/max sum(|x|)) in Phase 1 to pre-resolve many
-        objectives without individual LPs.  None = auto (always True).
+        objectives without individual LPs.  None = auto: on when Phase 2 would run
+        its objectives sequentially, off when they go to the worker pool (where the
+        scan's own LPs cost more than the objectives they remove).
     threads : int or None, optional (default None)
         Number of parallel workers for Phase 2 dispatch.  None = auto
         (Configuration().processes if n >= 1000, else 1).
@@ -349,8 +351,6 @@ def speedy_fva(model, **kwargs):
     # Auto-tuning
     if compress is None:
         compress = n_original >= 200
-    if precheck is None:
-        precheck = True
     if threads is None:
         # Worker cap only; whether Phase 2 actually goes parallel is decided
         # below from n_remaining (post-scan) against _PARALLEL_PHASE2_MIN.
@@ -482,6 +482,15 @@ def speedy_fva(model, **kwargs):
         res_max[newly_max] = True
         incumbent_max[newly_max] = 0.0
         total_bound_resolved += int(newly_max.sum())
+
+    if precheck is None:
+        # The scan certifies a direction by witnessing a flux that already sits at its bound --
+        # something phase 2 establishes anyway when it solves that direction. Its own LPs are
+        # full-model and cost about a second each, so it repays them only against the sequential
+        # loop; against pooled LPs a single push round costs more than the few hundred objectives
+        # it removes. Pass precheck explicitly to override.
+        n_unresolved = 2 * n_orig - int(res_max.sum() + res_min.sum())
+        precheck = not (threads > 1 and n_unresolved >= _PARALLEL_PHASE2_MIN)
 
     if precheck:
         scan_lp, n_scan = _build_abssum_lp(A_eq, b_eq, A_ineq, b_ineq, lb, ub, solver)
