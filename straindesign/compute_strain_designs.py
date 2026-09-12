@@ -38,6 +38,32 @@ from straindesign.networktools import   remove_ext_mets, bound_blocked_or_irreve
 from straindesign.compression import simplify_model_gprs
 
 
+def _protected_from_compression(kwargs):
+    """Reactions the caller wants kept intact through compression, by id.
+
+    Compression is free to lump anything it can prove equivalent, but a caller may need a
+    reaction to survive as ITSELF -- because something outside the model is stated in terms of it.
+    Gene-level reconstruction is the case this was added for: the gene pseudo-reactions carry the
+    evidence and the result, so they must not be merged, while the metabolic network around them
+    still can be.
+    """
+    return set(kwargs.get(PROTECTED_REACTIONS) or ())
+
+
+def _collect_core_reacs(sd_modules):
+    """CarveMe core reactions, which must survive compression as themselves.
+
+    Two reasons, and either alone is sufficient. Lumped into a group, "this reaction carries flux"
+    silently weakens to "the group does". And a lump's threshold has to be rescaled by the lumping
+    factor, which is how a demand of 1e-3 turns into one at the solver's feasibility tolerance.
+    """
+    reacs = set()
+    for m in sd_modules:
+        if m[MODULE_TYPE] == CARVEME and m[CORE_REACTIONS]:
+            reacs.update(m[CORE_REACTIONS])
+    return reacs
+
+
 def _collect_no_par_compress_reacs(sd_modules):
     """Collect reaction IDs referenced in SD modules that must not be parallel-compressed."""
     reacs = set()
@@ -52,6 +78,7 @@ def _collect_no_par_compress_reacs(sd_modules):
                 if p in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                     for k in param.keys():
                         reacs.add(k)
+    reacs |= _collect_core_reacs(sd_modules)
     return reacs
 
 
@@ -391,6 +418,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
+        PROTECTED_REACTIONS,
         SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'dump_preprocessed',
         'skip_preprocessing_fvas'
     }
@@ -441,16 +469,20 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     for key, value in dict(kwargs).items():
         if key not in allowed_keys:
             raise Exception("Key " + key + " is not supported.")
+        # the cost dictionaries are edited from here on -- genes are renamed, compressed
+        # reactions are relabelled, entries are dropped -- so they are copied rather than used
+        # in place. Without this a caller's dictionary comes back altered, which matters when
+        # the same one is used for a second computation.
         if key == KOCOST:
-            uncmp_ko_cost = value
+            uncmp_ko_cost = deepcopy(value)
         if key == KICOST:
-            uncmp_ki_cost = value
+            uncmp_ki_cost = deepcopy(value)
         if key == GKOCOST:
-            uncmp_gko_cost = value
+            uncmp_gko_cost = deepcopy(value)
         if key == GKICOST:
-            uncmp_gki_cost = value
+            uncmp_gki_cost = deepcopy(value)
         if key == REGCOST:
-            uncmp_reg_cost = value
+            uncmp_reg_cost = deepcopy(value)
     if (GKOCOST in kwargs or GKICOST in kwargs or
         ('gene_kos' in kwargs and kwargs['gene_kos'])) and hasattr(model, 'genes') and model.genes:
         kwargs['gene_kos'] = True
@@ -465,15 +497,41 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             has_gene_names = True
         else:
             has_gene_names = False
+        # Whether costs are keyed by gene name or by gene id is inferred, and a single gene whose
+        # name happens to equal its id is enough to tip that inference. Keys that then match
+        # nothing are dropped in silence: those genes are never targetable, and the search returns
+        # a design that looks optimal because it was never offered the alternatives. Measured on
+        # e_coli_core, where s0001.name == s0001.id: 136 of 137 gene costs were discarded and the
+        # reported optimum was -0.3 against a true -69.
+        # Only the gene cost dicts: regulatory entries are expressions ('g1 <= 0'), not gene keys.
+        _gene_cost_keys = set(kwargs.get(GKOCOST) or {}) | set(kwargs.get(GKICOST) or {})
+        if _gene_cost_keys:
+            _known = {g.name for g in model.genes} if has_gene_names else {g.id for g in model.genes}
+            _unmatched = sorted(_gene_cost_keys - _known)
+            if _unmatched:
+                raise Exception(
+                    '%d of %d gene cost entries match no gene by %s: %s. StrainDesign keys gene '
+                    'costs by %s here; keying them the other way silently drops them.' %
+                    (len(_unmatched), len(_gene_cost_keys), 'name' if has_gene_names else 'id',
+                     ', '.join(_unmatched[:5]) + ('...' if len(_unmatched) > 5 else ''),
+                     'name' if has_gene_names else 'id'))
         if has_gene_names and any([True for g in model.genes if g.name[0].isdigit()]):
             logging.warning("Gene names must not start with a digit. Inserting prefix 'g' where necessary.")
             for g, v in {g.id: 'g' + g.name for g in model.genes if g.name[0].isdigit()}.items():
                 model.genes.get_by_id(g).name = v
-        if GKOCOST not in kwargs or not kwargs[GKOCOST]:
+        # Every gene is a knockout candidate by default -- but only when the caller has not asked
+        # for gene knock-INS, and only when they did not pass a gko_cost of their own. Defaulting
+        # regardless made an empty dict indistinguishable from an omitted one, so "gene knock-ins
+        # and no gene knockouts" could not be expressed at all: the defaulted knockouts collided
+        # with the knock-ins and the overlap check rejected the setup. This mirrors what the
+        # reaction-level costs already do.
+        if GKOCOST not in kwargs and not (GKICOST in kwargs and kwargs[GKICOST]):
             if has_gene_names:  # if gene names are defined, use them instead of ids
                 uncmp_gko_cost = {k: 1.0 for k in model.genes.list_attr('name')}
             else:
                 uncmp_gko_cost = {k: 1.0 for k in model.genes.list_attr('id')}
+        elif GKOCOST not in kwargs or not kwargs[GKOCOST]:
+            uncmp_gko_cost = {}
         if GKICOST not in kwargs or not kwargs[GKICOST]:
             uncmp_gki_cost = {}
     else:
@@ -487,6 +545,11 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     # keeps mixed problems -- "R2 may be added, anything else may be removed" -- intact.
     if KOCOST not in kwargs and not kwargs['gene_kos']:
         named_ki = set(kwargs.get(KICOST) or {})
+        # A CarveMe core reaction must run whenever it is present, so it cannot also be a knockout
+        # candidate -- knocking it out is the one thing its must-run condition forbids. Left in the
+        # default ko_cost, a core reaction the caller did not name as a candidate became knockable
+        # by accident and the module rejected the setup, blaming a ko_cost the caller never set.
+        named_ki |= _collect_core_reacs(sd_modules)
         uncmp_ko_cost = {k: 1.0 for k in model.reactions.list_attr('id') if k not in named_ki}
     elif KOCOST not in kwargs or not kwargs[KOCOST]:
         uncmp_ko_cost = {}
@@ -517,9 +580,23 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     # designs without any of it, so this is a speed/precomputation trade, not a semantic one.
     # It pays to skip when the model is large and the design problem is easy -- gap-filling a
     # universe merge spends 252 s of 273 s in FVA for information the MILP does not need.
-    skip_fvas = bool(kwargs.pop('skip_preprocessing_fvas', False))
+    # A CarveMe module reconstructs from a universe, where there is little to compress and where
+    # the FVAs would scan reactions most of which will not be bought. Both default off for it --
+    # they stay available, and asking for either explicitly is honoured rather than overridden.
+    _is_carveme = any(m[MODULE_TYPE] == CARVEME for m in sd_modules)
+    skip_fvas = bool(kwargs.pop('skip_preprocessing_fvas', _is_carveme))
     if skip_fvas:
         logging.info('  Skipping preprocessing FVAs (skip_preprocessing_fvas).')
+    elif _is_carveme:
+        logging.warning('  The preprocessing FVAs are on for a CarveMe module. It does not need '
+                        'them -- its must-run conditions are indicator constraints and take no '
+                        'bound from them.')
+    if 'compress' not in kwargs:
+        kwargs['compress'] = not _is_carveme
+    elif _is_carveme and kwargs['compress']:
+        logging.warning('  Compression is on for a CarveMe module. Core reactions are kept out of '
+                        'both lumpings so the reconstruction stays exact, but on a universe this '
+                        'usually costs more time than it saves.')
 
     _free = [k for k, v in list(uncmp_ko_cost.items()) + list(uncmp_ki_cost.items()) +
              list(locals().get('uncmp_gko_cost', {}).items()) + list(locals().get('uncmp_gki_cost', {}).items())
@@ -533,8 +610,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     orig_ko_cost = deepcopy(uncmp_ko_cost)
     orig_ki_cost = deepcopy(uncmp_ki_cost)
     orig_reg_cost = deepcopy(uncmp_reg_cost)
-    if 'compress' not in kwargs:
-        kwargs['compress'] = True
     if kwargs['gene_kos']:
         orig_gko_cost = uncmp_gko_cost
         orig_gki_cost = uncmp_gki_cost
@@ -574,8 +649,9 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         uncmp_reg_cost.clear()
         uncmp_reg_cost.update(_immediate_reg)
     # --- COMPRESS #1: on model WITHOUT gene pseudoreactions ---
-    if kwargs['compress'] is True or kwargs['compress'] is None:
+    if kwargs['compress'] in (True, None, COUPLED):
         no_par_compress_reacs = _collect_no_par_compress_reacs(sd_modules)
+        no_par_compress_reacs |= _protected_from_compression(kwargs)
         # Keep reactions controlled by a gene that carries a REGULATORY intervention intact
         # through COMPRESS#1 (exempt from merging). Otherwise, if a gene controls several
         # reactions that get merged before GPR integration, the merged reaction is hooked to
@@ -583,7 +659,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         # (g <= X / g >= X) is mis-scaled vs the uncompressed model. They are merged correctly
         # in COMPRESS#2 once the g_gene metabolite exists. Gene KOs (=0) and gene KIs
         # (unbounded when added) are unaffected, so only regulatory genes need protecting.
-        no_coupled_compress_reacs = set()
+        no_coupled_compress_reacs = _collect_core_reacs(sd_modules) | _protected_from_compression(kwargs)
         if _deferred_reg:
             import re as _re
             _gene_by_id = {g.id: g for g in cmp_model.genes}
@@ -628,7 +704,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                                        no_par_compress_reacs,
                                        propagate_gpr=True,
                                        no_coupled_compress_reacs=no_coupled_compress_reacs,
-                                       targetable_rxns=targetable_rxns)
+                                       targetable_rxns=targetable_rxns,
+                                       mode=COUPLED if kwargs['compress'] == COUPLED else 'full')
         sd_modules = compress_modules(sd_modules, cmp_mapReac_1)
         # Compress reaction + regulatory costs only (gene costs not yet added)
         cmp_ko_cost, cmp_ki_cost, cmp_mapReac_1 = compress_ki_ko_cost(uncmp_ko_cost, uncmp_ki_cost, cmp_mapReac_1)
@@ -658,7 +735,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         # before the count log, lets that log reflect the fully reduced gene/gpr counts and the
         # combined elapsed time.
         t_gpr = time.time()
-        compress_gpr = kwargs['compress'] is True or kwargs['compress'] is None
+        compress_gpr = kwargs['compress'] in (True, None, COUPLED)
         if compress_gpr:
             num_genes = len(cmp_model.genes)
             num_gpr = len([True for r in cmp_model.reactions if r.gene_reaction_rule])
@@ -706,15 +783,18 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         uncmp_ko_cost.update(reg_costs)
         uncmp_reg_cost.update(_deferred_reg)  # now mutated by extend_model_regulatory
     # --- COMPRESS #2: after GPR extension ---
-    if kwargs['compress'] is True or kwargs['compress'] is None:
+    if kwargs['compress'] in (True, None, COUPLED):
         logging.info('Compressing after GPR extension (' + str(len(cmp_model.reactions)) + ' reactions).')
         t0 = time.time()
         no_par_compress_reacs = _collect_no_par_compress_reacs(sd_modules)
+        no_par_compress_reacs |= _protected_from_compression(kwargs)
         cmp_mapReac_2 = compress_model(
             cmp_model,
             no_par_compress_reacs | _free_par_reacs(cmp_ko_cost, cmp_ki_cost),
             targetable_rxns=set(cmp_ko_cost) | set(cmp_ki_cost),
-            no_coupled_compress_reacs=_free_coupled_reacs(cmp_ko_cost, cmp_ki_cost),
+            no_coupled_compress_reacs=_free_coupled_reacs(cmp_ko_cost, cmp_ki_cost) |
+            _collect_core_reacs(sd_modules) | _protected_from_compression(kwargs),
+            mode=COUPLED if kwargs['compress'] == COUPLED else 'full',
         )
         sd_modules = compress_modules(sd_modules, cmp_mapReac_2)
         cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2 = compress_ki_ko_cost(cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2)
@@ -829,6 +909,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     kwargs1[KICOST] = cmp_ki_cost
     kwargs1['essential_kis'] = essential_kis
     kwargs1.pop('compress')
+    if PROTECTED_REACTIONS in kwargs1:
+        kwargs1.pop(PROTECTED_REACTIONS)
     if GKOCOST in kwargs1:
         kwargs1.pop(GKOCOST)
     if GKICOST in kwargs1:

@@ -2236,7 +2236,7 @@ def _rename_lumped(reac_set, reac_map_exp):
 
 
 def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False, no_coupled_compress_reacs=set(),
-                   targetable_rxns=None):
+                   targetable_rxns=None, mode='full'):
     """Compress a metabolic model using multiple techniques.
 
     Performs blocked reaction removal, conservation relation removal, and
@@ -2256,6 +2256,15 @@ def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False, no_c
             Empty GPR rules are correctly handled: skipped in AND (always
             active), and absorb in OR (result is always active).
             Uses sympy for boolean simplification. Default False.
+        mode: 'full' (default) alternates parallel and coupled lumping to a fixed point.
+            'coupled' removes blocked reactions and conservation relations and runs a single
+            coupled pass, then stops -- no parallel lumping and no second cycle. Much cheaper,
+            but note which intervention costs it compounds: a lump's cost is the SUM of its
+            members' where every member has to be intervened on to intervene on the lump, and
+            the MINIMUM where any one member suffices. That makes it knockouts that compound
+            under parallel lumping and knock-ins that compound under coupled lumping (see
+            compress_ki_ko_cost). So 'coupled' spares knockout costs and not knock-in costs;
+            for a knock-in-dominated problem it is parallel lumping that is the gentle one.
 
     Returns:
         list of dict: Compression maps for reversing each compression step
@@ -2275,14 +2284,22 @@ def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False, no_c
             numr = len(model.reactions)
 
             # 1. Parallel (cheap — hash-based, no RREF)
-            LOG.info(f'  Compression {run}: Lumping parallel reactions.')
-            reac_map_exp = compress_model_parallel(model, no_par_compress_reacs, propagate_gpr=propagate_gpr,
-                                                   targetable_rxns=targetable)
-            parallel_changed = numr > len(reac_map_exp)
-            if parallel_changed:
-                LOG.info(f'  Reduced to {len(reac_map_exp)} reactions.')
-                cmp_mapReac.append({"reac_map_exp": reac_map_exp, "parallel": True})
-                _rename_lumped(targetable, reac_map_exp)
+            parallel_changed = False
+            if mode != 'coupled':
+                LOG.info(f'  Compression {run}: Lumping parallel reactions.')
+                reac_map_exp = compress_model_parallel(model, no_par_compress_reacs, propagate_gpr=propagate_gpr,
+                                                       targetable_rxns=targetable)
+                parallel_changed = numr > len(reac_map_exp)
+                if parallel_changed:
+                    LOG.info(f'  Reduced to {len(reac_map_exp)} reactions.')
+                    cmp_mapReac.append({"reac_map_exp": reac_map_exp, "parallel": True})
+                    _rename_lumped(targetable, reac_map_exp)
+                    # Carry coupled-protection onto the lump. Without this a coupled-protected
+                    # reaction that gets parallel-merged here is coupled-merged in the next cycle
+                    # under its new name, which is exactly what the protection forbids. (The
+                    # mirror rename for no_par_compress_reacs already happens after the coupled
+                    # step below.)
+                    _rename_lumped(no_coupled_compress_reacs, reac_map_exp)
 
             # 2. Conservation relation removal (reduces S rows for RREF)
             remove_conservation_relations(model)
@@ -2305,6 +2322,9 @@ def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False, no_c
             if coupled_changed:
                 LOG.info(f'  Reduced to {len(reac_map_exp)} reactions.')
                 cmp_mapReac.append({"reac_map_exp": reac_map_exp, "parallel": False})
+
+            if mode == 'coupled':  # one coupled pass, nothing to alternate with
+                break
 
             run += 1
 
