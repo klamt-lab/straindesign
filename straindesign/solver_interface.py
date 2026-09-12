@@ -384,14 +384,22 @@ class MILP_LP(object):
                     eqrows.append((idx + [sp, sn], dat + [-1.0, 1.0])); eqrhs.append(b)
                     self.sos1.append([sp, sn])      # complementarity pins them to the two parts
                     self.sos1.append([g, sp, sn])
+                elif slack_ind:
+                    # A free slack gated as an equality is the one gate a solver cannot settle by
+                    # bound propagation. Splitting it into non-negative parts makes both gated
+                    # variables sign-constrained, so the gate collapses to two fixings -- the
+                    # reversible-variable split that Klamt et al. 2020 measure at 2.9-5.6x.
+                    sp, sn = add_col(0.0, inf, 'C'), add_col(0.0, inf, 'C')
+                    eqrows.append((idx + [sp, sn], dat + [-1.0, 1.0])); eqrhs.append(b)
+                    if not os.environ.get('SD_SOS1_NOPAIR'):
+                        self.sos1.append([sp, sn])
+                    for part in (sp, sn):
+                        ind_rows.append([part]); ind_binv.append(z); ind_sense.append('L')
+                        ind_b.append(0.0); ind_val.append(val)
                 else:
                     sf = add_col(-inf, inf, 'C')
                     eqrows.append((idx + [sf], dat + [-1.0])); eqrhs.append(b)
-                    if slack_ind:
-                        ind_rows.append([sf]); ind_binv.append(z); ind_sense.append('E')
-                        ind_b.append(0.0); ind_val.append(val)
-                    else:
-                        self.sos1.append([g, sf])
+                    self.sos1.append([g, sf])
             else:
                 # A one-sided gate needs slack, but a slack defined by an INEQUALITY is free above
                 # the row activity: it sits in one row with no objective, so every gate-off
