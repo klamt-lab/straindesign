@@ -4,6 +4,15 @@ bumps the version, formats the repository, creates the tag and release, and
 uploads to PyPI and the `cnapy` Anaconda channel. The steps below are the manual
 equivalent, for the case where the action cannot be used.
 
+The conda-forge package (`straindesign-cobra`, feedstock
+https://github.com/conda-forge/straindesign-cobra-feedstock) is not uploaded by
+us. conda-forge's bot watches PyPI and, a few hours after a release lands
+there, opens a version-bump pull request on the feedstock. A feedstock
+maintainer reviews the dependency list against `pyproject.toml`, waits for
+the feedstock CI and merges; the package appears on conda-forge shortly after.
+Only dependency or Python-version changes need a manual edit of the
+feedstock's `recipe/recipe.yaml` in that pull request.
+
 ## In any case:
 1. Update the version number in `pyproject.toml`, `conda-recipe/meta.yaml` and
    `docs/source/conf.py`. `python .github/update_version.py <file> <version>`
