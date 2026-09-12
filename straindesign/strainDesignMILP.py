@@ -337,6 +337,9 @@ class SDMILP(SDProblem, MILP_LP):
 
     def fixObjective(self, c, cx):
         """Enforce a certain objective function and value (or any other constraint of the form c*x <= cx)"""
+        n = self.A_ineq.shape[1]
+        if len(c) < n:  # columns appended after construction (gate slacks) carry no objective
+            c = list(c) + [0.0] * (n - len(c))
         self.set_ineq_constraint(self.idx_row_obj, c, cx)
 
     def resetObjective(self):

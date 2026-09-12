@@ -779,11 +779,18 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         # module and flows to SDMILP via sd_modules. Scoping to knockable reactions keeps
         # the LP count down (and only knockable reactions carry z-links to tighten anyway).
         for module in sd_modules:
+            fva_scope = knockable_ids
+            if module[MODULE_TYPE] == SUPPRESS and os.environ.get('SD_SUPPRESS_RELAX_BOUNDS'):
+                # the redundant-bound relaxation needs the range of every finitely bounded reaction
+                fva_scope = sorted(set(knockable_ids) | {
+                    r.id for r in cmp_model.reactions
+                    if (r.lower_bound != 0.0 and not np.isinf(r.lower_bound)) or
+                       (r.upper_bound != 0.0 and not np.isinf(r.upper_bound))})
             flux_limits = fva(cmp_model,
                               solver=kwargs[SOLVER],
                               constraints=module[CONSTRAINTS],
                               compress=False,
-                              reaction_list=knockable_ids)
+                              reaction_list=fva_scope)
             module['fva_bounds'] = flux_limits
             essentials_in_module = _essentials_from_limits(flux_limits)
             if module[MODULE_TYPE] == SUPPRESS:
