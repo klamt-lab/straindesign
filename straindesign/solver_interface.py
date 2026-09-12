@@ -347,6 +347,7 @@ class MILP_LP(object):
         # one sign-constrained variable is a bound change for the node LP, where a gate on a
         # multi-variable row activates a row.
         slack_ind = bool(os.environ.get('SD_GATE_SLACK_IND'))
+        split_dir = slack_ind and bool(os.environ.get('SD_GATE_SPLIT_DIR'))
         ind_rows, ind_binv, ind_sense, ind_b, ind_val = [], [], [], [], []
         newcols_lb, newcols_ub, newcols_vt = [], [], []
         rows, rhs, senses = [], [], []
@@ -396,6 +397,23 @@ class MILP_LP(object):
                     for part in (sp, sn):
                         ind_rows.append([part]); ind_binv.append(z); ind_sense.append('L')
                         ind_b.append(0.0); ind_val.append(val)
+                    if split_dir:
+                        # With the gate off the row is free in both directions, but any one
+                        # certificate uses only one of them. A cost-free direction binary lets the
+                        # solver fix the unused part by branching instead of by an LP re-solve;
+                        # the union over both settings is the same relaxation, so designs are
+                        # unchanged. This is CellNetAnalyzer's two-binary split without a second
+                        # intervention variable.
+                        d = add_col(0.0, 1.0, 'B')
+                        ind_rows.append([sn]); ind_binv.append(d); ind_sense.append('L')
+                        ind_b.append(0.0); ind_val.append(0)
+                        ind_rows.append([sp]); ind_binv.append(d); ind_sense.append('L')
+                        ind_b.append(0.0); ind_val.append(1)
+                        # Only a knocked-out reaction has a direction to choose. Left free on the
+                        # gate-on side, both settings satisfy the model and the pool enumerates
+                        # every combination of them.
+                        rows.append(([d, z], [1.0, -1.0] if val == 0 else [1.0, 1.0]))
+                        rhs.append(0.0 if val == 0 else 1.0); senses.append('L')
                 else:
                     sf = add_col(-inf, inf, 'C')
                     eqrows.append((idx + [sf], dat + [-1.0])); eqrhs.append(b)
