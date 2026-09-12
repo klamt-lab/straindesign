@@ -798,6 +798,16 @@ class SDProblem:
                 c_i = -c_i
             c_i = c_i.toarray()[0].tolist()
 
+        # A PROTECT block asks only that SOME flux exists in the desired region, so one knockout
+        # pattern admits a continuum of flux vectors and populate can enumerate many of them for
+        # one design. A negligible cost on the sign-constrained flux columns of that block picks a
+        # single vertex per pattern. Only columns with lb >= 0 carry it: a cost on a free column
+        # would make the block unbounded.
+        _flux_eps = float(os.environ.get('SD_PROTECT_FLUX_EPS', 0) or 0)
+        if _flux_eps and sd_module[MODULE_TYPE] == PROTECT and sd_module[INNER_OBJECTIVE] is None:
+            c_i = [ci + (_flux_eps if (ci == 0.0 and lo >= 0.0) else 0.0)
+                   for ci, lo in zip(c_i, lb_i)]
+
         # 3. Add module to global MILP
         self.z_map_constr_ineq = sparse.hstack((self.z_map_constr_ineq, z_map_constr_ineq_i)).tocsc()
         self.z_map_constr_eq = sparse.hstack((self.z_map_constr_eq, z_map_constr_eq_i)).tocsc()
