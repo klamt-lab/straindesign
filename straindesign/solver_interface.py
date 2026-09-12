@@ -342,6 +342,12 @@ class MILP_LP(object):
         ic = self.indic_constr
         A = sparse.csr_matrix(ic.A)
         n0 = A.shape[1]
+        # SD_GATE_SLACK_IND keeps the slack rewrite but gates the slack with an indicator on that
+        # single variable instead of an SOS1 set -- the shape CellNetAnalyzer's dual has. A gate on
+        # one sign-constrained variable is a bound change for the node LP, where a gate on a
+        # multi-variable row activates a row.
+        slack_ind = bool(os.environ.get('SD_GATE_SLACK_IND'))
+        ind_rows, ind_binv, ind_sense, ind_b, ind_val = [], [], [], [], []
         newcols_lb, newcols_ub, newcols_vt = [], [], []
         rows, rhs, senses = [], [], []
         eqrows, eqrhs = [], []
@@ -353,7 +359,9 @@ class MILP_LP(object):
 
         for k in range(A.shape[0]):
             z, val, sense, b = int(ic.binv[k]), int(ic.indicval[k]), str(ic.sense[k]), float(ic.b[k])
-            if val == 1:
+            if val == 1 or slack_ind:
+                # an indicator carries its own trigger value, so the complement column only exists
+                # for the SOS1 form, whose sets must vanish on the gate-on side
                 g = z
             else:
                 if z not in comp:
@@ -379,7 +387,11 @@ class MILP_LP(object):
                 else:
                     sf = add_col(-inf, inf, 'C')
                     eqrows.append((idx + [sf], dat + [-1.0])); eqrhs.append(b)
-                    self.sos1.append([g, sf])
+                    if slack_ind:
+                        ind_rows.append([sf]); ind_binv.append(z); ind_sense.append('E')
+                        ind_b.append(0.0); ind_val.append(val)
+                    else:
+                        self.sos1.append([g, sf])
             else:
                 # A one-sided gate needs slack, but a slack defined by an INEQUALITY is free above
                 # the row activity: it sits in one row with no objective, so every gate-off
@@ -396,7 +408,12 @@ class MILP_LP(object):
                     self.sos1.append([vp, vn])
                 # a*y = vn - vp after complementarity, so vn is the positive part: an 'L' gate
                 # (a*y <= 0 when on) kills vn, a 'G' gate kills vp
-                self.sos1.append([g, vn] if sense == 'L' else [g, vp])
+                killed = vn if sense == 'L' else vp
+                if slack_ind:
+                    ind_rows.append([killed]); ind_binv.append(z); ind_sense.append('L')
+                    ind_b.append(0.0); ind_val.append(val)
+                else:
+                    self.sos1.append([g, killed])
 
         k_new = len(newcols_lb)
         # SD_SOS1_SLACK_EPS puts a negligible cost on every gate slack so the LP prefers one
@@ -439,9 +456,17 @@ class MILP_LP(object):
         ge_b = [-x for x, sn in zip(rhs, senses) if sn == 'G']
         self.A_ineq, self.b_ineq = stack(self.A_ineq, self.b_ineq, le + ge, le_b + ge_b, False)
         self.A_eq, self.b_eq = stack(self.A_eq, self.b_eq, eqrows, eqrhs, True)
-        logging.info('  Gates as SOS1: %d indicator constraints -> %d SOS1 sets, %d new columns '
-                     '(%d complement binaries).' % (A.shape[0], len(self.sos1), k_new, len(comp)))
-        self.indic_constr = None
+        if slack_ind:
+            m = sparse.lil_matrix((len(ind_rows), ncol))
+            for r, cols in enumerate(ind_rows):
+                m[r, cols[0]] = 1.0
+            self.indic_constr = IndicatorConstraints(ind_binv, m.tocsr(), ind_b, ''.join(ind_sense), ind_val)
+            logging.info('  Gates as slack indicators: %d row gates -> %d single-variable gates, '
+                         '%d SOS1 sets kept, %d new columns.' % (A.shape[0], len(ind_rows), len(self.sos1), k_new))
+        else:
+            logging.info('  Gates as SOS1: %d indicator constraints -> %d SOS1 sets, %d new columns '
+                         '(%d complement binaries).' % (A.shape[0], len(self.sos1), k_new, len(comp)))
+            self.indic_constr = None
 
     def solve(self) -> Tuple[List, float, float]:
         """Solve the MILP or LP
