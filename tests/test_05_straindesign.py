@@ -736,3 +736,36 @@ def test_final_status_does_not_promote_a_failed_enumeration():
     assert _final_status(ERROR, False) == ERROR
     assert _final_status(INFEASIBLE, False) == INFEASIBLE
     assert _final_status(OPTIMAL, True) == OPTIMAL
+
+
+@pytest.mark.parametrize('approach', ['any', 'best'])
+@pytest.mark.timeout(120)
+def test_sos1_gate_rewrite_keeps_the_objective_row_full_width(monkeypatch, model_small_example, approach):
+    """The SOS1 gate rewrite appends slack columns to the matrix after ``c_bu`` was stored, so an
+    objective vector of the original width no longer spans a row. ``any`` and ``best`` re-write the
+    objective row through fixObjective and raised ``ValueError: shape mismatch in assignment``
+    before the solver was ever called; ``populate`` never takes that path, which is why only these
+    two approaches broke. The designs asserted here are the same ones test_mcs expects."""
+    solver = next((s for s in [CPLEX, GUROBI] if s in sd.avail_solvers), None)
+    if solver is None:
+        pytest.skip('the SOS1 gate rewrite is implemented for cplex and gurobi only')
+    monkeypatch.setenv('SD_SOS1_GATES', '1')
+    modules = [sd.SDModule(model_small_example, SUPPRESS, constraints=["R3 - 0.5 R1 <= 0.0", "R2 <= 0", "R1 >= 0.1"])]
+    modules += [
+        sd.SDModule(model_small_example, SUPPRESS, constraints=["1.0 R3 - 0.5 R1 - 0.5 R2 <= 0.0 ", "1.0 R2 >= 0.0 ", "1.0 R1 >= 0.1 "])
+    ]
+    modules += [sd.SDModule(model_small_example, PROTECT, constraints=["1.0 R3 >= 1.0 "])]
+    sols = sd.compute_strain_designs(model_small_example,
+                                     sd_modules=modules,
+                                     max_cost=inf,
+                                     max_solutions=inf,
+                                     solution_approach=approach,
+                                     ki_cost={'R2': 1},
+                                     solver=solver,
+                                     milp_threads=1,
+                                     compress=False).get_reaction_sd()
+    assert ({'R1': -1.0, 'R2': 1.0} in sols)
+    assert ({'R6': -1.0, 'R8': -1.0} in sols)
+    assert ({'R4': -1.0} in sols)
+    assert ({'R7': -1.0} in sols)
+    assert ({'R10': -1.0} in sols)
