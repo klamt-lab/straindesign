@@ -863,7 +863,7 @@ class SDMILP(SDProblem, MILP_LP):
         # optimality gap be opened without losing the ascending-cost order that makes an emitted
         # design minimal. Everything above this line -- including every fallback to enumerate() --
         # runs with the gap closed.
-        if os.environ.get('SD_POOL_OPEN'):
+        if os.environ.get('SD_POOL_OPEN', '1').lower() not in ('0', 'off', 'false'):
             self.set_pool_gap(True)
         # The dual_tilt kwarg is the supported switch; SD_DUAL_TILT overrides it for experiments.
         _tilt = os.environ.get('SD_DUAL_TILT') or getattr(self, 'dual_tilt', None)
@@ -940,8 +940,9 @@ class SDMILP(SDProblem, MILP_LP):
                         hit_timelimit = True
                         break
                     # the level is pinned, so a populate that certified its optimum exhausted
-                    # leaves nothing for the confirmatory pass to find
-                    if os.environ.get('SD_POOL_CERT') and self.pool_exhausted:
+                    # (CPLEX 129/130; Gurobi only under SD_GRB_POOL_TRUST) leaves nothing for the
+                    # confirmatory pass to find. SD_POOL_CERT=off runs that pass regardless.
+                    if os.environ.get('SD_POOL_CERT', 'skip').lower() not in ('0', 'off', 'false') and self.pool_exhausted:
                         break
                 elif status == ERROR:
                     # A solver failure is not an empty level. Treating it as one silently drops
@@ -960,7 +961,7 @@ class SDMILP(SDProblem, MILP_LP):
                 break
         # The level rows keep their last value on the object, so leave the pool as every other
         # caller expects to find it.
-        if os.environ.get('SD_POOL_OPEN'):
+        if os.environ.get('SD_POOL_OPEN', '1').lower() not in ('0', 'off', 'false'):
             self.set_pool_gap(False)
         # Finalize status independently of the last populate's status.
         # A solver failure makes the result incomplete and must not be reported as optimal.

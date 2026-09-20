@@ -200,7 +200,7 @@ class MILP_LP(object):
             self._gates_as_named_rows()
 
         self.sos1 = []
-        if getattr(self, 'sos1_gates', None) and os.environ.get('SD_SOS1_GATES') \
+        if getattr(self, 'sos1_gates', None) and os.environ.get('SD_SOS1_GATES', '1').lower() not in ('0', 'off', 'false') \
            and self.indic_constr is not None and self.indic_constr.A.shape[0] \
            and self.solver in [CPLEX, GUROBI]:
             self._gates_as_sos1()
@@ -397,7 +397,7 @@ class MILP_LP(object):
                     # reversible-variable split that Klamt et al. 2020 measure at 2.9-5.6x.
                     sp, sn = add_col(0.0, inf, 'C'), add_col(0.0, inf, 'C')
                     eqrows.append((idx + [sp, sn], dat + [-1.0, 1.0])); eqrhs.append(b)
-                    if not os.environ.get('SD_SOS1_NOPAIR'):
+                    if os.environ.get('SD_SOS1_NOPAIR', '1').lower() in ('0', 'off', 'false'):
                         self.sos1.append([sp, sn])
                     for part in (sp, sn):
                         ind_rows.append([part]); ind_binv.append(z); ind_sense.append('L')
@@ -435,7 +435,7 @@ class MILP_LP(object):
                 eqrows.append((idx + [vp, vn], dat + [-sgn, sgn])); eqrhs.append(b)
                 # SD_SOS1_NOPAIR drops this complementarity set. gurobi's presolve removes it
                 # anyway (1140 sets -> 597); cplex's keeps 1134, so it is measured separately.
-                if not os.environ.get('SD_SOS1_NOPAIR'):
+                if os.environ.get('SD_SOS1_NOPAIR', '1').lower() in ('0', 'off', 'false'):
                     self.sos1.append([vp, vn])
                 # a*y = vn - vp after complementarity, so vn is the positive part: an 'L' gate
                 # (a*y <= 0 when on) kills vn, a 'G' gate kills vp

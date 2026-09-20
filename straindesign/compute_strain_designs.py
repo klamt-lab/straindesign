@@ -399,12 +399,13 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         time_limit (optional (int)): (Default: inf)
             The time limit in seconds for the MILP-solver.
 
-        dual_tilt (optional (float)): (Default: None)
+        dual_tilt (optional (float)): (Default: 1e-6)
             Weight of a small objective on the sign-restricted dual columns during 'populate'
             enumeration. With the cost level pinned the node LP has no objective of its own and the
             simplex wanders a degenerate face; the tilt gives it a direction. It never cuts a
             feasible design. Keep it small: 1e-6 is safe on every model measured, 1e-3 makes the
-            basis singular on some and a whole cost level is then lost. None or 0 disables it.
+            basis singular on some and a whole cost level is then lost. Pass None or 0 to
+            disable it.
 
         advanced, use_scenario (optional (bool)):
             Dummy parameters used for the CNApy interface.
@@ -874,6 +875,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     if REGCOST in kwargs1:
         kwargs1.pop(REGCOST)
 
+    kwargs.setdefault('dual_tilt', 1e-6)
     kwargs_milp = {k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M', SEED, MILP_THREADS, 'dual_tilt']}
     kwargs_milp.update({KOCOST: cmp_ko_cost})
     kwargs_milp.update({KICOST: cmp_ki_cost})
@@ -899,10 +901,11 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     else:
         solution_approach = BEST
 
-    # enumerate_ksweep is an alternative POPULATE loop, complete only for integer-valued
-    # intervention costs. Opt in per run while it is being benchmarked against CNA's
-    # stepwise enumerator; it falls back to populate whenever its guards do not hold.
-    enum_ksweep = bool(os.environ.get('SD_ENUM_KSWEEP'))
+    # enumerate_ksweep is the POPULATE loop: it pins one cost level at a time, which is what
+    # lets the pool gap open and the tilt act. It is complete only for positive, integer-valued
+    # intervention costs and a finite budget, and falls back to enumerate() on its own whenever
+    # those guards do not hold. SD_ENUM_KSWEEP=0 forces the plain populate for a run.
+    enum_ksweep = os.environ.get('SD_ENUM_KSWEEP', '1').lower() not in ('0', 'off', 'false')
 
     dump_preprocessed = kwargs.pop('dump_preprocessed', None)
 
