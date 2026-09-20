@@ -959,10 +959,12 @@ class SDMILP(SDProblem, MILP_LP):
                     if status == TIME_LIMIT_W_SOL:
                         hit_timelimit = True
                         break
-                    # the level is pinned, so a populate that certified its optimum exhausted
-                    # (CPLEX 129/130; Gurobi only under SD_GRB_POOL_TRUST) leaves nothing for the
-                    # confirmatory pass to find. SD_POOL_CERT=off runs that pass regardless.
-                    if os.environ.get('SD_POOL_CERT', 'skip').lower() not in ('0', 'off', 'false') and self.pool_exhausted:
+                    # The solver's exhaustion certificate (CPLEX 129/130; Gurobi only under
+                    # SD_GRB_POOL_TRUST) is NOT trusted by default: on HumanGEM media CPLEX certified
+                    # levels exhausted with one, four and six designs missing, in three identical runs.
+                    # The confirmatory populate that follows is the infeasibility proof completeness
+                    # needs. SD_POOL_CERT=skip trusts the certificate and skips that pass.
+                    if os.environ.get('SD_POOL_CERT', '').lower() == 'skip' and self.pool_exhausted:
                         break
                 elif status == ERROR:
                     # A solver failure is not an empty level. Treating it as one silently drops
