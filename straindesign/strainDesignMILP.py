@@ -850,6 +850,7 @@ class SDMILP(SDProblem, MILP_LP):
         endtime = time.time() + self.time_limit
         status = OPTIMAL
         hit_timelimit = False
+        errored = False
         sols = sparse.csr_matrix((0, self.num_z))
         logging.info('Enumerating strain designs (k-sweep) ...')
         # Only here is the design cost pinned to a single value, so only here can the pool's
@@ -892,8 +893,17 @@ class SDMILP(SDProblem, MILP_LP):
                     # leaves nothing for the confirmatory pass to find
                     if os.environ.get('SD_POOL_CERT') and self.pool_exhausted:
                         break
+                elif status == ERROR:
+                    # A solver failure is not an empty level. Treating it as one silently drops
+                    # every design at this cardinality and every level above it.
+                    logging.error('Solver returned ERROR at cost %s; enumeration is INCOMPLETE '
+                                  'from this level up.' % k)
+                    errored = True
+                    break
                 else:  # INFEASIBLE at this cardinality -> level exhausted, next k
                     break
+            if errored:
+                break
             if hit_timelimit or endtime - time.time() <= 0:
                 if endtime - time.time() <= 0:
                     hit_timelimit = True
@@ -903,7 +913,12 @@ class SDMILP(SDProblem, MILP_LP):
         if os.environ.get('SD_POOL_OPEN'):
             self.set_pool_gap(False)
         # Finalize status independently of the last populate's status.
-        if hit_timelimit and sols.shape[0] > 0:
+        # A solver failure makes the result incomplete and must not be reported as optimal.
+        # Callers drop the designs of a non-OPTIMAL run, so ERROR yields no designs at all;
+        # that is the safe direction, an incomplete list presented as complete is not.
+        if errored:
+            status = ERROR
+        elif hit_timelimit and sols.shape[0] > 0:
             status = TIME_LIMIT_W_SOL
         elif hit_timelimit:
             status = TIME_LIMIT
