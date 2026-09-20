@@ -816,3 +816,79 @@ def test_designs_stay_minimal_when_the_k_sweep_falls_back_under_an_open_pool(mon
     for a in designs:
         for b in designs:
             assert not (a < b), 'design %s contains %s, so it is not minimal' % (sorted(b), sorted(a))
+
+
+def test_final_status_does_not_promote_a_failed_enumeration():
+    """A solver that failed mid-enumeration leaves a truncated pool. Reporting that as OPTIMAL
+    presents it as complete -- which is what a dropped licence produced: 38 of 438 designs,
+    status optimal. Only exhaustion and the time limit may be rewritten."""
+    from straindesign.compute_strain_designs import _final_status
+    from straindesign.names import OPTIMAL, INFEASIBLE, TIME_LIMIT, TIME_LIMIT_W_SOL, ERROR
+
+    assert _final_status(INFEASIBLE, True) == OPTIMAL
+    assert _final_status(TIME_LIMIT, True) == TIME_LIMIT_W_SOL
+    assert _final_status(ERROR, True) == ERROR
+    assert _final_status(ERROR, False) == ERROR
+    assert _final_status(INFEASIBLE, False) == INFEASIBLE
+    assert _final_status(OPTIMAL, True) == OPTIMAL
+
+
+@pytest.mark.parametrize('approach', ['any', 'best'])
+@pytest.mark.timeout(120)
+def test_sos1_gate_rewrite_keeps_the_objective_row_full_width(monkeypatch, model_small_example, approach):
+    """The SOS1 gate rewrite appends slack columns to the matrix after ``c_bu`` was stored, so an
+    objective vector of the original width no longer spans a row. ``any`` and ``best`` re-write the
+    objective row through fixObjective and raised ``ValueError: shape mismatch in assignment``
+    before the solver was ever called; ``populate`` never takes that path, which is why only these
+    two approaches broke. The designs asserted here are the same ones test_mcs expects."""
+    solver = next((s for s in [CPLEX, GUROBI] if s in sd.avail_solvers), None)
+    if solver is None:
+        pytest.skip('the SOS1 gate rewrite is implemented for cplex and gurobi only')
+    monkeypatch.setenv('SD_SOS1_GATES', '1')
+    modules = [sd.SDModule(model_small_example, SUPPRESS, constraints=["R3 - 0.5 R1 <= 0.0", "R2 <= 0", "R1 >= 0.1"])]
+    modules += [
+        sd.SDModule(model_small_example, SUPPRESS, constraints=["1.0 R3 - 0.5 R1 - 0.5 R2 <= 0.0 ", "1.0 R2 >= 0.0 ", "1.0 R1 >= 0.1 "])
+    ]
+    modules += [sd.SDModule(model_small_example, PROTECT, constraints=["1.0 R3 >= 1.0 "])]
+    sols = sd.compute_strain_designs(model_small_example,
+                                     sd_modules=modules,
+                                     max_cost=inf,
+                                     max_solutions=inf,
+                                     solution_approach=approach,
+                                     ki_cost={'R2': 1},
+                                     solver=solver,
+                                     milp_threads=1,
+                                     compress=False).get_reaction_sd()
+    assert ({'R1': -1.0, 'R2': 1.0} in sols)
+    assert ({'R6': -1.0, 'R8': -1.0} in sols)
+    assert ({'R4': -1.0} in sols)
+    assert ({'R7': -1.0} in sols)
+    assert ({'R10': -1.0} in sols)
+
+
+@pytest.mark.parametrize('ki_cost,max_cost,expected', [
+    ({'R1': 1.0, 'R2': -5.0, 'R3': 1.0, 'R4': 1.0}, 3, ['R1', 'R2', 'R4']),
+    ({'R1': 1.0, 'R2': -100.0, 'R3': 1.0, 'R4': 1.0}, -97, ['R1', 'R2', 'R4']),
+])
+@pytest.mark.timeout(60)
+def test_ksweep_falls_back_when_an_intervention_is_not_positively_priced(monkeypatch, curr_solver, ki_cost, max_cost,
+                                                                        expected):
+    """The k-sweep walks cost levels 1, 2, ... upward and asks for each level in turn. A design
+    whose total cost is zero or negative -- which one rewarding intervention is enough to produce
+    -- lies below every level the sweep visits, so the sweep returns none of them and the
+    enumeration silently comes back short. Only a budget whose costs are all positive can be
+    swept, so anything else has to fall back to plain populate.
+
+    Every benchmark prices interventions at 1, which is why this never showed up there."""
+    monkeypatch.setenv('SD_ENUM_KSWEEP', '1')
+    model = _two_route_network()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, PROTECT, constraints=['R4 >= 1'])],
+                                    max_cost=max_cost,
+                                    ki_cost=ki_cost,
+                                    solution_approach='populate',
+                                    solver=curr_solver,
+                                    compress=False)
+    designs = _designs(sol)
+    assert designs, 'the k-sweep returned no design at all; it swept levels the design sits below'
+    assert expected in designs, designs
