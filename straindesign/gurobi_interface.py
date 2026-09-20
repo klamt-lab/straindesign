@@ -553,8 +553,15 @@ class Gurobi_MILP_LP(gp.Model):
         """Retrieve solution pool from Gurobi backend"""
         nSols = self.SolCount
         x = []
+        # With the pool gap open the cost level is pinned, so every pool entry is a wanted
+        # solution; exact equality with the incumbent would keep only the one whose objective
+        # the tie-breaking tilt happens to minimise, one design per full-tree solve. With the
+        # gap closed the pool is already restricted to the optimum; equality is checked with a
+        # tolerance rather than on floats that only agree by construction.
+        open_gap = self.params.PoolGap >= grb.INFINITY
+        tol = 1e-9 * max(1.0, abs(self.ObjVal))
         for i in range(nSols):
             self.setParam(grb.Param.SolutionNumber, i)
-            if self.PoolObjVal == self.ObjVal:
+            if open_gap or abs(self.PoolObjVal - self.ObjVal) <= tol:
                 x += [[x.Xn for x in self.getVars()]]
         return x
