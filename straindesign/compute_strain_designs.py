@@ -380,6 +380,13 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         time_limit (optional (int)): (Default: inf)
             The time limit in seconds for the MILP-solver.
 
+        dual_tilt (optional (float)): (Default: None)
+            Weight of a small objective on the sign-restricted dual columns during 'populate'
+            enumeration. With the cost level pinned the node LP has no objective of its own and the
+            simplex wanders a degenerate face; the tilt gives it a direction. It never cuts a
+            feasible design. Keep it small: 1e-6 is safe on every model measured, 1e-3 makes the
+            basis singular on some and a whole cost level is then lost. None or 0 disables it.
+
         advanced, use_scenario (optional (bool)):
             Dummy parameters used for the CNApy interface.
 
@@ -393,7 +400,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
         SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'dump_preprocessed',
-        'skip_preprocessing_fvas'
+        'skip_preprocessing_fvas', 'dual_tilt'
     }
     logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
@@ -848,7 +855,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     if REGCOST in kwargs1:
         kwargs1.pop(REGCOST)
 
-    kwargs_milp = {k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M', SEED, MILP_THREADS]}
+    kwargs_milp = {k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M', SEED, MILP_THREADS, 'dual_tilt']}
     kwargs_milp.update({KOCOST: cmp_ko_cost})
     kwargs_milp.update({KICOST: cmp_ki_cost})
     kwargs_milp.update({'essential_kis': essential_kis})

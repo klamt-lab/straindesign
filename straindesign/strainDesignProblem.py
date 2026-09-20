@@ -98,7 +98,7 @@ class SDProblem:
     """
 
     def __init__(self, model: Model, sd_modules: List[SDModule], *args, **kwargs):
-        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis', SEED, MILP_THREADS}
+        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis', SEED, MILP_THREADS, 'dual_tilt'}
         # set all keys passed in kwargs
         for key, value in dict(kwargs).items():
             if key in allowed_keys:

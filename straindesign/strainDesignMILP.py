@@ -21,6 +21,7 @@
 
 import numpy as np
 from scipy import sparse
+from math import isinf
 import time
 from typing import Dict, List, Tuple
 from straindesign import SDProblem, SDSolutions, MILP_LP, SDModule, Model
@@ -859,6 +860,50 @@ class SDMILP(SDProblem, MILP_LP):
         # runs with the gap closed.
         if os.environ.get('SD_POOL_OPEN'):
             self.set_pool_gap(True)
+        # The dual_tilt kwarg is the supported switch; SD_DUAL_TILT overrides it for experiments.
+        _tilt = os.environ.get('SD_DUAL_TILT') or getattr(self, 'dual_tilt', None)
+        if _tilt:
+            # A safe slant: the pinned level makes the objective constant on z and ZERO on the dual
+            # variables, so the node LP is a pure feasibility problem and the simplex wanders over a
+            # degenerate optimal face (measured: 5-8 iterations per node here, 207 on the boxed
+            # model). A tilt gives it a direction. It is not a bound: no certificate is cut, the
+            # feasible set is untouched, and with the pool gaps open every feasible design is still
+            # collected. Only sign-restricted dual columns are tilted (lb finite, ub infinite), so
+            # the LP stays bounded below; free columns keep coefficient 0.
+            # Magnitude matters: at 1e-3 the basis goes singular on some models and the level that
+            # fails is lost; 1e-6 is safe on every model measured and faster besides.
+            _w = float(_tilt)
+            _obj = list(self.c)
+            _n_t = 0
+            # SD_DUAL_TILT_RAND: a uniform tilt only minimises the SUM over the tilted columns,
+            # which is itself degenerate whenever certificates share that sum; per-column random
+            # coefficients in [w, 2w] break those ties as well. Seeded, so runs stay reproducible.
+            _rng = np.random.default_rng(self.seed if self.seed is not None else 0) \
+                if os.environ.get('SD_DUAL_TILT_RAND') else None
+            # SD_DUAL_TILT_SOS: tilt only the dual columns that share an SOS1 set with a z. Those
+            # are the ones whose nonzeroness costs a branch, so if the mechanism is "sparser
+            # certificate -> fewer violated gates", this is the targeted form of the same lever.
+            # Through the kwarg, the SOS1-paired columns are tilted whenever such sets exist
+            # (CPLEX, or Gurobi with the gates on) and every sign-restricted column otherwise.
+            _cols = range(self.num_z, len(_obj))
+            _sos_only = bool(os.environ.get('SD_DUAL_TILT_SOS')) or not os.environ.get('SD_DUAL_TILT')
+            if _sos_only and getattr(self, 'sos1', None):
+                _paired = set()
+                for _s in self.sos1:
+                    for _j in (_s if not isinstance(_s, tuple) else _s[0]):
+                        if _j >= self.num_z:
+                            _paired.add(int(_j))
+                _cols = sorted(_paired)
+            for j in _cols:
+                # ONLY lb >= 0 with an infinite ub: minimising such a column walks it down to its
+                # own lower bound and stops. A column with a finite NEGATIVE lb and infinite ub
+                # would need a negative coefficient to be pushed toward its bound, and that is
+                # unbounded below -- measured, as CPLEX status 119 on both PROTECT problems.
+                if self.lb[j] is not None and not isinf(self.lb[j]) and self.lb[j] >= 0 and isinf(self.ub[j]):
+                    _obj[j] = _w * (1.0 + float(_rng.random())) if _rng is not None else _w
+                    _n_t += 1
+            self.set_objective(_obj)
+            logging.info('  dual tilt %g on %d of %d sign-restricted dual columns' % (_w, _n_t, len(_obj) - self.num_z))
         for k in range(1, k_max + 1):
             if sols.shape[0] >= self.max_solutions:
                 break
