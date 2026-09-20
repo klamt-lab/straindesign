@@ -46,6 +46,20 @@ def _backend_pool_exhausted(backend):
     return False
 
 
+def _drop_non_minimal(sols):
+    """Remove every design that strictly contains another design in the same result.
+
+    An ascending enumeration emits designs of cost k only after excluding every superset of the
+    designs it found at lower cost, so a design containing a smaller one can appear only when
+    that smaller design was NOT found: the solver certified a level exhausted with a design
+    missing. The supersets are valid cut sets but not minimal ones, and their presence is the
+    proof that the result is incomplete. Returns the filtered rows and how many were dropped.
+    """
+    sets = [frozenset(sols[i].indices.tolist()) for i in range(sols.shape[0])]
+    keep = [i for i, a in enumerate(sets) if not any(b < a for b in sets)]
+    return sols[keep], sols.shape[0] - len(keep)
+
+
 class SDMILP(SDProblem, MILP_LP):
     """Class that contains functions for the solution of the strain design MILP
      
@@ -736,6 +750,12 @@ class SDMILP(SDProblem, MILP_LP):
                         self.add_exclusion_constraints(z[i])
             if (status != OPTIMAL):  # or (z[i]*self.cost == self.max_cost):
                 break
+        if sols.shape[0] > 1:
+            sols, n_super = _drop_non_minimal(sols)
+            if n_super:
+                logging.error('%d designs contain a smaller design: the enumeration missed one and '
+                              'the result is INCOMPLETE.' % n_super)
+                status = ERROR
         if status == INFEASIBLE and sols.shape[0] > 0:  # all solutions found or solution limit reached
             status = OPTIMAL
         if status == TIME_LIMIT and sols.shape[0] > 0:  # some solutions found, timelimit reached
@@ -964,6 +984,12 @@ class SDMILP(SDProblem, MILP_LP):
         if os.environ.get('SD_POOL_OPEN', '1').lower() not in ('0', 'off', 'false'):
             self.set_pool_gap(False)
         # Finalize status independently of the last populate's status.
+        if sols.shape[0] > 1:
+            sols, n_super = _drop_non_minimal(sols)
+            if n_super:
+                logging.error('%d designs contain a smaller design: a cost level was enumerated '
+                              'incompletely and the result is INCOMPLETE.' % n_super)
+                errored = True
         # A solver failure makes the result incomplete and must not be reported as optimal.
         # Callers drop the designs of a non-OPTIMAL run, so ERROR yields no designs at all;
         # that is the safe direction, an incomplete list presented as complete is not.
