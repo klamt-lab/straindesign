@@ -944,6 +944,10 @@ class SDMILP(SDProblem, MILP_LP):
         errored = False
         sols = sparse.csr_matrix((0, self.num_z))
         logging.info('Enumerating strain designs (k-sweep) ...')
+        if self.solver == SCIP:
+            # SCIP has no solution pool: its populate enumerates a level in one tree through a
+            # constraint handler that records and excludes every integral point over these columns
+            self.backend._sd_ko_cols = [j for j in self.idx_z if not self.z_inverted[j]]
         # Only here is the design cost pinned to a single value, so only here can the pool's
         # optimality gap be opened without losing the ascending-cost order that makes an emitted
         # design minimal. Everything above this line -- including every fallback to enumerate() --

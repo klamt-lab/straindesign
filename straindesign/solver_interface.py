@@ -202,7 +202,7 @@ class MILP_LP(object):
         self.sos1 = []
         if getattr(self, 'sos1_gates', None) and os.environ.get('SD_SOS1_GATES', '1').lower() not in ('0', 'off', 'false') \
            and self.indic_constr is not None and self.indic_constr.A.shape[0] \
-           and self.solver in [CPLEX, GUROBI]:
+           and (self.solver in [CPLEX, GUROBI] or (self.solver == SCIP and os.environ.get('SD_SCIP_SOS1'))):
             self._gates_as_sos1()
 
         # Optional: let CPLEX certify a pinned cost level. populate reports 129/130 ("all reachable
