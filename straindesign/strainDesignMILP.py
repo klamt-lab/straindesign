@@ -60,6 +60,60 @@ def _drop_non_minimal(sols):
     return sols[keep], sols.shape[0] - len(keep)
 
 
+def _set_lp_tolerance(lp, tol):
+    """Feasibility/optimality tolerance of a verification LP, whichever backend it wraps."""
+    b = getattr(lp, 'backend', lp)
+    if hasattr(b, 'params'):  # gurobi
+        b.params.FeasibilityTol = tol
+        b.params.OptimalityTol = tol
+    elif hasattr(b, 'parameters'):  # cplex
+        b.parameters.simplex.tolerances.feasibility.set(tol)
+        b.parameters.simplex.tolerances.optimality.set(tol)
+
+
+def _set_lp_method(lp, method):
+    """Switch a verification LP to another algorithm; False where the backend has none.
+    Barrier keeps its crossover and gets dual reductions switched off, so that it returns a
+    definite INFEASIBLE or OPTIMAL rather than INF_OR_UNBD."""
+    b = getattr(lp, 'backend', lp)
+    if hasattr(b, 'params'):  # gurobi
+        b.params.Method = 2 if method == 'barrier' else 1
+        b.params.DualReductions = 0
+        b.params.TimeLimit = 120  # a confirmation that does not finish confirms nothing
+        return True
+    if hasattr(b, 'parameters'):  # cplex
+        b.parameters.lpmethod.set(4 if method == 'barrier' else 2)
+        b.parameters.timelimit.set(120)
+        return True
+    return False
+
+
+def _lp_feasible(lp):
+    """Definite feasibility of a zero-objective verification LP. Only a solved status counts:
+    with no objective 'unbounded' is impossible, so INF_OR_UNBD means infeasible, and a
+    NUMERIC or aborted solve proves nothing either way."""
+    b = getattr(lp, 'backend', lp)
+    try:
+        val = lp.slim_solve()
+    except Exception as e:
+        # a status the backend's table does not map (barrier and abort codes); the raw status
+        # decides below, and an unmapped one is simply "not shown feasible"
+        logging.info('  verification LP: %s (status %s)' % (e, _lp_status(b)))
+        val = np.nan
+    if hasattr(b, 'Status'):  # gurobi: OPTIMAL, or SUBOPTIMAL (a feasible point was found)
+        return b.Status in (2, 13)
+    if hasattr(b, 'solution'):  # cplex: optimal, or optimal with unscaled infeasibilities
+        return _lp_status(b) in (1, 5, 6)
+    return not np.isnan(val)
+
+
+def _lp_status(b):
+    try:
+        return b.solution.get_status()
+    except Exception:
+        return None
+
+
 class SDMILP(SDProblem, MILP_LP):
     """Class that contains functions for the solution of the strain design MILP
      
@@ -427,7 +481,18 @@ class SDMILP(SDProblem, MILP_LP):
                          ub=[self.cont_MILP.ub[i] for i in active_vars],
                          solver=self.solver,
                          seed=self.seed)
-            valid[i] = not np.isnan(lp.slim_solve())
+            # The certificate system is scale-free (t'u <= -1 on a cone) and, with compressed
+            # columns carrying coefficients up to ~1e4, its feasible points have entries of 1e5
+            # and beyond. At the 1e-9 feasibility tolerance the MILP is pinned to, round-off at
+            # those magnitudes alone exceeds the tolerance and a genuine design reads INFEASIBLE
+            # (HumanGEM media: the same deleted system is feasible at the solver default under
+            # every method of both solvers and infeasible at 1e-9 only). Verify at the solver
+            # default, and let a second method confirm an infeasible verdict before it discards
+            # a design.
+            _set_lp_tolerance(lp, 1e-6)
+            valid[i] = _lp_feasible(lp)
+            if not valid[i] and _set_lp_method(lp, 'barrier'):
+                valid[i] = _lp_feasible(lp)
         return valid
 
     def compute_optimal(self, **kwargs):
