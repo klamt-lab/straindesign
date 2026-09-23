@@ -5,7 +5,8 @@ import numpy as np
 import warnings
 from fractions import Fraction
 from os.path import dirname, abspath
-from cobra.io import load_model, read_sbml_model
+from cobra.io import read_sbml_model
+from ._models import load_test_model
 from cobra.flux_analysis import flux_variability_analysis
 from sympy import Rational as SympyRational
 import straindesign as sd
@@ -142,12 +143,12 @@ def test_fba_optimum_recovered_through_map():
     exercises the map itself -- it would catch factors drifting out of step with the column
     scaling applied when a lump is re-expressed in one member's units.
     """
-    base = load_model("e_coli_core")
+    base = load_test_model("e_coli_core")
     biomass = next((r.id for r in base.reactions if 'biomass' in r.id.lower()), None)
     assert biomass, "Could not find biomass reaction"
     ref = sd.fba(base, obj={biomass: 1}, obj_sense='maximize').objective_value
 
-    model = load_model("e_coli_core")
+    model = load_test_model("e_coli_core")
     cmp_maps = nt.compress_model(model)
     cmp_id, factor = _trace_lump(cmp_maps, biomass)
     assert cmp_id in [r.id for r in model.reactions], (f"compression map names {cmp_id}, which is not in the compressed model")
@@ -163,13 +164,13 @@ def test_cobra_optimize_after_compression():
     Uses the compression map to back-transform the compressed biomass flux and
     verify it matches the original uncompressed value.
     """
-    model_orig = load_model("e_coli_core")
+    model_orig = load_test_model("e_coli_core")
     biomass_id = next((r.id for r in model_orig.reactions if 'biomass' in r.id.lower()), None)
     assert biomass_id is not None, "Could not find biomass reaction"
     model_orig.objective = biomass_id
     val_orig = model_orig.optimize().objective_value
 
-    model_cmp = load_model("e_coli_core")
+    model_cmp = load_test_model("e_coli_core")
     cmp_map = nt.compress_model(model_cmp)
 
     # Find biomass in compressed model via compression map
@@ -196,11 +197,11 @@ def test_cobra_optimize_after_compression():
 
 def test_fva_expansion():
     """Compression map correctly back-maps FVA results to the original reaction space."""
-    model_orig = load_model("e_coli_core")
+    model_orig = load_test_model("e_coli_core")
     original_ids = [r.id for r in model_orig.reactions]
     fva_orig = flux_variability_analysis(model_orig, fraction_of_optimum=0.0, processes=1)
 
-    model_cmp = load_model("e_coli_core")
+    model_cmp = load_test_model("e_coli_core")
     cmp_map = nt.compress_model(model_cmp)
     fva_cmp = flux_variability_analysis(model_cmp, fraction_of_optimum=0.0, processes=1)
 
@@ -247,7 +248,7 @@ def test_mcs_e_coli_core():
     if not strong_solvers:
         pytest.skip("test_mcs_e_coli_core requires Gurobi, CPLEX, or SCIP (GLPK gives incorrect results)")
     solver = SCIP if SCIP in strong_solvers else next(iter(strong_solvers))
-    model = load_model('e_coli_core')
+    model = load_test_model('e_coli_core')
     modules = [sd.SDModule(model, SUPPRESS, constraints='BIOMASS_Ecoli_core_w_GAM >= 0.001')]
     sols = sd.compute_strain_designs(
         model,

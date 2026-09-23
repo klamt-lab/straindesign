@@ -98,7 +98,7 @@ class SDProblem:
     """
 
     def __init__(self, model: Model, sd_modules: List[SDModule], *args, **kwargs):
-        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis', SEED, MILP_THREADS, 'milp_nullspace', 'split_level'}
+        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis', SEED, MILP_THREADS, 'milp_nullspace', 'split_level', 'dual_tilt'}
         # set all keys passed in kwargs
         for key, value in dict(kwargs).items():
             if key in allowed_keys:
@@ -318,6 +318,43 @@ class SDProblem:
                 override[rid] = (lo, hi)
         return override
 
+    def _module_bound_relax(self, sd_module):
+        """Bounds of a SUPPRESS block that its own region-FVA proves redundant, mapped to the loosest
+        form that keeps the block identical: a finite nonzero bound the region never reaches is
+        dropped to +/-inf (or to 0 when that keeps the variable's sign), so the Farkas dual carries no
+        column for it. A bound whose FVA extreme comes within a relative margin of it is kept.
+
+        Exactness: for a nonempty polytope P, a constraint with strict slack at every point of P is
+        implied by the remaining constraints (P would otherwise contain a point on the constraint's
+        face by convexity), so removing it leaves P, and therefore every knocked-out sub-polytope,
+        unchanged. PROTECT blocks are left alone: their bounds double as the big-M of the gates.
+        """
+        if sd_module[MODULE_TYPE] != SUPPRESS or not os.environ.get('SD_SUPPRESS_RELAX_BOUNDS'):
+            return {}
+        limits = sd_module.get('fva_bounds')
+        if limits is None:
+            return {}
+        relax = {}
+        for r in self.model.reactions:
+            if r.id not in limits.index:
+                continue
+            lim = limits.loc[r.id]
+            lb_, ub_ = float(r.lower_bound), float(r.upper_bound)
+            if lb_ == ub_ or not (lim.minimum <= lim.maximum):
+                continue
+            lo = hi = None
+            if ub_ != 0.0 and not isinf(ub_) and lim.maximum < ub_ - 1e-4 * max(1.0, abs(ub_)):
+                hi = np.inf if ub_ > 0 else 0.0
+            if lb_ != 0.0 and not isinf(lb_) and lim.minimum > lb_ + 1e-4 * max(1.0, abs(lb_)):
+                lo = -np.inf if lb_ < 0 else 0.0
+            if lo is not None or hi is not None:
+                relax[r.id] = (lo, hi)
+        if relax:
+            logging.info('  SUPPRESS block: %d redundant bounds relaxed (%d lower, %d upper).' %
+                         (len(relax), sum(1 for v in relax.values() if v[0] is not None),
+                          sum(1 for v in relax.values() if v[1] is not None)))
+        return relax
+
     def addModule(self, sd_module):
         """Generate module LP and z-linking-matrix for each module and add them to the strain design MILP
 
@@ -343,8 +380,10 @@ class SDProblem:
             # both PROTECT and SUPPRESS: for SUPPRESS the undesired-region primal is bounded the same
             # way before farkas_dualize, so the certificate is unchanged.
             bound_override = self._module_bound_override(sd_module)
+            bound_relax = self._module_bound_relax(sd_module)
             A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p \
-                = build_primal_from_cbm(self.model, V_ineq, v_ineq, V_eq, v_eq, bound_override=bound_override)
+                = build_primal_from_cbm(self.model, V_ineq, v_ineq, V_eq, v_eq, bound_override=bound_override,
+                                        bound_relax=bound_relax)
         elif sd_module[MODULE_TYPE] in [PROTECT, SUPPRESS, OPTKNOCK, OPTCOUPLE]:
             c_in = linexprdict2mat(sd_module[INNER_OBJECTIVE], self.model.reactions.list_attr('id'))
             # by default, assume maximization of the inner objective
@@ -771,6 +810,16 @@ class SDProblem:
                 c_i = -c_i
             c_i = c_i.toarray()[0].tolist()
 
+        # A PROTECT block asks only that SOME flux exists in the desired region, so one knockout
+        # pattern admits a continuum of flux vectors and populate can enumerate many of them for
+        # one design. A negligible cost on the sign-constrained flux columns of that block picks a
+        # single vertex per pattern. Only columns with lb >= 0 carry it: a cost on a free column
+        # would make the block unbounded.
+        _flux_eps = float(os.environ.get('SD_PROTECT_FLUX_EPS', 0) or 0)
+        if _flux_eps and sd_module[MODULE_TYPE] == PROTECT and sd_module[INNER_OBJECTIVE] is None:
+            c_i = [ci + (_flux_eps if (ci == 0.0 and lo >= 0.0) else 0.0)
+                   for ci, lo in zip(c_i, lb_i)]
+
         # 3. Add module to global MILP
         self.z_map_constr_ineq = sparse.hstack((self.z_map_constr_ineq, z_map_constr_ineq_i)).tocsc()
         self.z_map_constr_eq = sparse.hstack((self.z_map_constr_eq, z_map_constr_eq_i)).tocsc()
@@ -1176,7 +1225,7 @@ class ContMILP:
         self.z_map_vars = z_map_vars
 
 def build_primal_from_cbm(model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None, c=None,
-                          bound_override=None) -> \
+                          bound_override=None, bound_relax=None) -> \
         Tuple[sparse.csr_matrix, Tuple, sparse.csr_matrix, Tuple, Tuple, Tuple, sparse.csr_matrix, sparse.csr_matrix, sparse.csr_matrix]:
     """Builds primal LP from constraint-based model and (optionally) additional constraints.
     
@@ -1237,6 +1286,17 @@ def build_primal_from_cbm(model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None,
                     ub[i] = min(ub[i], float(hi))
                 if lb[i] > ub[i]:  # numeric guard: never emit an inconsistent block
                     lb[i], ub[i] = float(lo), float(hi)
+    if bound_relax:
+        # Bounds proven redundant for this block are replaced (not tightened): the block is the same
+        # polytope, and the dual no longer carries a column for the redundant bound.
+        for i, r in enumerate(model.reactions):
+            rl = bound_relax.get(r.id)
+            if rl is not None:
+                lo, hi = rl
+                if lo is not None:
+                    lb[i] = float(lo)
+                if hi is not None:
+                    ub[i] = float(hi)
     z_map_vars = sparse.identity(numr, 'd', format="csc")
     z_map_constr_eq = sparse.csc_matrix((numr, A_eq.shape[0]))
     z_map_constr_ineq = sparse.csc_matrix((numr, A_ineq.shape[0]))

@@ -271,6 +271,25 @@ def reduce_model_gprs(model, essential_reacs, gkis, gkos):
     return gkos
 
 
+def _final_status(status, has_designs):
+    """The status a completed enumeration should report.
+
+    Only two rewrites are sound. INFEASIBLE means the search found no further solution, which
+    for an enumeration is exhaustion, so with designs in hand it is OPTIMAL. TIME_LIMIT with
+    designs is TIME_LIMIT_W_SOL. Everything else is reported as it happened -- in particular
+    ERROR, which is what a solver that failed mid-enumeration returns: promoting that to OPTIMAL
+    presents a truncated pool as a complete one, and a licence dropped mid-run did exactly that
+    (38 of 438 designs, reported optimal).
+    """
+    if not has_designs:
+        return status
+    if status == INFEASIBLE:
+        return OPTIMAL
+    if status == TIME_LIMIT:
+        return TIME_LIMIT_W_SOL
+    return status
+
+
 @with_suppressed_lp
 def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """Computes strain designs for a user-defined strain design problem
@@ -380,6 +399,14 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         time_limit (optional (int)): (Default: inf)
             The time limit in seconds for the MILP-solver.
 
+        dual_tilt (optional (float)): (Default: 1e-6)
+            Weight of a small objective on the sign-restricted dual columns during 'populate'
+            enumeration. With the cost level pinned the node LP has no objective of its own and the
+            simplex wanders a degenerate face; the tilt gives it a direction. It never cuts a
+            feasible design. Keep it small: 1e-6 is safe on every model measured, 1e-3 makes the
+            basis singular on some and a whole cost level is then lost. Pass None or 0 to
+            disable it.
+
         advanced, use_scenario (optional (bool)):
             Dummy parameters used for the CNApy interface.
 
@@ -393,7 +420,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
         SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'dump_preprocessed',
-        'skip_preprocessing_fvas', 'milp_nullspace'
+        'skip_preprocessing_fvas', 'milp_nullspace', 'dual_tilt'
     }
     logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
@@ -779,11 +806,18 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         # module and flows to SDMILP via sd_modules. Scoping to knockable reactions keeps
         # the LP count down (and only knockable reactions carry z-links to tighten anyway).
         for module in sd_modules:
+            fva_scope = knockable_ids
+            if module[MODULE_TYPE] == SUPPRESS and os.environ.get('SD_SUPPRESS_RELAX_BOUNDS'):
+                # the redundant-bound relaxation needs the range of every finitely bounded reaction
+                fva_scope = sorted(set(knockable_ids) | {
+                    r.id for r in cmp_model.reactions
+                    if (r.lower_bound != 0.0 and not np.isinf(r.lower_bound)) or
+                       (r.upper_bound != 0.0 and not np.isinf(r.upper_bound))})
             flux_limits = fva(cmp_model,
                               solver=kwargs[SOLVER],
                               constraints=module[CONSTRAINTS],
                               compress=False,
-                              reaction_list=knockable_ids)
+                              reaction_list=fva_scope)
             module['fva_bounds'] = flux_limits
             essentials_in_module = _essentials_from_limits(flux_limits)
             if module[MODULE_TYPE] == SUPPRESS:
@@ -841,7 +875,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     if REGCOST in kwargs1:
         kwargs1.pop(REGCOST)
 
-    kwargs_milp = {k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M', SEED, MILP_THREADS, 'milp_nullspace', 'split_level']}
+    kwargs.setdefault('dual_tilt', 1e-6)
+    kwargs_milp = {k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M', SEED, MILP_THREADS, 'milp_nullspace', 'split_level', 'dual_tilt']}
     kwargs_milp.update({KOCOST: cmp_ko_cost})
     kwargs_milp.update({KICOST: cmp_ki_cost})
     kwargs_milp.update({'essential_kis': essential_kis})
@@ -866,10 +901,11 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     else:
         solution_approach = BEST
 
-    # enumerate_ksweep is an alternative POPULATE loop, complete only for integer-valued
-    # intervention costs. Opt in per run while it is being benchmarked against CNA's
-    # stepwise enumerator; it falls back to populate whenever its guards do not hold.
-    enum_ksweep = bool(os.environ.get('SD_ENUM_KSWEEP'))
+    # enumerate_ksweep is the POPULATE loop: it pins one cost level at a time, which is what
+    # lets the pool gap open and the tilt act. It is complete only for positive, integer-valued
+    # intervention costs and a finite budget, and falls back to enumerate() on its own whenever
+    # those guards do not hold. SD_ENUM_KSWEEP=0 forces the plain populate for a run.
+    enum_ksweep = os.environ.get('SD_ENUM_KSWEEP', '1').lower() not in ('0', 'off', 'false')
 
     dump_preprocessed = kwargs.pop('dump_preprocessed', None)
 
@@ -1050,9 +1086,7 @@ def _decompress_solutions(cmp_sd_solution, cmp_mapReac, cmp_size1_mcs, max_cost,
         # materialised, so a dominated design inside an unexpanded group is not caught
         sd, group_map = _drop_dominated(sd, group_map, cmp_size1_mcs, uncmp_ko_cost, uncmp_ki_cost)
 
-        status = cmp_sd_solution.status
-        if status not in [OPTIMAL, TIME_LIMIT_W_SOL] and sd:
-            status = OPTIMAL
+        status = _final_status(cmp_sd_solution.status, bool(sd))
 
         lazy_meta = {
             'compressed_sd': compressed_sd,
@@ -1098,8 +1132,7 @@ def _decompress_solutions(cmp_sd_solution, cmp_mapReac, cmp_size1_mcs, max_cost,
                     group_map.append(next_grp + grp_idx)
                     existing.append(frozenset(s.items()))
             compressed_sd.append(cmp_s)
-        if cmp_sd_solution.status not in [OPTIMAL, TIME_LIMIT_W_SOL] and sd:
-            cmp_sd_solution.status = OPTIMAL
+        cmp_sd_solution.status = _final_status(cmp_sd_solution.status, bool(sd))
 
     sd, group_map = _drop_dominated(sd, group_map, cmp_size1_mcs, uncmp_ko_cost, uncmp_ki_cost)
 

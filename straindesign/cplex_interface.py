@@ -162,10 +162,20 @@ class Cplex_MILP_LP(Cplex):
             else:
                 self.indicator_constraints.add_batch(lin_expr=A, sense=sense, rhs=b, indvar=indvar, complemented=complem)
         # set parameters
-        self.set_log_stream(io.StringIO())  # don't show output stream
+        _logpath = os.environ.get('SD_CPLEX_LOG')
+        if _logpath:
+            # diagnostic tap: CPLEX's own node log carries per-call node and iteration counts
+            # without the callback that switches off dual presolve reductions
+            _fh = open(_logpath, 'a', buffering=1)
+            self.set_log_stream(_fh)
+            self.set_results_stream(_fh)
+            self.set_warning_stream(_fh)
+            self.parameters.mip.display.set(2)
+        else:
+            self.set_log_stream(io.StringIO())  # don't show output stream
+            self.set_warning_stream(io.StringIO())
+            self.set_results_stream(io.StringIO())
         self.set_error_stream(io.StringIO())
-        self.set_warning_stream(io.StringIO())
-        self.set_results_stream(io.StringIO())
         self.parameters.simplex.tolerances.optimality.set(1e-9)
         self.parameters.simplex.tolerances.feasibility.set(1e-9)
 
@@ -184,11 +194,14 @@ class Cplex_MILP_LP(Cplex):
             if milp_threads is not None:
                 self.parameters.threads.set(milp_threads)
             # a perturbed objective on the gate slacks (SD_SOS1_SLACK_EPS) needs the pool open,
-            # otherwise absgap 0 would keep only the designs with the smallest slack sum
-            # SD_POOL_OPEN opens it on its own: with the level pinned every feasible design is wanted,
-            # and an open gap is what makes populate return 129 there (measured: absgap AND relgap
-            # both open; absgap alone still returns 101)
-            _open = bool(os.environ.get('SD_SOS1_SLACK_EPS')) or bool(os.environ.get('SD_POOL_OPEN'))
+            # otherwise absgap 0 would keep only the designs with the smallest slack sum.
+            # SD_POOL_OPEN is deliberately NOT read here. An open gap is sound only while the
+            # enumeration has the design cost pinned by a constraint, which only the level loop in
+            # enumerate_ksweep does; that loop opens the gap through set_pool_gap once the level is
+            # in force and closes it again on the way out. Opening it at construction time also
+            # opened it for the plain enumerate() fallback, whose ascending-cost order is the only
+            # thing making its designs minimal.
+            _open = bool(os.environ.get('SD_SOS1_SLACK_EPS'))
             self.parameters.mip.pool.absgap.set(1e75 if _open else 0.0)
             self.parameters.mip.pool.relgap.set(1e75 if _open else 0.0)
             self.parameters.mip.pool.intensity.set(4)
@@ -427,6 +440,17 @@ class Cplex_MILP_LP(Cplex):
         if basis is None:
             return
         self.start.set_start(col_status=basis['vbasis'], row_status=basis['cbasis'], col_primal=[], row_primal=[], col_dual=[], row_dual=[])
+
+    def set_pool_gap(self, open_gap):
+        """Open or close the solution pool's optimality gap.
+
+        Closed (0.0) keeps only solutions at the current optimum, which is what makes
+        ``enumerate``'s ascending-cost order -- and with it the minimality of every design it
+        emits -- hold. Open keeps every solution populate found, which is only wanted where the
+        design cost is already pinned by a constraint.
+        """
+        self.parameters.mip.pool.absgap.set(1e75 if open_gap else 0.0)
+        self.parameters.mip.pool.relgap.set(1e75 if open_gap else 0.0)
 
     def set_time_limit(self, t):
         """Set the computation time limit (in seconds)"""

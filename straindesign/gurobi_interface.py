@@ -174,13 +174,11 @@ class Gurobi_MILP_LP(gp.Model):
             if milp_threads is not None:
                 self.params.Threads = milp_threads
             self.params.IntFeasTol = 1e-9  # (0 is not allowed by Gurobi)
-            # yield only optimal solutions in pool
-            # SD_POOL_OPEN: with a pinned or fully enumerated level every feasible design is wanted,
-            # so the gap has no filtering role; measured on cplex as the difference between a bare
-            # 101 and the 129 exhaustion certificate. Mirrored here so both solvers can be compared.
-            _open = bool(os.environ.get('SD_POOL_OPEN'))   # eps is refused on gurobi, so it must not open the gap here
-            self.params.PoolGap = grb.INFINITY if _open else 1e-9
-            self.params.PoolGapAbs = grb.INFINITY if _open else 1e-9
+            # yield only optimal solutions in pool. SD_POOL_OPEN is not read here for the same
+            # reason as in the cplex backend: the gap loses its filtering role only where the design
+            # cost is pinned, so enumerate_ksweep's level loop opens it through set_pool_gap.
+            self.params.PoolGap = 1e-9
+            self.params.PoolGapAbs = 1e-9
             self.params.MIPFocus = 0
         self.update()
 
@@ -328,6 +326,13 @@ class Gurobi_MILP_LP(gp.Model):
             self.params.PoolSearchMode = 0
             self.params.NumericFocus = 0
             status = self.Status
+            # A pool search that ended OPTIMAL with room left in the pool found every solution of
+            # the level (PoolSearchMode 2 finds the n best); opt-in, the k-sweep decides whether to
+            # trust it (SD_GRB_POOL_TRUST) instead of paying a confirmatory solve per level.
+            # gurobipy.Model reserves plain attribute names for solver attributes; user data must
+            # carry an underscore prefix.
+            self._pool_exhausted = bool(os.environ.get('SD_GRB_POOL_TRUST')) and status == 2 and \
+                self.SolCount < self.params.PoolSolutions
             if status in [2, 10, 13, 15]:  # solution integer optimal
                 min_cx = self.ObjVal
                 status = OPTIMAL
@@ -349,6 +354,33 @@ class Gurobi_MILP_LP(gp.Model):
                 x = [nan] * len(self.getVars())
                 status = UNBOUNDED
                 return x, min_cx, status
+            elif status == gstatus.NUMERIC:
+                # solve() and slim_solve() already recover from this; populate() did not, so an
+                # enumeration that hit numerical trouble raised instead of returning the pool it
+                # had already built. Retry at maximum numerical focus, then keep whatever the
+                # pool holds.
+                self.params.PoolSearchMode = 2
+                self.params.NumericFocus = 3
+                self._safe_optimize()
+                self.params.PoolSearchMode = 0
+                self.params.NumericFocus = 0
+                status = self.Status
+                if status in [2, 10, 13, 15]:
+                    min_cx = self.ObjVal
+                    status = OPTIMAL
+                elif self.SolCount > 0:
+                    logging.warning('Gurobi reported numerical difficulties during enumeration; '
+                                    'returning the solutions found so far (the pool may be '
+                                    'incomplete).')
+                    min_cx = self.ObjVal
+                    status = TIME_LIMIT_W_SOL
+                else:
+                    logging.warning('Gurobi reported numerical difficulties during enumeration and '
+                                    'found no usable solution; treating as no solution.')
+                    x = [nan] * len(self.getVars())
+                    min_cx = nan
+                    status = TIME_LIMIT
+                    return x, min_cx, status
             else:
                 raise Exception('Status code ' + str(status) + " not yet handled.")
             x = self.getSolutions()
@@ -441,6 +473,12 @@ class Gurobi_MILP_LP(gp.Model):
             constrs[i].CBasis = v
         self.update()
 
+    def set_pool_gap(self, open_gap):
+        """Open or close the solution pool's optimality gap (see the cplex backend)."""
+        self.params.PoolGap = grb.INFINITY if open_gap else 1e-9
+        self.params.PoolGapAbs = grb.INFINITY if open_gap else 1e-9
+        self.update()
+
     def set_time_limit(self, t):
         """Set the computation time limit (in seconds)"""
         self.params.TimeLimit = t
@@ -515,8 +553,15 @@ class Gurobi_MILP_LP(gp.Model):
         """Retrieve solution pool from Gurobi backend"""
         nSols = self.SolCount
         x = []
+        # With the pool gap open the cost level is pinned, so every pool entry is a wanted
+        # solution; exact equality with the incumbent would keep only the one whose objective
+        # the tie-breaking tilt happens to minimise, one design per full-tree solve. With the
+        # gap closed the pool is already restricted to the optimum; equality is checked with a
+        # tolerance rather than on floats that only agree by construction.
+        open_gap = self.params.PoolGap >= grb.INFINITY
+        tol = 1e-9 * max(1.0, abs(self.ObjVal))
         for i in range(nSols):
             self.setParam(grb.Param.SolutionNumber, i)
-            if self.PoolObjVal == self.ObjVal:
+            if open_gap or abs(self.PoolObjVal - self.ObjVal) <= tol:
                 x += [[x.Xn for x in self.getVars()]]
         return x
