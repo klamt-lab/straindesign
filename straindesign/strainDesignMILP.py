@@ -60,19 +60,6 @@ def _drop_non_minimal(sols):
     return sols[keep], sols.shape[0] - len(keep)
 
 
-def _unit_anchor(b):
-    """Right-hand side of a verification row with the Farkas anchor read at 1.
-
-    The MILP may carry the anchor at a small constant c (SD_FARKAS_ANCHOR) to keep certificates
-    clear of round-off; certificates form a cone, so -c and -1 describe the same designs. The
-    verification must not inherit a small c: with the anchor at the LP tolerance, u = 0 passes
-    and the wild type reads as a cut set."""
-    c = float(os.environ.get('SD_FARKAS_ANCHOR', 1.0))
-    if c != 1.0 and np.isfinite(b) and b != 0 and abs(b + c) <= 1e-12 * c:
-        return -1.0
-    return b
-
-
 def _set_lp_tolerance(lp, tol):
     """Feasibility/optimality tolerance of a verification LP, whichever backend it wraps."""
     b = getattr(lp, 'backend', lp)
@@ -514,6 +501,18 @@ class SDMILP(SDProblem, MILP_LP):
         """Only allow a subset of intervention candidates"""
         self.set_ub([[i, 0.0] for i in self.idx_z if not sol[0, i]])
 
+    def _verify_rhs(self, r):
+        """Right-hand side of continuous row r as verify_sd reads it. A Farkas anchor row is read as
+        b'y <= -max|b|: certificates form a cone, so this is the same set of designs whatever
+        anchor constant and target threshold the MILP was built with, and it keeps the anchor at
+        the scale of its own coefficients, far from the verification tolerance. Otherwise u = 0
+        can pass within tolerance and the wild type reads as a cut set."""
+        b = self.cont_MILP.b_ineq[r]
+        if r in getattr(self, '_anchor_row_set', ()):
+            row = self.cont_MILP.A_ineq[r, :]
+            return -float(np.max(np.abs(row.data))) if row.nnz else b
+        return b
+
     def _verify_slack(self, sol_row, inactive_vars, active_vars, inactive_ineqs, active_ineqs,
                       inactive_eqs, active_eqs) -> bool:
         """Verification that keeps the design's gate rows, each with a non-negative slack, and
@@ -542,7 +541,7 @@ class SDMILP(SDProblem, MILP_LP):
         if ni:
             blocks_i.append(sparse.hstack((A_rel, -sparse.eye(ni, ns, format='csr'))))
         A_ineq = sparse.vstack(blocks_i, format='csr')
-        b_ineq = [_unit_anchor(cm.b_ineq[r]) for r in active_ineqs] + [_unit_anchor(cm.b_ineq[r]) for r in inactive_ineqs]
+        b_ineq = [self._verify_rhs(r) for r in active_ineqs] + [self._verify_rhs(r) for r in inactive_ineqs]
         blocks_e = [sparse.hstack((E_act, sparse.csr_matrix((E_act.shape[0], ns))))]
         if ne:
             sp = sparse.lil_matrix((ne, ns))
@@ -579,6 +578,8 @@ class SDMILP(SDProblem, MILP_LP):
 
     def verify_sd(self, sols) -> List:
         """Verify computed strain design"""
+        if not hasattr(self, '_anchor_row_set'):
+            self._anchor_row_set = set(getattr(self, '_farkas_anchor_rows', []))
         sols_orig = self._expand_z_to_orig(sols)
         valid = [False] * sols_orig.shape[0]
         def _split(z_map, sol_row):
@@ -611,7 +612,7 @@ class SDMILP(SDProblem, MILP_LP):
             # Otherwise drop the columns outright. Absence is a stronger statement than an
             # interval of [0, 0], since it owes nothing to feasibility tolerances.
             lp = MILP_LP(A_ineq=self.cont_MILP.A_ineq[active_ineqs, :][:, active_vars],
-                         b_ineq=[_unit_anchor(self.cont_MILP.b_ineq[i]) for i in active_ineqs],
+                         b_ineq=[self._verify_rhs(i) for i in active_ineqs],
                          A_eq=self.cont_MILP.A_eq[active_eqs, :][:, active_vars],
                          b_eq=[self.cont_MILP.b_eq[i] for i in active_eqs],
                          lb=[self.cont_MILP.lb[i] for i in active_vars],

@@ -809,6 +809,9 @@ class SDProblem:
                    for ci, lo in zip(c_i, lb_i)]
 
         # 3. Add module to global MILP
+        if sd_module[MODULE_TYPE] == SUPPRESS:
+            # farkas_dualize appends its anchor as the block's last inequality
+            self._farkas_anchor_rows = getattr(self, '_farkas_anchor_rows', []) + [self.A_ineq.shape[0] + len(b_ineq_i) - 1]
         self.z_map_constr_ineq = sparse.hstack((self.z_map_constr_ineq, z_map_constr_ineq_i)).tocsc()
         self.z_map_constr_eq = sparse.hstack((self.z_map_constr_eq, z_map_constr_eq_i)).tocsc()
         self.z_map_vars = sparse.hstack((self.z_map_vars, z_map_vars_i)).tocsc()
