@@ -1465,7 +1465,9 @@ def farkas_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
         A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, lb_f, ub_f, c_d = LP_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p)
     # add constraint b_prim'y or (c_dual'*y) <= -1;
     A_ineq_f = sparse.vstack((A_ineq_d, sparse.csr_matrix(c_d))).tocsr()
-    b_ineq_f = b_ineq_d + [-1]
+    # The certificates form a cone, so any positive anchor is exact; it sets the certificate's scale
+    # against the solver's absolute tolerances. SD_FARKAS_ANCHOR overrides the default of 1.
+    b_ineq_f = b_ineq_d + [-float(os.environ.get('SD_FARKAS_ANCHOR', 1.0))]
     A_eq_f = A_eq_d
     b_eq_f = b_eq_d
     # it would also be possible (but ofc not necessary) to force (c_dual*y) == -1; instead

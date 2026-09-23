@@ -60,6 +60,19 @@ def _drop_non_minimal(sols):
     return sols[keep], sols.shape[0] - len(keep)
 
 
+def _unit_anchor(b):
+    """Right-hand side of a verification row with the Farkas anchor read at 1.
+
+    The MILP may carry the anchor at a small constant c (SD_FARKAS_ANCHOR) to keep certificates
+    clear of round-off; certificates form a cone, so -c and -1 describe the same designs. The
+    verification must not inherit a small c: with the anchor at the LP tolerance, u = 0 passes
+    and the wild type reads as a cut set."""
+    c = float(os.environ.get('SD_FARKAS_ANCHOR', 1.0))
+    if c != 1.0 and np.isfinite(b) and b != 0 and abs(b + c) <= 1e-12 * c:
+        return -1.0
+    return b
+
+
 def _set_lp_tolerance(lp, tol):
     """Feasibility/optimality tolerance of a verification LP, whichever backend it wraps."""
     b = getattr(lp, 'backend', lp)
@@ -345,6 +358,23 @@ class SDMILP(SDProblem, MILP_LP):
                     A_ineq = A_ineq.tocsr()
                 self.add_ineq_constraints(A_ineq, [b_ineq])
 
+    def _raise_anchor(self):
+        """Raise the Farkas anchor 100-fold (at most to 1) on the MILP's anchor rows."""
+        new = min(1.0, self._anchor_c * 100.0)
+        for i in self._anchor_rows:
+            self.b_ineq[i] = -new
+            b = self.backend
+            if hasattr(b, 'linear_constraints'):
+                b.linear_constraints.set_rhs(int(i), -new)
+            elif hasattr(b, 'getConstrs'):
+                b.getConstrs()[int(i)].RHS = -new
+                b.update()
+        logging.warning('Farkas anchor raised %g -> %g after a rejected design' % (self._anchor_c, new))
+        os.environ['SD_FARKAS_ANCHOR'] = repr(new)   # verify_sd reads the anchor it maps back to 1
+        self._anchor_c = new
+        if new >= 1.0:
+            self._anchor_adaptive = False
+
     def add_exclusion_constraints_ineq(self, z):
         """Exclude exact binary solution in z (but not its supersets) from MILP.
 
@@ -474,7 +504,7 @@ class SDMILP(SDProblem, MILP_LP):
             # Otherwise drop the columns outright. Absence is a stronger statement than an
             # interval of [0, 0], since it owes nothing to feasibility tolerances.
             lp = MILP_LP(A_ineq=self.cont_MILP.A_ineq[active_ineqs, :][:, active_vars],
-                         b_ineq=[self.cont_MILP.b_ineq[i] for i in active_ineqs],
+                         b_ineq=[_unit_anchor(self.cont_MILP.b_ineq[i]) for i in active_ineqs],
                          A_eq=self.cont_MILP.A_eq[active_eqs, :][:, active_vars],
                          b_eq=[self.cont_MILP.b_eq[i] for i in active_eqs],
                          lb=[self.cont_MILP.lb[i] for i in active_vars],
@@ -944,6 +974,17 @@ class SDMILP(SDProblem, MILP_LP):
         errored = False
         sols = sparse.csr_matrix((0, self.num_z))
         logging.info('Enumerating strain designs (k-sweep) ...')
+        # Farkas anchor controller (SD_FARKAS_ANCHOR_ADAPTIVE=1): the MILP starts at the small anchor
+        # given by SD_FARKAS_ANCHOR; every verify_sd rejection means a certificate passed only
+        # within tolerance, so the anchor is raised 100-fold (up to 1) and the level re-populated.
+        self._anchor_adaptive = bool(os.environ.get('SD_FARKAS_ANCHOR_ADAPTIVE')) and \
+            float(os.environ.get('SD_FARKAS_ANCHOR', 1.0)) < 1.0 and self.solver in (CPLEX, GUROBI)
+        rejected_here = False
+        if self._anchor_adaptive:
+            _c = float(os.environ['SD_FARKAS_ANCHOR'])
+            self._anchor_c = _c
+            self._anchor_rows = [i for i, b in enumerate(self.b_ineq) if np.isfinite(b) and abs(b + _c) <= 1e-12 * _c]
+            logging.info('  Farkas anchor %g on %d row(s), adaptive' % (_c, len(self._anchor_rows)))
         # Only here is the design cost pinned to a single value, so only here can the pool's
         # optimality gap be opened without losing the ascending-cost order that makes an emitted
         # design minimal. Everything above this line -- including every fallback to enumerate() --
@@ -1020,7 +1061,17 @@ class SDMILP(SDProblem, MILP_LP):
                             sols = sparse.vstack((sols, z[i]))
                         else:
                             logging.warning('Invalid (minimal) solution found: ' + str(output))
-                            self.add_exclusion_constraints(z[i])
+                            if self._anchor_adaptive:
+                                # under a small anchor a rejection is a spurious certificate, not a
+                                # lost design: cut only this point, and raise the anchor below
+                                self.add_exclusion_constraints_ineq(z[i])
+                                rejected_here = True
+                            else:
+                                self.add_exclusion_constraints(z[i])
+                    if self._anchor_adaptive and rejected_here:
+                        self._raise_anchor()
+                        rejected_here = False
+                        continue  # re-populate this level at the larger anchor
                     if status == TIME_LIMIT_W_SOL:
                         hit_timelimit = True
                         break
