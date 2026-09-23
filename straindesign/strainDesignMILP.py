@@ -358,9 +358,13 @@ class SDMILP(SDProblem, MILP_LP):
                     A_ineq = A_ineq.tocsr()
                 self.add_ineq_constraints(A_ineq, [b_ineq])
 
-    def _raise_anchor(self):
-        """Raise the Farkas anchor 100-fold (at most to 1) on the MILP's anchor rows."""
-        new = min(1.0, self._anchor_c * 100.0)
+    def _set_anchor(self, new, why):
+        """Move the Farkas anchor of the MILP's anchor rows to -new (CPLEX, Gurobi); exact for any
+        new > 0. Only the MILP moves: the continuous copy verify_sd reads keeps the build value,
+        which _unit_anchor maps to 1."""
+        new = float(min(1.0, max(1e-8, new)))
+        if new == self._anchor_c:
+            return
         for i in self._anchor_rows:
             self.b_ineq[i] = -new
             b = self.backend
@@ -369,11 +373,47 @@ class SDMILP(SDProblem, MILP_LP):
             elif hasattr(b, 'getConstrs'):
                 b.getConstrs()[int(i)].RHS = -new
                 b.update()
-        logging.warning('Farkas anchor raised %g -> %g after a rejected design' % (self._anchor_c, new))
-        os.environ['SD_FARKAS_ANCHOR'] = repr(new)   # verify_sd reads the anchor it maps back to 1
+        logging.warning('Farkas anchor %g -> %g (%s)' % (self._anchor_c, new, why))
         self._anchor_c = new
-        if new >= 1.0:
-            self._anchor_adaptive = False
+
+    def _raise_anchor(self):
+        self._set_anchor(self._anchor_c * 100.0, 'a design failed verification: certificate inside tolerance')
+
+    def _steer_anchor(self, diags):
+        """Between levels: keep the smallest gate slack of the accepted designs a thousand times
+        above the MILP tolerance (c * margin >= 1e-6) and the largest certificate entry clear of
+        round-off (c * umax <= 1e3). When both cannot hold, stay on the small side: a too-small
+        anchor shows up as rejected designs and is corrected, a too-large one loses designs
+        silently."""
+        m = [d['margin'] for d in diags if d.get('valid') and d.get('margin')]
+        u = [d['umax'] for d in diags if d.get('valid') and d.get('umax')]
+        if not m:
+            return
+        lo = 1e-6 / min(m)
+        hi = 1e3 / max(u) if u else np.inf
+        c = self._anchor_c
+        target = min(max(c, lo), hi) if lo <= hi else hi
+        if target > 3 * c or target < c / 3:
+            self._set_anchor(target, 'margin steering: min slack %.3g, max entry %.3g at anchor 1' % (min(m), max(u) if u else 0))
+
+    def _minimise_design(self, z):
+        """Drop gates whose slack is zero in the slack verification until none is, returning the
+        cut set that remains (the same object when z is already minimal as far as the LP shows)."""
+        cur = z
+        inv = {o: t for t, o in enumerate(self._z_orig_indices)} if self._z_orig_indices is not None else None
+        for _ in range(int(z.getnnz()) if hasattr(z, 'getnnz') else z.shape[1]):
+            d = getattr(self, '_verify_diag', [None])[-1]
+            if not d or not d.get('valid') or not d.get('zero_gates'):
+                return cur
+            j = d['zero_gates'][0]
+            t = inv.get(j, None) if inv is not None else j
+            if t is None or cur[0, t] == 0:
+                return cur
+            nxt = cur.tolil(copy=True); nxt[0, t] = 0; nxt = nxt.tocsr()
+            if not all(self.verify_sd(nxt)):
+                return cur
+            cur = nxt
+        return cur
 
     def add_exclusion_constraints_ineq(self, z):
         """Exclude exact binary solution in z (but not its supersets) from MILP.
@@ -474,6 +514,69 @@ class SDMILP(SDProblem, MILP_LP):
         """Only allow a subset of intervention candidates"""
         self.set_ub([[i, 0.0] for i in self.idx_z if not sol[0, i]])
 
+    def _verify_slack(self, sol_row, inactive_vars, active_vars, inactive_ineqs, active_ineqs,
+                      inactive_eqs, active_eqs) -> bool:
+        """Verification that keeps the design's gate rows, each with a non-negative slack, and
+        minimises the sum of slacks (equalities carry a slack in each direction).
+
+        Infeasible: not a cut set. Feasible: a cut set, and a gate whose slack is zero at the
+        optimum is not needed, so the design minus that gate is already a cut set (a proof of
+        non-minimality; the converse does not hold, a single LP catches about 9 in 10). The
+        smallest gate slack is the design's margin against the tolerance, and the largest
+        certificate entry its exposure to round-off; both are recorded in _verify_diag, read with
+        the Farkas anchor at 1 so that they scale exactly with the MILP's anchor c.
+        """
+        cm = self.cont_MILP
+        if not hasattr(self, '_gate_of_row'):
+            self._gate_of_row = ({int(c): int(z) for z, c in zip(cm.z_map_constr_ineq.row, cm.z_map_constr_ineq.col)},
+                                 {int(c): int(z) for z, c in zip(cm.z_map_constr_eq.row, cm.z_map_constr_eq.col)})
+        gi, ge = self._gate_of_row
+        nv = len(active_vars)
+        ni, ne = len(inactive_ineqs), len(inactive_eqs)
+        ns = ni + 2 * ne
+        A_act = cm.A_ineq[active_ineqs, :][:, active_vars]
+        A_rel = cm.A_ineq[inactive_ineqs, :][:, active_vars]
+        E_act = cm.A_eq[active_eqs, :][:, active_vars]
+        E_rel = cm.A_eq[inactive_eqs, :][:, active_vars]
+        blocks_i = [sparse.hstack((A_act, sparse.csr_matrix((A_act.shape[0], ns))))]
+        if ni:
+            blocks_i.append(sparse.hstack((A_rel, -sparse.eye(ni, ns, format='csr'))))
+        A_ineq = sparse.vstack(blocks_i, format='csr')
+        b_ineq = [_unit_anchor(cm.b_ineq[r]) for r in active_ineqs] + [_unit_anchor(cm.b_ineq[r]) for r in inactive_ineqs]
+        blocks_e = [sparse.hstack((E_act, sparse.csr_matrix((E_act.shape[0], ns))))]
+        if ne:
+            sp = sparse.lil_matrix((ne, ns))
+            for k in range(ne):
+                sp[k, ni + 2 * k] = -1.0
+                sp[k, ni + 2 * k + 1] = 1.0
+            blocks_e.append(sparse.hstack((E_rel, sp.tocsr())))
+        A_eq = sparse.vstack(blocks_e, format='csr')
+        b_eq = [cm.b_eq[r] for r in active_eqs] + [cm.b_eq[r] for r in inactive_eqs]
+        lp = MILP_LP(c=[0.0] * nv + [1.0] * ns, A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
+                     lb=[cm.lb[r] for r in active_vars] + [0.0] * ns,
+                     ub=[cm.ub[r] for r in active_vars] + [np.inf] * ns, solver=self.solver, seed=self.seed)
+        _set_lp_tolerance(lp, 1e-6)
+        x, _, status = lp.solve()
+        if status != OPTIMAL and _set_lp_method(lp, 'barrier'):
+            x, _, status = lp.solve()
+        diag = {'valid': status == OPTIMAL, 'margin': None, 'umax': None, 'zero_gates': []}
+        if status == OPTIMAL:
+            x = np.asarray(x, dtype=float)
+            u, sl = x[:nv], x[nv:]
+            per_gate = {}
+            for k, r in enumerate(inactive_ineqs):
+                per_gate[gi.get(int(r))] = per_gate.get(gi.get(int(r)), 0.0) + sl[k]
+            for k, r in enumerate(inactive_eqs):
+                per_gate[ge.get(int(r))] = per_gate.get(ge.get(int(r)), 0.0) + sl[ni + 2 * k] + sl[ni + 2 * k + 1]
+            per_gate.pop(None, None)
+            if per_gate:
+                diag['margin'] = float(min(per_gate.values()))
+                diag['zero_gates'] = [z for z, v in per_gate.items() if v <= 1e-7]
+            diag['umax'] = float(np.max(np.abs(u))) if nv else 0.0
+        self._verify_diag = getattr(self, '_verify_diag', [])
+        self._verify_diag.append(diag)
+        return diag['valid']
+
     def verify_sd(self, sols) -> List:
         """Verify computed strain design"""
         sols_orig = self._expand_z_to_orig(sols)
@@ -500,6 +603,10 @@ class SDMILP(SDProblem, MILP_LP):
             # rows back into variable bounds, and those vanish together with the column.
             if any(self.cont_MILP.lb[j] > 0.0 or self.cont_MILP.ub[j] < 0.0 for j in inactive_vars):
                 valid[i] = False
+                continue
+            if os.environ.get('SD_VERIFY_SLACK'):
+                valid[i] = self._verify_slack(sol_row, inactive_vars, active_vars, inactive_ineqs,
+                                              active_ineqs, inactive_eqs, active_eqs)
                 continue
             # Otherwise drop the columns outright. Absence is a stronger statement than an
             # interval of [0, 0], since it owes nothing to feasibility tolerances.
@@ -978,8 +1085,9 @@ class SDMILP(SDProblem, MILP_LP):
         # given by SD_FARKAS_ANCHOR; every verify_sd rejection means a certificate passed only
         # within tolerance, so the anchor is raised 100-fold (up to 1) and the level re-populated.
         self._anchor_adaptive = bool(os.environ.get('SD_FARKAS_ANCHOR_ADAPTIVE')) and \
-            float(os.environ.get('SD_FARKAS_ANCHOR', 1.0)) < 1.0 and self.solver in (CPLEX, GUROBI)
+            float(os.environ.get('SD_FARKAS_ANCHOR', 1.0)) <= 1.0 and self.solver in (CPLEX, GUROBI)
         rejected_here = False
+        lowered_here = False
         if self._anchor_adaptive:
             _c = float(os.environ['SD_FARKAS_ANCHOR'])
             self._anchor_c = _c
@@ -1041,6 +1149,9 @@ class SDMILP(SDProblem, MILP_LP):
             if endtime - time.time() <= 0:
                 hit_timelimit = True
                 break
+            if self._anchor_adaptive and os.environ.get('SD_VERIFY_SLACK'):
+                self._steer_anchor(getattr(self, '_verify_diag', []))
+                self._verify_diag = []
             # pin the intervention cost to k for this level
             _lo, _hi = level(k)
             self.set_ineq_constraint(self.idx_row_mincost, cost_full, _lo)
@@ -1056,9 +1167,15 @@ class SDMILP(SDProblem, MILP_LP):
                     for i in range(z.shape[0]):
                         output = [self.sd2dict(z[i])]
                         if all(self.verify_sd(z[i])):
-                            logging.info('Strain designs with cost ' + str(round((z[i] * self.cost)[0], 6)) + ': ' + str(output))
-                            self.add_exclusion_constraints(z[i])
-                            sols = sparse.vstack((sols, z[i]))
+                            zc = z[i]
+                            zi = self._minimise_design(zc) if os.environ.get('SD_VERIFY_SLACK') else zc
+                            if zi.getnnz() != zc.getnnz():
+                                logging.warning('Non-minimal design %s contains the cut set %s, which a lower '
+                                                'level missed; recovered' % (output, [self.sd2dict(zi)]))
+                                lowered_here = True
+                            logging.info('Strain designs with cost ' + str(round((zi * self.cost)[0], 6)) + ': ' + str([self.sd2dict(zi)]))
+                            self.add_exclusion_constraints(zi)
+                            sols = sparse.vstack((sols, zi))
                         else:
                             logging.warning('Invalid (minimal) solution found: ' + str(output))
                             if self._anchor_adaptive:
@@ -1072,6 +1189,9 @@ class SDMILP(SDProblem, MILP_LP):
                         self._raise_anchor()
                         rejected_here = False
                         continue  # re-populate this level at the larger anchor
+                    if self._anchor_adaptive and lowered_here:
+                        self._set_anchor(self._anchor_c / 100.0, 'a lower level lost a design: certificate round-off')
+                        lowered_here = False
                     if status == TIME_LIMIT_W_SOL:
                         hit_timelimit = True
                         break
