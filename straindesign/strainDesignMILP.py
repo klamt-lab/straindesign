@@ -362,6 +362,8 @@ class SDMILP(SDProblem, MILP_LP):
                 b.update()
         logging.warning('Farkas anchor %g -> %g (%s)' % (self._anchor_c, new, why))
         self._anchor_c = new
+        if os.environ.get('SD_DUAL_TILT_SCALE') and getattr(self, '_tilt_base', None):
+            self.set_objective([c0 + (t - c0) / new for c0, t in zip(*self._tilt_base)])
 
     def _raise_anchor(self):
         self._set_anchor(self._anchor_c * 100.0, 'a design failed verification: certificate inside tolerance')
@@ -1142,9 +1144,16 @@ class SDMILP(SDProblem, MILP_LP):
                 if self.lb[j] is not None and not isinf(self.lb[j]) and self.lb[j] >= 0 and isinf(self.ub[j]):
                     _obj[j] = _w * (1.0 + float(_rng.random())) if _rng is not None else _w
                     _n_t += 1
+            self._tilt_base = (list(self.c), list(_obj))
+            if os.environ.get('SD_DUAL_TILT_SCALE') and getattr(self, '_anchor_adaptive', False):
+                # dual columns scale with the anchor c; dividing the tilt by c keeps its effect on the
+                # objective the size it was tuned at (c = 1)
+                _obj = [c0 + (t - c0) / self._anchor_c for c0, t in zip(*self._tilt_base)]
             self.set_objective(_obj)
             logging.info('  dual tilt %g on %d of %d sign-restricted dual columns' % (_w, _n_t, len(_obj) - self.num_z))
-        for k in range(1, k_max + 1):
+        k, n_restarts, restart_levels = 0, 0, False
+        while k < k_max:
+            k += 1
             if sols.shape[0] >= self.max_solutions:
                 break
             if endtime - time.time() <= 0:
@@ -1177,6 +1186,8 @@ class SDMILP(SDProblem, MILP_LP):
                             logging.info('Strain designs with cost ' + str(round((zi * self.cost)[0], 6)) + ': ' + str([self.sd2dict(zi)]))
                             self.add_exclusion_constraints(zi)
                             sols = sparse.vstack((sols, zi))
+                            if lowered_here and self._anchor_adaptive:
+                                break  # the rest of the batch is re-found after the lower levels are redone
                         else:
                             logging.warning('Invalid (minimal) solution found: ' + str(output))
                             if self._anchor_adaptive:
@@ -1184,6 +1195,7 @@ class SDMILP(SDProblem, MILP_LP):
                                 # lost design: cut only this point, and raise the anchor below
                                 self.add_exclusion_constraints_ineq(z[i])
                                 rejected_here = True
+                                break  # the rest of the batch is re-found at the larger anchor
                             else:
                                 self.add_exclusion_constraints(z[i])
                     if self._anchor_adaptive and rejected_here:
@@ -1191,8 +1203,12 @@ class SDMILP(SDProblem, MILP_LP):
                         rejected_here = False
                         continue  # re-populate this level at the larger anchor
                     if self._anchor_adaptive and lowered_here:
+                        # a design below this level was lost: lower the anchor and redo the levels
+                        # below (everything found stays excluded, so those passes only find losses)
                         self._set_anchor(self._anchor_c / 100.0, 'a lower level lost a design: certificate round-off')
                         lowered_here = False
+                        restart_levels = True
+                        break
                     if status == TIME_LIMIT_W_SOL:
                         hit_timelimit = True
                         break
@@ -1212,6 +1228,16 @@ class SDMILP(SDProblem, MILP_LP):
                     break
                 else:  # INFEASIBLE at this cardinality -> level exhausted, next k
                     break
+            if restart_levels:
+                restart_levels = False
+                n_restarts += 1
+                if n_restarts > 3 and os.environ.get('SD_POOL_CERT', '').lower() == 'skip':
+                    os.environ['SD_POOL_CERT'] = ''
+                    logging.warning('Three redos of the lower levels: the certificate is no longer '
+                                    'trusted, every level gets its confirmatory pass from here on')
+                logging.warning('Redoing cost levels 1..%d after a lost design' % (k - 1))
+                k = 0
+                continue
             if errored:
                 break
             if hit_timelimit or endtime - time.time() <= 0:
