@@ -358,6 +358,8 @@ class MILP_LP(object):
         rows, rhs, senses = [], [], []
         eqrows, eqrhs = [], []
         comp = {}
+        # gate slack column -> columns of the gate row it was split from
+        self._gate_slack_src = {}
 
         def add_col(lb, ub, vt):
             newcols_lb.append(lb); newcols_ub.append(ub); newcols_vt.append(vt)
@@ -445,6 +447,7 @@ class MILP_LP(object):
                     ind_b.append(0.0); ind_val.append(val)
                 else:
                     self.sos1.append([g, killed])
+                    self._gate_slack_src[killed] = idx
 
         k_new = len(newcols_lb)
         # SD_SOS1_SLACK_EPS puts a negligible cost on every gate slack so the LP prefers one

@@ -368,6 +368,19 @@ class SDMILP(SDProblem, MILP_LP):
                     A_ineq = A_ineq.tocsr()
                 self.add_ineq_constraints(A_ineq, [b_ineq])
 
+    def _continuous_column_modules(self):
+        """Module type of every continuous column of the MILP, as {column: type}.
+
+        Module column ranges are recorded when the problem is assembled; trimming fixed z columns
+        shifts every continuous column left by the number of z columns dropped.
+        """
+        shift = getattr(self, '_orig_num_z', self.num_z) - self.num_z if getattr(self, '_z_orig_indices', None) else 0
+        out = {}
+        for mod, a, b in getattr(self, '_module_cols', []):
+            for j in range(a - shift, b - shift):
+                out[j] = mod.lower()
+        return out
+
     def _set_anchor(self, new, why):
         """Move the Farkas anchor of the MILP's anchor rows to -new (CPLEX, Gurobi); exact for any
         new > 0. Only the MILP moves: the continuous copy verify_sd reads keeps the build value,
@@ -1159,6 +1172,19 @@ class SDMILP(SDProblem, MILP_LP):
                         if _j >= self.num_z:
                             _paired.add(int(_j))
                 _cols = sorted(_paired)
+            # SD_DUAL_TILT_MODULES (e.g. 'suppress' or 'protect'): tilt only the gate slacks whose
+            # gate row lies in a module of that type. Gate slacks only exist on the SOS1 path.
+            _mods = os.environ.get('SD_DUAL_TILT_MODULES')
+            _src = getattr(self, '_gate_slack_src', {})
+            _col_mod = self._continuous_column_modules()
+
+            def _gate_module(j):
+                ms = {_col_mod.get(i) for i in _src.get(j, ()) if i >= self.num_z} - {None}
+                return ms.pop() if len(ms) == 1 else ('mixed' if ms else 'unknown')
+
+            if _mods:
+                _want = {m.strip().lower() for m in _mods.split(',')}
+                _cols = [j for j in _cols if _gate_module(j) in _want]
             for j in _cols:
                 # ONLY lb >= 0 with an infinite ub: minimising such a column walks it down to its
                 # own lower bound and stops. A column with a finite NEGATIVE lb and infinite ub
@@ -1173,7 +1199,13 @@ class SDMILP(SDProblem, MILP_LP):
                 # objective the size it was tuned at (c = 1)
                 _obj = [c0 + (t - c0) / self._anchor_c for c0, t in zip(*self._tilt_base)]
             self.set_objective(_obj)
-            logging.info('  dual tilt %g on %d of %d sign-restricted dual columns' % (_w, _n_t, len(_obj) - self.num_z))
+            _by_mod = {}
+            for j, (o, b) in enumerate(zip(_obj, self._tilt_base[0])):
+                if j >= self.num_z and o != b:
+                    m = _gate_module(j) if j in _src else 'column:%s' % _col_mod.get(j, 'unknown')
+                    _by_mod[m] = _by_mod.get(m, 0) + 1
+            logging.info('  dual tilt %g on %d of %d continuous columns %s' %
+                         (_w, _n_t, len(_obj) - self.num_z, dict(sorted(_by_mod.items()))))
         k, n_restarts, restart_levels = 0, 0, False
         while k < k_max:
             k += 1

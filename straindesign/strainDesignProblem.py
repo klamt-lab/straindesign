@@ -809,6 +809,9 @@ class SDProblem:
                    for ci, lo in zip(c_i, lb_i)]
 
         # 3. Add module to global MILP
+        # which module each continuous column came from, so column-wise options (the dual tilt)
+        # can be restricted to one module type
+        self._module_cols = getattr(self, '_module_cols', []) + [(sd_module[MODULE_TYPE], len(self.c), len(self.c) + len(c_i))]
         if sd_module[MODULE_TYPE] == SUPPRESS:
             # farkas_dualize appends its anchor as the block's last inequality
             self._farkas_anchor_rows = getattr(self, '_farkas_anchor_rows', []) + [self.A_ineq.shape[0] + len(b_ineq_i) - 1]
