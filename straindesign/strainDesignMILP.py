@@ -60,6 +60,29 @@ def _drop_non_minimal(sols):
     return sols[keep], sols.shape[0] - len(keep)
 
 
+def _lp_solution(lp):
+    """Solve a verification LP and return (x, OPTIMAL) when the solver holds a definite optimum,
+    else (None, status). Statuses the backend's own table does not map (CPLEX 5/6, optimal with
+    unscaled infeasibilities; barrier codes) are read raw instead of raising."""
+    b = getattr(lp, 'backend', lp)
+    try:
+        x, _, status = lp.solve()
+        if status == OPTIMAL:
+            return x, OPTIMAL
+    except Exception:
+        status = None
+    if hasattr(b, 'solution'):
+        try:
+            if b.solution.get_status() in (1, 5, 6):
+                return b.solution.get_values(), OPTIMAL
+        except Exception:
+            pass
+    elif hasattr(b, 'Status'):
+        if b.Status in (2, 13) and b.SolCount > 0:
+            return [v.X for v in b.getVars()], OPTIMAL
+    return None, status
+
+
 def _set_lp_tolerance(lp, tol):
     """Feasibility/optimality tolerance of a verification LP, whichever backend it wraps."""
     b = getattr(lp, 'backend', lp)
@@ -557,9 +580,9 @@ class SDMILP(SDProblem, MILP_LP):
                      lb=[cm.lb[r] for r in active_vars] + [0.0] * ns,
                      ub=[cm.ub[r] for r in active_vars] + [np.inf] * ns, solver=self.solver, seed=self.seed)
         _set_lp_tolerance(lp, 1e-6)
-        x, _, status = lp.solve()
+        x, status = _lp_solution(lp)
         if status != OPTIMAL and _set_lp_method(lp, 'barrier'):
-            x, _, status = lp.solve()
+            x, status = _lp_solution(lp)
         diag = {'valid': status == OPTIMAL, 'margin': None, 'umax': None, 'zero_gates': []}
         if status == OPTIMAL:
             x = np.asarray(x, dtype=float)
