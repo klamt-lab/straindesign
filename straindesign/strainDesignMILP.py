@@ -219,6 +219,11 @@ class SDMILP(SDProblem, MILP_LP):
                 rows[k, i] = 1.0 if _fl else -1.0
             self.A_ineq = sparse.vstack((self.A_ineq, rows.tocsr()), format='csr')
             self.b_ineq = list(self.b_ineq) + [0.0 if _fl else -1.0] * len(_forced)
+        # SD_FCA_CLAUSES: if knocking out j blocks i (directional coupling in the flux cone), a cut
+        # set holding both keeps the same flux space without i, so no minimal design takes both:
+        # z_i + z_j <= 1 over knock-out pairs.
+        if os.environ.get('SD_FCA_CLAUSES') and self.is_mcs_computation:
+            self._add_coupling_clauses(model)
         # Remove non-knockable z-variables before solver sees them
         self._trim_z_variables()
         # Interventions that do not cost anything to take. Adding one to a design can only keep
@@ -260,6 +265,35 @@ class SDMILP(SDProblem, MILP_LP):
             if all(self.verify_sd(z_more.tocsr())):
                 return True
         return False
+
+    def _add_coupling_clauses(self, model):
+        from straindesign.flux_coupling import directional_couplings
+        n = len(model.reactions)
+        S = np.zeros((len(model.metabolites), n))
+        mi = {x.id: a for a, x in enumerate(model.metabolites)}
+        irr = []
+        for k, r in enumerate(model.reactions):
+            sgn = -1.0 if (r.upper_bound <= 0 and r.lower_bound < 0) else 1.0
+            for x, v in r.metabolites.items():
+                S[mi[x.id], k] = sgn * v
+            irr.append(r.lower_bound >= 0 or r.upper_bound <= 0)
+        ko = [i for i in range(n) if not self.z_non_targetable[i] and not self.z_inverted[i] and self.cost[i] > 0]
+        kos = set(ko)
+        pairs = directional_couplings(S, irr, targets=ko)
+        clauses = sorted({(min(i, j), max(i, j)) for i, j in pairs if i in kos and j in kos})
+        if not clauses:
+            return
+        _fl = getattr(self, '_z_flipped', False)
+        rows = sparse.lil_matrix((len(clauses), self.A_ineq.shape[1]))
+        for k, (i, j) in enumerate(clauses):
+            rows[k, i] = -1.0 if _fl else 1.0
+            rows[k, j] = -1.0 if _fl else 1.0
+        self.A_ineq = sparse.vstack((self.A_ineq, rows.tocsr()), format='csr')
+        self.b_ineq = list(self.b_ineq) + [-1.0 if _fl else 1.0] * len(clauses)
+        logging.warning('  Coupling clauses: %d knock-out pairs that no minimal design takes together' % len(clauses))
+        if os.environ.get('SD_FCA_LOG'):
+            with open(os.environ['SD_FCA_LOG'], 'a') as fh:
+                fh.write('%d z, %d knock-outs, %d directional pairs, %d clauses\n' % (n, len(ko), len(pairs), len(clauses)))
 
     def _trim_z_variables(self):
         """Remove non-knockable (ub=0) z-variables from MILP matrices.
