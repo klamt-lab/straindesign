@@ -420,7 +420,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
         SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'dump_preprocessed',
-        'skip_preprocessing_fvas', 'dual_tilt'
+        'skip_preprocessing_fvas', 'milp_nullspace', 'dual_tilt'
     }
     logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
@@ -876,7 +876,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         kwargs1.pop(REGCOST)
 
     kwargs.setdefault('dual_tilt', 1e-6)
-    kwargs_milp = {k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M', SEED, MILP_THREADS, 'dual_tilt']}
+    kwargs_milp = {k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M', SEED, MILP_THREADS, 'milp_nullspace', 'split_level', 'dual_tilt']}
     kwargs_milp.update({KOCOST: cmp_ko_cost})
     kwargs_milp.update({KICOST: cmp_ki_cost})
     kwargs_milp.update({'essential_kis': essential_kis})
