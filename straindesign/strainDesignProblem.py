@@ -1539,6 +1539,84 @@ def split_reversible_primal(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
             z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_split)
 
 
+def _markowitz_kernel(A_eq_p):
+    """Exact rational kernel of A_eq_p by Gauss-Jordan elimination with Markowitz pivoting.
+
+    Each step takes the pivot of least fill (row count - 1) * (column count - 1), preferring unit
+    pivots on ties. SD_NB_KERNEL_PIVOT_FRACTIONAL=1 pivots first on every column holding a
+    non-integer entry (the biomass column), so that column becomes a pivot instead of a free
+    coordinate. Returns K as a float CSR matrix, n x (n - rank).
+    """
+    from fractions import Fraction
+    from straindesign.compression import float_to_fraction
+    A = sparse.csr_matrix(A_eq_p)
+    m, n = A.shape
+    rows = []
+    for i in range(m):
+        d = {}
+        for k in range(A.indptr[i], A.indptr[i + 1]):
+            v = A.data[k]
+            if v != 0:
+                d[int(A.indices[k])] = float_to_fraction(v)
+        if d:
+            rows.append(d)
+    frac_first = bool(os.environ.get('SD_NB_KERNEL_PIVOT_FRACTIONAL'))
+    frac_cols = {j for r in rows for j, v in r.items() if v.denominator != 1} if frac_first else set()
+    col_rows = {}
+    for i, r in enumerate(rows):
+        for j in r:
+            col_rows.setdefault(j, set()).add(i)
+    active = set(range(len(rows)))
+    pivots = []  # (row index, column)
+    while active:
+        best = None
+        for i in active:
+            r = rows[i]
+            if not r:
+                continue
+            rc = len(r) - 1
+            for j, v in r.items():
+                cc = sum(1 for k in col_rows[j] if k in active) - 1
+                key = (j not in frac_cols, rc * cc, abs(v) != 1, j)
+                if best is None or key < best[0]:
+                    best = (key, i, j)
+        if best is None:
+            break
+        _, i, j = best
+        p = rows[i][j]
+        rows[i] = {c: v / p for c, v in rows[i].items()}
+        for k in list(col_rows[j]):
+            if k == i or j not in rows[k]:
+                continue
+            f = rows[k][j]
+            for c, v in rows[i].items():
+                nv = rows[k].get(c, 0) - f * v
+                if nv == 0:
+                    if c in rows[k]:
+                        del rows[k][c]
+                        col_rows[c].discard(k)
+                else:
+                    if c not in rows[k]:
+                        col_rows.setdefault(c, set()).add(k)
+                    rows[k][c] = nv
+        active.discard(i)
+        pivots.append((i, j))
+    piv_cols = {j for _, j in pivots}
+    free = [j for j in range(n) if j not in piv_cols]
+    fidx = {j: t for t, j in enumerate(free)}
+    r_, c_, d_ = [], [], []
+    for t, j in enumerate(free):
+        r_.append(j); c_.append(t); d_.append(1.0)
+    for i, j in pivots:
+        for c, v in rows[i].items():
+            if c != j:
+                r_.append(j); c_.append(fidx[c]); d_.append(float(-v))
+    K = sparse.csr_matrix((d_, (r_, c_)), shape=(n, len(free)))
+    logging.info('  Markowitz kernel: rank %d, %d free, %d nonzeros, %d fractional columns pivoted first' %
+                 (len(pivots), len(free), K.nnz, len(frac_cols)))
+    return K
+
+
 def _nullspace_float(A_eq_p):
     """Return an exact right-nullspace basis of A_eq_p as a float scipy CSR matrix.
 
@@ -1629,7 +1707,8 @@ def nullspace_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
     p = Abar.shape[0]  # number of w-duals (>= 0)
 
     # --- 2. Exact kernel of A_eq_p (metabolite duals to eliminate). ---
-    K = _nullspace_float(A_eq_p)  # n x q, A_eq_p @ K == 0
+    K = _markowitz_kernel(A_eq_p) if os.environ.get('SD_NB_KERNEL') == 'markowitz' \
+        else _nullspace_float(A_eq_p)  # n x q, A_eq_p @ K == 0
     q = K.shape[1]
 
     # --- 3. Primal variable sign classes (same predicates as LP_dualize). ---
@@ -1724,7 +1803,7 @@ def nullspace_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
     # --- 6. Append the Farkas normalization  bbar^T w <= -1  (not knockable). ---
     c_d = [0.0] * n + list(bbar) + [0.0] * nh   # dual objective: 0 on v and vhat, bbar on w
     A_ineq_f = sparse.vstack((A_ineq_d, sparse.csr_matrix(c_d))).tocsr()
-    b_ineq_f = list(b_ineq_d) + [-1]
+    b_ineq_f = list(b_ineq_d) + [-float(os.environ.get('SD_FARKAS_ANCHOR', 1.0))]
     z_map_constr_ineq_f = sparse.hstack((z_map_constr_ineq_d, sparse.csr_matrix((numz, 1)))).tocsc()
 
     return A_ineq_f, b_ineq_f, A_eq_d, b_eq_d, lb_d, ub_d, z_map_constr_ineq_f, z_map_constr_eq_d, z_map_vars_d
