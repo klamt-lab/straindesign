@@ -1625,15 +1625,54 @@ def nullspace_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
     x_leq0 = np.nonzero(np.greater(0, lb_a) & np.greater_equal(0, ub_a))[0]
 
     # --- 4. Assemble the raw dual (variables [v (n); w (p)]), before normalization. ---
-    # Projected feasibility equalities: K^T v - (Abar K)^T w = 0  (q rows, not knockable)
-    KT = K.transpose().tocsr()                       # q x n  -> coefficient on v
-    AbarK = (Abar @ K).transpose().tocsr()           # q x p  -> coefficient on w (= (Abar K)^T)
-    A_eq_proj = sparse.hstack((KT, -AbarK)).tocsr()
+    # Projected feasibility equalities: K^T (v - Abar^T w) = 0  (q rows, not knockable).
+    # SD_NB_LOCAL_BOUNDS keeps single-variable rows of Abar (the flux bounds) out of the projection.
+    # For such a row on reaction j, (Abar^T w)_j is one term, so the projection would only copy
+    # kernel row K_j a second time. Instead vhat_j = v_j - (Abar_single^T w)_j is a variable of its
+    # own, defined by one short row, and only the multi-variable rows (the targets) are projected:
+    #     K^T vhat - (Abar_multi K)^T w = 0 ,   v_j - vhat_j - (Abar_single^T w)_j = 0
+    # The certificate set is unchanged; vhat is a change of variables.
+    local = bool(os.environ.get('SD_NB_LOCAL_BOUNDS'))
+    row_nnz = np.diff(Abar.indptr)
+    single = np.nonzero(row_nnz == 1)[0] if local else np.array([], dtype=int)
+    multi = np.setdiff1d(np.arange(p), single)
+    KT = K.transpose().tocsr()                       # q x n  -> coefficient on v (or vhat)
+    if local and len(single):
+        bnd = np.unique(Abar[single, :].tocoo().col)  # reactions that carry a single-entry row
+        nh = len(bnd)
+        col_of = {int(r): n + p + k for k, r in enumerate(bnd)}
+        # K^T acting on vhat for bounded reactions, on v for the rest
+        KTc = KT.tocsc()
+        keep_v = np.setdiff1d(np.arange(n), bnd)
+        KT_v = sparse.hstack((KTc[:, keep_v], sparse.csc_matrix((q, n - len(keep_v))))).tocsc()
+        perm = np.concatenate((keep_v, bnd))
+        KT_v = KT_v[:, np.argsort(perm)]             # back to reaction order, zero on bnd columns
+        KT_h = KTc[:, bnd]
+        Amulti = Abar[multi, :]
+        AmK = sparse.csr_matrix((Amulti @ K).transpose())           # q x |multi|
+        W = sparse.lil_matrix((q, p)); W[:, multi] = -AmK
+        A_eq_proj = sparse.hstack((KT_v, W.tocsr(), KT_h)).tocsr()
+        # link rows: v_j - vhat_j - sum_k Abar[k, j] w_k = 0 over single rows k on reaction j
+        L = sparse.lil_matrix((nh, n + p + nh))
+        for k, r in enumerate(bnd):
+            L[k, int(r)] = 1.0
+            L[k, n + p + k] = -1.0
+        As = Abar[single, :].tocoo()
+        for rr, cc, vv in zip(As.row, As.col, As.data):
+            L[bnd.searchsorted(cc), n + int(single[rr])] = -float(vv)
+        A_eq_link = L.tocsr()
+    else:
+        nh = 0
+        AbarK = (Abar @ K).transpose().tocsr()       # q x p  -> coefficient on w (= (Abar K)^T)
+        A_eq_proj = sparse.hstack((KT, -AbarK)).tocsr()
+        A_eq_link = sparse.csr_matrix((0, n + p))
     if scale_rows and A_eq_proj.nnz:
         # Row-scale each =0 equality by its max |coef| to tame large integer kernel entries.
         rmax = np.maximum(np.abs(A_eq_proj).max(axis=1).toarray().ravel(), 1e-300)
         A_eq_proj = sparse.diags(1.0 / rmax) @ A_eq_proj
     b_eq_proj = [0.0] * q
+    logging.info('  Nullspace projection: %d rows, %d nonzeros (K part %d); %d local bound rows' %
+                 (q, A_eq_proj.nnz, K.nnz, nh))
 
     # Sign-constraint rows on v_j (v-block only; w-block zero).
     # ineq block, geq0 then leq0 to match LP_dualize's dual-ineq ordering:
@@ -1643,24 +1682,25 @@ def nullspace_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
     sign_geq0 = _sign_ineq(x_geq0, -1.0)
     sign_leq0 = _sign_ineq(x_leq0, 1.0)
     A_ineq_sign = sparse.hstack((sparse.vstack((sign_geq0, sign_leq0)),
-                                 sparse.csr_matrix((len(x_geq0) + len(x_leq0), p)))).tocsr()
+                                 sparse.csr_matrix((len(x_geq0) + len(x_leq0), p + nh)))).tocsr()
     b_ineq_sign = [0.0] * (len(x_geq0) + len(x_leq0))
     # eq block: eR reversible reactions -> v_j = 0
     sign_eR = sparse.csr_matrix((len(x_eR) * [1.0], (range(len(x_eR)), x_eR)), shape=(len(x_eR), n))
-    A_eq_sign = sparse.hstack((sign_eR, sparse.csr_matrix((len(x_eR), p)))).tocsr()
+    A_eq_sign = sparse.hstack((sign_eR, sparse.csr_matrix((len(x_eR), p + nh)))).tocsr()
     b_eq_sign = [0.0] * len(x_eR)
 
     A_ineq_d = A_ineq_sign
     b_ineq_d = b_ineq_sign
-    A_eq_d = sparse.vstack((A_eq_proj, A_eq_sign)).tocsr()
-    b_eq_d = b_eq_proj + b_eq_sign
-    lb_d = [-np.inf] * n + [0.0] * p       # v free, w >= 0
-    ub_d = [np.inf] * (n + p)
+    A_eq_d = sparse.vstack((A_eq_proj, A_eq_link, A_eq_sign)).tocsr()
+    b_eq_d = b_eq_proj + [0.0] * A_eq_link.shape[0] + b_eq_sign
+    lb_d = [-np.inf] * n + [0.0] * p + [-np.inf] * nh      # v free, w >= 0, vhat free
+    ub_d = [np.inf] * (n + p + nh)
 
     # z-maps: reaction j's knockability -> its v_j sign row (geq0/leq0 -> ineq, eR -> eq).
     z_map_constr_ineq_d = sparse.hstack((z_map_vars_p[:, x_geq0], z_map_vars_p[:, x_leq0])).tocsc()
-    z_map_constr_eq_d = sparse.hstack((sparse.csc_matrix((numz, q)), z_map_vars_p[:, x_eR])).tocsc()
-    z_map_vars_d = sparse.csc_matrix((numz, n + p))  # no variable-level knockability
+    z_map_constr_eq_d = sparse.hstack((sparse.csc_matrix((numz, q + A_eq_link.shape[0])),
+                                       z_map_vars_p[:, x_eR])).tocsc()
+    z_map_vars_d = sparse.csc_matrix((numz, n + p + nh))  # no variable-level knockability
 
     # --- 5. Reassign single-variable non-knockable sign rows into bounds (as FLB does). ---
     A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, lb_d, ub_d, z_map_constr_ineq_d, z_map_constr_eq_d = \
@@ -1668,7 +1708,7 @@ def nullspace_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
                                  z_map_constr_ineq_d, z_map_constr_eq_d, z_map_vars_d)
 
     # --- 6. Append the Farkas normalization  bbar^T w <= -1  (not knockable). ---
-    c_d = [0.0] * n + list(bbar)   # dual objective: 0 on v, bbar on w
+    c_d = [0.0] * n + list(bbar) + [0.0] * nh   # dual objective: 0 on v and vhat, bbar on w
     A_ineq_f = sparse.vstack((A_ineq_d, sparse.csr_matrix(c_d))).tocsr()
     b_ineq_f = list(b_ineq_d) + [-1]
     z_map_constr_ineq_f = sparse.hstack((z_map_constr_ineq_d, sparse.csr_matrix((numz, 1)))).tocsc()
