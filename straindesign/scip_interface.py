@@ -390,6 +390,15 @@ class SCIP_MILP(pso.Model):
             else:
                 self.chgVarUb(self.vars[ub[i][0]], None)
 
+    def set_lb(self, lb):
+        """Set the lower bounds with index-value pairs, e.g.: lb=[[1, 0.0], [4, -inf]]"""
+        self.freeTransform()
+        for i in range(len(lb)):
+            if not isinf(lb[i][1]):
+                self.chgVarLb(self.vars[lb[i][0]], float(lb[i][1]))
+            else:
+                self.chgVarLb(self.vars[lb[i][0]], None)
+
     def set_lp_method(self, method):
         """Set the LP solving method.
 
@@ -647,6 +656,18 @@ class SCIP_LP(pso.LP):
         e.g.: C=[[1, 1.0], [4,-0.2]]"""
         for i_v in C:
             self.chgObj(i_v[0], i_v[1])
+
+    def set_ub(self, ub):
+        """Set the upper bounds with index-value pairs, e.g.: ub=[[1, 0.0], [4, inf]]"""
+        for i, u in ub:
+            lb = self.getBounds(i, i)[0][0]
+            self.chgBound(i, lb, self.infinity() if isinf(u) else float(u))
+
+    def set_lb(self, lb):
+        """Set the lower bounds with index-value pairs, e.g.: lb=[[1, 0.0], [4, -inf]]"""
+        for i, l in lb:
+            ub = self.getBounds(i, i)[1][0]
+            self.chgBound(i, -self.infinity() if isinf(l) else float(l), ub)
 
     def add_ineq_constraints(self, A_ineq, b_ineq):
         """Add inequality constraints to the model

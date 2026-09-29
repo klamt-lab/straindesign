@@ -361,20 +361,35 @@ class GLPK_MILP_LP():
             glp_set_obj_coef(self.glpk, c[0] + 1, float(c[1]))
 
     def set_ub(self, ub):
-        """Set the upper bounds to a given vector"""
-        setvars = [ub[i][0] for i in range(len(ub))]
-        lb = [glp_get_col_lb(self.glpk, i + 1) for i in setvars]
-        ub = [ub[i][1] for i in range(len(ub))]
-        type = [glp_get_col_type(self.glpk, i + 1) for i in setvars]
-        for i, l, u, t in zip(setvars, lb, ub, type):
-            if t in [GLP_FR, GLP_LO] and isinf(u):
-                glp_set_col_bnds(self.glpk, i + 1, t, float(l), float(u))
-            elif t == GLP_UP and isinf(u):
-                glp_set_col_bnds(self.glpk, i + 1, GLP_FR, float(l), float(u))
-            elif t in [GLP_LO, GLP_DB, GLP_FX] and not isinf(u) and l < u:
-                glp_set_col_bnds(self.glpk, i + 1, GLP_DB, float(l), float(u))
-            elif t in [GLP_LO, GLP_DB, GLP_FX] and not isinf(u) and l == u:
-                glp_set_col_bnds(self.glpk, i + 1, GLP_FX, float(l), float(u))
+        """Set the upper bounds with index-value pairs, e.g.: ub=[[1, 0.0], [4, inf]]"""
+        for i, u in ub:
+            self._set_col_bounds(i, self._col_bounds(i)[0], float(u))
+
+    def set_lb(self, lb):
+        """Set the lower bounds with index-value pairs, e.g.: lb=[[1, 0.0], [4, -inf]]"""
+        for i, l in lb:
+            self._set_col_bounds(i, float(l), self._col_bounds(i)[1])
+
+    def _col_bounds(self, i):
+        # GLPK reports a missing bound as 0 or +-DBL_MAX, so read the bounds through the column type
+        t = glp_get_col_type(self.glpk, i + 1)
+        lb = -inf if t in [GLP_FR, GLP_UP] else glp_get_col_lb(self.glpk, i + 1)
+        ub = inf if t in [GLP_FR, GLP_LO] else glp_get_col_ub(self.glpk, i + 1)
+        return lb, ub
+
+    def _set_col_bounds(self, i, lb, ub):
+        # the column type follows from which bounds are finite; GLPK keeps the basis across the change
+        if isinf(lb) and isinf(ub):
+            t = GLP_FR
+        elif isinf(ub):
+            t = GLP_LO
+        elif isinf(lb):
+            t = GLP_UP
+        elif lb == ub:
+            t = GLP_FX
+        else:
+            t = GLP_DB
+        glp_set_col_bnds(self.glpk, i + 1, t, 0.0 if isinf(lb) else lb, 0.0 if isinf(ub) else ub)
 
     def set_lp_method(self, method):
         """Set the LP solving method.
