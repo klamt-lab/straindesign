@@ -321,3 +321,54 @@ def test_scip_lp_stopped_early_is_not_optimal():
     assert status == sd.names.OPTIMAL
     assert opt == pytest.approx(3.0)
 
+
+def test_glpk_unproven_infeasibility_is_resolved(monkeypatch):
+    """GLPK's GLP_INFEAS (current basis infeasible) and a dual-simplex GLP_NOFEAS are no proof.
+
+    The first simplex call is cut short: with an iteration limit of one, the slack basis of
+    x_i >= 1 (as rows) is still primal infeasible. Next, the dual simplex is made to report
+    GLP_NOFEAS on the feasible LP. Both must end OPTIMAL, not INFEASIBLE."""
+    import swiglpk
+    import straindesign.glpk_interface as glpk_interface
+    from scipy import sparse
+    simplex = glpk_interface.glp_simplex
+    get_status = glpk_interface.glp_get_status
+
+    def build():
+        return sd.MILP_LP(c=[1.0, 1.0, 1.0], A_ineq=sparse.csr_matrix(-np.eye(3)), b_ineq=[-1.0] * 3,
+                          A_eq=sparse.csr_matrix((0, 3)), b_eq=[], lb=[0.0] * 3, ub=[10.0] * 3,
+                          solver=sd.names.GLPK)
+
+    calls = []
+
+    def simplex_itlim_once(prob, params):
+        calls.append(1)
+        if len(calls) > 1:
+            return simplex(prob, params)
+        it_lim, params.it_lim = params.it_lim, 1
+        try:
+            return simplex(prob, params)
+        finally:
+            params.it_lim = it_lim
+
+    monkeypatch.setattr(glpk_interface, 'glp_simplex', simplex_itlim_once)
+    _, opt, status = build().solve()
+    assert status == sd.names.OPTIMAL
+    assert opt == pytest.approx(3.0)
+    monkeypatch.setattr(glpk_interface, 'glp_simplex', simplex)
+
+    lp = build()
+    lp.set_lp_method(sd.names.LP_METHOD_DUAL)
+    reported = []
+
+    def get_status_nofeas_once(prob):
+        if not reported:
+            reported.append(1)
+            return swiglpk.GLP_NOFEAS
+        return get_status(prob)
+
+    monkeypatch.setattr(glpk_interface, 'glp_get_status', get_status_nofeas_once)
+    _, opt, status = lp.solve()
+    assert status == sd.names.OPTIMAL
+    assert opt == pytest.approx(3.0)
+    assert lp.get_lp_method() == sd.names.LP_METHOD_DUAL

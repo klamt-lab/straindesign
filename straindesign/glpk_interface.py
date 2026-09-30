@@ -227,39 +227,19 @@ class GLPK_MILP_LP():
             solution_vector, optimal_value, optimization_status
         """
         try:
-            min_cx, status, bool_tlim = self.solve_MILP_LP()
-            if status in [GLP_OPT, GLP_FEAS]:  # solution
-                status = OPTIMAL
-            elif bool_tlim and status == GLP_UNDEF:  # timeout without solution
-                x = [nan] * glp_get_num_cols(self.glpk)
-                min_cx = nan
-                status = TIME_LIMIT
-                return x, min_cx, status
-            elif status in [GLP_INFEAS, GLP_NOFEAS]:  # infeasible
-                x = [nan] * glp_get_num_cols(self.glpk)
-                min_cx = nan
-                status = INFEASIBLE
-                return x, min_cx, status
-            elif bool_tlim and status == GLP_FEAS:  # timeout with solution
-                min_cx = self.ObjVal
-                status = TIME_LIMIT_W_SOL
-            elif status in [GLP_UNBND, GLP_UNDEF]:  # solution unbounded
-                x = [nan] * glp_get_num_cols(self.glpk)
-                min_cx = -inf
-                status = UNBOUNDED
-                return x, min_cx, status
-            else:
-                raise Exception('Status code ' + str(status) + " not yet handled.")
-            x = self.getSolution(status)
-            x = [round(y, 12) for y in x]  # workaround, round to 12 decimals
-            min_cx = round(min_cx, 12)
+            min_cx, status = self.solve_MILP_LP()
+            if status in [OPTIMAL, TIME_LIMIT_W_SOL]:
+                x = self.getSolution(status)
+                x = [round(y, 12) for y in x]  # workaround, round to 12 decimals
+                return x, round(min_cx, 12), status
+            x = [nan] * glp_get_num_cols(self.glpk)
+            min_cx = -inf if status == UNBOUNDED else nan
             return x, min_cx, status
-
         except:
             logging.error('Error while running GLPK.')
             min_cx = nan
             x = [nan] * glp_get_num_cols(self.glpk)
-            return x, min_cx, -1
+            return x, min_cx, ERROR
 
     def slim_solve(self) -> float:
         """Solve the MILP or LP, but return only the optimal value
@@ -273,17 +253,10 @@ class GLPK_MILP_LP():
             Optimum value of the objective function.
         """
         try:
-            opt, status, bool_tlim = self.solve_MILP_LP()
-            if status in [GLP_OPT, GLP_FEAS]:  # solution integer optimal (tolerance)
-                pass
-            elif status in [GLP_UNBND, GLP_UNDEF]:  # solution unbounded (or inf or unbdd)
-                opt = -inf
-            elif bool_tlim or status in [GLP_INFEAS, GLP_NOFEAS]:  # infeasible or timeout
-                opt = nan
-            else:
-                raise Exception('Status code ' + str(status) + " not yet handled.")
-            opt = round(opt, 12)  # workaround, round to 12 decimals
-            return opt
+            opt, status = self.solve_MILP_LP()
+            if status == OPTIMAL:
+                return round(opt, 12)  # workaround, round to 12 decimals
+            return -inf if status == UNBOUNDED else nan
         except:
             logging.error('Error while running GLPK.')
             return nan
@@ -537,31 +510,102 @@ class GLPK_MILP_LP():
             x = [glp_get_col_prim(self.glpk, i + 1) for i in range(glp_get_num_cols(self.glpk))]
         return x
 
-    def solve_MILP_LP(self) -> Tuple[float, int, bool]:
-        """Trigger GLPK solution through backend"""
-        starttime = glp_time()
+    def solve_MILP_LP(self) -> Tuple[float, str]:
+        """Trigger GLPK solution through backend
+
+        Returns:
+            (Tuple[float, str])
+
+            objective value (of the incumbent for a MILP), solver-neutral status
+        """
         # MILP solving needs prior solution of the LP-relaxed problem, because occasionally
         # the MILP solver interface crashes when a problem is infesible, which, in turn,
         # crashes the python program. This connection-loss to the solver can not be captured.
-        prelim_status = glp_simplex(self.glpk, self.lp_params)
-        # There is a GLPK bug where feasible LPs fail initialy but can complete when presolved
-        # in these cases, glp_simplex returns GLP_EFAIL. We capture these cases and solve again
-        # with prior resolve.
-        if prelim_status == GLP_EFAIL:
-            self.lp_params.presolve = 1
-            self.lp_params.meth = 3
-            prelim_status = glp_simplex(self.glpk, self.lp_params)
-            self.lp_params.presolve = 0
-            self.lp_params.meth = 1
-        status = glp_get_status(self.glpk)
-        if self.ismilp and status not in [GLP_INFEAS, GLP_NOFEAS]:
-            glp_intopt(self.glpk, self.milp_params)
-            status = glp_mip_status(self.glpk)
-            opt = glp_mip_obj_val(self.glpk)
+        status = self._solve_lp()
+        if not self.ismilp:
+            if status == ERROR:
+                logging.error('GLPK LP: no proof of optimality or infeasibility, also from a fresh basis and presolved.')
+            return glp_get_obj_val(self.glpk), status
+        if status in [INFEASIBLE, TIME_LIMIT, TIME_LIMIT_W_SOL]:
+            # an infeasible relaxation proves the MILP infeasible; at the time limit, no integer
+            # solution exists yet. On any other outcome, glp_intopt presolves and solves the
+            # relaxation itself.
+            return nan, INFEASIBLE if status == INFEASIBLE else TIME_LIMIT
+        ret = glp_intopt(self.glpk, self.milp_params)
+        mip_status = glp_mip_status(self.glpk)
+        has_sol = mip_status in [GLP_OPT, GLP_FEAS]
+        if ret in [0, GLP_EMIPGAP] and has_sol:
+            status = OPTIMAL
+        elif ret == 0 and mip_status == GLP_NOFEAS or ret == GLP_ENOPFS:
+            status = INFEASIBLE
+        elif ret == GLP_ENODFS:  # relaxation infeasible or unbounded
+            status = UNBOUNDED
+        elif ret in [GLP_ETMLIM, GLP_ESTOP]:
+            status = TIME_LIMIT_W_SOL if has_sol else TIME_LIMIT
+        elif has_sol:
+            # the search failed, but the incumbent is integer feasible
+            logging.warning('GLPK MILP search ended with return code ' + str(ret) + '; returning the incumbent.')
+            status = TIME_LIMIT_W_SOL
         else:
-            opt = glp_get_obj_val(self.glpk)
-        timelim_reached = glp_difftime(glp_time(), starttime) >= self.lp_params.tm_lim
-        return opt, status, timelim_reached
+            logging.error('GLPK MILP search ended with return code ' + str(ret) + ' and no solution.')
+            status = ERROR
+        return glp_mip_obj_val(self.glpk), status
+
+    def _lp_status(self, ret):
+        """Solver-neutral status of the last glp_simplex call with return code ret.
+
+        glp_get_status reports GLP_INFEAS or GLP_UNDEF for a basis that is primal infeasible or
+        missing, e.g. after a numerical failure or when the dual simplex proves the dual
+        infeasible (the primal is then infeasible or unbounded). Neither is a proof of
+        infeasibility, so both are ERROR here; only GLP_NOFEAS and the presolver's GLP_ENOPFS
+        are INFEASIBLE."""
+        if ret == 0:
+            status = glp_get_status(self.glpk)
+            if status == GLP_OPT:
+                return OPTIMAL
+            if status == GLP_NOFEAS:
+                return INFEASIBLE
+            if status == GLP_UNBND:
+                return UNBOUNDED
+        elif ret == GLP_ETMLIM:
+            return TIME_LIMIT_W_SOL if glp_get_prim_stat(self.glpk) == GLP_FEAS else TIME_LIMIT
+        elif ret == GLP_ENOPFS:
+            return INFEASIBLE
+        elif ret == GLP_ENODFS:  # infeasible or unbounded
+            return UNBOUNDED
+        return ERROR
+
+    def _solve_lp(self):
+        """Solve the LP (relaxation) and return a solver-neutral status.
+
+        A solve starts from the basis of the previous one. When that ends without a proof (a
+        singular or stalled basis, GLP_EFAIL, or a basis that is only known to be primal
+        infeasible), the LP is solved again with the primal simplex from a fresh advanced basis,
+        and, if that fails too, with the presolver, which builds its own basis. GLPK has feasible
+        LPs that fail initially but complete when presolved.
+
+        GLP_NOFEAS from the dual simplex goes through the same retry: warm-started from a
+        neighbouring optimal basis, it can end with GLP_NOFEAS on a feasible LP (iML1515 flux
+        coupling: 6 of about 1150 LPs), so only the primal simplex's verdict counts as proof."""
+        meth, presolve = self.lp_params.meth, self.lp_params.presolve
+        status = self._lp_status(glp_simplex(self.glpk, self.lp_params))
+        if status != ERROR and not (status == INFEASIBLE and meth != GLP_PRIMAL and presolve == GLP_OFF):
+            return status
+        try:
+            logging.debug('GLPK LP: ' + status + ' from ' + ('primal' if meth == GLP_PRIMAL else 'dual') +
+                          ' simplex, re-solving with the primal simplex from a fresh basis.')
+            term_out = glp_term_out(GLP_OFF)  # glp_adv_basis reports to the terminal regardless of msg_lev
+            glp_adv_basis(self.glpk, 0)
+            glp_term_out(term_out)
+            self.lp_params.meth, self.lp_params.presolve = GLP_PRIMAL, GLP_OFF
+            status = self._lp_status(glp_simplex(self.glpk, self.lp_params))
+            if status == ERROR:
+                logging.debug('GLPK LP: fresh basis failed, re-solving with presolve.')
+                self.lp_params.meth, self.lp_params.presolve = GLP_DUALP, GLP_ON
+                status = self._lp_status(glp_simplex(self.glpk, self.lp_params))
+        finally:
+            self.lp_params.meth, self.lp_params.presolve = meth, presolve
+        return status
 
     def addExclusionConstraintsIneq(self, x):
         """Function to add exclusion constraint (GLPK compatibility function)"""
