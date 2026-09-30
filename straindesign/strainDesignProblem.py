@@ -1539,6 +1539,43 @@ def split_reversible_primal(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
             z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_split)
 
 
+def _exact_fraction(v):
+    """Rationalise one float without relative error, for the NB kernel.
+
+    ``float_to_fraction``'s defaults accept a rational on agreement to six DECIMAL PLACES and
+    otherwise round to six decimal places. That criterion is absolute, so a stoichiometric
+    coefficient of order 1e-6 -- reduced networks have them -- comes out with a relative error of up
+    to a percent, and the kernel then belongs to a different matrix than the one the primal, the
+    Farkas dual and verify_sd use: K^T r = 0 no longer means r lies in the row space of S, and since
+    the certificate cone is unbounded in v the drift is reachable at any magnitude. Here the
+    precision is escalated until the rational reproduces the float to within a few ulps, falling
+    back on the float's exact dyadic value, so short rationals (1/3) stay short.
+    """
+    from fractions import Fraction
+    from straindesign.compression import float_to_fraction
+    v = float(v)
+    if not v:
+        return Fraction(0)
+    tol = 8.0 * np.spacing(abs(v))
+    for precision, denom in ((6, 100), (9, 10**4), (12, 10**6), (15, 10**9)):
+        cand = float_to_fraction(v, precision, denom)
+        if cand is not None and abs(float(cand) - v) <= tol:
+            return cand
+    return Fraction(v)  # every float is exactly a dyadic rational
+
+
+def _exact_rational_matrix(A):
+    """RationalMatrix of a float matrix, each entry rationalised by :func:`_exact_fraction`."""
+    from straindesign.compression import RationalMatrix
+    A = sparse.coo_matrix(A)
+    entries = []
+    for r, c, v in zip(A.row, A.col, A.data):
+        frac = _exact_fraction(v)
+        if frac:
+            entries.append((int(r), int(c), frac))
+    return RationalMatrix.from_fractions(iter(entries), A.shape)
+
+
 def _markowitz_kernel(A_eq_p):
     """Exact rational kernel of A_eq_p by Gauss-Jordan elimination with Markowitz pivoting.
 
@@ -1547,8 +1584,6 @@ def _markowitz_kernel(A_eq_p):
     non-integer entry (the biomass column), so that column becomes a pivot instead of a free
     coordinate. Returns K as a float CSR matrix, n x (n - rank).
     """
-    from fractions import Fraction
-    from straindesign.compression import float_to_fraction
     A = sparse.csr_matrix(A_eq_p)
     m, n = A.shape
     rows = []
@@ -1557,7 +1592,7 @@ def _markowitz_kernel(A_eq_p):
         for k in range(A.indptr[i], A.indptr[i + 1]):
             v = A.data[k]
             if v != 0:
-                d[int(A.indices[k])] = float_to_fraction(v)
+                d[int(A.indices[k])] = _exact_fraction(v)
         if d:
             rows.append(d)
     frac_first = bool(os.environ.get('SD_NB_KERNEL_PIVOT_FRACTIONAL'))
@@ -1620,14 +1655,21 @@ def _markowitz_kernel(A_eq_p):
 def _nullspace_float(A_eq_p):
     """Return an exact right-nullspace basis of A_eq_p as a float scipy CSR matrix.
 
-    Uses straindesign.sparse_nullspace (exact rational kernel). Handles both the
-    int64-CSR return and the arbitrary-precision ExactCOO return (big integers that
-    do not fit int64). Coefficients are cast to float64; the kernel property
-    ``A_eq_p @ K == 0`` holds exactly for any scalar scaling, so casting is safe for
-    building the projection (the MILP is solved in floating point regardless).
+    Uses straindesign.sparse_nullspace (exact rational kernel) on a rationalisation of A_eq_p that
+    reproduces every float coefficient to within a few ulps (see :func:`_exact_fraction`). Handles
+    both the int64-CSR return and the arbitrary-precision ExactCOO return (big integers that do not
+    fit int64). A basis change selected by SD_NB_KERNEL (see straindesign.nb_kernel) is applied in
+    exact integer arithmetic; coefficients are cast to float64 only at the end, since the MILP is
+    solved in floating point regardless.
     """
     from straindesign import sparse_nullspace
-    K = sparse_nullspace(sparse.csr_matrix(A_eq_p))
+    K = sparse_nullspace(_exact_rational_matrix(A_eq_p))
+    if os.environ.get('SD_NB_KERNEL', 'none').strip() not in ('', 'none') \
+            or os.environ.get('SD_NB_KERNEL_MODULE') or os.environ.get('SD_NB_KERNEL_STATS'):
+        # The dual constrains v against the SUBSPACE null(A_eq_p), so any invertible K -> K M is
+        # free: same feasible set, same designs, different sparsity and conditioning.
+        from straindesign.nb_kernel import apply_variant
+        return apply_variant(K, A_eq_p)
     if sparse.issparse(K):
         return K.astype(float).tocsr()
     # ExactCOO namedtuple (rows, cols, data, shape, denom) with Python-int data
@@ -1707,7 +1749,9 @@ def nullspace_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
     p = Abar.shape[0]  # number of w-duals (>= 0)
 
     # --- 2. Exact kernel of A_eq_p (metabolite duals to eliminate). ---
-    K = _markowitz_kernel(A_eq_p) if os.environ.get('SD_NB_KERNEL') == 'markowitz' \
+    # SD_NB_KERNEL=markowitz builds the kernel by minimum-fill elimination; every other value is a
+    # basis change of sparse_nullspace's kernel (straindesign.nb_kernel). Both are exact.
+    K = _markowitz_kernel(A_eq_p) if os.environ.get('SD_NB_KERNEL', '').strip() == 'markowitz' \
         else _nullspace_float(A_eq_p)  # n x q, A_eq_p @ K == 0
     q = K.shape[1]
 
@@ -1759,6 +1803,11 @@ def nullspace_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
         AbarK = (Abar @ K).transpose().tocsr()       # q x p  -> coefficient on w (= (Abar K)^T)
         A_eq_proj = sparse.hstack((KT, -AbarK)).tocsr()
         A_eq_link = sparse.csr_matrix((0, n + p))
+    if os.environ.get('SD_NB_KERNEL_STATS'):
+        import json as _json
+        with open(os.environ['SD_NB_KERNEL_STATS'], 'a') as _fh:
+            _fh.write(_json.dumps(dict(block='A_eq_proj', rows=int(q), cols=int(A_eq_proj.shape[1]),
+                                       nnz_KT=int(KT.nnz), nnz=int(A_eq_proj.nnz))) + '\n')
     if scale_rows and A_eq_proj.nnz:
         # Row-scale each =0 equality by its max |coef| to tame large integer kernel entries.
         rmax = np.maximum(np.abs(A_eq_proj).max(axis=1).toarray().ravel(), 1e-300)
