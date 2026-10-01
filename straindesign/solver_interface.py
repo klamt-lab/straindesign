@@ -105,7 +105,7 @@ class MILP_LP(object):
     def __init__(self, **kwargs):
         allowed_keys = {
             'c', 'A_ineq', 'b_ineq', 'A_eq', 'b_eq', 'lb', 'ub', 'vtype', 'indic_constr', 'M', SOLVER, 'skip_checks', 'tlim', SEED, 'sos1_gates',
-            MILP_THREADS
+            MILP_THREADS, 'gate_modules'
         }
         # set all keys passed in kwargs
         for key, value in kwargs.items():
@@ -198,6 +198,14 @@ class MILP_LP(object):
            and self.indic_constr is not None and self.indic_constr.A.shape[0] \
            and self.solver in [CPLEX, GUROBI]:
             self._gates_as_named_rows()
+
+        # Optional: CellNetAnalyzer's binary structure on the target-region gates (SD_CNA_OWNZ,
+        # SD_CNA_DIRSPLIT). Applied before the SOS1 rewrite, which then gates on the new binaries.
+        self._direct_gates = {}
+        if getattr(self, 'sos1_gates', None) and (os.environ.get('SD_CNA_OWNZ') or os.environ.get('SD_CNA_DIRSPLIT')) \
+           and self.indic_constr is not None and self.indic_constr.A.shape[0] \
+           and getattr(self, 'gate_modules', None) is not None and self.solver in [CPLEX, GUROBI]:
+            self._cna_binaries()
 
         self.sos1 = []
         if getattr(self, 'sos1_gates', None) and os.environ.get('SD_SOS1_GATES', '1').lower() not in ('0', 'off', 'false') \
@@ -328,6 +336,122 @@ class MILP_LP(object):
         logging.info('  Named gate rows: %d indicator constraints reduced to one term each, '
                      '%d new columns.' % (m, k_new))
 
+    def _cna_binaries(self):
+        """CellNetAnalyzer's binary structure for the target-region (SUPPRESS) gates.
+
+        CNA's MILP carries more binaries than StrainDesign's and keeps them in linear rows: a
+        direction binary pair per reversible reaction, and a separate binary per subproblem that
+        gates the target-region dual, linked to the knock-out one way only. Both are reproduced
+        here as opt-in switches. Each leaves the set of feasible z unchanged, so the designs are
+        the same; what changes is what the solver can branch on and cut with.
+
+        SD_CNA_DIRSPLIT: a reversible reaction's target-region gate is an equality on its dual row
+        (a*y = b while the reaction is present). With it knocked out, any one certificate leaves
+        that row on one side of b, so a direction suffices. The row becomes a*y - sp + sn = b with
+        sp, sn >= 0, two binaries zp + zn = [reaction knocked out] (CNA's ZP, ZN), and two gates on
+        one sign-constrained column each: zp = 0 -> sp <= 0, zn = 0 -> sn <= 0. Only binaries with
+        exactly one target-region gate are split, since one direction is chosen per reaction. Cost,
+        decoding and the desired-region gates stay on z, so a design found in both directions is
+        still one z pattern.
+
+        SD_CNA_OWNZ: every target-region gate is keyed on its own binary i ("gate enforced") with
+        i >= [the intervention requires the gate], i.e. i = 1 whenever the reaction is present and
+        free once it is knocked out (CNA's x = 1 -> i = 1). Enforcing a knocked-out reaction's gate
+        only removes certificates, so for a fixed z the block is feasible exactly when it is with i
+        at its lower bound, which is the shared-z model. Applied after the direction split, so a
+        split reaction gets one such binary per direction, as in CNA.
+
+        Gate modules come from the caller (``gate_modules``, one entry per indicator row).
+        """
+        ic = self.indic_constr
+        A = sparse.csr_matrix(ic.A)
+        m, n0 = A.shape
+        mods = [str(x).lower() for x in self.gate_modules]
+        if len(mods) != m:
+            logging.warning('gate_modules has %d entries for %d gates; CNA binaries not applied.' % (len(mods), m))
+            return
+        split = bool(os.environ.get('SD_CNA_DIRSPLIT'))
+        own = bool(os.environ.get('SD_CNA_OWNZ'))
+        newcols = []  # (lb, ub, vtype)
+        ineqrows, ineqrhs, eqrows, eqrhs = [], [], [], []
+
+        def add_col(lb_, ub_, vt):
+            newcols.append((lb_, ub_, vt))
+            return n0 + len(newcols) - 1
+
+        n_supp = {}
+        for k in range(m):
+            if mods[k] == SUPPRESS:
+                n_supp[int(ic.binv[k])] = n_supp.get(int(ic.binv[k]), 0) + 1
+        gates = []
+        n_split = 0
+        for k in range(m):
+            row = A.getrow(k)
+            idx, dat = [int(j) for j in row.indices], [float(v) for v in row.data]
+            z, val, sense, b = int(ic.binv[k]), int(ic.indicval[k]), str(ic.sense[k]), float(ic.b[k])
+            if split and mods[k] == SUPPRESS and sense == 'E' and n_supp.get(z) == 1:
+                sp, sn = add_col(0.0, inf, 'C'), add_col(0.0, inf, 'C')
+                zp, zn = add_col(0.0, 1.0, 'B'), add_col(0.0, 1.0, 'B')
+                eqrows.append((idx + [sp, sn], dat + [-1.0, 1.0])); eqrhs.append(b)
+                # the gate is off at z = 1 - val; exactly then one direction is chosen
+                if val == 0:
+                    eqrows.append(([z, zp, zn], [1.0, -1.0, -1.0])); eqrhs.append(0.0)
+                else:
+                    eqrows.append(([z, zp, zn], [1.0, 1.0, 1.0])); eqrhs.append(1.0)
+                for d, part in ((zp, sp), (zn, sn)):
+                    gates.append([d, 0, 'L', 0.0, [part], [1.0], SUPPRESS, idx])
+                n_split += 1
+            else:
+                gates.append([z, val, sense, b, idx, dat, mods[k], None])
+        n_own = 0
+        if own:
+            owner = {}
+            for g in gates:
+                if g[6] != SUPPRESS:
+                    continue
+                key = (g[0], g[1])
+                if key not in owner:
+                    i = add_col(0.0, 1.0, 'B')
+                    owner[key] = i
+                    if key[1] == 0:  # gate required while the binary is 0:  i + z >= 1
+                        ineqrows.append(([i, key[0]], [-1.0, -1.0])); ineqrhs.append(-1.0)
+                    else:            # gate required while the binary is 1:  i >= z
+                        ineqrows.append(([key[0], i], [1.0, -1.0])); ineqrhs.append(0.0)
+                g[0], g[1] = owner[key], 1
+            n_own = len(owner)
+
+        k_new = len(newcols)
+        ncol = n0 + k_new
+        self.c = list(self.c) + [0.0] * k_new
+        self.lb = list(self.lb) + [c_[0] for c_ in newcols]
+        self.ub = list(self.ub) + [c_[1] for c_ in newcols]
+        self.vtype = self.vtype + ''.join(c_[2] for c_ in newcols)
+
+        def stack(base, b_base, specs, b_specs):
+            base = sparse.hstack((base, sparse.csr_matrix((base.shape[0], k_new))), format='csr')
+            if not specs:
+                return base, list(b_base)
+            M_ = sparse.lil_matrix((len(specs), ncol))
+            for r, (cols, vals) in enumerate(specs):
+                for cc, vv in zip(cols, vals):
+                    M_[r, cc] = vv
+            return sparse.vstack((base, M_.tocsr()), format='csr'), list(b_base) + list(b_specs)
+
+        self.A_ineq, self.b_ineq = stack(self.A_ineq, self.b_ineq, ineqrows, ineqrhs)
+        self.A_eq, self.b_eq = stack(self.A_eq, self.b_eq, eqrows, eqrhs)
+        gA = sparse.lil_matrix((len(gates), ncol))
+        for r, g in enumerate(gates):
+            for cc, vv in zip(g[4], g[5]):
+                gA[r, cc] = vv
+        self.indic_constr = IndicatorConstraints([g[0] for g in gates], gA.tocsr(), [g[3] for g in gates],
+                                                 ''.join(g[2] for g in gates), [g[1] for g in gates])
+        self.gate_modules = [g[6] for g in gates]
+        # gates on a single sign-constrained column: the SOS1 rewrite pairs that column directly
+        self._direct_gates = {r: g[7] for r, g in enumerate(gates) if g[7] is not None}
+        logging.info('  CNA binaries: %d reversible target-region gates split by direction, %d own '
+                     'gate binaries; %d new columns (%d binary), %d gates.'
+                     % (n_split, n_own, k_new, sum(1 for c_ in newcols if c_[2] == 'B'), len(gates)))
+
     def _gates_as_sos1(self):
         """Rewrite indicator gates as slack rows plus SOS1 sets.
 
@@ -383,6 +507,16 @@ class MILP_LP(object):
                 g = comp[z]
             row = A.getrow(k)
             idx, dat = list(row.indices), list(row.data)
+            if k in self._direct_gates:
+                # "x <= 0" on a single column with lb = 0: x is already the slack the gate kills
+                x = int(idx[0])
+                if slack_ind:
+                    ind_rows.append([x]); ind_binv.append(z); ind_sense.append('L')
+                    ind_b.append(0.0); ind_val.append(val)
+                else:
+                    self.sos1.append([g, x])
+                    self._gate_slack_src[x] = self._direct_gates[k]
+                continue
             if sense == 'E':
                 # An equality row defines its slack uniquely, so there is no continuum here to
                 # pin and the signed split the inequality gates need is pure overhead. One free

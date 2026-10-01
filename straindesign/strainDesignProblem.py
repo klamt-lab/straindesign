@@ -318,6 +318,45 @@ class SDProblem:
                 override[rid] = (lo, hi)
         return override
 
+    def _protect_finite_bounds(self, sd_module, override):
+        """Finite desired-region flux bounds where the model has none (``SD_CNA_PROTECT_BIGM``).
+
+        Preprocessing replaces every bound that the full-model FVA proves non-binding by +/-inf. A
+        knockable reaction left unbounded on one side has no finite big-M for its desired-region
+        knock-out gate, so that gate becomes an indicator (an SOS1 set on CPLEX and Gurobi), where
+        CellNetAnalyzer writes the linear row v <= ub (1 - z) from the problem file's bounds. The
+        region's own flux range bounds the flux in every knocked-out sub-region too (knock-outs only
+        shrink it), so it is a valid M; widened outward by max(1e-6, 1e-6 |v|) so the solver's
+        tolerance cannot make it bind. Only the infinite side of a reaction is filled in, and only in
+        this block: no other module, and no dual, sees these bounds.
+
+        Returns ``override`` with the magnitudes merged in (tighter of the two per side).
+        """
+        limits = sd_module.get('fva_bounds')
+        if limits is None:
+            return override
+        out = dict(override)
+        bnds = {r.id: (float(r.lower_bound), float(r.upper_bound)) for r in self.model.reactions}
+        n_lo = n_hi = 0
+        for rid, lim in limits.iterrows():
+            if rid not in bnds or not (lim.minimum <= lim.maximum):
+                continue
+            lb_, ub_ = bnds[rid]
+            lo, hi = out.get(rid, (None, None))
+            if isinf(lb_) and lb_ < 0 and np.isfinite(lim.minimum) and lim.minimum < 0:
+                v = float(lim.minimum) - max(1e-6, 1e-6 * abs(float(lim.minimum)))
+                lo = v if lo is None else max(lo, v)
+                n_lo += 1
+            if isinf(ub_) and ub_ > 0 and np.isfinite(lim.maximum) and lim.maximum > 0:
+                v = float(lim.maximum) + max(1e-6, 1e-6 * abs(float(lim.maximum)))
+                hi = v if hi is None else min(hi, v)
+                n_hi += 1
+            if lo is not None or hi is not None:
+                out[rid] = (lo, hi)
+        logging.info('  PROTECT block: %d lower and %d upper flux bounds made finite from the region\'s '
+                     'flux range, so their knock-out gates are big-M rows.' % (n_lo, n_hi))
+        return out
+
     def _module_bound_relax(self, sd_module):
         """Bounds of a SUPPRESS block that its own region-FVA proves redundant, mapped to the loosest
         form that keeps the block identical: a finite nonzero bound the region never reaches is
@@ -380,6 +419,8 @@ class SDProblem:
             # both PROTECT and SUPPRESS: for SUPPRESS the undesired-region primal is bounded the same
             # way before farkas_dualize, so the certificate is unchanged.
             bound_override = self._module_bound_override(sd_module)
+            if sd_module[MODULE_TYPE] == PROTECT and os.environ.get('SD_CNA_PROTECT_BIGM'):
+                bound_override = self._protect_finite_bounds(sd_module, bound_override)
             bound_relax = self._module_bound_relax(sd_module)
             A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p \
                 = build_primal_from_cbm(self.model, V_ineq, v_ineq, V_eq, v_eq, bound_override=bound_override,
