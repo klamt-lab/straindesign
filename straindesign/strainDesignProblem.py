@@ -329,6 +329,19 @@ class SDProblem:
         face by convexity), so removing it leaves P, and therefore every knocked-out sub-polytope,
         unchanged. PROTECT blocks are left alone: their bounds double as the big-M of the gates.
         """
+        if sd_module[MODULE_TYPE] == SUPPRESS and os.environ.get('SD_SUPPRESS_CONE'):
+            # Experiment: CellNetAnalyzer's SUPPRESS block keeps only signs and the target rows.
+            # Dropping every finite nonzero bound enlarges the undesired region to its cone, so each
+            # design still blocks it, but designs that rely on a bound are no longer found.
+            relax = {}
+            for r in self.model.reactions:
+                lb_, ub_ = float(r.lower_bound), float(r.upper_bound)
+                lo = (-np.inf if lb_ < 0 else 0.0) if lb_ != 0.0 and not isinf(lb_) else None
+                hi = (np.inf if ub_ > 0 else 0.0) if ub_ != 0.0 and not isinf(ub_) else None
+                if lo is not None or hi is not None:
+                    relax[r.id] = (lo, hi)
+            logging.info('  SUPPRESS block in the cone: %d finite bounds dropped' % len(relax))
+            return relax
         if sd_module[MODULE_TYPE] != SUPPRESS or not os.environ.get('SD_SUPPRESS_RELAX_BOUNDS'):
             return {}
         limits = sd_module.get('fva_bounds')
