@@ -1135,9 +1135,9 @@ class SDMILP(SDProblem, MILP_LP):
         # SD_LEVEL_RESTART=min_s[:factor] (CPLEX, Gurobi): a populate that has found nothing after a
         # budget of max(min_s, factor x the previous level's time) is restarted from another seed with
         # the budget doubled. Search time at a level is heavy-tailed in the seed (one seed can take
-        # minutes where others take seconds) and a fresh seed usually lands on the short side. Every
-        # design found stays excluded across a restart, and once a call returns designs the rest of the
-        # level runs without a cap, so the level still ends with a populate that ran to completion.
+        # minutes where others take seconds) and a fresh seed usually lands on the short side. A call
+        # that has found designs by the cap is resumed uncapped rather than restarted, so the level
+        # still ends with a populate that ran to completion.
         _rs = os.environ.get('SD_LEVEL_RESTART')
         _rs_min = None
         if _rs and self.solver in (CPLEX, GUROBI):
@@ -1267,8 +1267,11 @@ class SDMILP(SDProblem, MILP_LP):
                     budget *= 2
                     continue
                 if capped and status == TIME_LIMIT_W_SOL:
-                    status = OPTIMAL
+                    # Designs are arriving, so this search is not stalled: lift the cap and call
+                    # again before touching the model. The solver then resumes the same tree and
+                    # keeps its pool, and nothing searched so far is lost.
                     budget = None
+                    continue
                 if status in [OPTIMAL, TIME_LIMIT_W_SOL]:
                     if z.shape[0] == 0:  # level exhausted
                         break
