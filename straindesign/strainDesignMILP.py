@@ -229,8 +229,20 @@ class SDMILP(SDProblem, MILP_LP):
         # A rewarding intervention strictly lowers the cost of any design that can absorb it,
         # so a design is only worth reporting once none of them can be added while staying valid.
         self._rewarding_z = [i for i in self._free_z if self.cost[i] < 0.0]
+        # The module each indicator gate belongs to, for the gate transforms that treat the target
+        # region on its own (SD_CNA_OWNZ, SD_CNA_DIRSPLIT); a gate spans one module's columns.
+        _gate_modules = None
+        if self.is_mcs_computation and (os.environ.get('SD_CNA_OWNZ') or os.environ.get('SD_CNA_DIRSPLIT')) \
+                and getattr(self.indic_constr, 'A', None) is not None and self.indic_constr.A.shape[0]:
+            _colmod = self._continuous_column_modules()
+            _Ag = sparse.csr_matrix(self.indic_constr.A)
+            _gate_modules = []
+            for k in range(_Ag.shape[0]):
+                ms = {_colmod.get(int(j)) for j in _Ag.indices[_Ag.indptr[k]:_Ag.indptr[k + 1]] if j >= self.num_z} - {None}
+                _gate_modules.append(ms.pop() if len(ms) == 1 else 'mixed')
         # Build MILP object from constructed problem
         MILP_LP.__init__(self,
+                         gate_modules=_gate_modules,
                          sos1_gates=self.is_mcs_computation,
                          c=self.c,
                          A_ineq=self.A_ineq,
