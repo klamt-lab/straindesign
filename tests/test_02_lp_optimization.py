@@ -173,15 +173,19 @@ def test_fva_small_model_stays_sequential(ecoli_core, fva_solver, ref_legacy, mo
     assert _max_err(res, ref_legacy) < FVA_TOL
 
 
-def test_fva_hands_off_to_pool(ecoli_core, fva_solver, ref_legacy, monkeypatch):
+def test_fva_hands_off_to_pool(ecoli_core, ref_legacy, monkeypatch):
     """Once the probe projects more work than the pool's start-up, the rest goes to the pool."""
     import straindesign.speedy_fva as sf
+    from straindesign import avail_solvers
+    fva_solver = next((s for s in (CPLEX, GUROBI) if s in avail_solvers), None)
+    if fva_solver is None:
+        pytest.skip("the pool hand-off needs CPLEX or Gurobi (GLPK FVA never pools)")
     monkeypatch.setattr(sf, "_PARALLEL_PHASE2_MIN", 1)
     monkeypatch.setattr(sf, "_PROBE_LPS", 5)
     monkeypatch.setattr(sf, "_POOL_START_SECONDS", 0.0)
     monkeypatch.setattr(sf, "_POOL_START_SECONDS_PER_WORKER", 0.0)
     res = speedy_fva(ecoli_core.copy(), solver=fva_solver, compress=False, precheck=False, threads=2)
-    assert res.attrs["pooled"] is True
+    assert res.attrs["pooled"] is True, fva_solver
     assert _max_err(res, ref_legacy) < FVA_TOL
 
 

@@ -52,8 +52,6 @@ from straindesign.lptools import (
     idx2c,
     fva_worker_init,
     fva_worker_compute,
-    fva_worker_init_glpk,
-    fva_worker_compute_glpk,
 )
 from straindesign.solver_interface import MILP_LP
 from straindesign.pool import SDPool
@@ -82,9 +80,6 @@ _PROBE_LPS = 50
 _PROBE_SECONDS = 0.5
 _POOL_START_SECONDS = 2.0
 _POOL_START_SECONDS_PER_WORKER = 0.07
-# The scan is kept regardless of dispatch when the setup LP solved faster than this: its push
-# rounds then cost a few milliseconds, against the hundreds of objectives they settle.
-_PRECHECK_CHEAP_SECONDS = 0.05
 
 # ---------------------------------------------------------------------------
 # Compression helpers
@@ -502,7 +497,9 @@ def speedy_fva(model, **kwargs):
         # loop; against pooled LPs a single push round costs more than the few hundred objectives
         # it removes. Pass precheck explicitly to override.
         n_unresolved = 2 * n_orig - int(res_max.sum() + res_min.sum())
-        precheck = not (threads > 1 and n_unresolved >= _PARALLEL_PHASE2_MIN) or t_phase['lp0'] < _PRECHECK_CHEAP_SECONDS
+        # GLPK always scans: its warm-started dual simplex can stall indefinitely on objectives the
+        # scan settles (iMLcore, uncompressed: one glp_simplex call did not return in minutes).
+        precheck = solver == GLPK or not (threads > 1 and n_unresolved >= _PARALLEL_PHASE2_MIN)
 
     if precheck:
         scan_lp, n_scan = _build_abssum_lp(A_eq, b_eq, A_ineq, b_ineq, lb, ub, solver)
@@ -595,7 +592,9 @@ def speedy_fva(model, **kwargs):
     # sequential loop runs first as a probe and hands the remaining objectives to the pool only when
     # their projected sequential time exceeds what the pool takes to start.
     handoff = False
-    probe = n_remaining >= _PARALLEL_PHASE2_MIN and threads > 1
+    # GLPK stays sequential: its pool worker rebuilds the LP for every objective, which took
+    # minutes on iMLcore where the warm-started loop takes two seconds.
+    probe = n_remaining >= _PARALLEL_PHASE2_MIN and threads > 1 and solver != GLPK
     if n_remaining > 0:
         # Sequential dispatch — simple loop, no hub-first, no dual check
         prev_col = -1
@@ -728,17 +727,11 @@ def speedy_fva(model, **kwargs):
 
         x_par = [nan] * (2 * n_orig)
         t0 = _time.perf_counter()
-        if solver == GLPK:
-            with SDPool(threads, initializer=fva_worker_init_glpk, initargs=(A_ineq, b_ineq, A_eq, b_eq, lb.tolist(), ub.tolist())) as pool:
-                chunk_size = max(1, len(unresolved) // threads)
-                for i, value in pool.imap_unordered(fva_worker_compute_glpk, unresolved, chunksize=chunk_size):
-                    x_par[i] = value
-        else:
-            with SDPool(threads, initializer=fva_worker_init,
-                        initargs=(A_ineq, b_ineq, A_eq, b_eq, lb.tolist(), ub.tolist(), solver)) as pool:
-                chunk_size = max(1, len(unresolved) // threads)
-                for i, value in pool.imap_unordered(fva_worker_compute, unresolved, chunksize=chunk_size):
-                    x_par[i] = value
+        with SDPool(threads, initializer=fva_worker_init,
+                    initargs=(A_ineq, b_ineq, A_eq, b_eq, lb.tolist(), ub.tolist(), solver)) as pool:
+            chunk_size = max(1, len(unresolved) // threads)
+            for i, value in pool.imap_unordered(fva_worker_compute, unresolved, chunksize=chunk_size):
+                x_par[i] = value
         t_solve += _time.perf_counter() - t0
         lps_solved += len(unresolved)
 
