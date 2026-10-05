@@ -321,7 +321,9 @@ class Gurobi_MILP_LP(gp.Model):
             else:
                 self.params.PoolSolutions = n
             self.params.PoolSearchMode = 2
-            self.params.NumericFocus = 2
+            # SD_GRB_NUMFOCUS: NumericFocus during populate (default 2). 0 measured 1.44-1.55x faster
+            # on three of four suites with identical designs (2026-08-20, pre-tilt stack).
+            self.params.NumericFocus = int(os.environ.get('SD_GRB_NUMFOCUS', 2))
             self._safe_optimize()
             self.params.PoolSearchMode = 0
             self.params.NumericFocus = 0
