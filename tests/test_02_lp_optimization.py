@@ -188,3 +188,187 @@ def test_indicator_is_one_directional(curr_solver):
     for indicval in (0, 1):
         assert max_v(indicval, indicval) == pytest.approx(0.0)       # row enforced: v <= 0
         assert max_v(indicval, 1 - indicval) == pytest.approx(10.0)  # row absent: v free
+
+
+# =============================================================================
+# Solver status mapping: OPTIMAL, INFEASIBLE and UNBOUNDED only with a proof
+# =============================================================================
+
+
+def _small_lp(A_ineq, b_ineq, solver, vtype=None, lp_method=None):
+    """min -x1 - x2 s.t. A_ineq x <= b_ineq, x >= 0"""
+    from scipy import sparse
+    lp = sd.MILP_LP(c=[-1.0, -1.0],
+                    A_ineq=sparse.csr_matrix(A_ineq), b_ineq=b_ineq,
+                    A_eq=sparse.csr_matrix((0, 2)), b_eq=[],
+                    lb=[0.0, 0.0], ub=[inf, inf], vtype=vtype, solver=solver)
+    if lp_method is not None:
+        lp.set_lp_method(lp_method)
+    return lp
+
+
+@pytest.mark.parametrize("vtype", [None, 'CI'])
+@pytest.mark.parametrize("lp_method", [None, sd.names.LP_METHOD_PRIMAL, sd.names.LP_METHOD_DUAL])
+def test_status_mapping(curr_solver, vtype, lp_method):
+    """Feasible, infeasible and unbounded (MI)LPs get the matching status, with every LP method."""
+    x, opt, status = _small_lp([[1.0, 1.0]], [4.0], curr_solver, vtype, lp_method).solve()
+    assert status == sd.names.OPTIMAL
+    assert opt == pytest.approx(-4.0)
+    assert sum(x) == pytest.approx(4.0)
+    x, opt, status = _small_lp([[1.0, 1.0]], [-1.0], curr_solver, vtype, lp_method).solve()
+    assert status == sd.names.INFEASIBLE
+    assert isnan(opt)
+    x, opt, status = _small_lp([[1.0, -1.0]], [4.0], curr_solver, vtype, lp_method).solve()
+    assert status == sd.names.UNBOUNDED
+    assert opt == -inf
+
+
+@pytest.mark.parametrize("lp_method", [None, sd.names.LP_METHOD_PRIMAL, sd.names.LP_METHOD_DUAL])
+def test_warm_bound_changes_match_fresh_solve(curr_solver, lp_method):
+    """A sequence of in-place bound changes, each solved warm, gives the optimum of a fresh LP.
+
+    The sequence passes through infeasible bounds, so a warm solve after an infeasible one is
+    covered too."""
+    from scipy import sparse
+    rng = np.random.default_rng(0)
+    m, n = 12, 30
+    A = sparse.random(m, n, density=0.3, random_state=1, data_rvs=lambda k: rng.integers(-3, 4, k)).tocsr()
+    c = list(rng.integers(-5, 6, n).astype(float))
+    lb0, ub0 = [-10.0] * n, [10.0] * n
+
+    def build(lb, ub):
+        lp = sd.MILP_LP(c=c, A_ineq=sparse.csr_matrix((0, n)), b_ineq=[], A_eq=A, b_eq=[0.0] * m,
+                        lb=list(lb), ub=list(ub), solver=curr_solver)
+        if lp_method is not None:
+            lp.set_lp_method(lp_method)
+        return lp
+
+    warm = build(lb0, ub0)
+    lb, ub = list(lb0), list(ub0)
+    seen = set()
+    for step in range(40):
+        idx = [int(i) for i in rng.choice(n, 3, replace=False)]
+        for i in idx:
+            kind = rng.integers(4)
+            if kind == 0:
+                lb[i], ub[i] = 0.0, 10.0
+            elif kind == 1:
+                lb[i], ub[i] = -10.0, 0.0
+            elif kind == 2:
+                lb[i], ub[i] = -10.0, 10.0
+            else:  # r_i >= 1 is infeasible whenever the network forces r_i <= 0
+                lb[i], ub[i] = 1.0, 10.0
+        warm.set_lb([[i, lb[i]] for i in idx])
+        warm.set_ub([[i, ub[i]] for i in idx])
+        _, opt_w, status_w = warm.solve()
+        _, opt_f, status_f = build(lb, ub).solve()
+        assert status_w == status_f
+        assert status_f in [sd.names.OPTIMAL, sd.names.INFEASIBLE]
+        seen.add(status_f)
+        if status_f == sd.names.OPTIMAL:
+            assert opt_w == pytest.approx(opt_f, abs=1e-7)
+    assert seen == {sd.names.OPTIMAL, sd.names.INFEASIBLE}
+
+
+@pytest.mark.skipif(sd.names.SCIP not in sd.avail_solvers, reason="SCIP not installed")
+def test_scip_lp_recovers_from_lp_error(caplog, monkeypatch):
+    """An LP error from a warm start is re-solved from scratch; a persistent one is an error."""
+    lp = _small_lp([[1.0, 1.0]], [4.0], sd.names.SCIP)
+    lp.solve()
+    lp.set_ub([[0, 3.0]])
+    backend = lp.backend
+    optimize = backend.optimize
+    calls = []
+
+    def fail_once(dual=True):
+        calls.append(dual)
+        if len(calls) == 1:
+            raise Exception('SCIP: error in LP solver!')
+        return optimize(dual=dual)
+
+    monkeypatch.setattr(backend, 'optimize', fail_once)
+    with caplog.at_level('DEBUG'):
+        x, opt, status = lp.solve()
+    assert len(calls) == 2
+    assert status == sd.names.OPTIMAL
+    assert opt == pytest.approx(-4.0)
+    assert not [r for r in caplog.records if r.levelno >= 40]
+    assert backend.getIntParam(__import__('pyscipopt').SCIP_LPPARAM.FROMSCRATCH) == 0
+
+    def fail(dual=True):
+        raise Exception('SCIP: error in LP solver!')
+
+    monkeypatch.setattr(backend, 'optimize', fail)
+    x, opt, status = lp.solve()
+    assert status == sd.names.ERROR
+    assert isnan(opt) and all(isnan(x))
+    assert isnan(lp.slim_solve())
+
+
+@pytest.mark.skipif(sd.names.SCIP not in sd.avail_solvers, reason="SCIP not installed")
+def test_scip_lp_stopped_early_is_not_optimal():
+    """A SoPlex solve stopped by its iteration limit has a finite objective but is not optimal."""
+    from pyscipopt import SCIP_LPPARAM
+    from scipy import sparse
+    lp = sd.MILP_LP(c=[1.0, 1.0, 1.0], A_ineq=sparse.csr_matrix(-np.eye(3)), b_ineq=[-1.0] * 3,
+                    A_eq=sparse.csr_matrix((0, 3)), b_eq=[], lb=[0.0] * 3, ub=[10.0] * 3, solver=sd.names.SCIP)
+    lp.backend.setIntParam(SCIP_LPPARAM.LPITLIM, 1)
+    _, opt, status = lp.solve()
+    assert status == sd.names.ERROR
+    assert isnan(opt)
+    lp.backend.setIntParam(SCIP_LPPARAM.LPITLIM, 2**31 - 1)
+    _, opt, status = lp.solve()
+    assert status == sd.names.OPTIMAL
+    assert opt == pytest.approx(3.0)
+
+
+def test_glpk_unproven_infeasibility_is_resolved(monkeypatch):
+    """GLPK's GLP_INFEAS (current basis infeasible) and a dual-simplex GLP_NOFEAS are no proof.
+
+    The first simplex call is cut short: with an iteration limit of one, the slack basis of
+    x_i >= 1 (as rows) is still primal infeasible. Next, the dual simplex is made to report
+    GLP_NOFEAS on the feasible LP. Both must end OPTIMAL, not INFEASIBLE."""
+    import swiglpk
+    import straindesign.glpk_interface as glpk_interface
+    from scipy import sparse
+    simplex = glpk_interface.glp_simplex
+    get_status = glpk_interface.glp_get_status
+
+    def build():
+        return sd.MILP_LP(c=[1.0, 1.0, 1.0], A_ineq=sparse.csr_matrix(-np.eye(3)), b_ineq=[-1.0] * 3,
+                          A_eq=sparse.csr_matrix((0, 3)), b_eq=[], lb=[0.0] * 3, ub=[10.0] * 3,
+                          solver=sd.names.GLPK)
+
+    calls = []
+
+    def simplex_itlim_once(prob, params):
+        calls.append(1)
+        if len(calls) > 1:
+            return simplex(prob, params)
+        it_lim, params.it_lim = params.it_lim, 1
+        try:
+            return simplex(prob, params)
+        finally:
+            params.it_lim = it_lim
+
+    monkeypatch.setattr(glpk_interface, 'glp_simplex', simplex_itlim_once)
+    _, opt, status = build().solve()
+    assert status == sd.names.OPTIMAL
+    assert opt == pytest.approx(3.0)
+    monkeypatch.setattr(glpk_interface, 'glp_simplex', simplex)
+
+    lp = build()
+    lp.set_lp_method(sd.names.LP_METHOD_DUAL)
+    reported = []
+
+    def get_status_nofeas_once(prob):
+        if not reported:
+            reported.append(1)
+            return swiglpk.GLP_NOFEAS
+        return get_status(prob)
+
+    monkeypatch.setattr(glpk_interface, 'glp_get_status', get_status_nofeas_once)
+    _, opt, status = lp.solve()
+    assert status == sd.names.OPTIMAL
+    assert opt == pytest.approx(3.0)
+    assert lp.get_lp_method() == sd.names.LP_METHOD_DUAL
