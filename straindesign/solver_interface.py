@@ -18,6 +18,7 @@
 #
 """Unified solver interface for LPs and MILPs (MILP_LP)"""
 
+import math
 from numpy import inf, isinf, isnan, unique
 from scipy import sparse
 from typing import List, Tuple
@@ -515,7 +516,11 @@ class MILP_LP(object):
         """
         x, min_cx, status = self.backend.solve()
         if status not in [INFEASIBLE, UNBOUNDED, TIME_LIMIT]:  # if solution exists (is not nan), round integers
-            x = [x[i] if self.vtype[i] == 'C' else int(round(x[i])) for i in range(len(x)) if not isnan(x[i])]
+            if 'B' in self.vtype or 'I' in self.vtype:
+                x = [x[i] if self.vtype[i] == 'C' else int(round(x[i])) for i in range(len(x)) if not isnan(x[i])]
+            else:
+                # math.isnan: numpy's scalar isnan is slow enough to dominate LPs solved in a loop
+                x = [v for v in x if not math.isnan(v)]
         return x, min_cx, status
 
     def slim_solve(self) -> float:
@@ -566,6 +571,14 @@ class MILP_LP(object):
         """Set the upper bounds to a given vector"""
         self.ub = ub
         self.backend.set_ub(ub)
+
+    def set_lb(self, lb):
+        """Set lower bounds with index-value pairs
+
+        e.g.: lb=[[1, 0.0], [4, -inf]]. Variables not listed keep their bounds."""
+        for i, v in lb:
+            self.lb[i] = float(v)
+        self.backend.set_lb(lb)
 
     def set_pool_gap(self, open_gap):
         """Open or close the solution pool's optimality gap, where the backend has one.

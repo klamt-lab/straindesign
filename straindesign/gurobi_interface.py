@@ -435,6 +435,13 @@ class Gurobi_MILP_LP(gp.Model):
             gvars[ub[i][0]].ub = ub[i][1]
         self.update()
 
+    def set_lb(self, lb):
+        """Set the lower bounds with index-value pairs, e.g.: lb=[[1, 0.0], [4, -inf]]"""
+        gvars = self.getVars()
+        for i in range(len(lb)):
+            gvars[lb[i][0]].lb = lb[i][1]
+        self.update()
+
     def set_lp_method(self, method):
         """Set the LP solving method.
 
