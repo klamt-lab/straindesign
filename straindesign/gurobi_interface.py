@@ -192,15 +192,16 @@ class Gurobi_MILP_LP(gp.Model):
         """Call optimize(), retrying with Presolve=0 on Gurobi 13 ObjBound bug.
 
         Gurobi 13 has a bug where indicator constraints + presolve can raise
-        error 10005 "Unable to retrieve attribute 'ObjBound'".  Rather than
+        error 10005 "Unable to retrieve attribute 'ObjBound'". SOS1 constraints, which the gate
+        rewrite puts in place of the indicators, trigger it as well.  Rather than
         disabling presolve globally (1.6x slowdown), we try with presolve on
         and fall back only when the bug triggers.
         """
         try:
             self.optimize()
         except gp.GurobiError as e:
-            if e.errno == 10005 and self._has_indicator_constr:
-                logging.warning('Gurobi error 10005 with indicators; retrying with Presolve=0, Crossover=1.')
+            if e.errno == 10005 and (self._has_indicator_constr or self.NumSOS > 0):
+                logging.warning('Gurobi error 10005 with indicators or SOS1; retrying with Presolve=0, Crossover=1.')
                 self.params.Presolve = 0
                 self.params.Crossover = 1
                 self.optimize()
