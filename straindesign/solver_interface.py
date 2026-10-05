@@ -581,6 +581,12 @@ class MILP_LP(object):
         if setter is not None:
             setter(bool(open_gap))
 
+    def set_seed(self, seed):
+        """Set the random seed for subsequent solves, where the backend takes one."""
+        setter = getattr(self.backend, 'set_seed', None)
+        if setter is not None:
+            setter(seed)
+
     def set_time_limit(self, t):
         """Set the computation time limit (in seconds)"""
         # Floor at 1 ms before dispatching to any backend. The remaining-time passed by the

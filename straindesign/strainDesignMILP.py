@@ -1120,6 +1120,18 @@ class SDMILP(SDProblem, MILP_LP):
         errored = False
         sols = sparse.csr_matrix((0, self.num_z))
         logging.info('Enumerating strain designs (k-sweep) ...')
+        # SD_LEVEL_RESTART=min_s[:factor] (CPLEX, Gurobi): a populate that has found nothing after a
+        # budget of max(min_s, factor x the previous level's time) is restarted from another seed with
+        # the budget doubled. Search time at a level is heavy-tailed in the seed (one seed can take
+        # minutes where others take seconds) and a fresh seed usually lands on the short side. Every
+        # design found stays excluded across a restart, and once a call returns designs the rest of the
+        # level runs without a cap, so the level still ends with a populate that ran to completion.
+        _rs = os.environ.get('SD_LEVEL_RESTART')
+        _rs_min = None
+        if _rs and self.solver in (CPLEX, GUROBI):
+            _rs_p = _rs.split(':')
+            _rs_min, _rs_fac = float(_rs_p[0]), (float(_rs_p[1]) if len(_rs_p) > 1 else 4.0)
+        t_prev_level, n_reseeds = 0.0, 0
         # Farkas anchor controller (SD_FARKAS_ANCHOR_ADAPTIVE=1): the MILP starts at the small anchor
         # given by SD_FARKAS_ANCHOR; every verify_sd rejection means a certificate passed only
         # within tolerance, so the anchor is raised 100-fold (up to 1) and the level re-populated.
@@ -1222,10 +1234,22 @@ class SDMILP(SDProblem, MILP_LP):
             self.set_ineq_constraint(self.idx_row_mincost, cost_full, _lo)
             self.set_ineq_constraint(self.idx_row_maxcost, neg_cost_full, _hi)
             logging.info('  Enumerating minimal cut sets of cost ' + str(k))
+            t_level0 = time.time()
+            budget = max(_rs_min, _rs_fac * t_prev_level) if _rs_min is not None else None
             while sols.shape[0] < self.max_solutions and \
                     endtime - time.time() > 0:
-                self.set_time_limit(endtime - time.time())
+                capped = budget is not None and budget < endtime - time.time()
+                self.set_time_limit(budget if capped else endtime - time.time())
                 z, status = self.populateZ(self.max_solutions - sols.shape[0])
+                if capped and status == TIME_LIMIT:
+                    n_reseeds += 1
+                    self.set_seed((self.seed or 0) + 7919 * n_reseeds)
+                    logging.info('  no design at cost %s within %.1f s: restarting from another seed' % (k, budget))
+                    budget *= 2
+                    continue
+                if capped and status == TIME_LIMIT_W_SOL:
+                    status = OPTIMAL
+                    budget = None
                 if status in [OPTIMAL, TIME_LIMIT_W_SOL]:
                     if z.shape[0] == 0:  # level exhausted
                         break
@@ -1283,6 +1307,7 @@ class SDMILP(SDProblem, MILP_LP):
                     break
                 else:  # INFEASIBLE at this cardinality -> level exhausted, next k
                     break
+            t_prev_level = time.time() - t_level0
             if restart_levels:
                 restart_levels = False
                 n_restarts += 1

@@ -481,6 +481,12 @@ class Gurobi_MILP_LP(gp.Model):
         self.params.PoolGapAbs = grb.INFINITY if open_gap else 1e-9
         self.update()
 
+    def set_seed(self, seed):
+        """Set the random seed for subsequent solves, discarding any search tree left by the last one"""
+        self.params.Seed = int(seed)
+        self.reset(0)
+        self.update()
+
     def set_time_limit(self, t):
         """Set the computation time limit (in seconds)"""
         self.params.TimeLimit = t

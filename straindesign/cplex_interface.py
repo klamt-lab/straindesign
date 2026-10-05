@@ -468,6 +468,16 @@ class Cplex_MILP_LP(Cplex):
         self.parameters.mip.pool.absgap.set(1e75 if open_gap else 0.0)
         self.parameters.mip.pool.relgap.set(1e75 if open_gap else 0.0)
 
+    def set_seed(self, seed):
+        """Set the random seed for subsequent solves, discarding any search tree left by the last one.
+
+        CPLEX resumes an interrupted search on an unchanged model and a parameter change does not
+        count as one, so a new seed alone would continue the old tree. Rewriting an objective
+        coefficient with its own value is a model change and frees the tree.
+        """
+        self.parameters.randomseed.set(int(seed))
+        self.objective.set_linear(0, self.objective.get_linear(0))
+
     def set_time_limit(self, t):
         """Set the computation time limit (in seconds)"""
         if isinf(t):
