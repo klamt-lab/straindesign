@@ -75,6 +75,16 @@ from straindesign.compression import (
 # reaches its first result in about 3 s on a genome-scale LP and then solves roughly 6x
 # faster than the sequential loop, so it pays from a few hundred LPs upwards.
 _PARALLEL_PHASE2_MIN = 500
+# Above that count, the first LPs are solved sequentially as a probe (until _PROBE_LPS of them or
+# _PROBE_SECONDS have passed); the rest goes to the pool only if the probe's rate projects more
+# sequential work than the pool takes to start, measured at about 2 s plus 0.07 s per worker.
+_PROBE_LPS = 50
+_PROBE_SECONDS = 0.5
+_POOL_START_SECONDS = 2.0
+_POOL_START_SECONDS_PER_WORKER = 0.07
+# The scan is kept regardless of dispatch when the setup LP solved faster than this: its push
+# rounds then cost a few milliseconds, against the hundreds of objectives they settle.
+_PRECHECK_CHEAP_SECONDS = 0.05
 
 # ---------------------------------------------------------------------------
 # Compression helpers
@@ -406,7 +416,9 @@ def speedy_fva(model, **kwargs):
 
     lp = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb.tolist(), ub=ub.tolist(), solver=solver)
 
+    _t_lp0 = _time.perf_counter()
     _, _, status = lp.solve()
+    t_phase['lp0'] = _time.perf_counter() - _t_lp0
     if status not in [OPTIMAL, UNBOUNDED]:
         logging.info('FVA problem not feasible.')
         return DataFrame(
@@ -490,7 +502,7 @@ def speedy_fva(model, **kwargs):
         # loop; against pooled LPs a single push round costs more than the few hundred objectives
         # it removes. Pass precheck explicitly to override.
         n_unresolved = 2 * n_orig - int(res_max.sum() + res_min.sum())
-        precheck = not (threads > 1 and n_unresolved >= _PARALLEL_PHASE2_MIN)
+        precheck = not (threads > 1 and n_unresolved >= _PARALLEL_PHASE2_MIN) or t_phase['lp0'] < _PRECHECK_CHEAP_SECONDS
 
     if precheck:
         scan_lp, n_scan = _build_abssum_lp(A_eq, b_eq, A_ineq, b_ineq, lb, ub, solver)
@@ -578,72 +590,13 @@ def speedy_fva(model, **kwargs):
     n_remaining = 2 * n_orig - n_done
     phase2_entry_count = n_remaining  # for stats
 
-    if n_remaining >= _PARALLEL_PHASE2_MIN and threads > 1:
-        # Parallel dispatch via SDPool
-        # Build list of unresolved objective indices (even=max, odd=min)
-        unresolved = []
-        for j in range(n_orig):
-            if not res_max[j]:
-                unresolved.append(2 * j)  # even = max
-            if not res_min[j]:
-                unresolved.append(2 * j + 1)  # odd = min
-
-        x_par = [nan] * (2 * n_orig)
-        t0 = _time.perf_counter()
-        if solver == GLPK:
-            with SDPool(threads, initializer=fva_worker_init_glpk, initargs=(A_ineq, b_ineq, A_eq, b_eq, lb.tolist(), ub.tolist())) as pool:
-                chunk_size = max(1, len(unresolved) // threads)
-                for i, value in pool.imap_unordered(fva_worker_compute_glpk, unresolved, chunksize=chunk_size):
-                    x_par[i] = value
-        else:
-            with SDPool(threads, initializer=fva_worker_init,
-                        initargs=(A_ineq, b_ineq, A_eq, b_eq, lb.tolist(), ub.tolist(), solver)) as pool:
-                chunk_size = max(1, len(unresolved) // threads)
-                for i, value in pool.imap_unordered(fva_worker_compute, unresolved, chunksize=chunk_size):
-                    x_par[i] = value
-        t_solve += _time.perf_counter() - t0
-        lps_solved += len(unresolved)
-
-        # NaN retry with fresh LPs
-        nan_idx = [i for i in unresolved if np.isnan(x_par[i])]
-        if nan_idx:
-            _BATCH = 50
-            while nan_idx:
-                lp_retry = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb.tolist(), ub=ub.tolist(), solver=solver)
-                prev_retry = 0
-                for i in nan_idx[:_BATCH]:
-                    C = idx2c(i, prev_retry)
-                    if solver in ('cplex', 'gurobi'):
-                        lp_retry.backend.set_objective_idx(C)
-                        x_par[i] = lp_retry.backend.slim_solve()
-                    else:
-                        lp_retry.set_objective_idx(C)
-                        x_par[i] = lp_retry.slim_solve()
-                    prev_retry = C[0][0]
-                old_count = len(nan_idx)
-                nan_idx = [i for i in nan_idx if np.isnan(x_par[i])]
-                if len(nan_idx) == old_count:
-                    break
-            lps_solved += len(unresolved) - len(nan_idx) if nan_idx else len(unresolved)
-
-        # Collect parallel results
-        for j in range(n_orig):
-            i_max = 2 * j
-            if not res_max[j]:
-                if np.isnan(x_par[i_max]):
-                    unresolved_bounds.append((reaction_ids[j], 1, 'nan'))
-                else:
-                    res_max[j] = True
-                    incumbent_max[j] = -x_par[i_max]
-            i_min = 2 * j + 1
-            if not res_min[j]:
-                if np.isnan(x_par[i_min]):
-                    unresolved_bounds.append((reaction_ids[j], -1, 'nan'))
-                else:
-                    res_min[j] = True
-                    incumbent_min[j] = x_par[i_min]
-
-    elif n_remaining > 0:
+    # The pool's start-up is a fixed cost of seconds, while an LP of a small network solves in well
+    # under a millisecond, so the objective count alone cannot tell which dispatch is faster. The
+    # sequential loop runs first as a probe and hands the remaining objectives to the pool only when
+    # their projected sequential time exceeds what the pool takes to start.
+    handoff = False
+    probe = n_remaining >= _PARALLEL_PHASE2_MIN and threads > 1
+    if n_remaining > 0:
         # Sequential dispatch — simple loop, no hub-first, no dual check
         prev_col = -1
 
@@ -654,13 +607,25 @@ def speedy_fva(model, **kwargs):
 
         _rebuild_lp()
         seq_count = 0
+        t_seq0 = _time.perf_counter()
 
         for j in range(n_orig):
+            if handoff:
+                break
             for direction in (1, -1):
                 if direction == 1 and res_max[j]:
                     continue
                 if direction == -1 and res_min[j]:
                     continue
+                if probe:
+                    elapsed = _time.perf_counter() - t_seq0
+                    if seq_count >= _PROBE_LPS or elapsed >= _PROBE_SECONDS:
+                        probe = False
+                        n_left = 2 * n_orig - int(res_max.sum() + res_min.sum())
+                        handoff = seq_count > 0 and elapsed / seq_count * n_left > (
+                            _POOL_START_SECONDS + _POOL_START_SECONDS_PER_WORKER * threads)
+                        if handoff:
+                            break
 
                 # Periodic rebuild to limit warm-start degeneration
                 if seq_count > 0 and seq_count % 200 == 0:
@@ -751,6 +716,71 @@ def speedy_fva(model, **kwargs):
                     np.minimum(incumbent_min, x_arr, out=incumbent_min)
                     _bound_scan(x_arr)
 
+    if handoff:
+        # Parallel dispatch via SDPool
+        # Build list of unresolved objective indices (even=max, odd=min)
+        unresolved = []
+        for j in range(n_orig):
+            if not res_max[j]:
+                unresolved.append(2 * j)  # even = max
+            if not res_min[j]:
+                unresolved.append(2 * j + 1)  # odd = min
+
+        x_par = [nan] * (2 * n_orig)
+        t0 = _time.perf_counter()
+        if solver == GLPK:
+            with SDPool(threads, initializer=fva_worker_init_glpk, initargs=(A_ineq, b_ineq, A_eq, b_eq, lb.tolist(), ub.tolist())) as pool:
+                chunk_size = max(1, len(unresolved) // threads)
+                for i, value in pool.imap_unordered(fva_worker_compute_glpk, unresolved, chunksize=chunk_size):
+                    x_par[i] = value
+        else:
+            with SDPool(threads, initializer=fva_worker_init,
+                        initargs=(A_ineq, b_ineq, A_eq, b_eq, lb.tolist(), ub.tolist(), solver)) as pool:
+                chunk_size = max(1, len(unresolved) // threads)
+                for i, value in pool.imap_unordered(fva_worker_compute, unresolved, chunksize=chunk_size):
+                    x_par[i] = value
+        t_solve += _time.perf_counter() - t0
+        lps_solved += len(unresolved)
+
+        # NaN retry with fresh LPs
+        nan_idx = [i for i in unresolved if np.isnan(x_par[i])]
+        if nan_idx:
+            _BATCH = 50
+            while nan_idx:
+                lp_retry = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb.tolist(), ub=ub.tolist(), solver=solver)
+                prev_retry = 0
+                for i in nan_idx[:_BATCH]:
+                    C = idx2c(i, prev_retry)
+                    if solver in ('cplex', 'gurobi'):
+                        lp_retry.backend.set_objective_idx(C)
+                        x_par[i] = lp_retry.backend.slim_solve()
+                    else:
+                        lp_retry.set_objective_idx(C)
+                        x_par[i] = lp_retry.slim_solve()
+                    prev_retry = C[0][0]
+                old_count = len(nan_idx)
+                nan_idx = [i for i in nan_idx if np.isnan(x_par[i])]
+                if len(nan_idx) == old_count:
+                    break
+            lps_solved += len(unresolved) - len(nan_idx) if nan_idx else len(unresolved)
+
+        # Collect parallel results
+        for j in range(n_orig):
+            i_max = 2 * j
+            if not res_max[j]:
+                if np.isnan(x_par[i_max]):
+                    unresolved_bounds.append((reaction_ids[j], 1, 'nan'))
+                else:
+                    res_max[j] = True
+                    incumbent_max[j] = -x_par[i_max]
+            i_min = 2 * j + 1
+            if not res_min[j]:
+                if np.isnan(x_par[i_min]):
+                    unresolved_bounds.append((reaction_ids[j], -1, 'nan'))
+                else:
+                    res_min[j] = True
+                    incumbent_min[j] = x_par[i_min]
+
     if unresolved_bounds:
         logging.warning(f"speedy_fva: {len(unresolved_bounds)} of {2*n_orig} bounds left unresolved after "
                         f"{_MAX_STATUS_RETRIES} retries (solver '{solver}' reported "
@@ -787,6 +817,7 @@ def speedy_fva(model, **kwargs):
     fva_result.attrs['lps_solved'] = lps_solved
     fva_result.attrs['bound_resolved'] = total_bound_resolved
     fva_result.attrs['phase2_remaining'] = phase2_entry_count
+    fva_result.attrs['pooled'] = handoff
     if cmp_maps:
         fva_result.attrs['n_original'] = n_original
         fva_result.attrs['n_compressed'] = n_orig
