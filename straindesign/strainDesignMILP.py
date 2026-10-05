@@ -1148,10 +1148,17 @@ class SDMILP(SDProblem, MILP_LP):
         # optimality gap be opened without losing the ascending-cost order that makes an emitted
         # design minimal. Everything above this line -- including every fallback to enumerate() --
         # runs with the gap closed.
-        if os.environ.get('SD_POOL_OPEN', '1').lower() not in ('0', 'off', 'false'):
+        _pool_open = os.environ.get('SD_POOL_OPEN', '1').lower() not in ('0', 'off', 'false')
+        if _pool_open:
             self.set_pool_gap(True)
         # The dual_tilt kwarg is the supported switch; SD_DUAL_TILT overrides it for experiments.
         _tilt = os.environ.get('SD_DUAL_TILT') or getattr(self, 'dual_tilt', None)
+        if _tilt and not _pool_open:
+            # A closed gap keeps only the pool members at the tilted optimum, so a level holding
+            # designs with different tilt values comes back short, and the solver's certificate
+            # then declares it exhausted.
+            logging.warning('  dual tilt needs the pool gap open; running this enumeration without it')
+            _tilt = None
         if _tilt:
             # A safe slant: the pinned level makes the objective constant on z and ZERO on the dual
             # variables, so the node LP is a pure feasibility problem and the simplex wanders over a
