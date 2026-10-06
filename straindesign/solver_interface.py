@@ -32,6 +32,9 @@ import os
 # CellNetAnalyzer's binary structure for the target-region gates, per solver: (own gate binaries,
 # direction binaries for reversible reactions). See MILP_LP._cna_binaries.
 _GATE_BINARIES = {CPLEX: (True, True)}
+# Solvers whose equality gates take the slack in two sign-restricted parts, SOS1(g, s+, s-), instead
+# of one free slack: the set itself then chooses the direction, and the dual tilt reaches both parts.
+_EQUALITY_GATE_SPLIT = set()
 
 
 class MILP_LP(object):
@@ -366,6 +369,7 @@ class MILP_LP(object):
             sense L :  a*x + vp - vn = b ,  vp, vn >= 0 ,  SOS1(g, vn)
             sense G :  a*x + vp - vn = b ,  vp, vn >= 0 ,  SOS1(g, vp)
             sense E :  a*x - s       = b ,  s free     ,  SOS1(g, s)
+                       a*x - sp + sn = b ,  sp, sn >= 0 ,  SOS1(g, sp, sn)   (_EQUALITY_GATE_SPLIT)
 
         `SOS1(g, ...)` makes the slack vanish whenever g is nonzero, so g must be nonzero exactly
         when the gate is on. For indicval = 1 that is z itself; for indicval = 0 it is a continuous
@@ -406,7 +410,11 @@ class MILP_LP(object):
                 self.sos1.append([g, x])
                 self._gate_slack_src[x] = self._direct_gates[k]
                 continue
-            if sense == 'E':
+            if sense == 'E' and self.solver in _EQUALITY_GATE_SPLIT:
+                sp, sn = add_col(0.0, inf, 'C'), add_col(0.0, inf, 'C')
+                eqrows.append((idx + [sp, sn], dat + [-1.0, 1.0])); eqrhs.append(b)
+                self.sos1.append([g, sp, sn])
+            elif sense == 'E':
                 sf = add_col(-inf, inf, 'C')
                 eqrows.append((idx + [sf], dat + [-1.0])); eqrhs.append(b)
                 self.sos1.append([g, sf])
