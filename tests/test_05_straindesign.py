@@ -744,16 +744,13 @@ def test_pool_gap_is_open_only_while_a_cost_level_is_pinned(monkeypatch, ko_cost
     every superset. ``enumerate_ksweep`` pins the cost to one value per level, and only there does
     the gap stop filtering anything that is wanted.
 
-    SD_POOL_OPEN used to open the gap in the backend constructor, so it was open for the plain
+    The gap used to be opened in the backend constructor, so it was open for the plain
     ``enumerate`` path as well -- including the k-sweep's own fallback, which any non-integer
     intervention cost triggers.
     """
     solver = next((s for s in [CPLEX, GUROBI] if s in sd.avail_solvers), None)
     if solver is None:
         pytest.skip('a solution pool is implemented for cplex and gurobi only')
-    monkeypatch.setenv('SD_ENUM_KSWEEP', '1')
-    monkeypatch.setenv('SD_POOL_OPEN', '1')
-    monkeypatch.setenv('SD_POOL_CERT', 'skip')
 
     from straindesign.strainDesignMILP import SDMILP
     seen = []
@@ -777,7 +774,7 @@ def test_pool_gap_is_open_only_while_a_cost_level_is_pinned(monkeypatch, ko_cost
     assert seen, 'populate was never called, so the test asserts nothing'
     if pinned:
         assert all(g > 0 for g in seen), \
-            'the k-sweep pins the level, so SD_POOL_OPEN should have opened the gap there: ' + str(seen)
+            'the k-sweep pins the level, so it should have opened the gap there: ' + str(seen)
     else:
         assert all(g == 0 for g in seen), \
             'a non-integer cost falls back to plain enumerate, whose ascending-cost order needs ' \
@@ -795,9 +792,6 @@ def test_designs_stay_minimal_when_the_k_sweep_falls_back_under_an_open_pool(mon
     solver = next((s for s in [CPLEX, GUROBI] if s in sd.avail_solvers), None)
     if solver is None:
         pytest.skip('a solution pool is implemented for cplex and gurobi only')
-    monkeypatch.setenv('SD_ENUM_KSWEEP', '1')
-    monkeypatch.setenv('SD_POOL_OPEN', '1')
-    monkeypatch.setenv('SD_POOL_CERT', 'skip')
     modules = [sd.SDModule(model_weak_coupling, SUPPRESS, inner_objective="r_BM", constraints=["r_P - 0.4 r_S <= 0", "r_S >= 0.1"])]
     modules += [sd.SDModule(model_weak_coupling, PROTECT, constraints=["r_BM >= 0.2"])]
     kocost = {'r1': 1, 'r2': 1, 'r4': 1.1, 'r5': 0.75, 'r7': 0.8, 'r8': 1, 'r9': 1, 'r_S': 1.0, 'r_P': 1, 'r_BM': 1, 'r_Q': 1.5}
@@ -844,7 +838,6 @@ def test_sos1_gate_rewrite_keeps_the_objective_row_full_width(monkeypatch, model
     solver = next((s for s in [CPLEX, GUROBI] if s in sd.avail_solvers), None)
     if solver is None:
         pytest.skip('the SOS1 gate rewrite is implemented for cplex and gurobi only')
-    monkeypatch.setenv('SD_SOS1_GATES', '1')
     modules = [sd.SDModule(model_small_example, SUPPRESS, constraints=["R3 - 0.5 R1 <= 0.0", "R2 <= 0", "R1 >= 0.1"])]
     modules += [
         sd.SDModule(model_small_example, SUPPRESS, constraints=["1.0 R3 - 0.5 R1 - 0.5 R2 <= 0.0 ", "1.0 R2 >= 0.0 ", "1.0 R1 >= 0.1 "])
@@ -880,7 +873,6 @@ def test_ksweep_falls_back_when_an_intervention_is_not_positively_priced(monkeyp
     swept, so anything else has to fall back to plain populate.
 
     Every benchmark prices interventions at 1, which is why this never showed up there."""
-    monkeypatch.setenv('SD_ENUM_KSWEEP', '1')
     model = _two_route_network()
     sol = sd.compute_strain_designs(model,
                                     sd_modules=[sd.SDModule(model, PROTECT, constraints=['R4 >= 1'])],

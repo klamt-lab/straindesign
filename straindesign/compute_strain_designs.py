@@ -807,12 +807,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         # the LP count down (and only knockable reactions carry z-links to tighten anyway).
         for module in sd_modules:
             fva_scope = knockable_ids
-            if module[MODULE_TYPE] == SUPPRESS and os.environ.get('SD_SUPPRESS_RELAX_BOUNDS'):
-                # the redundant-bound relaxation needs the range of every finitely bounded reaction
-                fva_scope = sorted(set(knockable_ids) | {
-                    r.id for r in cmp_model.reactions
-                    if (r.lower_bound != 0.0 and not np.isinf(r.lower_bound)) or
-                       (r.upper_bound != 0.0 and not np.isinf(r.upper_bound))})
             flux_limits = fva(cmp_model,
                               solver=kwargs[SOLVER],
                               constraints=module[CONSTRAINTS],
@@ -901,12 +895,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     else:
         solution_approach = BEST
 
-    # enumerate_ksweep is the POPULATE loop: it pins one cost level at a time, which is what
-    # lets the pool gap open and the tilt act. It is complete only for positive, integer-valued
-    # intervention costs and a finite budget, and falls back to enumerate() on its own whenever
-    # those guards do not hold. SD_ENUM_KSWEEP=0 forces the plain populate for a run.
-    enum_ksweep = os.environ.get('SD_ENUM_KSWEEP', '1').lower() not in ('0', 'off', 'false')
-
     dump_preprocessed = kwargs.pop('dump_preprocessed', None)
 
     if dump_preprocessed:
@@ -976,10 +964,10 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     elif solution_approach == BEST:
         cmp_sd_solution = sd_milp.compute_optimal(**kwargs_computation)
     elif solution_approach == POPULATE:
-        if enum_ksweep:
-            cmp_sd_solution = sd_milp.enumerate_ksweep(**kwargs_computation)
-        else:
-            cmp_sd_solution = sd_milp.enumerate(**kwargs_computation)
+        # enumerate_ksweep pins one cost level at a time, which is what lets the pool gap open and
+        # the tilt act. It is complete only for positive, integer-valued intervention costs and a
+        # finite budget, and falls back to enumerate() on its own whenever those guards do not hold.
+        cmp_sd_solution = sd_milp.enumerate_ksweep(**kwargs_computation)
     logging.info('  MILP solved (%.1fs).' % (time.time() - t0))
 
     # Decompress solutions

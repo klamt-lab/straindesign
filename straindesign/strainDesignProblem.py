@@ -146,8 +146,6 @@ class SDProblem:
         self.ko_cost = [float(self.ko_cost.get(key)) if (key in self.ko_cost.keys()) else np.nan for key in reac_ids]
         self.ki_cost = [float(self.ki_cost.get(key)) if (key in self.ki_cost.keys()) else np.nan for key in reac_ids]
         self.ko_cost = [self.ko_cost[i] if np.isnan(self.ki_cost[i]) else np.nan for i in range(numr)]
-        self._z_flipped = False
-        self._cost_offset = 0.0
         self.num_z = numr
         self.cost = [i for i in self.ko_cost]
         for i in [i for i, x in enumerate(self.ki_cost) if not np.isnan(x)]:
@@ -233,17 +231,16 @@ class SDProblem:
         _ess = [i for i, r in enumerate(model.reactions) if r.id in self.essential_kis]
         if _ess:
             _rows = sparse.lil_matrix((len(_ess), self.A_ineq.shape[1]))
-            _flip = getattr(self, '_z_flipped', False)
             for _k, _i in enumerate(_ess):
-                _rows[_k, _i] = 1.0 if _flip else -1.0
+                _rows[_k, _i] = -1.0
             self.A_ineq = sparse.vstack((self.A_ineq, _rows.tocsr()), format='csr')
-            self.b_ineq = list(self.b_ineq) + [0.0 if _flip else -1.0] * len(_ess)
+            self.b_ineq = list(self.b_ineq) + [-1.0] * len(_ess)
 
         # if there are only mcs modules, minimize the knockout costs,
         # otherwise use objective function(s) from modules
         if all([mod[MODULE_TYPE] in [PROTECT, SUPPRESS, DOUBLEOPT] for mod in sd_modules]):
             for i in self.idx_z:
-                self.c[i] = -self.cost[i] if getattr(self, '_z_flipped', False) else self.cost[i]
+                self.c[i] = self.cost[i]
             self.is_mcs_computation = True
         else:
             self.is_mcs_computation = False
@@ -318,95 +315,6 @@ class SDProblem:
                 override[rid] = (lo, hi)
         return override
 
-    def _protect_finite_bounds(self, sd_module, override):
-        """Finite desired-region flux bounds where the model has none (``SD_CNA_PROTECT_BIGM``).
-
-        Preprocessing replaces every bound that the full-model FVA proves non-binding by +/-inf. A
-        knockable reaction left unbounded on one side has no finite big-M for its desired-region
-        knock-out gate, so that gate becomes an indicator (an SOS1 set on CPLEX and Gurobi), where
-        CellNetAnalyzer writes the linear row v <= ub (1 - z) from the problem file's bounds. The
-        region's own flux range bounds the flux in every knocked-out sub-region too (knock-outs only
-        shrink it), so it is a valid M; widened outward by max(1e-6, 1e-6 |v|) so the solver's
-        tolerance cannot make it bind. Only the infinite side of a reaction is filled in, and only in
-        this block: no other module, and no dual, sees these bounds.
-
-        Returns ``override`` with the magnitudes merged in (tighter of the two per side).
-        """
-        limits = sd_module.get('fva_bounds')
-        if limits is None:
-            return override
-        out = dict(override)
-        bnds = {r.id: (float(r.lower_bound), float(r.upper_bound)) for r in self.model.reactions}
-        n_lo = n_hi = 0
-        for rid, lim in limits.iterrows():
-            if rid not in bnds or not (lim.minimum <= lim.maximum):
-                continue
-            lb_, ub_ = bnds[rid]
-            lo, hi = out.get(rid, (None, None))
-            if isinf(lb_) and lb_ < 0 and np.isfinite(lim.minimum) and lim.minimum < 0:
-                v = float(lim.minimum) - max(1e-6, 1e-6 * abs(float(lim.minimum)))
-                lo = v if lo is None else max(lo, v)
-                n_lo += 1
-            if isinf(ub_) and ub_ > 0 and np.isfinite(lim.maximum) and lim.maximum > 0:
-                v = float(lim.maximum) + max(1e-6, 1e-6 * abs(float(lim.maximum)))
-                hi = v if hi is None else min(hi, v)
-                n_hi += 1
-            if lo is not None or hi is not None:
-                out[rid] = (lo, hi)
-        logging.info('  PROTECT block: %d lower and %d upper flux bounds made finite from the region\'s '
-                     'flux range, so their knock-out gates are big-M rows.' % (n_lo, n_hi))
-        return out
-
-    def _module_bound_relax(self, sd_module):
-        """Bounds of a SUPPRESS block that its own region-FVA proves redundant, mapped to the loosest
-        form that keeps the block identical: a finite nonzero bound the region never reaches is
-        dropped to +/-inf (or to 0 when that keeps the variable's sign), so the Farkas dual carries no
-        column for it. A bound whose FVA extreme comes within a relative margin of it is kept.
-
-        Exactness: for a nonempty polytope P, a constraint with strict slack at every point of P is
-        implied by the remaining constraints (P would otherwise contain a point on the constraint's
-        face by convexity), so removing it leaves P, and therefore every knocked-out sub-polytope,
-        unchanged. PROTECT blocks are left alone: their bounds double as the big-M of the gates.
-        """
-        if sd_module[MODULE_TYPE] == SUPPRESS and os.environ.get('SD_SUPPRESS_CONE'):
-            # Experiment: CellNetAnalyzer's SUPPRESS block keeps only signs and the target rows.
-            # Dropping every finite nonzero bound enlarges the undesired region to its cone, so each
-            # design still blocks it, but designs that rely on a bound are no longer found.
-            relax = {}
-            for r in self.model.reactions:
-                lb_, ub_ = float(r.lower_bound), float(r.upper_bound)
-                lo = (-np.inf if lb_ < 0 else 0.0) if lb_ != 0.0 and not isinf(lb_) else None
-                hi = (np.inf if ub_ > 0 else 0.0) if ub_ != 0.0 and not isinf(ub_) else None
-                if lo is not None or hi is not None:
-                    relax[r.id] = (lo, hi)
-            logging.info('  SUPPRESS block in the cone: %d finite bounds dropped' % len(relax))
-            return relax
-        if sd_module[MODULE_TYPE] != SUPPRESS or not os.environ.get('SD_SUPPRESS_RELAX_BOUNDS'):
-            return {}
-        limits = sd_module.get('fva_bounds')
-        if limits is None:
-            return {}
-        relax = {}
-        for r in self.model.reactions:
-            if r.id not in limits.index:
-                continue
-            lim = limits.loc[r.id]
-            lb_, ub_ = float(r.lower_bound), float(r.upper_bound)
-            if lb_ == ub_ or not (lim.minimum <= lim.maximum):
-                continue
-            lo = hi = None
-            if ub_ != 0.0 and not isinf(ub_) and lim.maximum < ub_ - 1e-4 * max(1.0, abs(ub_)):
-                hi = np.inf if ub_ > 0 else 0.0
-            if lb_ != 0.0 and not isinf(lb_) and lim.minimum > lb_ + 1e-4 * max(1.0, abs(lb_)):
-                lo = -np.inf if lb_ < 0 else 0.0
-            if lo is not None or hi is not None:
-                relax[r.id] = (lo, hi)
-        if relax:
-            logging.info('  SUPPRESS block: %d redundant bounds relaxed (%d lower, %d upper).' %
-                         (len(relax), sum(1 for v in relax.values() if v[0] is not None),
-                          sum(1 for v in relax.values() if v[1] is not None)))
-        return relax
-
     def addModule(self, sd_module):
         """Generate module LP and z-linking-matrix for each module and add them to the strain design MILP
 
@@ -432,12 +340,8 @@ class SDProblem:
             # both PROTECT and SUPPRESS: for SUPPRESS the undesired-region primal is bounded the same
             # way before farkas_dualize, so the certificate is unchanged.
             bound_override = self._module_bound_override(sd_module)
-            if sd_module[MODULE_TYPE] == PROTECT and os.environ.get('SD_CNA_PROTECT_BIGM'):
-                bound_override = self._protect_finite_bounds(sd_module, bound_override)
-            bound_relax = self._module_bound_relax(sd_module)
             A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p, z_map_constr_ineq_p, z_map_constr_eq_p, z_map_vars_p \
-                = build_primal_from_cbm(self.model, V_ineq, v_ineq, V_eq, v_eq, bound_override=bound_override,
-                                        bound_relax=bound_relax)
+                = build_primal_from_cbm(self.model, V_ineq, v_ineq, V_eq, v_eq, bound_override=bound_override)
         elif sd_module[MODULE_TYPE] in [PROTECT, SUPPRESS, OPTKNOCK, OPTCOUPLE]:
             c_in = linexprdict2mat(sd_module[INNER_OBJECTIVE], self.model.reactions.list_attr('id'))
             # by default, assume maximization of the inner objective
@@ -864,22 +768,6 @@ class SDProblem:
                 c_i = -c_i
             c_i = c_i.toarray()[0].tolist()
 
-        # A PROTECT block asks only that SOME flux exists in the desired region, so one knockout
-        # pattern admits a continuum of flux vectors and populate can enumerate many of them for
-        # one design. A negligible cost on the sign-constrained flux columns of that block picks a
-        # single vertex per pattern. Only columns with lb >= 0 carry it: a cost on a free column
-        # would make the block unbounded.
-        # A negative SD_PROTECT_FLUX_EPS maximises instead. That is bounded only on columns with a
-        # finite upper bound, and like the minimising form it stays on sign-constrained columns.
-        _flux_eps = float(os.environ.get('SD_PROTECT_FLUX_EPS', 0) or 0)
-        if _flux_eps and sd_module[MODULE_TYPE] == PROTECT and sd_module[INNER_OBJECTIVE] is None:
-            if _flux_eps > 0:
-                _carry = [ci == 0.0 and lo >= 0.0 for ci, lo in zip(c_i, lb_i)]
-            else:
-                _carry = [ci == 0.0 and lo >= 0.0 and not np.isinf(up) for ci, lo, up in zip(c_i, lb_i, ub_i)]
-            c_i = [ci + (_flux_eps if t else 0.0) for ci, t in zip(c_i, _carry)]
-            logging.info('  flux tilt %g on %d of %d PROTECT columns' % (_flux_eps, sum(_carry), len(c_i)))
-
         # 3. Add module to global MILP
         # which module each continuous column came from, so column-wise options (the dual tilt)
         # can be restricted to one module type
@@ -970,52 +858,6 @@ class SDProblem:
         #    Zero/single-variable rows take a finite M from the bounds; multi-variable rows are
         #    unbounded on the polytope (M = +inf), which the linker realizes as an indicator
         #    constraint (gurobi/cplex) or the constant self.M (glpk/user-M).
-        # Which polarity would cost fewer auxiliary columns? A gate whose indicval is 0 needs a
-        # complement column when it is realised as SOS1; one with indicval 1 gates z directly. The
-        # z-map sign decides that: +1 (knock-out) becomes indicval 0, -1 (knock-in) becomes 1. So
-        # the convention "z = 1 means intervened" is cheaper exactly when knock-ins outnumber
-        # knock-outs, which they essentially never do. Counted here because this is the first point
-        # where every module's map is complete.
-        _pos = int((self.z_map_constr_ineq.data > 0).sum() + (self.z_map_constr_eq.data > 0).sum()
-                   + (self.z_map_vars.data > 0).sum())
-        _neg = int((self.z_map_constr_ineq.data < 0).sum() + (self.z_map_constr_eq.data < 0).sum()
-                   + (self.z_map_vars.data < 0).sum())
-        logging.info('  Gate polarity: %d knock-out-style (+1) and %d knock-in-style (-1) map '
-                     'entries; as built that is %d gates needing a complement column, %d free.'
-                     % (_pos, _neg, _pos, _neg))
-        _mode = os.environ.get('SD_Z_POLARITY', 'A')
-        if _mode == 'auto':
-            _mode = 'B' if _pos > _neg else 'A'
-        if _mode == 'B':
-            self._z_flipped = True
-            # z now reads "reaction is in its ORIGINAL state"; the intervention is z = 0. Every
-            # gate polarity follows the map sign, so negating the maps flips all of them at once.
-            self.z_map_constr_ineq = -self.z_map_constr_ineq
-            self.z_map_constr_eq = -self.z_map_constr_eq
-            self.z_map_vars = -self.z_map_vars
-            # the intervention cost is now sum(cost) - cost.z, so the two bracket rows carry -cost
-            # and the budget rhs drops by that constant
-            self._cost_offset = float(np.sum([c for c in self.cost if not np.isnan(c)]))
-            # the bracket rows span the whole matrix by now, while cost covers only the z block
-            _w = self.A_ineq.shape[1]
-            _pos = np.zeros(_w); _neg = np.zeros(_w)
-            for _i, _c in enumerate(self.cost):
-                if not np.isnan(_c):
-                    _pos[_i], _neg[_i] = _c, -_c
-            A = self.A_ineq.tolil()
-            A[self.idx_row_maxcost] = sparse.lil_matrix(_pos)
-            A[self.idx_row_mincost] = sparse.lil_matrix(_neg)
-            self.A_ineq = A.tocsr()
-            if not isinf(self.b_ineq[self.idx_row_mincost]):
-                self.b_ineq[self.idx_row_mincost] -= self._cost_offset
-            # a reaction nobody may touch must read as "original state", i.e. z = 1, or sd2dict
-            # would report every one of them as an intervention
-            for i in range(self.num_z):
-                if self.z_non_targetable[i]:
-                    self.lb[i], self.ub[i] = 1.0, 1.0
-            logging.info('  z polarity B: z=1 means original state, intervention at z=0; '
-                         'cost offset %.6g.' % self._cost_offset)
-
         knockable_constr_ineq = np.unique(self.z_map_constr_ineq.nonzero()[1])
 
         _idxz = set(self.idx_z)  # O(1) membership in the scan below
@@ -1199,6 +1041,9 @@ class SDProblem:
         _is_ic[list(knockable_constr_ineq_ic)] = True
         keep_ineq = [i for i in range(self.A_ineq.shape[0]) if i not in _remove]
         knockable_constr_ineq_ic = np.nonzero(_is_ic[keep_ineq])[0]
+        # the Farkas anchor rows, followed through the row removals into the MILP's numbering
+        _pos = {old: new for new, old in enumerate(keep_ineq)}
+        self._milp_anchor_rows = [_pos[r] for r in getattr(self, '_farkas_anchor_rows', []) if r in _pos]
         self.A_ineq = self.A_ineq[keep_ineq, :]
         self.b_ineq = [self.b_ineq[i] for i in keep_ineq]
         self.z_map_constr_ineq = self.z_map_constr_ineq[:, keep_ineq]
@@ -1222,6 +1067,8 @@ class SDProblem:
         _drop_ineq = set(int(i) for i in knockable_constr_ineq_ic)
         _drop_eq = set(int(i) for i in knockable_constr_eq_ic)
         keep_ineq = [i not in _drop_ineq for i in range(self.A_ineq.shape[0])]
+        _pos = {old: new for new, old in enumerate(i for i in range(len(keep_ineq)) if keep_ineq[i])}
+        self._milp_anchor_rows = [_pos[r] for r in self._milp_anchor_rows if r in _pos]
         self.A_ineq = self.A_ineq[keep_ineq, :]
         self.b_ineq = [self.b_ineq[i] for i in range(len(keep_ineq)) if keep_ineq[i]]
         keep_eq = [i not in _drop_eq for i in range(self.A_eq.shape[0])]
@@ -1291,7 +1138,7 @@ class ContMILP:
         self.z_map_vars = z_map_vars
 
 def build_primal_from_cbm(model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None, c=None,
-                          bound_override=None, bound_relax=None) -> \
+                          bound_override=None) -> \
         Tuple[sparse.csr_matrix, Tuple, sparse.csr_matrix, Tuple, Tuple, Tuple, sparse.csr_matrix, sparse.csr_matrix, sparse.csr_matrix]:
     """Builds primal LP from constraint-based model and (optionally) additional constraints.
     
@@ -1352,17 +1199,6 @@ def build_primal_from_cbm(model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None,
                     ub[i] = min(ub[i], float(hi))
                 if lb[i] > ub[i]:  # numeric guard: never emit an inconsistent block
                     lb[i], ub[i] = float(lo), float(hi)
-    if bound_relax:
-        # Bounds proven redundant for this block are replaced (not tightened): the block is the same
-        # polytope, and the dual no longer carries a column for the redundant bound.
-        for i, r in enumerate(model.reactions):
-            rl = bound_relax.get(r.id)
-            if rl is not None:
-                lo, hi = rl
-                if lo is not None:
-                    lb[i] = float(lo)
-                if hi is not None:
-                    ub[i] = float(hi)
     z_map_vars = sparse.identity(numr, 'd', format="csc")
     z_map_constr_eq = sparse.csc_matrix((numr, A_eq.shape[0]))
     z_map_constr_ineq = sparse.csc_matrix((numr, A_ineq.shape[0]))
@@ -1544,8 +1380,8 @@ def farkas_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
     # add constraint b_prim'y or (c_dual'*y) <= -1;
     A_ineq_f = sparse.vstack((A_ineq_d, sparse.csr_matrix(c_d))).tocsr()
     # The certificates form a cone, so any positive anchor is exact; it sets the certificate's scale
-    # against the solver's absolute tolerances. SD_FARKAS_ANCHOR overrides the default of 1.
-    b_ineq_f = b_ineq_d + [-float(os.environ.get('SD_FARKAS_ANCHOR', 1.0))]
+    # against the solver's absolute tolerances. The cost-level sweep moves it (SDMILP._set_anchor).
+    b_ineq_f = b_ineq_d + [-1.0]
     A_eq_f = A_eq_d
     b_eq_f = b_eq_d
     # it would also be possible (but ofc not necessary) to force (c_dual*y) == -1; instead
@@ -1630,100 +1466,17 @@ def _exact_rational_matrix(A):
     return RationalMatrix.from_fractions(iter(entries), A.shape)
 
 
-def _markowitz_kernel(A_eq_p):
-    """Exact rational kernel of A_eq_p by Gauss-Jordan elimination with Markowitz pivoting.
-
-    Each step takes the pivot of least fill (row count - 1) * (column count - 1), preferring unit
-    pivots on ties. SD_NB_KERNEL_PIVOT_FRACTIONAL=1 pivots first on every column holding a
-    non-integer entry (the biomass column), so that column becomes a pivot instead of a free
-    coordinate. Returns K as a float CSR matrix, n x (n - rank).
-    """
-    A = sparse.csr_matrix(A_eq_p)
-    m, n = A.shape
-    rows = []
-    for i in range(m):
-        d = {}
-        for k in range(A.indptr[i], A.indptr[i + 1]):
-            v = A.data[k]
-            if v != 0:
-                d[int(A.indices[k])] = _exact_fraction(v)
-        if d:
-            rows.append(d)
-    frac_first = bool(os.environ.get('SD_NB_KERNEL_PIVOT_FRACTIONAL'))
-    frac_cols = {j for r in rows for j, v in r.items() if v.denominator != 1} if frac_first else set()
-    col_rows = {}
-    for i, r in enumerate(rows):
-        for j in r:
-            col_rows.setdefault(j, set()).add(i)
-    active = set(range(len(rows)))
-    pivots = []  # (row index, column)
-    while active:
-        best = None
-        for i in active:
-            r = rows[i]
-            if not r:
-                continue
-            rc = len(r) - 1
-            for j, v in r.items():
-                cc = sum(1 for k in col_rows[j] if k in active) - 1
-                key = (j not in frac_cols, rc * cc, abs(v) != 1, j)
-                if best is None or key < best[0]:
-                    best = (key, i, j)
-        if best is None:
-            break
-        _, i, j = best
-        p = rows[i][j]
-        rows[i] = {c: v / p for c, v in rows[i].items()}
-        for k in list(col_rows[j]):
-            if k == i or j not in rows[k]:
-                continue
-            f = rows[k][j]
-            for c, v in rows[i].items():
-                nv = rows[k].get(c, 0) - f * v
-                if nv == 0:
-                    if c in rows[k]:
-                        del rows[k][c]
-                        col_rows[c].discard(k)
-                else:
-                    if c not in rows[k]:
-                        col_rows.setdefault(c, set()).add(k)
-                    rows[k][c] = nv
-        active.discard(i)
-        pivots.append((i, j))
-    piv_cols = {j for _, j in pivots}
-    free = [j for j in range(n) if j not in piv_cols]
-    fidx = {j: t for t, j in enumerate(free)}
-    r_, c_, d_ = [], [], []
-    for t, j in enumerate(free):
-        r_.append(j); c_.append(t); d_.append(1.0)
-    for i, j in pivots:
-        for c, v in rows[i].items():
-            if c != j:
-                r_.append(j); c_.append(fidx[c]); d_.append(float(-v))
-    K = sparse.csr_matrix((d_, (r_, c_)), shape=(n, len(free)))
-    logging.info('  Markowitz kernel: rank %d, %d free, %d nonzeros, %d fractional columns pivoted first' %
-                 (len(pivots), len(free), K.nnz, len(frac_cols)))
-    return K
-
-
 def _nullspace_float(A_eq_p):
     """Return an exact right-nullspace basis of A_eq_p as a float scipy CSR matrix.
 
     Uses straindesign.sparse_nullspace (exact rational kernel) on a rationalisation of A_eq_p that
     reproduces every float coefficient to within a few ulps (see :func:`_exact_fraction`). Handles
     both the int64-CSR return and the arbitrary-precision ExactCOO return (big integers that do not
-    fit int64). A basis change selected by SD_NB_KERNEL (see straindesign.nb_kernel) is applied in
-    exact integer arithmetic; coefficients are cast to float64 only at the end, since the MILP is
-    solved in floating point regardless.
+    fit int64). Coefficients are cast to float64 only at the end, since the MILP is solved in
+    floating point regardless.
     """
     from straindesign import sparse_nullspace
     K = sparse_nullspace(_exact_rational_matrix(A_eq_p))
-    if os.environ.get('SD_NB_KERNEL', 'none').strip() not in ('', 'none') \
-            or os.environ.get('SD_NB_KERNEL_MODULE') or os.environ.get('SD_NB_KERNEL_STATS'):
-        # The dual constrains v against the SUBSPACE null(A_eq_p), so any invertible K -> K M is
-        # free: same feasible set, same designs, different sparsity and conditioning.
-        from straindesign.nb_kernel import apply_variant
-        return apply_variant(K, A_eq_p)
     if sparse.issparse(K):
         return K.astype(float).tocsr()
     # ExactCOO namedtuple (rows, cols, data, shape, denom) with Python-int data
@@ -1803,10 +1556,7 @@ def nullspace_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
     p = Abar.shape[0]  # number of w-duals (>= 0)
 
     # --- 2. Exact kernel of A_eq_p (metabolite duals to eliminate). ---
-    # SD_NB_KERNEL=markowitz builds the kernel by minimum-fill elimination; every other value is a
-    # basis change of sparse_nullspace's kernel (straindesign.nb_kernel). Both are exact.
-    K = _markowitz_kernel(A_eq_p) if os.environ.get('SD_NB_KERNEL', '').strip() == 'markowitz' \
-        else _nullspace_float(A_eq_p)  # n x q, A_eq_p @ K == 0
+    K = _nullspace_float(A_eq_p)  # n x q, A_eq_p @ K == 0
     q = K.shape[1]
 
     # --- 3. Primal variable sign classes (same predicates as LP_dualize). ---
@@ -1817,51 +1567,11 @@ def nullspace_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
 
     # --- 4. Assemble the raw dual (variables [v (n); w (p)]), before normalization. ---
     # Projected feasibility equalities: K^T (v - Abar^T w) = 0  (q rows, not knockable).
-    # SD_NB_LOCAL_BOUNDS keeps single-variable rows of Abar (the flux bounds) out of the projection.
-    # For such a row on reaction j, (Abar^T w)_j is one term, so the projection would only copy
-    # kernel row K_j a second time. Instead vhat_j = v_j - (Abar_single^T w)_j is a variable of its
-    # own, defined by one short row, and only the multi-variable rows (the targets) are projected:
-    #     K^T vhat - (Abar_multi K)^T w = 0 ,   v_j - vhat_j - (Abar_single^T w)_j = 0
-    # The certificate set is unchanged; vhat is a change of variables.
-    local = bool(os.environ.get('SD_NB_LOCAL_BOUNDS'))
-    row_nnz = np.diff(Abar.indptr)
-    single = np.nonzero(row_nnz == 1)[0] if local else np.array([], dtype=int)
-    multi = np.setdiff1d(np.arange(p), single)
-    KT = K.transpose().tocsr()                       # q x n  -> coefficient on v (or vhat)
-    if local and len(single):
-        bnd = np.unique(Abar[single, :].tocoo().col)  # reactions that carry a single-entry row
-        nh = len(bnd)
-        col_of = {int(r): n + p + k for k, r in enumerate(bnd)}
-        # K^T acting on vhat for bounded reactions, on v for the rest
-        KTc = KT.tocsc()
-        keep_v = np.setdiff1d(np.arange(n), bnd)
-        KT_v = sparse.hstack((KTc[:, keep_v], sparse.csc_matrix((q, n - len(keep_v))))).tocsc()
-        perm = np.concatenate((keep_v, bnd))
-        KT_v = KT_v[:, np.argsort(perm)]             # back to reaction order, zero on bnd columns
-        KT_h = KTc[:, bnd]
-        Amulti = Abar[multi, :]
-        AmK = sparse.csr_matrix((Amulti @ K).transpose())           # q x |multi|
-        W = sparse.lil_matrix((q, p)); W[:, multi] = -AmK
-        A_eq_proj = sparse.hstack((KT_v, W.tocsr(), KT_h)).tocsr()
-        # link rows: v_j - vhat_j - sum_k Abar[k, j] w_k = 0 over single rows k on reaction j
-        L = sparse.lil_matrix((nh, n + p + nh))
-        for k, r in enumerate(bnd):
-            L[k, int(r)] = 1.0
-            L[k, n + p + k] = -1.0
-        As = Abar[single, :].tocoo()
-        for rr, cc, vv in zip(As.row, As.col, As.data):
-            L[bnd.searchsorted(cc), n + int(single[rr])] = -float(vv)
-        A_eq_link = L.tocsr()
-    else:
-        nh = 0
-        AbarK = (Abar @ K).transpose().tocsr()       # q x p  -> coefficient on w (= (Abar K)^T)
-        A_eq_proj = sparse.hstack((KT, -AbarK)).tocsr()
-        A_eq_link = sparse.csr_matrix((0, n + p))
-    if os.environ.get('SD_NB_KERNEL_STATS'):
-        import json as _json
-        with open(os.environ['SD_NB_KERNEL_STATS'], 'a') as _fh:
-            _fh.write(_json.dumps(dict(block='A_eq_proj', rows=int(q), cols=int(A_eq_proj.shape[1]),
-                                       nnz_KT=int(KT.nnz), nnz=int(A_eq_proj.nnz))) + '\n')
+    KT = K.transpose().tocsr()                       # q x n  -> coefficient on v
+    nh = 0
+    AbarK = (Abar @ K).transpose().tocsr()           # q x p  -> coefficient on w (= (Abar K)^T)
+    A_eq_proj = sparse.hstack((KT, -AbarK)).tocsr()
+    A_eq_link = sparse.csr_matrix((0, n + p))
     if scale_rows and A_eq_proj.nnz:
         # Row-scale each =0 equality by its max |coef| to tame large integer kernel entries.
         rmax = np.maximum(np.abs(A_eq_proj).max(axis=1).toarray().ravel(), 1e-300)
@@ -1906,7 +1616,7 @@ def nullspace_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
     # --- 6. Append the Farkas normalization  bbar^T w <= -1  (not knockable). ---
     c_d = [0.0] * n + list(bbar) + [0.0] * nh   # dual objective: 0 on v and vhat, bbar on w
     A_ineq_f = sparse.vstack((A_ineq_d, sparse.csr_matrix(c_d))).tocsr()
-    b_ineq_f = list(b_ineq_d) + [-float(os.environ.get('SD_FARKAS_ANCHOR', 1.0))]
+    b_ineq_f = list(b_ineq_d) + [-1.0]
     z_map_constr_ineq_f = sparse.hstack((z_map_constr_ineq_d, sparse.csr_matrix((numz, 1)))).tocsc()
 
     return A_ineq_f, b_ineq_f, A_eq_d, b_eq_d, lb_d, ub_d, z_map_constr_ineq_f, z_map_constr_eq_d, z_map_vars_d
