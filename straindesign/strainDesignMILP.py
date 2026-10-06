@@ -1327,6 +1327,10 @@ class SDMILP(SDProblem, MILP_LP):
                                   'from this level up.' % k)
                     errored = True
                     break
+                elif status == TIME_LIMIT:
+                    # Stopped without a proof either way: the level is not exhausted.
+                    hit_timelimit = True
+                    break
                 else:  # INFEASIBLE at this cardinality -> level exhausted, next k
                     break
             t_prev_level = time.time() - t_level0
