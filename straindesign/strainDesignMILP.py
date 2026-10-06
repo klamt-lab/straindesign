@@ -221,6 +221,8 @@ class SDMILP(SDProblem, MILP_LP):
             self.b_ineq = list(self.b_ineq) + [0.0 if _fl else -1.0] * len(_forced)
         # Remove non-knockable z-variables before solver sees them
         self._trim_z_variables()
+        if self.is_mcs_computation and os.environ.get('SD_PROTECT_OWNP'):
+            self._protect_own_binaries()
         # Interventions that do not cost anything to take. Adding one to a design can only keep
         # its cost equal or lower, so such a design is not dominated by the smaller one and the
         # exclusion constraints must leave it reachable. Empty for the usual all-positive setup,
@@ -229,8 +231,20 @@ class SDMILP(SDProblem, MILP_LP):
         # A rewarding intervention strictly lowers the cost of any design that can absorb it,
         # so a design is only worth reporting once none of them can be added while staying valid.
         self._rewarding_z = [i for i in self._free_z if self.cost[i] < 0.0]
+        # The module each indicator gate belongs to, for the gate transforms that treat the target
+        # region on its own (SD_CNA_OWNZ, SD_CNA_DIRSPLIT); a gate spans one module's columns.
+        _gate_modules = None
+        if self.is_mcs_computation and (os.environ.get('SD_CNA_OWNZ') or os.environ.get('SD_CNA_DIRSPLIT')) \
+                and getattr(self.indic_constr, 'A', None) is not None and self.indic_constr.A.shape[0]:
+            _colmod = self._continuous_column_modules()
+            _Ag = sparse.csr_matrix(self.indic_constr.A)
+            _gate_modules = []
+            for k in range(_Ag.shape[0]):
+                ms = {_colmod.get(int(j)) for j in _Ag.indices[_Ag.indptr[k]:_Ag.indptr[k + 1]] if j >= self.num_z} - {None}
+                _gate_modules.append(ms.pop() if len(ms) == 1 else 'mixed')
         # Build MILP object from constructed problem
         MILP_LP.__init__(self,
+                         gate_modules=_gate_modules,
                          sos1_gates=self.is_mcs_computation,
                          c=self.c,
                          A_ineq=self.A_ineq,
@@ -367,6 +381,66 @@ class SDMILP(SDProblem, MILP_LP):
                         A_ineq[0, j] = -1.0
                     A_ineq = A_ineq.tocsr()
                 self.add_ineq_constraints(A_ineq, [b_ineq])
+
+    def _protect_own_binaries(self):
+        """Key every desired-region (PROTECT) big-M gate on a presence binary of its own (SD_PROTECT_OWNP).
+
+        A gate row a*x + c*z <= B (c > 0) is enforced while z = 1. With z replaced by 1 - p it reads
+        a*x - c*p <= B - c, enforced while p = 0, and p + z <= 1 ties p to the intervention one way
+        only: a knocked-out reaction has p = 0, a present one may still take p = 0. That only shrinks
+        the module's region, so the z for which the problem is feasible are those of the shared-z
+        model. One p per reaction and PROTECT module instance; the target region keeps z.
+        """
+        shift = getattr(self, '_orig_num_z', self.num_z) - self.num_z if getattr(self, '_z_orig_indices', None) else 0
+        col_mod = {}
+        for k, (mod, a, b) in enumerate(getattr(self, '_module_cols', [])):
+            for j in range(a - shift, b - shift):
+                col_mod[j] = (k, str(mod).lower())
+        A = sparse.csr_matrix(self.A_ineq)
+        nz, n0 = self.num_z, A.shape[1]
+        owner, changes = {}, []
+        for r in range(A.shape[0]):
+            cols = A.indices[A.indptr[r]:A.indptr[r + 1]]
+            vals = A.data[A.indptr[r]:A.indptr[r + 1]]
+            zc = [(int(j), float(v)) for j, v in zip(cols, vals) if j < nz and v != 0.0]
+            xc = [int(j) for j in cols if j >= nz]
+            if len(zc) != 1 or not xc or zc[0][1] <= 0.0:
+                continue
+            ms = {col_mod.get(j) for j in xc}
+            if len(ms) != 1 or None in ms:
+                continue
+            kmod, mtype = ms.pop()
+            if mtype != PROTECT:
+                continue
+            key = (zc[0][0], kmod)
+            if key not in owner:
+                owner[key] = n0 + len(owner)
+            changes.append((r, zc[0][0], owner[key], zc[0][1]))
+        if not owner:
+            return
+        k_new = len(owner)
+        A = sparse.hstack((A, sparse.csr_matrix((A.shape[0], k_new))), format='lil')
+        b_ineq = list(self.b_ineq)
+        for r, jz, jp, c in changes:
+            A[r, jz] = 0.0
+            A[r, jp] = -c
+            b_ineq[r] = b_ineq[r] - c
+        link = sparse.lil_matrix((k_new, n0 + k_new))
+        for i, ((jz, _), jp) in enumerate(owner.items()):
+            link[i, jz] = 1.0
+            link[i, jp] = 1.0
+        self.A_ineq = sparse.vstack((A.tocsr(), link.tocsr()), format='csr')
+        self.b_ineq = b_ineq + [1.0] * k_new
+        self.A_eq = sparse.hstack((sparse.csr_matrix(self.A_eq), sparse.csr_matrix((self.A_eq.shape[0], k_new))), format='csr')
+        if getattr(self.indic_constr, 'A', None) is not None:
+            self.indic_constr.A = sparse.hstack((sparse.csr_matrix(self.indic_constr.A),
+                                                 sparse.csr_matrix((self.indic_constr.A.shape[0], k_new))), format='csr')
+        self.c = list(self.c) + [0.0] * k_new
+        self.lb = list(self.lb) + [0.0] * k_new
+        self.ub = list(self.ub) + [1.0] * k_new
+        self.vtype = self.vtype + 'B' * k_new
+        logging.info('  PROTECT presence binaries: %d gate rows rekeyed on %d own binaries (p + z <= 1).'
+                     % (len(changes), k_new))
 
     def _continuous_column_modules(self):
         """Module type of every continuous column of the MILP, as {column: type}.
@@ -1132,6 +1206,10 @@ class SDMILP(SDProblem, MILP_LP):
             _rs_p = _rs.split(':')
             _rs_min, _rs_fac = float(_rs_p[0]), (float(_rs_p[1]) if len(_rs_p) > 1 else 4.0)
         t_prev_level, n_reseeds = 0.0, 0
+        # SD_LEVEL_RESTART_STALL: a capped call that found designs is resumed with the cap doubled for as
+        # long as it keeps finding new ones; once a cap passes with nothing new, its designs are kept and
+        # the search restarts from another seed, the cap doubling on.
+        _rs_stall = bool(os.environ.get('SD_LEVEL_RESTART_STALL'))
         # Farkas anchor controller (SD_FARKAS_ANCHOR_ADAPTIVE=1): the MILP starts at the small anchor
         # given by SD_FARKAS_ANCHOR; every verify_sd rejection means a certificate passed only
         # within tolerance, so the anchor is raised 100-fold (up to 1) and the level re-populated.
@@ -1243,8 +1321,13 @@ class SDMILP(SDProblem, MILP_LP):
             logging.info('  Enumerating minimal cut sets of cost ' + str(k))
             t_level0 = time.time()
             budget = max(_rs_min, _rs_fac * t_prev_level) if _rs_min is not None else None
+            n_tree, reseed_after_batch = 0, False
             while sols.shape[0] < self.max_solutions and \
                     endtime - time.time() > 0:
+                if reseed_after_batch:
+                    n_reseeds += 1
+                    self.set_seed((self.seed or 0) + 7919 * n_reseeds)
+                    reseed_after_batch = False
                 capped = budget is not None and budget < endtime - time.time()
                 self.set_time_limit(budget if capped else endtime - time.time())
                 z, status = self.populateZ(self.max_solutions - sols.shape[0])
@@ -1255,11 +1338,21 @@ class SDMILP(SDProblem, MILP_LP):
                     budget *= 2
                     continue
                 if capped and status == TIME_LIMIT_W_SOL:
-                    # Designs are arriving, so this search is not stalled: lift the cap and call
-                    # again before touching the model. The solver then resumes the same tree and
-                    # keeps its pool, and nothing searched so far is lost.
-                    budget = None
-                    continue
+                    if not _rs_stall:
+                        # Designs are arriving, so this search is not stalled: lift the cap and call
+                        # again before touching the model. The solver then resumes the same tree and
+                        # keeps its pool, and nothing searched so far is lost.
+                        budget = None
+                        continue
+                    if z.shape[0] > n_tree:
+                        n_tree = z.shape[0]
+                        budget *= 2
+                        continue
+                    logging.info('  no new design at cost %s within %.1f s: restarting from another seed' % (k, budget))
+                    status = OPTIMAL
+                    budget *= 2
+                    reseed_after_batch = True
+                n_tree = 0
                 if status in [OPTIMAL, TIME_LIMIT_W_SOL]:
                     if z.shape[0] == 0:  # level exhausted
                         break
