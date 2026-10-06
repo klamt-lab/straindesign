@@ -358,10 +358,9 @@ class Gurobi_MILP_LP(gp.Model):
                 status = UNBOUNDED
                 return x, min_cx, status
             elif status == gstatus.NUMERIC:
-                # solve() and slim_solve() already recover from this; populate() did not, so an
-                # enumeration that hit numerical trouble raised instead of returning the pool it
-                # had already built. Retry at maximum numerical focus, then keep whatever the
-                # pool holds.
+                # Retry at maximum numerical focus. On an unchanged model Gurobi resumes the failed
+                # search and returns the same state at once, so the retry starts over.
+                self.reset(0)
                 self.params.PoolSearchMode = 2
                 self.params.NumericFocus = 3
                 self._safe_optimize()
@@ -371,6 +370,12 @@ class Gurobi_MILP_LP(gp.Model):
                 if status in [2, 10, 13, 15]:
                     min_cx = self.ObjVal
                     status = OPTIMAL
+                elif status == 3:
+                    x = [nan] * len(self.getVars())
+                    return x, nan, INFEASIBLE
+                elif status in [9, 11] and self.SolCount == 0:
+                    x = [nan] * len(self.getVars())
+                    return x, nan, TIME_LIMIT
                 elif self.SolCount > 0:
                     logging.warning('Gurobi reported numerical difficulties during enumeration; '
                                     'returning the solutions found so far (the pool may be '
@@ -378,12 +383,12 @@ class Gurobi_MILP_LP(gp.Model):
                     min_cx = self.ObjVal
                     status = TIME_LIMIT_W_SOL
                 else:
-                    logging.warning('Gurobi reported numerical difficulties during enumeration and '
-                                    'found no usable solution; treating as no solution.')
+                    # Neither a solution nor a proof that there is none. Reporting this as "no
+                    # solution" made the enumeration treat an unproven cost level as exhausted.
+                    logging.error('Gurobi reported numerical difficulties during enumeration twice '
+                                  'and proved nothing.')
                     x = [nan] * len(self.getVars())
-                    min_cx = nan
-                    status = TIME_LIMIT
-                    return x, min_cx, status
+                    return x, nan, ERROR
             else:
                 raise Exception('Status code ' + str(status) + " not yet handled.")
             x = self.getSolutions()
