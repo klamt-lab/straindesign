@@ -344,6 +344,37 @@ class Gurobi_MILP_LP(gp.Model):
                 x = [nan] * len(self.getVars())
                 status = UNBOUNDED
                 return x, min_cx, status
+            elif status == gstatus.NUMERIC:
+                # Retry at maximum numerical focus. On an unchanged model Gurobi resumes the failed
+                # search and returns the same state at once, so the retry starts over.
+                self.reset(0)
+                self.params.PoolSearchMode = 2
+                self.params.NumericFocus = 3
+                self._safe_optimize()
+                self.params.PoolSearchMode = 0
+                self.params.NumericFocus = 0
+                status = self.Status
+                if status in [2, 10, 13, 15]:
+                    min_cx = self.ObjVal
+                    status = OPTIMAL
+                elif status == 3:
+                    x = [nan] * len(self.getVars())
+                    return x, nan, INFEASIBLE
+                elif status in [9, 11] and self.SolCount == 0:
+                    x = [nan] * len(self.getVars())
+                    return x, nan, TIME_LIMIT
+                elif self.SolCount > 0:
+                    logging.warning('Gurobi reported numerical difficulties during enumeration; '
+                                    'returning the solutions found so far (the pool may be '
+                                    'incomplete).')
+                    min_cx = self.ObjVal
+                    status = TIME_LIMIT_W_SOL
+                else:
+                    # neither a solution nor a proof that there is none: not an empty pool
+                    logging.error('Gurobi reported numerical difficulties during enumeration twice '
+                                  'and proved nothing.')
+                    x = [nan] * len(self.getVars())
+                    return x, nan, ERROR
             else:
                 raise Exception('Status code ' + str(status) + " not yet handled.")
             x = self.getSolutions()
@@ -502,8 +533,10 @@ class Gurobi_MILP_LP(gp.Model):
         """Retrieve solution pool from Gurobi backend"""
         nSols = self.SolCount
         x = []
+        # only entries at the optimum, compared with a tolerance
+        tol = 1e-9 * max(1.0, abs(self.ObjVal))
         for i in range(nSols):
             self.setParam(grb.Param.SolutionNumber, i)
-            if self.PoolObjVal == self.ObjVal:
+            if abs(self.PoolObjVal - self.ObjVal) <= tol:
                 x += [[x.Xn for x in self.getVars()]]
         return x
