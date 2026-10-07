@@ -25,8 +25,37 @@ from cplex.exceptions import CplexError
 from typing import Tuple, List
 import logging
 import io
+import os
 from psutil import virtual_memory
 from straindesign.names import *
+
+
+def _memory_limit_bytes():
+    """Memory this process may use: the machine's, capped by every enclosing cgroup limit."""
+    limit = virtual_memory().total
+    try:
+        with open('/proc/self/cgroup') as fh:
+            entries = [line.rstrip('\n').split(':', 2) for line in fh]
+        for hid, ctrl, path in entries:
+            if ctrl == 'memory':
+                root, fname = '/sys/fs/cgroup/memory', 'memory.limit_in_bytes'
+            elif hid == '0' and ctrl == '':
+                root, fname = '/sys/fs/cgroup', 'memory.max'
+            else:
+                continue
+            while True:
+                f = root + path.rstrip('/') + '/' + fname
+                if os.path.exists(f):
+                    with open(f) as fh:
+                        v = fh.read().strip()
+                    if v.isdigit():
+                        limit = min(limit, int(v))
+                if path in ('', '/'):
+                    break
+                path = os.path.dirname(path)
+    except (OSError, ValueError):
+        pass
+    return limit
 
 
 class Cplex_MILP_LP(Cplex):
@@ -161,8 +190,9 @@ class Cplex_MILP_LP(Cplex):
         self.parameters.simplex.tolerances.feasibility.set(1e-9)
 
         if 'B' in vtype or 'I' in vtype:
-            # set usable working memory to 3/4 of the total available memory
-            self.parameters.workmem.set(round(virtual_memory().total / 1024 / 1024 * 0.75))
+            # usable working memory: 3/4 of what this process may use (CPLEX itself sizes it
+            # from the machine, ignoring a SLURM or container memory limit)
+            self.parameters.workmem.set(round(_memory_limit_bytes() / 1024 / 1024 * 0.75))
             #self.parameters.threads.set(16)
             # yield only optimal solutions in pool
             if seed is None:
@@ -306,9 +336,12 @@ class Cplex_MILP_LP(Cplex):
             elif status in [13, 107, 113]:  # timeout/abort with solution
                 min_cx = self.solution.get_objective_value()
                 status = TIME_LIMIT_W_SOL
-            elif status in [118, 119]:  # solution unbounded
-                min_cx = -inf
-                status = UNBOUNDED
+            elif status in [118, 119]:  # unbounded, or infeasible-or-unbounded: never a result
+                # An unbounded MILP is a formulation error; returning it as an empty pool would end
+                # an enumeration early with status 'optimal'.
+                raise RuntimeError('CPLEX populate returned status %d (%s); the MILP is unbounded, '
+                                   'which is a formulation error, not an empty pool' %
+                                   (status, self.solution.get_status_string()))
             else:
                 logging.exception(status)
                 logging.exception(self.solution.get_status_string())
@@ -317,6 +350,22 @@ class Cplex_MILP_LP(Cplex):
             return x, min_cx, status
 
         except CplexError as exc:
+            if exc.args[2] != 1217 and not getattr(self, '_numeric_retry', False):
+                # A singular basis (1256) or a similar numerical failure depends on the path the
+                # search took; one fresh start at numerical emphasis usually gets through. The
+                # caller only ever sees the retry's pool, so nothing is counted twice.
+                logging.warning('CPLEX populate failed (%s); retrying once from scratch with '
+                                'numerical emphasis' % exc)
+                emph, adv = self.parameters.emphasis.numerical.get(), self.parameters.advance.get()
+                self.parameters.emphasis.numerical.set(1)
+                self.parameters.advance.set(0)
+                self._numeric_retry = True
+                try:
+                    return self.populate(n)
+                finally:
+                    self._numeric_retry = False
+                    self.parameters.emphasis.numerical.set(emph)
+                    self.parameters.advance.set(adv)
             if not exc.args[2] == 1217:
                 logging.error(exc)
             min_cx = nan
