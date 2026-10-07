@@ -35,6 +35,15 @@ _CNA_GATE_BINARIES = {CPLEX}
 _EQUALITY_GATE_SPLIT = {GUROBI}
 
 
+def _size_limit(solver):
+    """Largest number of variables or constraints the solver's licence accepts (inf if unlimited)."""
+    if solver == CPLEX:
+        from straindesign.cplex_interface import size_limit
+    else:
+        from straindesign.gurobi_interface import size_limit
+    return size_limit()
+
+
 class MILP_LP(object):
     """Unified MILP and LP interface
     
@@ -204,10 +213,21 @@ class MILP_LP(object):
         self.sos1 = []
         if getattr(self, 'sos1_gates', None) and self.solver in [CPLEX, GUROBI] \
            and self.indic_constr is not None and self.indic_constr.A.shape[0]:
+            indicator_form = (self.c, self.lb, self.ub, self.vtype, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq,
+                              self.indic_constr)
             direct_gates = set()
             if self.solver in _CNA_GATE_BINARIES and getattr(self, 'gate_modules', None) is not None:
                 direct_gates = self._cna_binaries()
             self._gates_as_sos1(direct_gates)
+            # The rewrite adds columns and rows. A size-limited licence (CPLEX Community Edition,
+            # Gurobi's pip licence) may accept the indicator form but not this one.
+            limit = _size_limit(self.solver)
+            if max(len(self.c), self.A_ineq.shape[0] + self.A_eq.shape[0]) > limit:
+                logging.info('  Keeping indicator constraints: with SOS1 gates the MILP exceeds the size '
+                             'limit of %d of this %s licence.' % (limit, self.solver))
+                (self.c, self.lb, self.ub, self.vtype, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq,
+                 self.indic_constr) = indicator_form
+                self.sos1 = []
 
         # Create backend
         if self.solver == CPLEX:

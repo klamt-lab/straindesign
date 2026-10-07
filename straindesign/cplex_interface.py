@@ -58,6 +58,30 @@ def _memory_limit_bytes():
     return limit
 
 
+_size_limit = None
+
+
+def size_limit():
+    """Largest number of variables or constraints this CPLEX runtime accepts: 1000 for the
+    Community Edition (the pip package's default), unlimited otherwise. Probed once."""
+    global _size_limit
+    if _size_limit is None:
+        probe = Cplex()
+        probe.set_log_stream(None)
+        probe.set_error_stream(None)
+        probe.set_warning_stream(None)
+        probe.set_results_stream(None)
+        probe.variables.add(lb=[0.0] * 1001)
+        try:
+            probe.solve()
+            _size_limit = inf
+        except CplexError as exc:
+            _size_limit = 1000 if exc.args[2] == 1016 else inf
+        finally:
+            probe.end()
+    return _size_limit
+
+
 class Cplex_MILP_LP(Cplex):
     """CPLEX interface for MILP and LP
     

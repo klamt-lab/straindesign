@@ -153,3 +153,30 @@ def test_ksweep_falls_back_when_an_intervention_is_not_positively_priced(monkeyp
     designs = _designs(sol)
     assert designs, 'the k-sweep returned no design at all; it swept levels the design sits below'
     assert expected in designs, designs
+
+
+@pytest.mark.timeout(120)
+def test_size_limited_licence_keeps_indicator_gates(monkeypatch, caplog):
+    """Where the SOS1 form would exceed the licence's size limit, the indicator form is kept, with
+    the same designs."""
+    import logging
+    import straindesign.solver_interface as si
+    from ._models import load_test_model
+    solver = next((s for s in [CPLEX, GUROBI] if s in sd.avail_solvers), None)
+    if solver is None:
+        pytest.skip('the SOS1 gates are built for cplex and gurobi only')
+    model = load_test_model('e_coli_core')
+
+    def designs():
+        modules = [sd.SDModule(model, SUPPRESS, constraints=['BIOMASS_Ecoli_core_w_GAM >= 0.1'])]
+        sol = sd.compute_strain_designs(model, sd_modules=modules, max_cost=2, solution_approach=POPULATE,
+                                        solver=solver, seed=1)
+        assert sol.status == OPTIMAL
+        return {frozenset(d.items()) for d in sol.get_reaction_sd()}
+
+    reference = designs()
+    monkeypatch.setattr(si, '_size_limit', lambda solver: 100)
+    with caplog.at_level(logging.INFO):
+        limited = designs()
+    assert 'Keeping indicator constraints' in caplog.text
+    assert limited == reference

@@ -42,6 +42,24 @@ def _get_quiet_env():
     return _quiet_env
 
 
+_size_limit = None
+
+
+def size_limit():
+    """Largest number of variables or constraints this Gurobi licence accepts: 2000 for the
+    size-limited licence that comes with the pip package, unlimited otherwise. Probed once."""
+    global _size_limit
+    if _size_limit is None:
+        with gp.Model(env=_get_quiet_env()) as probe:
+            probe.addVars(2001)
+            try:
+                probe.optimize()
+                _size_limit = inf
+            except gp.GurobiError as e:
+                _size_limit = 2000 if e.errno == grb.Error.SIZE_LIMIT_EXCEEDED else inf
+    return _size_limit
+
+
 class Gurobi_MILP_LP(gp.Model):
     """Gurobi interface for MILP and LP
     
