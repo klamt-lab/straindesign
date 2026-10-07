@@ -189,6 +189,46 @@ def test_fva_hands_off_to_pool(ecoli_core, ref_legacy, monkeypatch):
     assert _max_err(res, ref_legacy) < FVA_TOL
 
 
+def _recording_pool(sf, monkeypatch):
+    """Replace speedy_fva's SDPool with one that records that it was started."""
+    started = []
+
+    class RecordingPool(sf.SDPool):
+
+        def __init__(self, *args, **kwargs):
+            started.append(True)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(sf, "SDPool", RecordingPool)
+    return started
+
+
+def test_reversibility_small_model_stays_sequential(ecoli_core, fva_solver, monkeypatch):
+    """A network this small finishes its reversibility scan before a worker pool could start."""
+    import straindesign.speedy_fva as sf
+    started = _recording_pool(sf, monkeypatch)
+    sf.fast_reversibility(ecoli_core.copy(), solver=fva_solver, compress=False, threads=2)
+    assert not started
+
+
+def test_reversibility_hands_off_to_pool(ecoli_core, monkeypatch):
+    """Once the probe projects more work than the pool's start-up, the remaining directions go to
+    the pool, and the result is the sequential scan's."""
+    import straindesign.speedy_fva as sf
+    from straindesign import avail_solvers
+    solver = next((s for s in (CPLEX, GUROBI) if s in avail_solvers), None)
+    if solver is None:
+        pytest.skip("the pool hand-off needs CPLEX or Gurobi")
+    sequential = sf.fast_reversibility(ecoli_core.copy(), solver=solver, compress=False, threads=1)
+    started = _recording_pool(sf, monkeypatch)
+    monkeypatch.setattr(sf, "_PROBE_LPS", 5)
+    monkeypatch.setattr(sf, "_POOL_START_SECONDS", 0.0)
+    monkeypatch.setattr(sf, "_POOL_START_SECONDS_PER_WORKER", 0.0)
+    pooled = sf.fast_reversibility(ecoli_core.copy(), solver=solver, compress=False, threads=2)
+    assert started
+    assert pooled == sequential
+
+
 def test_indicator_is_one_directional(curr_solver):
     """An indicator gates its row in one direction only.
 
