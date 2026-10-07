@@ -174,6 +174,7 @@ def test_ecoli_core_mcs_455(solver, model_core):
     )
     elapsed = time.perf_counter() - t0
     record("mcs_455", solver, "e_coli_core", elapsed, len(sol.reaction_sd), sol.status)
+    assert sol.status == OPTIMAL, f"[{solver}] enumeration not complete: {sol.status}"
     assert len(sol.reaction_sd) == 455, (f"[{solver}] Expected 455 MCS, got {len(sol.reaction_sd)}")
 
 
@@ -233,6 +234,7 @@ def test_weak_mcs_wgcp(solver, model_weak):
     )
     elapsed = time.perf_counter() - t0
     record("mcs_wgcp", solver, "weak_coupling", elapsed, len(sol.reaction_sd), sol.status)
+    assert sol.status == OPTIMAL, f"[{solver}] enumeration not complete: {sol.status}"
     assert len(sol.reaction_sd) == 3, (f"[{solver}] Expected 3 wGCP MCS solutions, got {len(sol.reaction_sd)}")
 
 
@@ -356,6 +358,7 @@ def test_imlcore_mcs_ethanol(solver, model_imlcore):
     )
     elapsed = time.perf_counter() - t0
     record("imlcore_ethanol", solver, "iMLcore", elapsed, len(sol.reaction_sd), sol.status)
+    assert sol.status == OPTIMAL, f"[{solver}] enumeration not complete: {sol.status}"
     assert len(sol.reaction_sd) > 0, (f"[{solver}] Expected ≥1 MCS for iMLcore ethanol scenario, got 0")
 
 
@@ -383,6 +386,7 @@ def test_imlcore_mcs_growth(solver, model_imlcore):
     )
     elapsed = time.perf_counter() - t0
     record("imlcore_growth", solver, "iMLcore", elapsed, len(sol.reaction_sd), sol.status)
+    assert sol.status == OPTIMAL, f"[{solver}] enumeration not complete: {sol.status}"
     assert len(sol.reaction_sd) > 0, (f"[{solver}] Expected ≥1 MCS for iMLcore growth scenario, got 0")
 
 
@@ -414,6 +418,7 @@ def test_iml1515_mcs_393(solver):
     )
     elapsed = time.perf_counter() - t0
     record("iml1515_393", solver, "iML1515", elapsed, len(sol.reaction_sd), sol.status)
+    assert sol.status == OPTIMAL, f"[{solver}] enumeration not complete: {sol.status}"
     assert len(sol.reaction_sd) == 393, (f"[{solver}] Expected 393 MCS for iML1515, got {len(sol.reaction_sd)}")
 
 
