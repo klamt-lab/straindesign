@@ -24,7 +24,6 @@ import os
 import sys
 import pickle
 from os.path import isfile
-from platform import system
 from tempfile import mkstemp
 from typing import Callable, Optional, Tuple
 
@@ -47,10 +46,11 @@ class SDPool(Pool):
     
     Initialize a process pool.
 
-    Add a thin layer on top of the `multiprocessing.Pool` that, on Windows, passes
-    initialization code to workers via a pickle file rather than directly. This is
-    done to avoid a performance issue that exists on Windows. Please, also see the
-    discussion [1_].
+    Add a thin layer on top of the `multiprocessing.Pool` that passes initialization
+    code to workers via a pickle file rather than directly [1_]. A large initargs payload
+    (an LP's matrices) written straight to a worker's pipe blocks the parent until that
+    worker has started, so the workers would start one after another; with the file the
+    pipe payload stays small and all workers start concurrently.
 
     References
     ----------
@@ -65,7 +65,7 @@ class SDPool(Pool):
                  maxtasksperchild: Optional[int] = None,
                  context=None):
         self._filename = None
-        if initializer is not None and system() == "Windows":
+        if initializer is not None:
             descriptor, self._filename = mkstemp(suffix=".pkl")
             # We use the file descriptor to the open file returned by `mkstemp` to
             # ensure that the resource is closed and can later be removed. Otherwise

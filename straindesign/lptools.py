@@ -32,6 +32,7 @@ from pandas import DataFrame
 from numpy import floor, sign, mod, nan, isnan, unique, inf, isinf, full, linspace, \
                   prod, array, mean, flip, ceil, floor, arctan2
 from contextlib import redirect_stdout, redirect_stderr
+import numpy as _np
 from io import StringIO
 import logging
 
@@ -233,6 +234,65 @@ def fva_worker_compute(i) -> Tuple[int, float]:
             min_cx = lp_glob.slim_solve()
         lp_glob.prev = C[0][0]
         return i, min_cx
+
+
+rev_glob = None
+
+
+def rev_worker_init(A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver, rebuild_every):
+    """Helper function for parallel fast_reversibility
+
+    Build the worker's LP and keep its data so the LP can be rebuilt every ``rebuild_every``
+    solves (a fresh factorization after a long warm-start chain, as in the sequential scan).
+    Is executed on workers, not on main thread.
+    """
+    global rev_glob
+    rev_glob = {'args': (A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver), 'rebuild_every': int(rebuild_every)}
+    _rev_worker_build()
+    if solver in ('gurobi', 'cplex'):
+        import atexit
+        atexit.register(_fva_worker_cleanup)
+
+
+def _rev_worker_build():
+    global lp_glob
+    A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver = rev_glob['args']
+    with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+        lp_glob = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb, ub=ub, solver=solver)
+        if lp_glob.solver == 'cplex':
+            lp_glob.backend.parameters.threads.set(1)
+        elif lp_glob.solver == 'gurobi':
+            lp_glob.backend.params.Threads = 1
+    lp_glob.prev = -1
+    lp_glob.n_solved = 0
+
+
+def rev_worker_compute(i) -> Tuple[int, float, int, bytes]:
+    """Helper function for parallel fast_reversibility
+
+    Solve one warm-started LP on the worker's LP: ``i = 2*j`` maximizes reaction ``j``,
+    ``i = 2*j + 1`` minimizes it (objective-only change, as ``idx2c``). Is executed on workers,
+    not on main thread.
+
+    Returns:
+        (i, optimal_value, status, flux vector as float64 bytes)
+    """
+    if lp_glob.n_solved > 0 and lp_glob.n_solved % rev_glob['rebuild_every'] == 0:
+        _rev_worker_build()
+    j = i // 2
+    sig = -1.0 if i % 2 == 0 else 1.0
+    prev = lp_glob.prev
+    C = [[j, sig]] if (prev < 0 or prev == j) else [[j, sig], [prev, 0.0]]
+    with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+        if lp_glob.solver in ('cplex', 'gurobi'):
+            lp_glob.backend.set_objective_idx(C)
+            x, min_cx, status = lp_glob.backend.solve()
+        else:
+            lp_glob.set_objective_idx(C)
+            x, min_cx, status = lp_glob.solve()
+    lp_glob.prev = j
+    lp_glob.n_solved += 1
+    return i, min_cx, status, _np.asarray(x, dtype=_np.float64).tobytes()
 
 
 # GLPK needs a workaround, because problems cannot be solved in a different thread
