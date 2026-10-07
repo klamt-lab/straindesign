@@ -236,7 +236,7 @@ class Cplex_MILP_LP(Cplex):
                 min_cx = nan
                 status = TIME_LIMIT
                 return x, min_cx, status
-            elif status in [3, 103]:  # infeasible
+            elif status in [3, 22, 103]:  # infeasible (22: dual simplex passed the dual objective limit)
                 x = [nan] * self.variables.get_num()
                 min_cx = nan
                 status = INFEASIBLE
@@ -288,7 +288,7 @@ class Cplex_MILP_LP(Cplex):
                 opt = self.solution.get_objective_value()
             elif status in [2, 4, 118, 119]:  # unbounded (LP: 2/4, MIP: 118/119)
                 opt = -inf
-            elif status in [3, 13, 103, 108, 114]:  # infeasible or abort without solution
+            elif status in [3, 13, 22, 103, 108, 114]:  # infeasible or abort without solution
                 opt = nan
             elif status in [5, 6]:  # optimal/best with unscaled infeasibilities (numerical)
                 opt = self.solution.get_objective_value()
@@ -350,7 +350,8 @@ class Cplex_MILP_LP(Cplex):
             return x, min_cx, status
 
         except CplexError as exc:
-            if exc.args[2] != 1217 and not getattr(self, '_numeric_retry', False):
+            # 1217: no solution exists; 1016: problem size limit of the Community Edition
+            if exc.args[2] not in (1016, 1217) and not getattr(self, '_numeric_retry', False):
                 # A singular basis (1256) or a similar numerical failure depends on the path the
                 # search took; one fresh start at numerical emphasis usually gets through. The
                 # caller only ever sees the retry's pool, so nothing is counted twice.
