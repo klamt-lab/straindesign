@@ -895,11 +895,12 @@ def fast_reversibility(model, solver=None, compress=True, threads=None):
     reactions carrying flux; (4) map compressed min/max back to the original reactions.
     Sign of the achieved min/max gives reversibility.
 
-    ``threads`` workers (default ``Configuration().processes`` once the LP has at least
-    ``_REV_PARALLEL_MIN`` reactions, else 1) each hold one warm-started LP; the objectives are
-    dispatched in rounds and every round's flux vectors certify directions before the next round
-    is formed, so the scan stays the same as the sequential one up to which witness certifies a
-    direction first."""
+    The scan starts sequentially. When the remaining directions project to more sequential time
+    than a worker pool takes to start, ``threads`` workers (default ``Configuration().processes``
+    once the LP has at least ``_REV_PARALLEL_MIN`` reactions, else 1) take over, each holding one
+    warm-started LP; the objectives are dispatched in rounds and every round's flux vectors certify
+    directions before the next round is formed, so the scan stays the same as the sequential one up
+    to which witness certifies a direction first."""
     solver = select_solver(solver, model)
     orig_rid = [r.id for r in model.reactions]
 
@@ -1029,16 +1030,50 @@ def fast_reversibility(model, solver=None, compress=True, threads=None):
     if threads is None:
         threads = Configuration().processes if n >= _REV_PARALLEL_MIN else 1
     threads = max(1, int(threads))
-    if threads > 1 and solver in ('cplex', 'gurobi'):
+
+    def pending_directions():
+        for j in range(n):
+            for direction in (1, -1):
+                if not resolved(j, direction):
+                    yield j, direction
+
+    # As in speedy_fva's phase 2: the pool's start-up is a fixed cost of seconds, so the sequential
+    # loop runs first as a probe and hands the remaining directions to the pool only when their
+    # projected sequential time exceeds that start-up.
+    probe = threads > 1 and solver in ('cplex', 'gurobi')
+    handoff = False
+    n_seq, t_seq0 = 0, _time.perf_counter()
+    for j, direction in pending_directions():
+        if probe:
+            elapsed = _time.perf_counter() - t_seq0
+            if n_seq >= _PROBE_LPS or elapsed >= _PROBE_SECONDS:
+                probe = False
+                n_left = sum(1 for _ in pending_directions())
+                if n_seq > 0 and elapsed / n_seq * n_left > \
+                        _POOL_START_SECONDS + _POOL_START_SECONDS_PER_WORKER * threads:
+                    handoff = True
+                    break
+        if seq > 0 and seq % _REV_REBUILD_EVERY == 0:
+            lp = build()
+            prev_col = -1
+        x_list, obj_val, status = solve_dir(j, direction)
+        n_seq += 1
+        if status != OPTIMAL:
+            # UNBOUNDED is a proven infinite direction, every other nonoptimal status (time
+            # limit, numerical trouble) is simply unknown; both must not tighten.
+            unknown(j, direction)
+            continue
+        val = -obj_val if direction == 1 else obj_val
+        if degenerate(j, direction, val):
+            fresh_resolve(j, direction)
+            continue
+        accept(j, direction, np.array(x_list[:n], dtype=np.float64), val)
+
+    if handoff:
         with SDPool(threads, initializer=rev_worker_init,
                     initargs=(A_ineq, b_ineq, A_eq, b_eq, lb.tolist(), ub.tolist(), solver, _REV_REBUILD_EVERY)) as pool:
             while True:
-                pending = []
-                for j in range(n):
-                    if not res_max[j]:
-                        pending.append(2 * j)
-                    if not res_min[j]:
-                        pending.append(2 * j + 1)
+                pending = [2 * j + (0 if direction == 1 else 1) for j, direction in pending_directions()]
                 if not pending:
                     break
                 batch = pending[:threads * _REV_BATCH_PER_WORKER]
@@ -1058,26 +1093,7 @@ def fast_reversibility(model, solver=None, compress=True, threads=None):
                     # A witness for a direction certified meanwhile is still an exact feasible
                     # point: its value and flux vector are used like any other.
                     accept(j, direction, np.frombuffer(x_bytes, dtype=np.float64)[:n], val)
-    else:
-        for j in range(n):
-            for direction in (1, -1):
-                if resolved(j, direction):
-                    continue
-                if seq > 0 and seq % _REV_REBUILD_EVERY == 0:
-                    lp = build()
-                    prev_col = -1
-                x_list, obj_val, status = solve_dir(j, direction)
-                if status != OPTIMAL:
-                    # UNBOUNDED is a proven infinite direction, every other nonoptimal status (time
-                    # limit, numerical trouble) is simply unknown; both must not tighten.
-                    unknown(j, direction)
-                    continue
-                val = -obj_val if direction == 1 else obj_val
-                if degenerate(j, direction, val):
-                    fresh_resolve(j, direction)
-                    continue
-                accept(j, direction, np.array(x_list[:n], dtype=np.float64), val)
-    logging.debug('fast_reversibility: %d LPs on %d reactions, %d workers.', n_lp, n, threads)
+    logging.debug('fast_reversibility: %d LPs on %d reactions, %d workers.', n_lp, n, threads if handoff else 1)
 
     # (4) expand compressed min/max back to original reactions
     # Snapping only removes flux the solver cannot distinguish from zero; the direction decision
