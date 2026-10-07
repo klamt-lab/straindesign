@@ -7,12 +7,16 @@ from .test_01_load_models_and_solvers import model_small_example, model_weak_cou
 from .test_05_straindesign import _two_route_network, _designs
 
 
-def _pool_gap(milp):
-    """The backend's absolute solution-pool optimality gap, whatever the solver calls it."""
+def _pool_gap_open(milp):
+    """Whether the backend's solution-pool optimality gap is open. Closed is 0 on CPLEX and 1e-9 on
+    Gurobi (its smallest value); open is effectively infinite on both."""
     backend = milp.backend
     if hasattr(backend, 'parameters'):  # cplex
-        return backend.parameters.mip.pool.absgap.get()
-    return backend.params.PoolGapAbs  # gurobi
+        gap = backend.parameters.mip.pool.absgap.get()
+    else:  # gurobi
+        gap = backend.params.PoolGapAbs
+    assert gap <= 1e-9 or gap >= 1e20, 'neither closed nor open: %g' % gap
+    return gap >= 1e20
 
 
 @pytest.mark.parametrize('ko_cost,pinned', [
@@ -26,11 +30,8 @@ def test_pool_gap_is_open_only_while_a_cost_level_is_pinned(monkeypatch, ko_cost
     turn the only reason a design emitted before its own subset cannot happen -- validity is all
     ``verify_sd`` checks, minimality comes from the ascending-cost order plus the exclusion of
     every superset. ``enumerate_ksweep`` pins the cost to one value per level, and only there does
-    the gap stop filtering anything that is wanted.
-
-    The gap used to be opened in the backend constructor, so it was open for the plain
-    ``enumerate`` path as well -- including the k-sweep's own fallback, which any non-integer
-    intervention cost triggers.
+    the gap stop filtering anything that is wanted. Its fallback to ``enumerate``, which any
+    non-integer intervention cost triggers, runs with the gap closed.
     """
     solver = next((s for s in [CPLEX, GUROBI] if s in sd.avail_solvers), None)
     if solver is None:
@@ -41,7 +42,7 @@ def test_pool_gap_is_open_only_while_a_cost_level_is_pinned(monkeypatch, ko_cost
     original = SDMILP.populateZ
 
     def recording_populateZ(self, n):
-        seen.append(_pool_gap(self))
+        seen.append(_pool_gap_open(self))
         return original(self, n)
 
     monkeypatch.setattr(SDMILP, 'populateZ', recording_populateZ)
@@ -57,10 +58,9 @@ def test_pool_gap_is_open_only_while_a_cost_level_is_pinned(monkeypatch, ko_cost
                               compress=False)
     assert seen, 'populate was never called, so the test asserts nothing'
     if pinned:
-        assert all(g > 0 for g in seen), \
-            'the k-sweep pins the level, so it should have opened the gap there: ' + str(seen)
+        assert all(seen), 'the k-sweep pins the level, so it should have opened the gap there: ' + str(seen)
     else:
-        assert all(g == 0 for g in seen), \
+        assert not any(seen), \
             'a non-integer cost falls back to plain enumerate, whose ascending-cost order needs ' \
             'the pool gap closed; it was open: ' + str(seen)
 
