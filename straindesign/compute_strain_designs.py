@@ -396,6 +396,13 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         time_limit (optional (int)): (Default: inf)
             The time limit in seconds for the MILP-solver.
 
+        dual_tilt (optional (float)): (Default: 1e-6)
+            Weight of a small objective on the sign-restricted dual columns during 'populate'
+            enumeration of MCS. With the cost level pinned the node LP has no objective of its own
+            and the simplex wanders a degenerate face; the tilt gives it a direction. It never cuts
+            a feasible design. Keep it small: at 1e-3 the basis becomes singular on some models and
+            a whole cost level is lost. Pass None or 0 to disable it.
+
         advanced, use_scenario (optional (bool)):
             Dummy parameters used for the CNApy interface.
 
@@ -409,7 +416,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
         SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'dump_preprocessed',
-        'skip_preprocessing_fvas'
+        'skip_preprocessing_fvas', 'dual_tilt'
     }
     logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
@@ -853,7 +860,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     if REGCOST in kwargs1:
         kwargs1.pop(REGCOST)
 
-    kwargs_milp = {k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M', SEED, MILP_THREADS]}
+    kwargs.setdefault('dual_tilt', 1e-6)
+    kwargs_milp = {k: v for k, v in kwargs.items() if k in [SOLVER, MAX_COST, 'M', SEED, MILP_THREADS, 'dual_tilt']}
     kwargs_milp.update({KOCOST: cmp_ko_cost})
     kwargs_milp.update({KICOST: cmp_ki_cost})
     kwargs_milp.update({'essential_kis': essential_kis})
@@ -878,14 +886,10 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     else:
         solution_approach = BEST
 
-    # SDMILP.enumerate_ksweep is an alternative POPULATE loop, disabled for now. It is complete only
-    # for integer-valued intervention costs, and was faster on CPLEX gene-MCS but slower on gurobi.
-    # enum_method = kwargs.pop('enum_method', 'populate')
-
     dump_preprocessed = kwargs.pop('dump_preprocessed', None)
 
     if dump_preprocessed:
-        import os, pickle as _pickle
+        import pickle as _pickle
         dump_path = dump_preprocessed
         with open(dump_path, 'wb') as f:
             _pickle.dump(
@@ -951,7 +955,10 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     elif solution_approach == BEST:
         cmp_sd_solution = sd_milp.compute_optimal(**kwargs_computation)
     elif solution_approach == POPULATE:
-        cmp_sd_solution = sd_milp.enumerate(**kwargs_computation)
+        # enumerate_ksweep pins one cost level at a time, which is what lets the pool gap open and
+        # the tilt act. It is complete only for positive, integer-valued intervention costs and a
+        # finite budget, and falls back to enumerate() on its own whenever those guards do not hold.
+        cmp_sd_solution = sd_milp.enumerate_ksweep(**kwargs_computation)
     logging.info('  MILP solved (%.1fs).' % (time.time() - t0))
 
     # Decompress solutions

@@ -173,7 +173,8 @@ class Gurobi_MILP_LP(gp.Model):
             if milp_threads is not None:
                 self.params.Threads = milp_threads
             self.params.IntFeasTol = 1e-9  # (0 is not allowed by Gurobi)
-            # yield only optimal solutions in pool
+            # yield only optimal solutions in pool. The gap loses its filtering role only where the
+            # design cost is pinned, so enumerate_ksweep's level loop opens it through set_pool_gap.
             self.params.PoolGap = 1e-9
             self.params.PoolGapAbs = 1e-9
             self.params.MIPFocus = 0
@@ -189,20 +190,25 @@ class Gurobi_MILP_LP(gp.Model):
         """Call optimize(), retrying with Presolve=0 on Gurobi 13 ObjBound bug.
 
         Gurobi 13 has a bug where indicator constraints + presolve can raise
-        error 10005 "Unable to retrieve attribute 'ObjBound'".  Rather than
+        error 10005 "Unable to retrieve attribute 'ObjBound'". SOS1 constraints, which the gate
+        rewrite puts in place of the indicators, trigger it as well.  Rather than
         disabling presolve globally (1.6x slowdown), we try with presolve on
         and fall back only when the bug triggers.
         """
         try:
             self.optimize()
         except gp.GurobiError as e:
-            if e.errno == 10005 and self._has_indicator_constr:
-                logging.warning('Gurobi error 10005 with indicators; retrying with Presolve=0, Crossover=1.')
+            if e.errno == 10005 and (self._has_indicator_constr or self.NumSOS > 0):
+                logging.warning('Gurobi error 10005 with indicators or SOS1; retrying with Presolve=0, Crossover=1.')
                 self.params.Presolve = 0
                 self.params.Crossover = 1
                 self.optimize()
             else:
                 raise
+        try:
+            self._work_total = getattr(self, '_work_total', 0.0) + float(self.Work)
+        except (gp.GurobiError, AttributeError):
+            pass
 
     def solve(self) -> Tuple[List, float, float]:
         """Solve the MILP or LP
@@ -220,13 +226,13 @@ class Gurobi_MILP_LP(gp.Model):
         if status in [gstatus.OPTIMAL, gstatus.SOLUTION_LIMIT, gstatus.SUBOPTIMAL, gstatus.USER_OBJ_LIMIT]:  # solution
             min_cx = self.ObjVal
             status = OPTIMAL
-        elif status in [gstatus.TIME_LIMIT, gstatus.INTERRUPTED] and not hasattr(self.getVars()[0], 'X'):
+        elif status in [gstatus.TIME_LIMIT, gstatus.WORK_LIMIT, gstatus.INTERRUPTED] and not hasattr(self.getVars()[0], 'X'):
             # timeout or Ctrl+C without solution
             x = [nan] * self.NumVars
             min_cx = nan
             status = TIME_LIMIT
             return x, min_cx, status
-        elif status in [gstatus.TIME_LIMIT, gstatus.INTERRUPTED] and hasattr(self.getVars()[0], 'X'):
+        elif status in [gstatus.TIME_LIMIT, gstatus.WORK_LIMIT, gstatus.INTERRUPTED] and hasattr(self.getVars()[0], 'X'):
             # timeout or Ctrl+C with solutions found — return them
             min_cx = self.ObjVal
             status = TIME_LIMIT_W_SOL
@@ -292,7 +298,7 @@ class Gurobi_MILP_LP(gp.Model):
             opt = self.ObjVal
         elif status in [gstatus.INF_OR_UNBD, gstatus.UNBOUNDED]:
             opt = -inf
-        elif status in [gstatus.INFEASIBLE, gstatus.TIME_LIMIT, gstatus.INTERRUPTED]:
+        elif status in [gstatus.INFEASIBLE, gstatus.TIME_LIMIT, gstatus.WORK_LIMIT, gstatus.INTERRUPTED]:
             opt = nan
         elif status == gstatus.NUMERIC:
             # Numerical trouble: return best incumbent value if available, else nan
@@ -317,16 +323,25 @@ class Gurobi_MILP_LP(gp.Model):
                 self.params.PoolSolutions = grb.MAXINT
             else:
                 self.params.PoolSolutions = n
+            # PoolSearchMode 2 enumerates the pool exhaustively, so the primal heuristics only find
+            # solutions the search reaches anyway.
             self.params.PoolSearchMode = 2
-            self.params.NumericFocus = 2
+            self.params.NumericFocus = 0
+            heuristics = self.params.Heuristics
+            self.params.Heuristics = 0
             self._safe_optimize()
             self.params.PoolSearchMode = 0
-            self.params.NumericFocus = 0
+            self.params.Heuristics = heuristics
             status = self.Status
+            # A pool search that ended OPTIMAL with room left in the pool found every solution of
+            # the level (PoolSearchMode 2 finds the n best); the k-sweep reads this as the level's
+            # exhaustion certificate. gurobipy.Model reserves plain attribute names for solver
+            # attributes; user data must carry an underscore prefix.
+            self._pool_exhausted = status == 2 and self.SolCount < self.params.PoolSolutions
             if status in [2, 10, 13, 15]:  # solution integer optimal
                 min_cx = self.ObjVal
                 status = OPTIMAL
-            elif status in [9, 11] and not hasattr(self.getVars()[0], 'X'):  # timeout/interrupt without solution
+            elif status in [9, 11, 16] and not hasattr(self.getVars()[0], 'X'):  # time or work limit, or interrupt, without solution
                 x = [nan] * len(self.getVars())
                 min_cx = nan
                 status = TIME_LIMIT
@@ -336,7 +351,7 @@ class Gurobi_MILP_LP(gp.Model):
                 min_cx = nan
                 status = INFEASIBLE
                 return x, min_cx, status
-            elif status in [9, 11] and hasattr(self.getVars()[0], 'X'):  # timeout/interrupt with solution
+            elif status in [9, 11, 16] and hasattr(self.getVars()[0], 'X'):  # time or work limit, or interrupt, with solution
                 min_cx = self.ObjVal
                 status = TIME_LIMIT_W_SOL
             elif status in [4, 5]:  # solution unbounded
@@ -360,7 +375,7 @@ class Gurobi_MILP_LP(gp.Model):
                 elif status == 3:
                     x = [nan] * len(self.getVars())
                     return x, nan, INFEASIBLE
-                elif status in [9, 11] and self.SolCount == 0:
+                elif status in [9, 11, 16] and self.SolCount == 0:
                     x = [nan] * len(self.getVars())
                     return x, nan, TIME_LIMIT
                 elif self.SolCount > 0:
@@ -386,6 +401,14 @@ class Gurobi_MILP_LP(gp.Model):
             min_cx = nan
             x = [nan] * len(self.getVars())
             return x, min_cx, ERROR
+
+    def add_sos1(self, sets):
+        """Add SOS1 sets: at most one member of each may be nonzero."""
+        gvars = self.getVars()
+        for members in sets:
+            self.addSOS(grb.SOS_TYPE1, [gvars[int(i)] for i in members],
+                        [float(k + 1) for k in range(len(members))])
+        self.update()
 
     def set_objective(self, c):
         """Set the objective function with a vector"""
@@ -458,6 +481,27 @@ class Gurobi_MILP_LP(gp.Model):
         for i, v in enumerate(basis['cbasis']):
             constrs[i].CBasis = v
         self.update()
+
+    def set_pool_gap(self, open_gap):
+        """Open or close the solution pool's optimality gap (see the cplex backend)."""
+        self.params.PoolGap = grb.INFINITY if open_gap else 1e-9
+        self.params.PoolGapAbs = grb.INFINITY if open_gap else 1e-9
+        self.update()
+
+    def set_seed(self, seed):
+        """Set the random seed for subsequent solves, discarding any search tree left by the last one"""
+        self.params.Seed = int(seed)
+        self.reset(0)
+        self.update()
+
+    def set_work_limit(self, w):
+        """Cap the next solves at w work units; None lifts the cap"""
+        self.params.WorkLimit = grb.INFINITY if w is None else float(w)
+        self.update()
+
+    def get_work(self):
+        """Work units spent by this model's optimizations so far"""
+        return float(getattr(self, '_work_total', 0.0))
 
     def set_time_limit(self, t):
         """Set the computation time limit (in seconds)"""
@@ -533,10 +577,13 @@ class Gurobi_MILP_LP(gp.Model):
         """Retrieve solution pool from Gurobi backend"""
         nSols = self.SolCount
         x = []
-        # only entries at the optimum, compared with a tolerance
+        # With the pool gap open the cost level is pinned and every pool entry is wanted, even
+        # where a tie-breaking objective (the dual tilt) separates their values. With the gap
+        # closed only entries at the optimum are kept, compared with a tolerance.
+        open_gap = self.params.PoolGap >= grb.INFINITY
         tol = 1e-9 * max(1.0, abs(self.ObjVal))
         for i in range(nSols):
             self.setParam(grb.Param.SolutionNumber, i)
-            if abs(self.PoolObjVal - self.ObjVal) <= tol:
+            if open_gap or abs(self.PoolObjVal - self.ObjVal) <= tol:
                 x += [[x.Xn for x in self.getVars()]]
         return x
