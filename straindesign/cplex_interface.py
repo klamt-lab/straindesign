@@ -346,13 +346,11 @@ class Cplex_MILP_LP(Cplex):
                 min_cx = self.solution.get_objective_value()
                 status = TIME_LIMIT_W_SOL
             elif status in [118, 119]:  # unbounded, or infeasible-or-unbounded: never a result
-                # Reporting this as a solution silently truncates an enumeration (measured: 54 of 249
-                # designs with status 'optimal' once a free column carried an objective coefficient).
+                # An unbounded MILP is a formulation error; returning it as an empty pool would end
+                # an enumeration early with status 'optimal'.
                 raise RuntimeError('CPLEX populate returned status %d (%s); the MILP is unbounded, '
                                    'which is a formulation error, not an empty pool' %
                                    (status, self.solution.get_status_string()))
-                min_cx = -inf
-                status = UNBOUNDED
             else:
                 logging.exception(status)
                 logging.exception(self.solution.get_status_string())

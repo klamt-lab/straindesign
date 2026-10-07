@@ -289,9 +289,7 @@ class SDMILP(SDProblem, MILP_LP):
         solver carries these dead variables. This trims them at construction
         time. Stores _z_orig_indices for expanding solutions back.
         """
-        # a column pinned to a single value carries no decision; under the flipped
-        # convention the pinned value is 1 rather than 0, so test for width not for ub
-        keep_z = [i for i in range(self.num_z) if self.lb[i] < self.ub[i]]
+        keep_z = [i for i in range(self.num_z) if self.ub[i] > 0]
         if len(keep_z) == self.num_z:
             self._z_orig_indices = None  # no trimming needed
             return
@@ -467,24 +465,18 @@ class SDMILP(SDProblem, MILP_LP):
             b_ineq = n_active - 1
             self.add_ineq_constraints(A_row, [b_ineq])
 
-    def _intervened(self, row, i):
-        """True if column i carries an intervention in this solution row.
-
-        """
-        v = row[0, i] if hasattr(row, 'shape') and len(row.shape) == 2 else row[i]
-        return v != 0 and not np.isnan(v)
-
     def sd2dict(self, sol, *args) -> Dict:
         """Translate binary solution vector to dictionary for human-readable output"""
         output = {}
         reacID = self.model.reactions.list_attr("id")
         for i in self.idx_z:
             orig_i = self._z_orig_indices[i] if self._z_orig_indices is not None else i
-            if self._intervened(sol, i):
-                # report the intervention's direction, +1 knock-in and -1 knock-out, rather than
-                # the z encoding: under the flipped convention an intervention carries z = 0.
-                output[reacID[orig_i]] = 1.0 if self.z_inverted[i] else -1.0
-            elif args and args[0] and self.z_inverted[i]:
+            if sol[0, i] != 0 and not np.isnan(sol[0, i]):
+                if self.z_inverted[i]:
+                    output[reacID[orig_i]] = sol[0, i]
+                else:
+                    output[reacID[orig_i]] = -sol[0, i]
+            elif args and args[0] and (sol[0, i] == 0) and self.z_inverted[i]:
                 output[reacID[orig_i]] = 0.0
         return output
 
