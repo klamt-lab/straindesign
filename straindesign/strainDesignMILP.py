@@ -37,7 +37,7 @@ _ANCHOR_START = 1e-5
 _TILT_SCALES_WITH_ANCHOR = {GUROBI}
 # Smallest work cap per populate in the cost-level sweep, in the solver's deterministic work unit
 # (CPLEX ticks, Gurobi work units); both are about 10 s of an 8-thread solve.
-_RESTART_MIN_WORK = {CPLEX: 7000.0, GUROBI: 8.0}
+_RESTART_MIN_WORK = {CPLEX: 7000.0, GUROBI: 15.0}
 
 
 def _backend_pool_exhausted(backend):

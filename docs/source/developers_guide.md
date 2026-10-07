@@ -2909,8 +2909,9 @@ becomes an always-present row with a slack and an SOS1 set that forbids the slac
 | `E` | `a·x - s = b`, `s` free | `(g, s)` |
 
 `g` is `z` when the gate is on at `z = 1`, otherwise a continuous complement `w = 1 - z` (one per
-binary). Solvers in `_EQUALITY_GATE_SPLIT` give equality gates two sign-restricted parts instead,
-`a·x - sp + sn = b` with SOS1 `(g, sp, sn)`, so the set itself chooses the direction. CPLEX
+binary). Solvers in `_EQUALITY_GATE_SPLIT` (Gurobi) give equality gates two sign-restricted parts
+instead, `a·x - sp + sn = b` with SOS1 `(g, sp, sn)`, so the set itself chooses the direction and the
+dual tilt reaches both parts. CPLEX
 additionally receives CellNetAnalyzer's binary structure for the target-region gates first
 (`_GATE_BINARIES`, `MILP_LP._cna_binaries`): a reversible reaction's equality gate is split by
 direction with two binaries `zp + zn = z`, and every target-region gate is keyed on a binary of its

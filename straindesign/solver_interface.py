@@ -34,7 +34,7 @@ import os
 _GATE_BINARIES = {CPLEX: (True, True)}
 # Solvers whose equality gates take the slack in two sign-restricted parts, SOS1(g, s+, s-), instead
 # of one free slack: the set itself then chooses the direction, and the dual tilt reaches both parts.
-_EQUALITY_GATE_SPLIT = set()
+_EQUALITY_GATE_SPLIT = {GUROBI}
 
 
 class MILP_LP(object):
