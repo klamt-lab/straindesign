@@ -55,4 +55,5 @@ from .strainDesignSolutions import *
 from .strainDesignProblem import *
 from .strainDesignMILP import *
 from .compute_strain_designs import *
+from .flux_coupling import flux_coupling_analysis, FluxCouplingResult
 from .compression import sparse_nullspace, RationalMatrix, ExactCOO

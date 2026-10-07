@@ -97,7 +97,7 @@ class SDProblem:
     """
 
     def __init__(self, model: Model, sd_modules: List[SDModule], *args, **kwargs):
-        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis', SEED, MILP_THREADS}
+        allowed_keys = {KOCOST, KICOST, SOLVER, MAX_COST, 'M', 'essential_kis', SEED, MILP_THREADS, 'dual_tilt'}
         # set all keys passed in kwargs
         for key, value in dict(kwargs).items():
             if key in allowed_keys:
@@ -756,6 +756,12 @@ class SDProblem:
             c_i = c_i.toarray()[0].tolist()
 
         # 3. Add module to global MILP
+        # which module each continuous column came from, so column-wise options (the dual tilt)
+        # can be restricted to one module type
+        self._module_cols = getattr(self, '_module_cols', []) + [(sd_module[MODULE_TYPE], len(self.c), len(self.c) + len(c_i))]
+        if sd_module[MODULE_TYPE] == SUPPRESS:
+            # farkas_dualize appends its anchor as the block's last inequality
+            self._farkas_anchor_rows = getattr(self, '_farkas_anchor_rows', []) + [self.A_ineq.shape[0] + len(b_ineq_i) - 1]
         self.z_map_constr_ineq = sparse.hstack((self.z_map_constr_ineq, z_map_constr_ineq_i)).tocsc()
         self.z_map_constr_eq = sparse.hstack((self.z_map_constr_eq, z_map_constr_eq_i)).tocsc()
         self.z_map_vars = sparse.hstack((self.z_map_vars, z_map_vars_i)).tocsc()
@@ -1022,6 +1028,9 @@ class SDProblem:
         _is_ic[list(knockable_constr_ineq_ic)] = True
         keep_ineq = [i for i in range(self.A_ineq.shape[0]) if i not in _remove]
         knockable_constr_ineq_ic = np.nonzero(_is_ic[keep_ineq])[0]
+        # the Farkas anchor rows, followed through the row removals into the MILP's numbering
+        _pos = {old: new for new, old in enumerate(keep_ineq)}
+        self._milp_anchor_rows = [_pos[r] for r in getattr(self, '_farkas_anchor_rows', []) if r in _pos]
         self.A_ineq = self.A_ineq[keep_ineq, :]
         self.b_ineq = [self.b_ineq[i] for i in keep_ineq]
         self.z_map_constr_ineq = self.z_map_constr_ineq[:, keep_ineq]
@@ -1045,6 +1054,8 @@ class SDProblem:
         _drop_ineq = set(int(i) for i in knockable_constr_ineq_ic)
         _drop_eq = set(int(i) for i in knockable_constr_eq_ic)
         keep_ineq = [i not in _drop_ineq for i in range(self.A_ineq.shape[0])]
+        _pos = {old: new for new, old in enumerate(i for i in range(len(keep_ineq)) if keep_ineq[i])}
+        self._milp_anchor_rows = [_pos[r] for r in self._milp_anchor_rows if r in _pos]
         self.A_ineq = self.A_ineq[keep_ineq, :]
         self.b_ineq = [self.b_ineq[i] for i in range(len(keep_ineq)) if keep_ineq[i]]
         keep_eq = [i not in _drop_eq for i in range(self.A_eq.shape[0])]
@@ -1355,7 +1366,9 @@ def farkas_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
         A_ineq_d, b_ineq_d, A_eq_d, b_eq_d, lb_f, ub_f, c_d = LP_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p, c_p)
     # add constraint b_prim'y or (c_dual'*y) <= -1;
     A_ineq_f = sparse.vstack((A_ineq_d, sparse.csr_matrix(c_d))).tocsr()
-    b_ineq_f = b_ineq_d + [-1]
+    # The certificates form a cone, so any positive anchor is exact; it sets the certificate's scale
+    # against the solver's absolute tolerances. The cost-level sweep moves it (SDMILP._set_anchor).
+    b_ineq_f = b_ineq_d + [-1.0]
     A_eq_f = A_eq_d
     b_eq_f = b_eq_d
     # it would also be possible (but ofc not necessary) to force (c_dual*y) == -1; instead
@@ -1367,6 +1380,7 @@ def farkas_dualize(A_ineq_p, b_ineq_p, A_eq_p, b_eq_p, lb_p, ub_p,
         return A_ineq_f, b_ineq_f, A_eq_f, b_eq_f, lb_f, ub_f, z_map_constr_ineq_f, z_map_constr_eq_f, z_map_vars_f
     else:
         return A_ineq_f, b_ineq_f, A_eq_f, b_eq_f, lb_f, ub_f, z_map_constr_ineq_f, z_map_constr_eq_f, z_map_vars_f
+
 
 def reassign_lb_ub_from_ineq(A_ineq, b_ineq, A_eq, b_eq, lb, ub,
                              z_map_constr_ineq=None, z_map_constr_eq=None, z_map_vars=None) -> \

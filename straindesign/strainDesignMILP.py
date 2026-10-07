@@ -21,11 +21,130 @@
 
 import numpy as np
 from scipy import sparse
+from math import isinf
 import time
 from typing import Dict, List, Tuple
 from straindesign import SDProblem, SDSolutions, MILP_LP, SDModule, Model
 from straindesign.names import *
+from straindesign.solver_interface import _GATE_BINARIES
 import logging
+import os
+
+# Farkas anchor the cost-level sweep starts from on CPLEX and Gurobi (see enumerate_ksweep).
+_ANCHOR_START = 1e-5
+# Solvers on which the dual tilt is divided by the anchor, so its weight in the objective stays
+# the size it has at an anchor of 1 while the certificates shrink with the anchor.
+_TILT_SCALES_WITH_ANCHOR = {GUROBI}
+# Smallest work cap per populate in the cost-level sweep, in the solver's deterministic work unit
+# (CPLEX ticks, Gurobi work units); both are about 10 s of an 8-thread solve.
+_RESTART_MIN_WORK = {CPLEX: 7000.0, GUROBI: 15.0}
+
+
+def _backend_pool_exhausted(backend):
+    """Read a backend's pool-exhaustion flag under either naming convention.
+
+    The CPLEX backend stores it as a plain attribute; the Gurobi backend must prefix it with an
+    underscore because gurobipy reserves plain attribute names for solver attributes.
+    """
+    for name in ('_pool_exhausted', 'pool_exhausted'):
+        try:
+            value = getattr(backend, name)
+        except Exception:
+            continue
+        if isinstance(value, bool):
+            return value
+    return False
+
+
+def _drop_non_minimal(sols):
+    """Remove every design that strictly contains another design in the same result.
+
+    An ascending enumeration emits designs of cost k only after excluding every superset of the
+    designs it found at lower cost, so a design containing a smaller one can appear only when
+    that smaller design was NOT found: the solver certified a level exhausted with a design
+    missing. The supersets are valid cut sets but not minimal ones, and their presence is the
+    proof that the result is incomplete. Returns the filtered rows and how many were dropped.
+    """
+    sets = [frozenset(sols[i].indices.tolist()) for i in range(sols.shape[0])]
+    keep = [i for i, a in enumerate(sets) if not any(b < a for b in sets)]
+    return sols[keep], sols.shape[0] - len(keep)
+
+
+def _lp_solution(lp):
+    """Solve a verification LP and return (x, OPTIMAL) when the solver holds a definite optimum,
+    else (None, status). Statuses the backend's own table does not map (CPLEX 5/6, optimal with
+    unscaled infeasibilities; barrier codes) are read raw instead of raising."""
+    b = getattr(lp, 'backend', lp)
+    try:
+        x, _, status = lp.solve()
+        if status == OPTIMAL:
+            return x, OPTIMAL
+    except Exception:
+        status = None
+    if hasattr(b, 'solution'):
+        try:
+            if b.solution.get_status() in (1, 5, 6):
+                return b.solution.get_values(), OPTIMAL
+        except Exception:
+            pass
+    elif hasattr(b, 'Status'):
+        if b.Status in (2, 13) and b.SolCount > 0:
+            return [v.X for v in b.getVars()], OPTIMAL
+    return None, status
+
+
+def _set_lp_tolerance(lp, tol):
+    """Feasibility/optimality tolerance of a verification LP, whichever backend it wraps."""
+    b = getattr(lp, 'backend', lp)
+    if hasattr(b, 'params'):  # gurobi
+        b.params.FeasibilityTol = tol
+        b.params.OptimalityTol = tol
+    elif hasattr(b, 'parameters'):  # cplex
+        b.parameters.simplex.tolerances.feasibility.set(tol)
+        b.parameters.simplex.tolerances.optimality.set(tol)
+
+
+def _set_lp_method(lp, method):
+    """Switch a verification LP to another algorithm; False where the backend has none.
+    Barrier keeps its crossover and gets dual reductions switched off, so that it returns a
+    definite INFEASIBLE or OPTIMAL rather than INF_OR_UNBD."""
+    b = getattr(lp, 'backend', lp)
+    if hasattr(b, 'params'):  # gurobi
+        b.params.Method = 2 if method == 'barrier' else 1
+        b.params.DualReductions = 0
+        b.params.TimeLimit = 120  # a confirmation that does not finish confirms nothing
+        return True
+    if hasattr(b, 'parameters'):  # cplex
+        b.parameters.lpmethod.set(4 if method == 'barrier' else 2)
+        b.parameters.timelimit.set(120)
+        return True
+    return False
+
+
+def _lp_feasible(lp):
+    """Definite feasibility of a zero-objective verification LP. Only a solved status counts:
+    with no objective 'unbounded' is impossible, so INF_OR_UNBD means infeasible, and a
+    NUMERIC or aborted solve proves nothing either way."""
+    b = getattr(lp, 'backend', lp)
+    try:
+        val = lp.slim_solve()
+    except Exception as e:
+        # a status the backend's table does not map (barrier and abort codes); the raw status
+        # decides below, and an unmapped one is simply "not shown feasible"
+        logging.info('  verification LP: %s (status %s)' % (e, _lp_status(b)))
+        val = np.nan
+    if hasattr(b, 'Status'):  # gurobi: OPTIMAL, or SUBOPTIMAL (a feasible point was found)
+        return b.Status in (2, 13)
+    if hasattr(b, 'solution'):  # cplex: optimal, or optimal with unscaled infeasibilities
+        return _lp_status(b) in (1, 5, 6)
+    return not np.isnan(val)
+
+
+def _lp_status(b):
+    try:
+        return b.solution.get_status()
+    except Exception:
+        return None
 
 
 class SDMILP(SDProblem, MILP_LP):
@@ -119,8 +238,21 @@ class SDMILP(SDProblem, MILP_LP):
         # A rewarding intervention strictly lowers the cost of any design that can absorb it,
         # so a design is only worth reporting once none of them can be added while staying valid.
         self._rewarding_z = [i for i in self._free_z if self.cost[i] < 0.0]
+        # The module each indicator gate belongs to, for the gate transforms that treat the target
+        # region on its own (see _GATE_BINARIES); a gate spans one module's columns.
+        _gate_modules = None
+        if self.is_mcs_computation and any(_GATE_BINARIES.get(self.solver, ())) \
+                and getattr(self.indic_constr, 'A', None) is not None and self.indic_constr.A.shape[0]:
+            _colmod = self._continuous_column_modules()
+            _Ag = sparse.csr_matrix(self.indic_constr.A)
+            _gate_modules = []
+            for k in range(_Ag.shape[0]):
+                ms = {_colmod.get(int(j)) for j in _Ag.indices[_Ag.indptr[k]:_Ag.indptr[k + 1]] if j >= self.num_z} - {None}
+                _gate_modules.append(ms.pop() if len(ms) == 1 else 'mixed')
         # Build MILP object from constructed problem
         MILP_LP.__init__(self,
+                         gate_modules=_gate_modules,
+                         sos1_gates=self.is_mcs_computation,
                          c=self.c,
                          A_ineq=self.A_ineq,
                          b_ineq=self.b_ineq,
@@ -243,6 +375,79 @@ class SDMILP(SDProblem, MILP_LP):
                     A_ineq = A_ineq.tocsr()
                 self.add_ineq_constraints(A_ineq, [b_ineq])
 
+    def _continuous_column_modules(self):
+        """Module type of every continuous column of the MILP, as {column: type}.
+
+        Module column ranges are recorded when the problem is assembled; trimming fixed z columns
+        shifts every continuous column left by the number of z columns dropped.
+        """
+        shift = getattr(self, '_orig_num_z', self.num_z) - self.num_z if getattr(self, '_z_orig_indices', None) else 0
+        out = {}
+        for mod, a, b in getattr(self, '_module_cols', []):
+            for j in range(a - shift, b - shift):
+                out[j] = mod.lower()
+        return out
+
+    def _set_anchor(self, new, why, log=True):
+        """Move the Farkas anchor of the MILP's anchor rows to -new (CPLEX, Gurobi); exact for any
+        new > 0. Only the MILP moves: the continuous copy verify_sd reads keeps the build value,
+        which _unit_anchor maps to 1."""
+        new = float(min(1.0, max(1e-8, new)))
+        if new == self._anchor_c:
+            return
+        for i in self._anchor_rows:
+            self.b_ineq[i] = -new
+            b = self.backend
+            if hasattr(b, 'linear_constraints'):
+                b.linear_constraints.set_rhs(int(i), -new)
+            elif hasattr(b, 'getConstrs'):
+                b.getConstrs()[int(i)].RHS = -new
+                b.update()
+        if log:
+            logging.warning('Farkas anchor %g -> %g (%s)' % (self._anchor_c, new, why))
+        self._anchor_c = new
+        if self.solver in _TILT_SCALES_WITH_ANCHOR and getattr(self, '_tilt_base', None):
+            self.set_objective([c0 + (t - c0) / new for c0, t in zip(*self._tilt_base)])
+
+    def _raise_anchor(self):
+        self._set_anchor(self._anchor_c * 100.0, 'a design failed verification: certificate inside tolerance')
+
+    def _steer_anchor(self, diags):
+        """Between levels: keep the smallest gate slack of the accepted designs a thousand times
+        above the MILP tolerance (c * margin >= 1e-6) and the largest certificate entry clear of
+        round-off (c * umax <= 1e3). When both cannot hold, stay on the small side: a too-small
+        anchor shows up as rejected designs and is corrected, a too-large one loses designs
+        silently."""
+        m = [d['margin'] for d in diags if d.get('valid') and d.get('margin')]
+        u = [d['umax'] for d in diags if d.get('valid') and d.get('umax')]
+        if not m:
+            return
+        lo = 1e-6 / min(m)
+        hi = 1e3 / max(u) if u else np.inf
+        c = self._anchor_c
+        target = min(max(c, lo), hi) if lo <= hi else hi
+        if target > 3 * c or target < c / 3:
+            self._set_anchor(target, 'margin steering: min slack %.3g, max entry %.3g at anchor 1' % (min(m), max(u) if u else 0))
+
+    def _minimise_design(self, z):
+        """Drop gates whose slack is zero in the slack verification until none is, returning the
+        cut set that remains (the same object when z is already minimal as far as the LP shows)."""
+        cur = z
+        inv = {o: t for t, o in enumerate(self._z_orig_indices)} if self._z_orig_indices is not None else None
+        for _ in range(int(z.getnnz()) if hasattr(z, 'getnnz') else z.shape[1]):
+            d = getattr(self, '_verify_diag', [None])[-1]
+            if not d or not d.get('valid') or not d.get('zero_gates'):
+                return cur
+            j = d['zero_gates'][0]
+            t = inv.get(j, None) if inv is not None else j
+            if t is None or cur[0, t] == 0:
+                return cur
+            nxt = cur.tolil(copy=True); nxt[0, t] = 0; nxt = nxt.tocsr()
+            if not all(self.verify_sd(nxt)):
+                return cur
+            cur = nxt
+        return cur
+
     def add_exclusion_constraints_ineq(self, z):
         """Exclude exact binary solution in z (but not its supersets) from MILP.
 
@@ -284,6 +489,7 @@ class SDMILP(SDProblem, MILP_LP):
     def populateZ(self, n) -> Tuple[List, int]:
         """Populate MILP, and return only binary variables rounded to 5 decimals (should return ints)"""
         x, _, status = self.populate(n)
+        self.pool_exhausted = _backend_pool_exhausted(self.backend)
         if status in [OPTIMAL, TIME_LIMIT_W_SOL]:
             z = sparse.csr_matrix([[round(x[j][i], 5) for i in self.idx_z] for j in range(len(x))])
             z.resize((len(x), self.num_z))
@@ -301,6 +507,9 @@ class SDMILP(SDProblem, MILP_LP):
 
     def fixObjective(self, c, cx):
         """Enforce a certain objective function and value (or any other constraint of the form c*x <= cx)"""
+        n = self.A_ineq.shape[1]
+        if len(c) < n:  # columns appended after construction (gate slacks) carry no objective
+            c = list(c) + [0.0] * (n - len(c))
         self.set_ineq_constraint(self.idx_row_obj, c, cx)
 
     def resetObjective(self):
@@ -320,8 +529,85 @@ class SDMILP(SDProblem, MILP_LP):
         """Only allow a subset of intervention candidates"""
         self.set_ub([[i, 0.0] for i in self.idx_z if not sol[0, i]])
 
+    def _verify_rhs(self, r):
+        """Right-hand side of continuous row r as verify_sd reads it. A Farkas anchor row is read as
+        b'y <= -max|b|: certificates form a cone, so this is the same set of designs whatever
+        anchor constant and target threshold the MILP was built with, and it keeps the anchor at
+        the scale of its own coefficients, far from the verification tolerance. Otherwise u = 0
+        can pass within tolerance and the wild type reads as a cut set."""
+        b = self.cont_MILP.b_ineq[r]
+        if r in getattr(self, '_anchor_row_set', ()):
+            row = self.cont_MILP.A_ineq[r, :]
+            return -float(np.max(np.abs(row.data))) if row.nnz else b
+        return b
+
+    def _verify_slack(self, sol_row, inactive_vars, active_vars, inactive_ineqs, active_ineqs,
+                      inactive_eqs, active_eqs) -> bool:
+        """Verification that keeps the design's gate rows, each with a non-negative slack, and
+        minimises the sum of slacks (equalities carry a slack in each direction).
+
+        Infeasible: not a cut set. Feasible: a cut set, and a gate whose slack is zero at the
+        optimum is not needed, so the design minus that gate is already a cut set (a proof of
+        non-minimality; the converse does not hold, a single LP catches about 9 in 10). The
+        smallest gate slack is the design's margin against the tolerance, and the largest
+        certificate entry its exposure to round-off; both are recorded in _verify_diag, read with
+        the Farkas anchor at 1 so that they scale exactly with the MILP's anchor c.
+        """
+        cm = self.cont_MILP
+        if not hasattr(self, '_gate_of_row'):
+            self._gate_of_row = ({int(c): int(z) for z, c in zip(cm.z_map_constr_ineq.row, cm.z_map_constr_ineq.col)},
+                                 {int(c): int(z) for z, c in zip(cm.z_map_constr_eq.row, cm.z_map_constr_eq.col)})
+        gi, ge = self._gate_of_row
+        nv = len(active_vars)
+        ni, ne = len(inactive_ineqs), len(inactive_eqs)
+        ns = ni + 2 * ne
+        A_act = cm.A_ineq[active_ineqs, :][:, active_vars]
+        A_rel = cm.A_ineq[inactive_ineqs, :][:, active_vars]
+        E_act = cm.A_eq[active_eqs, :][:, active_vars]
+        E_rel = cm.A_eq[inactive_eqs, :][:, active_vars]
+        blocks_i = [sparse.hstack((A_act, sparse.csr_matrix((A_act.shape[0], ns))))]
+        if ni:
+            blocks_i.append(sparse.hstack((A_rel, -sparse.eye(ni, ns, format='csr'))))
+        A_ineq = sparse.vstack(blocks_i, format='csr')
+        b_ineq = [self._verify_rhs(r) for r in active_ineqs] + [self._verify_rhs(r) for r in inactive_ineqs]
+        blocks_e = [sparse.hstack((E_act, sparse.csr_matrix((E_act.shape[0], ns))))]
+        if ne:
+            sp = sparse.lil_matrix((ne, ns))
+            for k in range(ne):
+                sp[k, ni + 2 * k] = -1.0
+                sp[k, ni + 2 * k + 1] = 1.0
+            blocks_e.append(sparse.hstack((E_rel, sp.tocsr())))
+        A_eq = sparse.vstack(blocks_e, format='csr')
+        b_eq = [cm.b_eq[r] for r in active_eqs] + [cm.b_eq[r] for r in inactive_eqs]
+        lp = MILP_LP(c=[0.0] * nv + [1.0] * ns, A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
+                     lb=[cm.lb[r] for r in active_vars] + [0.0] * ns,
+                     ub=[cm.ub[r] for r in active_vars] + [np.inf] * ns, solver=self.solver, seed=self.seed)
+        _set_lp_tolerance(lp, 1e-6)
+        x, status = _lp_solution(lp)
+        if status != OPTIMAL and _set_lp_method(lp, 'barrier'):
+            x, status = _lp_solution(lp)
+        diag = {'valid': status == OPTIMAL, 'margin': None, 'umax': None, 'zero_gates': []}
+        if status == OPTIMAL:
+            x = np.asarray(x, dtype=float)
+            u, sl = x[:nv], x[nv:]
+            per_gate = {}
+            for k, r in enumerate(inactive_ineqs):
+                per_gate[gi.get(int(r))] = per_gate.get(gi.get(int(r)), 0.0) + sl[k]
+            for k, r in enumerate(inactive_eqs):
+                per_gate[ge.get(int(r))] = per_gate.get(ge.get(int(r)), 0.0) + sl[ni + 2 * k] + sl[ni + 2 * k + 1]
+            per_gate.pop(None, None)
+            if per_gate:
+                diag['margin'] = float(min(per_gate.values()))
+                diag['zero_gates'] = [z for z, v in per_gate.items() if v <= 1e-7]
+            diag['umax'] = float(np.max(np.abs(u))) if nv else 0.0
+        self._verify_diag = getattr(self, '_verify_diag', [])
+        self._verify_diag.append(diag)
+        return diag['valid']
+
     def verify_sd(self, sols) -> List:
         """Verify computed strain design"""
+        if not hasattr(self, '_anchor_row_set'):
+            self._anchor_row_set = set(getattr(self, '_farkas_anchor_rows', []))
         sols_orig = self._expand_z_to_orig(sols)
         valid = [False] * sols_orig.shape[0]
         def _split(z_map, sol_row):
@@ -347,17 +633,32 @@ class SDMILP(SDProblem, MILP_LP):
             if any(self.cont_MILP.lb[j] > 0.0 or self.cont_MILP.ub[j] < 0.0 for j in inactive_vars):
                 valid[i] = False
                 continue
+            if getattr(self, '_slack_verification', False):
+                valid[i] = self._verify_slack(sol_row, inactive_vars, active_vars, inactive_ineqs,
+                                              active_ineqs, inactive_eqs, active_eqs)
+                continue
             # Otherwise drop the columns outright. Absence is a stronger statement than an
             # interval of [0, 0], since it owes nothing to feasibility tolerances.
             lp = MILP_LP(A_ineq=self.cont_MILP.A_ineq[active_ineqs, :][:, active_vars],
-                         b_ineq=[self.cont_MILP.b_ineq[i] for i in active_ineqs],
+                         b_ineq=[self._verify_rhs(i) for i in active_ineqs],
                          A_eq=self.cont_MILP.A_eq[active_eqs, :][:, active_vars],
                          b_eq=[self.cont_MILP.b_eq[i] for i in active_eqs],
                          lb=[self.cont_MILP.lb[i] for i in active_vars],
                          ub=[self.cont_MILP.ub[i] for i in active_vars],
                          solver=self.solver,
                          seed=self.seed)
-            valid[i] = not np.isnan(lp.slim_solve())
+            # The certificate system is scale-free (t'u <= -1 on a cone) and, with compressed
+            # columns carrying coefficients up to ~1e4, its feasible points have entries of 1e5
+            # and beyond. At the 1e-9 feasibility tolerance the MILP is pinned to, round-off at
+            # those magnitudes alone exceeds the tolerance and a genuine design reads INFEASIBLE
+            # (HumanGEM media: the same deleted system is feasible at the solver default under
+            # every method of both solvers and infeasible at 1e-9 only). Verify at the solver
+            # default, and let a second method confirm an infeasible verdict before it discards
+            # a design.
+            _set_lp_tolerance(lp, 1e-6)
+            valid[i] = _lp_feasible(lp)
+            if not valid[i] and _set_lp_method(lp, 'barrier'):
+                valid[i] = _lp_feasible(lp)
         return valid
 
     def compute_optimal(self, **kwargs):
@@ -680,6 +981,12 @@ class SDMILP(SDProblem, MILP_LP):
                         self.add_exclusion_constraints(z[i])
             if (status != OPTIMAL):  # or (z[i]*self.cost == self.max_cost):
                 break
+        if sols.shape[0] > 1:
+            sols, n_super = _drop_non_minimal(sols)
+            if n_super:
+                logging.error('%d designs contain a smaller design: the enumeration missed one and '
+                              'the result is INCOMPLETE.' % n_super)
+                status = ERROR
         if status == INFEASIBLE and sols.shape[0] > 0:  # all solutions found or solution limit reached
             status = OPTIMAL
         if status == TIME_LIMIT and sols.shape[0] > 0:  # some solutions found, timelimit reached
@@ -700,6 +1007,324 @@ class SDMILP(SDProblem, MILP_LP):
             sd_dict += [self.sd2dict(sol, self.show_no_ki)]
         sd_solution = self.build_sd_solution(sd_dict, status, POPULATE)
         return sd_solution
+
+    def enumerate_ksweep(self, **kwargs):
+        """Enumerate minimal cut sets by an ascending-cardinality sweep (gMCSpy-style loop).
+
+        Standard ``enumerate`` runs a single populate over the whole budget
+        ``sum(cost*z) <= max_cost`` and loops until the pool is exhausted. This
+        variant instead pins the intervention-cost budget to EQUALITY at each level
+        ``k = 1 .. max_cost`` and exhausts the pool at that level before moving on::
+
+            for k in 1 .. max_cost:
+                set  sum(cost*z) == k          (both budget-bracket rows -> k)
+                while populate returns solutions:
+                    record + verify every pool solution
+                    add exclusion  sum_{j in K} z_j <= |K|-1  (and its supersets)
+
+        It returns the IDENTICAL set of minimal cut sets as ``enumerate`` -- only the
+        enumeration order (ascending size) and the loop structure differ. Ascending-
+        cardinality enumeration parallelizes far better at genome scale, which is the
+        whole point of the opt-in.
+
+        Design-identity relies on mirroring ``enumerate``'s per-solution handling
+        exactly (verify_sd, then ``add_exclusion_constraints`` for BOTH valid and
+        invalid solutions, which excludes the set and all its supersets).
+
+        Requires an MCS computation (``is_mcs_computation``) with a finite ``max_cost``.
+        Intervention costs are assumed integer (the default ko/ki cost of 1 satisfies
+        this); the sweep visits integer levels 1..ceil(max_cost). For non-MCS problems
+        or an infinite budget it transparently falls back to ``enumerate``.
+        """
+        keys = {MAX_SOLUTIONS, T_LIMIT, 'show_no_ki'}
+        # set keys passed in kwargs
+        for key, value in dict(kwargs).items():
+            if key in keys:
+                setattr(self, key, value)
+        # set all remaining keys to None
+        for key in keys:
+            if key not in dict(kwargs).keys():
+                setattr(self, key, None)
+        if self.max_solutions is None:
+            self.max_solutions = np.inf
+        if self.time_limit is None:
+            self.time_limit = np.inf
+        if self.show_no_ki is None:
+            self.show_no_ki = True
+        # k-sweep is only defined for MCS with a finite, INTEGER cost budget.
+        # The level loop pins sum(cost*z) == k for integer k, so it enumerates the
+        # pool completely only when every intervention cost is integer-valued: with
+        # fractional or mixed costs (ki/reg costs, non-unit ko costs) the achievable
+        # totals are non-integer and would be silently skipped between levels. Guard
+        # on cost integrality and fall back to the full-budget populate otherwise.
+        max_cost_finite = self.max_cost is not None and np.isfinite(self.max_cost)
+        finite_costs = [c for c in self.cost if np.isfinite(c)]
+        costs_integer = all(abs(c - round(c)) < 1e-9 for c in finite_costs)
+        # The sweep walks cost levels 1, 2, ... upward, so a design whose total cost is zero or
+        # negative -- reachable as soon as one intervention is free or rewarding -- sits below
+        # every level it visits and is returned by none of them.
+        costs_positive = all(c > 0 for c in finite_costs)
+        if (not self.is_mcs_computation) or (not max_cost_finite) or (not costs_integer) \
+                or (not costs_positive):
+            logging.warning("enum_method='ksweep' requires an MCS computation with a finite, "
+                            "positive, integer-valued intervention cost budget; falling back to "
+                            "standard populate enumeration.")
+            return self.enumerate(**kwargs)
+        # first check if strain doesn't already fulfill the strain design setup
+        if self.verify_sd(sparse.csr_matrix((1, self.num_z)))[0]:
+            logging.warning('The strain already meets the requirements defined in the strain design setup. ' \
+                  'No interventions are needed.')
+            return self.build_sd_solution([{}], OPTIMAL, POPULATE)
+        # otherwise continue
+        if self.solver == 'scip':
+            logging.warning("SCIP does not natively support solution pool generation. "+ \
+                "An high-level implementation of populate is used. " + \
+                "Consider using compute_optimal instead of enumerate, as " + \
+                "it returns the same results but faster.")
+        if self.solver == 'glpk':
+            logging.warning("GLPK does not natively support solution pool generation. "+ \
+                "An instable high-level implementation of populate is used. "
+                "Consider using compute_optimal instead of enumerate, as " + \
+                "it returns the same results but faster." )
+        # Full-width cost vector for the two budget-bracket rows (z-cols carry cost,
+        # continuous cols carry 0). Rows: idx_row_mincost:  cost.z <= k  ;
+        #                                 idx_row_maxcost: -cost.z <= -k  (-> cost.z >= k).
+        # Together they pin sum(cost*z) == k for the current level.
+        n_cont = len(self.c) - self.num_z
+        cost_full = [float(c) for c in self.cost] + [0.0] * n_cont
+        neg_cost_full = [-c for c in cost_full]
+        k_max = int(np.floor(self.max_cost))  # a cost-k solution is within budget only if k <= max_cost
+        endtime = time.time() + self.time_limit
+        status = OPTIMAL
+        hit_timelimit = False
+        errored = False
+        sols = sparse.csr_matrix((0, self.num_z))
+        logging.info('Enumerating strain designs (k-sweep) ...')
+        native = self.solver in (CPLEX, GUROBI)
+        # Farkas anchor controller (CPLEX, Gurobi). The certificates form a cone, so the anchor c in
+        # b'y <= -c is exact at any positive value; it sets their scale against the solver's absolute
+        # tolerances, and a small one is markedly faster. The sweep starts at _ANCHOR_START. A design
+        # that fails verification means a certificate passed only within tolerance, so c is raised
+        # 100-fold (up to 1) and the level re-populated; between levels c is steered from the gate
+        # slacks of the accepted designs, which the slack verification reports. A design that turns
+        # out not to be minimal means a lower level lost one: c is lowered and those levels redone.
+        self._anchor_rows = list(getattr(self, '_milp_anchor_rows', [])) if native else []
+        # an anchor row always has the build value -1; anything else means the numbering is off
+        self._anchor_rows = [i for i in self._anchor_rows if i < len(self.b_ineq) and self.b_ineq[i] == -1.0]
+        self._anchor_adaptive = bool(self._anchor_rows)
+        self._slack_verification = self._anchor_adaptive
+        self._anchor_c = 1.0
+        if self._anchor_adaptive:
+            self._set_anchor(_ANCHOR_START, 'start', log=False)
+            logging.info('  Farkas anchor %g on %d row(s), adaptive' % (self._anchor_c, len(self._anchor_rows)))
+        rejected_here = False
+        lowered_here = False
+        # The solver's certificate that a pinned level is exhausted (CPLEX 129/130, Gurobi an optimal
+        # pool search with room left) ends the level without a confirmatory populate. It is withdrawn
+        # for the rest of the run once the lower levels had to be redone more than three times.
+        trust_certificate = True
+        # Only here is the design cost pinned to a single value, so only here can the pool's
+        # optimality gap be opened without losing the ascending-cost order that makes an emitted
+        # design minimal. Everything above this line -- including every fallback to enumerate() --
+        # runs with the gap closed.
+        self.set_pool_gap(True)
+        _tilt = getattr(self, 'dual_tilt', None)
+        if _tilt:
+            # A safe slant: the pinned level makes the objective constant on z and ZERO on the dual
+            # variables, so the node LP is a pure feasibility problem and the simplex wanders over a
+            # degenerate optimal face. A tilt gives it a direction. It is not a bound: no certificate
+            # is cut, the feasible set is untouched, and with the pool gaps open every feasible design
+            # is still collected. Where gates are SOS1 sets the tilt goes on their sign-restricted
+            # members, otherwise on every sign-restricted continuous column (lb finite, ub infinite),
+            # so the LP stays bounded below. At 1e-3 the basis goes singular on some models and the
+            # level that fails is lost; 1e-6 is safe on every model measured and faster besides.
+            _w = float(_tilt)
+            _obj = list(self.c)
+            _cols = range(self.num_z, len(_obj))
+            if getattr(self, 'sos1', None):
+                _cols = sorted({int(j) for _s in self.sos1 for j in _s if j >= self.num_z})
+            _n_t = 0
+            for j in _cols:
+                if self.lb[j] is not None and not isinf(self.lb[j]) and self.lb[j] >= 0 and isinf(self.ub[j]):
+                    _obj[j] = _w
+                    _n_t += 1
+            self._tilt_base = (list(self.c), list(_obj))
+            if self.solver in _TILT_SCALES_WITH_ANCHOR and self._anchor_adaptive:
+                _obj = [c0 + (t - c0) / self._anchor_c for c0, t in zip(*self._tilt_base)]
+            self.set_objective(_obj)
+            logging.info('  dual tilt %g on %d of %d continuous columns' % (_w, _n_t, len(_obj) - self.num_z))
+        # Restarts (CPLEX, Gurobi). Search time at a cost level is heavy-tailed in the solver's seed:
+        # one seed can spend minutes on a level that others finish in seconds. Each populate is capped
+        # in deterministic work (CPLEX ticks, Gurobi work units, so a run with a fixed seed repeats on
+        # the same machine) at max(_RESTART_MIN_WORK, 4 x the previous level's work). A call that is
+        # still finding new designs at the cap is resumed with the cap doubled: the model is left as
+        # it is, so the solver continues the same tree with its pool. A call that found nothing new
+        # by the cap has its designs recorded and is restarted from the next seed derived from the
+        # run's seed, the cap doubling on. Every level ends with a populate that ran to completion,
+        # so the result is the same as without restarts.
+        restart = native
+        prev_level_work, n_reseeds = 0.0, 0
+        k, n_restarts, restart_levels = 0, 0, False
+        while k < k_max:
+            k += 1
+            if sols.shape[0] >= self.max_solutions:
+                break
+            if endtime - time.time() <= 0:
+                hit_timelimit = True
+                break
+            if self._anchor_adaptive:
+                self._steer_anchor(getattr(self, '_verify_diag', []))
+                self._verify_diag = []
+            # pin the intervention cost to k for this level
+            self.set_ineq_constraint(self.idx_row_mincost, cost_full, float(k))
+            self.set_ineq_constraint(self.idx_row_maxcost, neg_cost_full, -float(k))
+            logging.info('  Enumerating minimal cut sets of cost ' + str(k))
+            work_level0 = self.get_work()
+            budget = max(_RESTART_MIN_WORK[self.solver], 4.0 * prev_level_work) if restart else None
+            n_tree, reseed_after_batch = 0, False
+            while sols.shape[0] < self.max_solutions and \
+                    endtime - time.time() > 0:
+                if reseed_after_batch:
+                    n_reseeds += 1
+                    self.set_seed(self._restart_seed(n_reseeds))
+                    reseed_after_batch = False
+                self.set_time_limit(endtime - time.time())
+                self.set_work_limit(budget)
+                work_call0 = self.get_work()
+                z, status = self.populateZ(self.max_solutions - sols.shape[0])
+                # stopped by the work cap: time is left and the call spent (about) its budget
+                capped = budget is not None and endtime - time.time() > 0 and \
+                    self.get_work() - work_call0 >= 0.5 * budget
+                if capped and status == TIME_LIMIT:
+                    n_reseeds += 1
+                    self.set_seed(self._restart_seed(n_reseeds))
+                    logging.info('  no design at cost %s within the work cap: restarting from another seed' % k)
+                    budget *= 2
+                    continue
+                if capped and status == TIME_LIMIT_W_SOL:
+                    if z.shape[0] > n_tree:
+                        n_tree = z.shape[0]
+                        budget *= 2
+                        continue
+                    logging.info('  no new design at cost %s within the work cap: restarting from another seed' % k)
+                    status = OPTIMAL
+                    budget *= 2
+                    reseed_after_batch = True
+                n_tree = 0
+                if status in [OPTIMAL, TIME_LIMIT_W_SOL]:
+                    if z.shape[0] == 0:  # level exhausted
+                        break
+                    for i in range(z.shape[0]):
+                        output = [self.sd2dict(z[i])]
+                        if all(self.verify_sd(z[i])):
+                            zc = z[i]
+                            zi = self._minimise_design(zc) if self._slack_verification else zc
+                            if zi.getnnz() != zc.getnnz():
+                                logging.warning('Non-minimal design %s contains the cut set %s, which a lower '
+                                                'level missed; recovered' % (output, [self.sd2dict(zi)]))
+                                lowered_here = True
+                            logging.info('Strain designs with cost ' + str(round((zi * self.cost)[0], 6)) + ': ' + str([self.sd2dict(zi)]))
+                            self.add_exclusion_constraints(zi)
+                            sols = sparse.vstack((sols, zi))
+                            if lowered_here and self._anchor_adaptive:
+                                break  # the rest of the batch is re-found after the lower levels are redone
+                        else:
+                            logging.warning('Invalid (minimal) solution found: ' + str(output))
+                            if self._anchor_adaptive:
+                                # under a small anchor a rejection is a spurious certificate, not a
+                                # lost design: cut only this point, and raise the anchor below
+                                self.add_exclusion_constraints_ineq(z[i])
+                                rejected_here = True
+                                break  # the rest of the batch is re-found at the larger anchor
+                            else:
+                                self.add_exclusion_constraints(z[i])
+                    if self._anchor_adaptive and rejected_here:
+                        self._raise_anchor()
+                        rejected_here = False
+                        continue  # re-populate this level at the larger anchor
+                    if self._anchor_adaptive and lowered_here:
+                        # a design below this level was lost: lower the anchor and redo the levels
+                        # below (everything found stays excluded, so those passes only find losses)
+                        self._set_anchor(self._anchor_c / 100.0, 'a lower level lost a design: certificate round-off')
+                        lowered_here = False
+                        restart_levels = True
+                        break
+                    if status == TIME_LIMIT_W_SOL:
+                        hit_timelimit = True
+                        break
+                    if trust_certificate and self.pool_exhausted:
+                        break
+                elif status == ERROR:
+                    # A solver failure is not an empty level. Treating it as one silently drops
+                    # every design at this cardinality and every level above it.
+                    logging.error('Solver returned ERROR at cost %s; enumeration is INCOMPLETE '
+                                  'from this level up.' % k)
+                    errored = True
+                    break
+                elif status == TIME_LIMIT:
+                    # Stopped without a proof either way: the level is not exhausted.
+                    hit_timelimit = True
+                    break
+                else:  # INFEASIBLE at this cardinality -> level exhausted, next k
+                    break
+            prev_level_work = self.get_work() - work_level0
+            if restart_levels:
+                restart_levels = False
+                n_restarts += 1
+                if n_restarts > 3 and trust_certificate:
+                    trust_certificate = False
+                    logging.warning('Three redos of the lower levels: the exhaustion certificate is no '
+                                    'longer trusted, every level gets its confirmatory pass from here on')
+                logging.warning('Redoing cost levels 1..%d after a lost design' % (k - 1))
+                k = 0
+                continue
+            if errored:
+                break
+            if hit_timelimit or endtime - time.time() <= 0:
+                if endtime - time.time() <= 0:
+                    hit_timelimit = True
+                break
+        # The level rows keep their last value on the object, so leave the pool and the work limit as
+        # every other caller expects to find them.
+        self.set_pool_gap(False)
+        self.set_work_limit(None)
+        # Finalize status independently of the last populate's status.
+        if sols.shape[0] > 1:
+            sols, n_super = _drop_non_minimal(sols)
+            if n_super:
+                logging.error('%d designs contain a smaller design: a cost level was enumerated '
+                              'incompletely and the result is INCOMPLETE.' % n_super)
+                errored = True
+        # A solver failure makes the result incomplete and must not be reported as optimal.
+        # Callers drop the designs of a non-OPTIMAL run, so ERROR yields no designs at all;
+        # that is the safe direction, an incomplete list presented as complete is not.
+        if errored:
+            status = ERROR
+        elif hit_timelimit and sols.shape[0] > 0:
+            status = TIME_LIMIT_W_SOL
+        elif hit_timelimit:
+            status = TIME_LIMIT
+        else:
+            status = OPTIMAL
+        if not hit_timelimit and sols.shape[0] > 0:
+            logging.info('Finished solving strain design MILP. ')
+            if 'strainDesignMILP' in self.__module__:
+                logging.info(str(sols.shape[0]) + ' solutions to MILP found.')
+        elif not hit_timelimit:
+            logging.info('Finished solving strain design MILP.')
+            if 'strainDesignMILP' in self.__module__:
+                logging.info(' No solutions exist.')
+        else:
+            logging.info('Time limit reached.')
+        # Translate solutions into dict
+        sd_dict = []
+        for sol in sols:
+            sd_dict += [self.sd2dict(sol, self.show_no_ki)]
+        return self.build_sd_solution(sd_dict, status, POPULATE)
+
+    def _restart_seed(self, n):
+        """Seed of the n-th restart, derived from the run's seed so a seeded run repeats."""
+        return ((self.seed if self.seed is not None else 0) + 7919 * n) % 2**30
 
     def build_sd_solution(self, sd_dict, status, solution_approach):
         """Build the strain design solution object"""

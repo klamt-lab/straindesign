@@ -47,10 +47,12 @@ class SDPool(Pool):
     
     Initialize a process pool.
 
-    Add a thin layer on top of the `multiprocessing.Pool` that, on Windows, passes
-    initialization code to workers via a pickle file rather than directly. This is
-    done to avoid a performance issue that exists on Windows. Please, also see the
-    discussion [1_].
+    Add a thin layer on top of the `multiprocessing.Pool` that passes initialization
+    code to workers via a pickle file rather than directly. Originally a Windows
+    workaround [1_]; with the 'spawn' context on any platform a large initargs payload
+    (an LP's matrices) written straight to the worker's pipe blocks the parent until
+    that worker has started up, which serializes the start of every worker. The file
+    keeps the pipe payload small so all workers start concurrently.
 
     References
     ----------
@@ -65,7 +67,7 @@ class SDPool(Pool):
                  maxtasksperchild: Optional[int] = None,
                  context=None):
         self._filename = None
-        if initializer is not None and system() == "Windows":
+        if initializer is not None:
             descriptor, self._filename = mkstemp(suffix=".pkl")
             # We use the file descriptor to the open file returned by `mkstemp` to
             # ensure that the resource is closed and can later be removed. Otherwise

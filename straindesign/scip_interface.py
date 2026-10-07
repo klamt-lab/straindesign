@@ -390,6 +390,15 @@ class SCIP_MILP(pso.Model):
             else:
                 self.chgVarUb(self.vars[ub[i][0]], None)
 
+    def set_lb(self, lb):
+        """Set the lower bounds with index-value pairs, e.g.: lb=[[1, 0.0], [4, -inf]]"""
+        self.freeTransform()
+        for i in range(len(lb)):
+            if not isinf(lb[i][1]):
+                self.chgVarLb(self.vars[lb[i][0]], float(lb[i][1]))
+            else:
+                self.chgVarLb(self.vars[lb[i][0]], None)
+
     def set_lp_method(self, method):
         """Set the LP solving method.
 
@@ -583,6 +592,52 @@ class SCIP_LP(pso.LP):
                      rhss = b_eq)
         self.optimize = super().solve
 
+    def _optimize_and_classify(self, dual=True):
+        """Run SoPlex and return the solver-neutral status of the result.
+
+        OPTIMAL, INFEASIBLE and UNBOUNDED are only reported with a certificate from SoPlex: an
+        optimal basis, a dual (Farkas) ray or a primal ray. Anything else, e.g. a limit or a
+        result that is neither, is ERROR."""
+        self.optimize(dual=dual)  # this function was inherited from super().solve() during initialization
+        if self.isOptimal():
+            return OPTIMAL
+        if self.getDualRay() is not None:
+            return INFEASIBLE
+        if self.getPrimalRay() is not None:
+            return UNBOUNDED
+        return ERROR
+
+    def _solve_status(self):
+        """Solve and return the status, retrying once from scratch if SoPlex fails.
+
+        Every solve after a bound, objective or row change warm-starts from the previous basis.
+        SoPlex occasionally returns an LP error from such a start (a singular or stalled basis)
+        on an LP that it solves without trouble from a slack basis, and presolving can end with
+        "infeasible or unbounded" without a ray. So a failed or inconclusive solve is repeated
+        once with the primal simplex from scratch and without presolving, and only reported as
+        ERROR if that fails as well."""
+        try:
+            status = self._optimize_and_classify()
+            if status != ERROR:
+                return status
+            logging.debug('SCIP LP: no optimal basis or ray after warm start, re-solving from scratch.')
+        except Exception as e:
+            logging.debug('SCIP LP: "' + str(e) + '" after warm start, re-solving from scratch.')
+        presolving = self.getIntParam(pso.SCIP_LPPARAM.PRESOLVING)
+        self.setIntParam(pso.SCIP_LPPARAM.FROMSCRATCH, 1)
+        self.setIntParam(pso.SCIP_LPPARAM.PRESOLVING, 0)
+        try:
+            status = self._optimize_and_classify(dual=False)
+            if status == ERROR:
+                logging.error('SCIP LP: no optimal basis or ray, also when solved from scratch.')
+        except Exception as e:
+            logging.error('Error while running SCIP: ' + str(e))
+            status = ERROR
+        finally:
+            self.setIntParam(pso.SCIP_LPPARAM.FROMSCRATCH, 0)
+            self.setIntParam(pso.SCIP_LPPARAM.PRESOLVING, presolving)
+        return status
+
     def solve(self) -> Tuple[List, float, float]:
         """Solve the LP
         
@@ -594,25 +649,11 @@ class SCIP_LP(pso.LP):
             
             solution_vector, optimal_value, optimization_status
         """
-        try:
-            min_cx = self.optimize()  # this function was inherited from super().solve() during initialization
-            if self.isInfinity(-min_cx):  # solution
-                min_cx = -inf
-                status = UNBOUNDED
-            elif self.isInfinity(min_cx):
-                min_cx = nan
-                status = INFEASIBLE
-            if not isnan(min_cx) and not isinf(min_cx):
-                x = self.getPrimal()
-                status = OPTIMAL
-            else:
-                x = [nan] * len(self.getPrimal())
-            return x, min_cx, status
-        except:
-            logging.error('Error while running SCIP.')
-            min_cx = nan
-            x = [nan] * len(self.getPrimal())
-            return x, min_cx, ERROR
+        status = self._solve_status()
+        if status == OPTIMAL:
+            return self.getPrimal(), self.getObjVal(), status
+        min_cx = -inf if status == UNBOUNDED else nan
+        return [nan] * self.ncols(), min_cx, status
 
     def slim_solve(self) -> float:
         """Solve the LP, but return only the optimal value
@@ -625,16 +666,10 @@ class SCIP_LP(pso.LP):
             
             Optimum value of the objective function.
         """
-        try:
-            opt = self.optimize()  # this function was inherited from super().solve() during initialization
-            if self.isInfinity(-opt):  # solution
-                opt = -inf
-            elif self.isInfinity(opt):
-                opt = nan
-            return opt
-        except:
-            logging.error('Error while running SCIP.')
-            return nan
+        status = self._solve_status()
+        if status == OPTIMAL:
+            return self.getObjVal()
+        return -inf if status == UNBOUNDED else nan
 
     def set_objective(self, c):
         """Set the objective function with a vector"""
@@ -647,6 +682,18 @@ class SCIP_LP(pso.LP):
         e.g.: C=[[1, 1.0], [4,-0.2]]"""
         for i_v in C:
             self.chgObj(i_v[0], i_v[1])
+
+    def set_ub(self, ub):
+        """Set the upper bounds with index-value pairs, e.g.: ub=[[1, 0.0], [4, inf]]"""
+        for i, u in ub:
+            lb = self.getBounds(i, i)[0][0]
+            self.chgBound(i, lb, self.infinity() if isinf(u) else float(u))
+
+    def set_lb(self, lb):
+        """Set the lower bounds with index-value pairs, e.g.: lb=[[1, 0.0], [4, -inf]]"""
+        for i, l in lb:
+            ub = self.getBounds(i, i)[1][0]
+            self.chgBound(i, -self.infinity() if isinf(l) else float(l), ub)
 
     def add_ineq_constraints(self, A_ineq, b_ineq):
         """Add inequality constraints to the model
