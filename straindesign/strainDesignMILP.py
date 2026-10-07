@@ -1203,7 +1203,8 @@ class SDMILP(SDProblem, MILP_LP):
         elif hit_timelimit:
             status = TIME_LIMIT
         else:
-            status = OPTIMAL
+            # as in enumerate(): an exhausted enumeration without designs is INFEASIBLE
+            status = OPTIMAL if sols.shape[0] > 0 else INFEASIBLE
         if not hit_timelimit and sols.shape[0] > 0:
             logging.info('Finished solving strain design MILP. ')
             if 'strainDesignMILP' in self.__module__:
