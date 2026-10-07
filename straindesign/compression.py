@@ -124,6 +124,9 @@ class RationalMatrix:
         self._den_sparse: Optional[csr_matrix] = None  # Denominators
         self._csc_cache: Optional[csc_matrix] = None
         self._batch_mode = False
+        # Column edits between begin_batch_edit() and end_batch_edit() go to {col: {row: (num, den)}}
+        # and are written back to the int sparse store once, at end_batch_edit().
+        self._batch_cols: Optional[Dict[int, Dict[int, Tuple[int, int]]]] = None
         # Big-integer fallback: scipy.sparse only holds <=64-bit ints, so exact results whose
         # coefficients exceed int64 (e.g. yeast-GEM's nullspace) are stored here as {row:{col:Fraction}}
         # and _num_sparse/_den_sparse stay None. See is_bigint() / to_coo_exact().
@@ -332,17 +335,50 @@ class RationalMatrix:
     # Batch edit mode
 
     def begin_batch_edit(self):
-        """Enter batch edit mode - delays cache invalidation."""
+        """Enter batch edit mode: column edits accumulate in a column store, the sparse matrices and
+        the cached column view stay as they were until end_batch_edit()."""
         self._require_sparse_store('begin_batch_edit')
         self._batch_mode = True
-        self._num_sparse = self._num_sparse.tolil()
-        self._den_sparse = self._den_sparse.tolil()
+        self._batch_cols = None
+
+    def _batch_column_store(self) -> Dict[int, Dict[int, Tuple[int, int]]]:
+        """{col: {row: (num, den)}} of the current entries; built on first use within a batch."""
+        if self._batch_cols is None:
+            num_csc = self._num_sparse.tocsc()
+            den_csc = self._den_sparse.tocsc()
+            indptr, indices = num_csc.indptr, num_csc.indices
+            num_data, den_data = num_csc.data.tolist(), den_csc.data.tolist()
+            store: Dict[int, Dict[int, Tuple[int, int]]] = {}
+            for c in range(self._cols):
+                start, end = indptr[c], indptr[c + 1]
+                if start == end:
+                    continue
+                col = {}
+                for idx in range(start, end):
+                    n = num_data[idx]
+                    if n != 0:
+                        col[int(indices[idx])] = (n, den_data[idx])
+                if col:
+                    store[c] = col
+            self._batch_cols = store
+        return self._batch_cols
 
     def end_batch_edit(self):
-        """Exit batch edit mode - converts back to CSR and invalidates cache."""
+        """Exit batch edit mode: write the accumulated column edits back and invalidate the cache."""
         self._batch_mode = False
-        self._num_sparse = self._num_sparse.tocsr()
-        self._den_sparse = self._den_sparse.tocsr()
+        if self._batch_cols is not None:
+            rows, cols, nums, dens = [], [], [], []
+            for c, col in self._batch_cols.items():
+                for r, (n, d) in col.items():
+                    if n != 0:
+                        rows.append(r)
+                        cols.append(c)
+                        nums.append(n)
+                        dens.append(d)
+            rebuilt = RationalMatrix._build_from_sparse_data(rows, cols, nums, dens, self._rows, self._cols)
+            self._num_sparse, self._den_sparse = rebuilt._num_sparse, rebuilt._den_sparse
+            self._dict_frac = rebuilt._dict_frac
+            self._batch_cols = None
         self._csc_cache = None
 
     # Matrix operations
@@ -381,67 +417,54 @@ class RationalMatrix:
         """Add scalar * column[src] to column[dst]. dst[i] += (num/den) * src[i]"""
         if scalar_num == 0:
             return
+        if not self._batch_mode:
+            self.begin_batch_edit()
+            try:
+                self.add_scaled_column(dst_col, src_col, scalar_num, scalar_den)
+            finally:
+                self.end_batch_edit()
+            return
 
-        num_lil = self._num_sparse
-        den_lil = self._den_sparse
-
-        # Get source column entries
-        if hasattr(num_lil, 'rows'):  # LIL format
-            src_rows = num_lil.rows[src_col] if num_lil.format == 'csc' else None
-
-        # Convert to CSC for efficient column access
-        num_csc = num_lil.tocsc() if num_lil.format != 'csc' else num_lil
-        den_csc = den_lil.tocsc() if den_lil.format != 'csc' else den_lil
-
-        start = num_csc.indptr[src_col]
-        end = num_csc.indptr[src_col + 1]
-
-        for idx in range(start, end):
-            row = num_csc.indices[idx]
-            src_num = int(num_csc.data[idx])
-            src_den = int(den_csc.data[idx])
-
+        store = self._batch_column_store()
+        src = store.get(src_col)
+        if not src:
+            return
+        dst = store.setdefault(dst_col, {})
+        for row, (src_num, src_den) in list(src.items()):
             if src_num == 0:
                 continue
-
-            # Get current dst value
-            dst_num = int(num_lil[row, dst_col])
-            dst_den = int(den_lil[row, dst_col]) if dst_num != 0 else 1
-
-            # Compute: dst + (scalar_num/scalar_den) * (src_num/src_den)
-            # = dst_num/dst_den + (scalar_num * src_num)/(scalar_den * src_den)
+            # dst + (scalar_num/scalar_den) * (src_num/src_den)
             add_num = scalar_num * src_num
             add_den = scalar_den * src_den
-
-            if dst_num == 0:
+            cur = dst.get(row)
+            if cur is None or cur[0] == 0:
                 new_num, new_den = add_num, add_den
             else:
-                # Common denominator addition
+                dst_num, dst_den = cur
                 new_num = dst_num * add_den + add_num * dst_den
                 new_den = dst_den * add_den
-
-            # Reduce
             if new_num != 0:
                 g = gcd(abs(new_num), new_den)
-                new_num //= g
-                new_den //= g
-
-            num_lil[row, dst_col] = new_num
-            den_lil[row, dst_col] = new_den if new_num != 0 else 0
-
-        self._invalidate_cache()
+                dst[row] = (new_num // g, new_den // g)
+            else:
+                dst.pop(row, None)
 
     def scale_column(self, col: int, scalar_num: int, scalar_den: int) -> None:
         """Multiply a column by a scalar: col[i] *= scalar_num/scalar_den."""
         if scalar_num == 0 or scalar_num == scalar_den:
             return
-        num_lil, den_lil = self._num_sparse, self._den_sparse
-        num_csc = num_lil.tocsc() if num_lil.format != 'csc' else num_lil
-        den_csc = den_lil.tocsc() if den_lil.format != 'csc' else den_lil
-        entries = [
-            (num_csc.indices[i], int(num_csc.data[i]), int(den_csc.data[i])) for i in range(num_csc.indptr[col], num_csc.indptr[col + 1])
-        ]
-        for row, cur_num, cur_den in entries:
+        if not self._batch_mode:
+            self.begin_batch_edit()
+            try:
+                self.scale_column(col, scalar_num, scalar_den)
+            finally:
+                self.end_batch_edit()
+            return
+
+        col_entries = self._batch_column_store().get(col)
+        if not col_entries:
+            return
+        for row, (cur_num, cur_den) in list(col_entries.items()):
             if cur_num == 0:
                 continue
             new_num, new_den = cur_num * scalar_num, cur_den * scalar_den
@@ -451,9 +474,10 @@ class RationalMatrix:
             if g:
                 new_num //= g
                 new_den //= g
-            num_lil[row, col] = new_num
-            den_lil[row, col] = new_den if new_num != 0 else 0
-        self._invalidate_cache()
+            if new_num != 0:
+                col_entries[row] = (new_num, new_den)
+            else:
+                col_entries.pop(row, None)
 
     # Conversion
 
@@ -795,33 +819,34 @@ def _nullspace_sparse(matrix: RationalMatrix) -> RationalMatrix:
     # For each free column f, the nullspace vector has:
     # - Entry 1 at position f (the free variable)
     # - Entry -rref[i,f]/rref[i,pivot_i] at each pivot position
-    row_indices, col_indices = [], []
-    numerators, denominators = [], []
+    # The RREF rows are sparse, so walk each pivot row's nonzeros once and route every free-column
+    # entry to its kernel column, rather than probing every (pivot, free) pair.
+    free_pos = {c: k for k, c in enumerate(free_cols)}
+    row_indices = list(free_cols)
+    col_indices = list(range(nullity))
+    numerators = [1] * nullity
+    denominators = [1] * nullity
 
-    for k, free_col in enumerate(free_cols):
-        # Identity entry for free variable
-        row_indices.append(free_col)
-        col_indices.append(k)
-        numerators.append(1)
-        denominators.append(1)
-
-        # Entries from RREF for pivot variables
-        for i, pivot_col in enumerate(pivot_cols):
-            row_data = rref_data.get(i, {})
-            val_at_free = row_data.get(free_col, 0)
-            if val_at_free != 0:
-                pivot_val = row_data.get(pivot_col, 1)  # Should always exist
-                # Nullspace entry: -val_at_free / pivot_val
-                g = gcd(abs(val_at_free), abs(pivot_val))
-                num = -val_at_free // g
-                den = pivot_val // g
-                # Ensure positive denominator
-                if den < 0:
-                    num, den = -num, -den
-                row_indices.append(pivot_col)
-                col_indices.append(k)
-                numerators.append(num)
-                denominators.append(den)
+    for i, pivot_col in enumerate(pivot_cols):
+        row_data = rref_data.get(i)
+        if not row_data:
+            continue
+        pivot_val = row_data.get(pivot_col, 1)  # Should always exist
+        for free_col, val_at_free in row_data.items():
+            k = free_pos.get(free_col)
+            if k is None or val_at_free == 0:
+                continue
+            # Nullspace entry: -val_at_free / pivot_val
+            g = gcd(abs(val_at_free), abs(pivot_val))
+            num = -val_at_free // g
+            den = pivot_val // g
+            # Ensure positive denominator
+            if den < 0:
+                num, den = -num, -den
+            row_indices.append(pivot_col)
+            col_indices.append(k)
+            numerators.append(num)
+            denominators.append(den)
 
     return RationalMatrix._build_from_sparse_data(row_indices, col_indices, numerators, denominators, cols, nullity)
 
@@ -2223,15 +2248,34 @@ def simplify_model_gprs(model, budget=50000):
     logging.info('  GPR rule simplification: %d rules, %d rewritten.' % (n, nchg))
 
 
+def _detach_gprs(model):
+    """Clear every reaction's GPR and its gene links, as ``gene_reaction_rule = ''`` on each reaction
+    would, without parsing or copying a rule per reaction. Genes stay in the model."""
+    from cobra.core.gene import GPR
+    for r in model.reactions:
+        for g in r._genes:
+            g._reaction.discard(r)
+        r._genes = set()
+        r._gpr = GPR()
+
+
+def _reattach_gpr(rxn, gpr, genes):
+    """Give ``rxn`` back a GPR object and gene links taken from it before _detach_gprs."""
+    rxn._gpr = gpr
+    rxn._genes = set(genes)
+    for g in genes:
+        g._reaction.add(rxn)
+
+
 def _rename_lumped(reac_set, reac_map_exp):
     """Carry a set of reaction ids through one compression step, in place."""
     if reac_set is None:
         return
-    for new_reac, old_reac_val in reac_map_exp.items():
-        old_reacs = [r for r in reac_set if r in old_reac_val]
-        if old_reacs:
-            for r in old_reacs:
-                reac_set.discard(r)
+    lumped_into = {old: new_reac for new_reac, old_reac_val in reac_map_exp.items() for old in old_reac_val}
+    for r in list(reac_set):
+        new_reac = lumped_into.get(r)
+        if new_reac is not None:
+            reac_set.discard(r)
             reac_set.add(new_reac)
 
 
@@ -2344,25 +2388,31 @@ def compress_model_coupled(model, propagate_gpr=False, protected_reactions=set()
     with suppress_lp_context(model):
         # Save GPR AST bodies before compression clears them
         if propagate_gpr:
-            saved_gpr_bodies = {r.id: r.gpr.body for r in model.reactions}
+            saved_gprs = {r.id: (r._gpr, r._genes, r.gene_reaction_rule) for r in model.reactions}
 
         # Gene rules are cleared here and re-derived below from the saved ASTs, so a lumped
         # reaction's rule is the AND-combination of its members rather than one member's.
-        for r in model.reactions:
-            r.gene_reaction_rule = ''
+        _detach_gprs(model)
 
         result = compress_cobra_model(model, methods=CompressionMethod.standard(), in_place=True, protected_reactions=protected_reactions)
         reaction_map = result.reaction_map
 
-        # Propagate GPR rules: AND-combine contributing reactions' GPR ASTs
+        # Propagate GPR rules: AND-combine contributing reactions' GPR ASTs. A reaction whose
+        # rule comes out unchanged gets its own GPR object and gene links back instead of a
+        # re-parse through the cobra setter.
         if propagate_gpr:
             for cmp_id, orig_map in reaction_map.items():
                 try:
                     rxn = model.reactions.get_by_id(cmp_id)
                 except KeyError:
                     continue
-                gpr_bodies = [saved_gpr_bodies.get(orig_id) for orig_id in orig_map]
-                rxn.gene_reaction_rule = _combine_gprs(gpr_bodies, 'and')
+                gpr_bodies = [saved_gprs[orig_id][0].body if orig_id in saved_gprs else None for orig_id in orig_map]
+                combined = _combine_gprs(gpr_bodies, 'and')
+                saved = saved_gprs.get(cmp_id) if len(orig_map) == 1 else None
+                if saved is not None and combined == saved[2]:
+                    _reattach_gpr(rxn, saved[0], saved[1])
+                else:
+                    rxn.gene_reaction_rule = combined
 
     return reaction_map
 
@@ -2384,7 +2434,6 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False, ta
     Returns:
         dict: Mapping {compressed_id: {orig_id: factor, ...}}
     """
-    old_num_reac = len(model.reactions)
     old_reac_ids = [r.id for r in model.reactions]
 
     if propagate_gpr:
@@ -2462,18 +2511,16 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False, ta
     # Set combined GPR rules on surviving reactions
     if propagate_gpr:
         for rxn, combined_gpr in group_gpr:
-            rxn.gene_reaction_rule = combined_gpr
+            if combined_gpr != rxn.gene_reaction_rule:
+                rxn.gene_reaction_rule = combined_gpr
 
     # Build compression map with flux-split fractions.
     # For parallel reactions, the compressed flux is the total through all
     # members.  Each member's fraction is proportional to |first_coeff|
     # (its stoichiometric scale relative to the representative).
     rational_map = {}
-    subT = np.zeros((old_num_reac, len(model.reactions)))
-    for i in range(subT.shape[1]):
+    for i in range(len(model.reactions)):
         group = subset_list[i]
-        for j in group:
-            subT[j, i] = 1
         if len(group) == 1:
             rational_map[model.reactions[i].id] = {old_reac_ids[group[0]]: Fraction(1)}
         else:
