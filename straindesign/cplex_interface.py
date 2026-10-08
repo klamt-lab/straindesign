@@ -337,6 +337,10 @@ class Cplex_MILP_LP(Cplex):
         """Set the upper bounds to a given vector"""
         self.variables.set_upper_bounds(ub)
 
+    def set_lb(self, lb):
+        """Set the lower bounds with index-value pairs, e.g.: lb=[[1, 0.0], [4, -inf]]"""
+        self.variables.set_lower_bounds(lb)
+
     def set_lp_method(self, method):
         """Set the LP solving method.
 
