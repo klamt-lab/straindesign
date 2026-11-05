@@ -619,8 +619,8 @@ def speedy_fva(model, **kwargs):
                     if seq_count >= _PROBE_LPS or elapsed >= _PROBE_SECONDS:
                         probe = False
                         n_left = 2 * n_orig - int(res_max.sum() + res_min.sum())
-                        handoff = seq_count > 0 and elapsed / seq_count * n_left > (
-                            _POOL_START_SECONDS + _POOL_START_SECONDS_PER_WORKER * threads)
+                        handoff = seq_count > 0 and elapsed / seq_count * n_left > (_POOL_START_SECONDS +
+                                                                                    _POOL_START_SECONDS_PER_WORKER * threads)
                         if handoff:
                             break
 
@@ -725,8 +725,7 @@ def speedy_fva(model, **kwargs):
 
         x_par = [nan] * (2 * n_orig)
         t0 = _time.perf_counter()
-        with SDPool(threads, initializer=fva_worker_init,
-                    initargs=(A_ineq, b_ineq, A_eq, b_eq, lb.tolist(), ub.tolist(), solver)) as pool:
+        with SDPool(threads, initializer=fva_worker_init, initargs=(A_ineq, b_ineq, A_eq, b_eq, lb.tolist(), ub.tolist(), solver)) as pool:
             chunk_size = max(1, len(unresolved) // threads)
             for i, value in pool.imap_unordered(fva_worker_compute, unresolved, chunksize=chunk_size):
                 x_par[i] = value
@@ -1070,7 +1069,8 @@ def fast_reversibility(model, solver=None, compress=True, threads=None):
         accept(j, direction, np.array(x_list[:n], dtype=np.float64), val)
 
     if handoff:
-        with SDPool(threads, initializer=rev_worker_init,
+        with SDPool(threads,
+                    initializer=rev_worker_init,
                     initargs=(A_ineq, b_ineq, A_eq, b_eq, lb.tolist(), ub.tolist(), solver, _REV_REBUILD_EVERY)) as pool:
             while True:
                 pending = [2 * j + (0 if direction == 1 else 1) for j, direction in pending_directions()]

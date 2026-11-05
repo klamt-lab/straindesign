@@ -258,10 +258,9 @@ class RationalMatrix:
 
     def _require_sparse_store(self, op: str) -> None:
         if self._dict_frac is not None:
-            raise NotImplementedError(
-                f"{op} is not available on a big-integer RationalMatrix; its coefficients exceed "
-                "int64 and are held as exact Fractions. Use nullspace()/basic_columns(), or "
-                "to_coo_exact() to export.")
+            raise NotImplementedError(f"{op} is not available on a big-integer RationalMatrix; its coefficients exceed "
+                                      "int64 and are held as exact Fractions. Use nullspace()/basic_columns(), or "
+                                      "to_coo_exact() to export.")
 
     def _iter_row_fractions(self) -> Iterator[Tuple[int, Dict[int, Fraction]]]:
         """Yield (row, {col: Fraction}) for every non-empty row."""
@@ -917,8 +916,7 @@ def sparse_nullspace(matrix):
         rm = matrix
     elif isinstance(matrix, ExactCOO):
         rm = RationalMatrix.from_fractions(
-            ((r, c, Fraction(int(v), int(matrix.denom))) for r, c, v in zip(matrix.rows, matrix.cols, matrix.data)),
-            matrix.shape)
+            ((r, c, Fraction(int(v), int(matrix.denom))) for r, c, v in zip(matrix.rows, matrix.cols, matrix.data)), matrix.shape)
     elif sparse.issparse(matrix):
         A = matrix.tocsr()
         if np.issubdtype(A.dtype, np.integer):
@@ -2288,8 +2286,7 @@ def _rename_lumped(reac_set, reac_map_exp):
             reac_set.add(new_reac)
 
 
-def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False, no_coupled_compress_reacs=set(),
-                   targetable_rxns=None):
+def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False, no_coupled_compress_reacs=set(), targetable_rxns=None):
     """Compress a metabolic model using multiple techniques.
 
     Performs blocked reaction removal, conservation relation removal, and
@@ -2329,8 +2326,7 @@ def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False, no_c
 
             # 1. Parallel (cheap — hash-based, no RREF)
             LOG.info(f'  Compression {run}: Lumping parallel reactions.')
-            reac_map_exp = compress_model_parallel(model, no_par_compress_reacs, propagate_gpr=propagate_gpr,
-                                                   targetable_rxns=targetable)
+            reac_map_exp = compress_model_parallel(model, no_par_compress_reacs, propagate_gpr=propagate_gpr, targetable_rxns=targetable)
             parallel_changed = numr > len(reac_map_exp)
             if parallel_changed:
                 LOG.info(f'  Reduced to {len(reac_map_exp)} reactions.')

@@ -311,8 +311,7 @@ def test_nullspace_accepts_coefficients_beyond_int64():
     exceeds int64, which scipy sparse cannot store.
     """
     tiny = Fraction(-773333333333333, 10**22)
-    entries = [(0, 0, tiny), (0, 1, Fraction(-1)), (0, 2, Fraction(1)),
-               (1, 1, Fraction(1)), (1, 3, Fraction(-1))]
+    entries = [(0, 0, tiny), (0, 1, Fraction(-1)), (0, 2, Fraction(1)), (1, 1, Fraction(1)), (1, 3, Fraction(-1))]
     rm = sd.RationalMatrix.from_fractions(entries, (2, 4))
     assert rm.is_bigint()
     _assert_kernel_exact(entries, (2, 4), sd.sparse_nullspace(rm))
@@ -410,8 +409,7 @@ def test_nullspace_of_float_sparse_matches_the_dense_route():
     A.data = np.round(A.data, 2)
     viaseq = sd.sparse_nullspace(A)
     viadense = sd.sparse_nullspace(RationalMatrix.from_numpy(A.toarray()))
-    to_set = lambda K: ({(int(r), int(c), Fraction(int(v), int(K.denom)))
-                         for r, c, v in zip(K.rows, K.cols, K.data)} if isinstance(K, sd.ExactCOO)
-                        else {(int(r), int(c), Fraction(int(v)))
+    to_set = lambda K: ({(int(r), int(c), Fraction(int(v), int(K.denom))) for r, c, v in zip(K.rows, K.cols, K.data)} if isinstance(
+        K, sd.ExactCOO) else {(int(r), int(c), Fraction(int(v)))
                               for r, c, v in zip(*[K.tocoo().row, K.tocoo().col, K.tocoo().data])})
     assert to_set(viaseq) == to_set(viadense)
