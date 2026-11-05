@@ -547,6 +547,9 @@ class RationalMatrix:
             pattern = csr_matrix(([1] * len(ai), (ai, aj)), shape=(self._rows, self._cols), dtype=np.int8)
             return pattern, row_data
 
+        if self._num_sparse is None:  # e.g. the empty kernel of a matrix with full column rank
+            return csr_matrix((self._rows, self._cols), dtype=np.int8), {}
+
         # Build pattern matrix (just 1s for structure)
         coo_num = self._num_sparse.tocoo()
         pattern_data = [1] * len(coo_num.data)
@@ -795,6 +798,24 @@ def _nullspace_sparse(matrix: RationalMatrix) -> RationalMatrix:
     # For each free column f, the nullspace vector has:
     # - Entry 1 at position f (the free variable)
     # - Entry -rref[i,f]/rref[i,pivot_i] at each pivot position
+    # The entries are collected from the nonzeros of the RREF, so the cost follows its fill and not
+    # (pivot rows) x (free columns), which reaches 10^8 dictionary lookups per nullspace on
+    # genome-scale networks.
+    entries_of_free = {free_col: [] for free_col in free_cols}
+    for i, pivot_col in enumerate(pivot_cols):
+        row_data = rref_data.get(i, {})
+        pivot_val = row_data.get(pivot_col, 1)  # Should always exist
+        for col, val_at_free in row_data.items():
+            if val_at_free != 0 and col in entries_of_free:
+                # Nullspace entry: -val_at_free / pivot_val
+                g = gcd(abs(val_at_free), abs(pivot_val))
+                num = -val_at_free // g
+                den = pivot_val // g
+                # Ensure positive denominator
+                if den < 0:
+                    num, den = -num, -den
+                entries_of_free[col].append((pivot_col, num, den))
+
     row_indices, col_indices = [], []
     numerators, denominators = [], []
 
@@ -806,22 +827,11 @@ def _nullspace_sparse(matrix: RationalMatrix) -> RationalMatrix:
         denominators.append(1)
 
         # Entries from RREF for pivot variables
-        for i, pivot_col in enumerate(pivot_cols):
-            row_data = rref_data.get(i, {})
-            val_at_free = row_data.get(free_col, 0)
-            if val_at_free != 0:
-                pivot_val = row_data.get(pivot_col, 1)  # Should always exist
-                # Nullspace entry: -val_at_free / pivot_val
-                g = gcd(abs(val_at_free), abs(pivot_val))
-                num = -val_at_free // g
-                den = pivot_val // g
-                # Ensure positive denominator
-                if den < 0:
-                    num, den = -num, -den
-                row_indices.append(pivot_col)
-                col_indices.append(k)
-                numerators.append(num)
-                denominators.append(den)
+        for pivot_col, num, den in entries_of_free[free_col]:
+            row_indices.append(pivot_col)
+            col_indices.append(k)
+            numerators.append(num)
+            denominators.append(den)
 
     return RationalMatrix._build_from_sparse_data(row_indices, col_indices, numerators, denominators, cols, nullity)
 

@@ -10,6 +10,7 @@ from ._models import load_test_model
 from cobra.flux_analysis import flux_variability_analysis
 from sympy import Rational as SympyRational
 import straindesign as sd
+import straindesign.compression as compression
 import straindesign.networktools as nt
 
 warnings.filterwarnings('ignore')
@@ -315,6 +316,45 @@ def test_nullspace_accepts_coefficients_beyond_int64():
     rm = sd.RationalMatrix.from_fractions(entries, (2, 4))
     assert rm.is_bigint()
     _assert_kernel_exact(entries, (2, 4), sd.sparse_nullspace(rm))
+
+
+def _kernel_from_every_pair(matrix):
+    """The kernel as rows, read off the RREF by visiting every (free column, pivot row)."""
+    rref, _, pivots = compression._rref_integer_sparse(matrix)
+    free = [c for c in range(matrix.get_column_count()) if c not in set(pivots)]
+    rows = {}
+    for k, f in enumerate(free):
+        rows.setdefault(f, {})[k] = Fraction(1)
+        for i, p in enumerate(pivots):
+            v = rref.get(i, {}).get(f, 0)
+            if v != 0:
+                rows.setdefault(p, {})[k] = Fraction(-v, rref[i][p])
+    return rows
+
+
+@pytest.mark.parametrize("big", [False, True], ids=["int64", "bigint"])
+def test_kernel_matches_the_rref(big):
+    rng = np.random.default_rng(0)
+    shape = (30, 60)
+    entries = {}
+    for _ in range(150):
+        r, c = int(rng.integers(shape[0])), int(rng.integers(shape[1]))
+        # primes beyond 2^64 in the numerators keep the exact kernel from fitting in int64
+        size = 2**89 - 1 if big and rng.random() < 0.5 else 1
+        entries[(r, c)] = Fraction((int(rng.integers(-5, 6)) or 1) * size, int(rng.integers(1, 4)))
+    triples = [(r, c, v) for (r, c), v in entries.items()]
+    rm = sd.RationalMatrix.from_fractions(triples, shape)
+    K = compression.nullspace(rm)
+    assert K.is_bigint() == big
+    _, rows = K.to_sparse_pattern()
+    assert {int(r): {int(c): v for c, v in row.items()} for r, row in rows.items()} == _kernel_from_every_pair(rm)
+
+
+def test_sparse_pattern_of_an_empty_kernel():
+    K = compression.nullspace(sd.RationalMatrix.from_fractions([(0, 0, Fraction(1))], (1, 1)))
+    pattern, rows = K.to_sparse_pattern()
+    assert pattern.shape == (1, 0)
+    assert rows == {}
 
 
 def test_nullspace_round_trips_its_own_exact_output():
