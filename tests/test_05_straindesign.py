@@ -438,8 +438,7 @@ def _two_route_network():
     from cobra import Model, Reaction, Metabolite
     m = Model('two_route')
     A, B = Metabolite('A'), Metabolite('B')
-    for rid, stoich in [('R1', {A: 1.0}), ('R2', {A: -1.0, B: 1.0}),
-                        ('R3', {A: -1.0, B: 1.0}), ('R4', {B: -1.0})]:
+    for rid, stoich in [('R1', {A: 1.0}), ('R2', {A: -1.0, B: 1.0}), ('R3', {A: -1.0, B: 1.0}), ('R4', {B: -1.0})]:
         r = Reaction(rid)
         r.lower_bound, r.upper_bound = 0.0, 10.0
         m.add_reactions([r])
@@ -481,7 +480,12 @@ def test_negative_cost_forces_reaction_into_every_design(curr_solver):
     sol = sd.compute_strain_designs(model,
                                     sd_modules=[sd.SDModule(model, PROTECT, constraints=['R4 >= 1'])],
                                     max_cost=-97,
-                                    ki_cost={'R1': 1.0, 'R2': -100.0, 'R3': 1.0, 'R4': 1.0},
+                                    ki_cost={
+                                        'R1': 1.0,
+                                        'R2': -100.0,
+                                        'R3': 1.0,
+                                        'R4': 1.0
+                                    },
                                     solution_approach='populate',
                                     solver=curr_solver,
                                     compress=False)
@@ -534,7 +538,12 @@ def test_rewarding_intervention_beats_the_design_without_it(curr_solver):
     sol = sd.compute_strain_designs(model,
                                     sd_modules=[sd.SDModule(model, PROTECT, constraints=['R4 >= 1'])],
                                     max_cost=3,
-                                    ki_cost={'R1': 1.0, 'R2': -5.0, 'R3': 1.0, 'R4': 1.0},
+                                    ki_cost={
+                                        'R1': 1.0,
+                                        'R2': -5.0,
+                                        'R3': 1.0,
+                                        'R4': 1.0
+                                    },
                                     solution_approach='populate',
                                     solver=curr_solver,
                                     compress=False)
@@ -550,7 +559,12 @@ def test_zero_cost_intervention_ties_instead_of_dominating(curr_solver):
     sol = sd.compute_strain_designs(model,
                                     sd_modules=[sd.SDModule(model, PROTECT, constraints=['R4 >= 1'])],
                                     max_cost=3,
-                                    ki_cost={'R1': 1.0, 'R2': 0.0, 'R3': 1.0, 'R4': 1.0},
+                                    ki_cost={
+                                        'R1': 1.0,
+                                        'R2': 0.0,
+                                        'R3': 1.0,
+                                        'R4': 1.0
+                                    },
                                     solution_approach='populate',
                                     solver=curr_solver,
                                     compress=False)
@@ -566,7 +580,12 @@ def test_positive_costs_keep_the_smaller_design_only(curr_solver):
     sol = sd.compute_strain_designs(model,
                                     sd_modules=[sd.SDModule(model, SUPPRESS, constraints=['R4 >= 1'])],
                                     max_cost=3,
-                                    ko_cost={'R1': 1.0, 'R2': 1.0, 'R3': 1.0, 'R4': 1.0},
+                                    ko_cost={
+                                        'R1': 1.0,
+                                        'R2': 1.0,
+                                        'R3': 1.0,
+                                        'R4': 1.0
+                                    },
                                     solution_approach='populate',
                                     solver=curr_solver,
                                     compress=False)
@@ -605,15 +624,14 @@ def test_trim_preserves_binaries_outside_the_intervention_block(curr_solver):
             self.lb = list(self.lb) + [0.0]
             self.ub = list(self.ub) + [1.0]
             self.vtype += 'B'
-            if len(self.indic_constr.binv):          # glpk uses big-M and has no indicators
-                self.indic_constr.binv[0] = col      # key one on it, as a row gate would
+            if len(self.indic_constr.binv):  # glpk uses big-M and has no indicators
+                self.indic_constr.binv[0] = col  # key one on it, as a row gate would
                 seen['keyed'] = True
             super()._trim_z_variables()
             seen['vtype'] = self.vtype
             seen['binv'] = [int(b) for b in self.indic_constr.binv]
 
-    _Probe(model, [sd.SDModule(model, SUPPRESS, constraints=['R4 >= 1'])],
-           ko_cost={'R1': 1.0, 'R2': 1.0}, solver=curr_solver)
+    _Probe(model, [sd.SDModule(model, SUPPRESS, constraints=['R4 >= 1'])], ko_cost={'R1': 1.0, 'R2': 1.0}, solver=curr_solver)
 
     # the appended column is the last one and must still be binary after renumbering
     assert seen['vtype'][-1] == 'B', seen['vtype'][-8:]
@@ -633,16 +651,20 @@ def test_caller_model_is_left_untouched(curr_solver, model_gpr, gene_kos):
 
     def snapshot(m):
         return ([r.id for r in m.reactions], [g.id for g in m.genes], [x.id for x in m.metabolites],
-                [(r.lower_bound, r.upper_bound) for r in m.reactions],
-                [r.gene_reaction_rule for r in m.reactions],
-                {r.id: r.objective_coefficient for r in m.reactions if r.objective_coefficient != 0},
-                [sorted((x.id, v) for x, v in r.metabolites.items()) for r in m.reactions])
+                [(r.lower_bound, r.upper_bound) for r in m.reactions], [r.gene_reaction_rule for r in m.reactions], {
+                    r.id: r.objective_coefficient for r in m.reactions if r.objective_coefficient != 0
+                }, [sorted((x.id, v) for x, v in r.metabolites.items()) for r in m.reactions])
 
     before = snapshot(model_gpr)
     sd.compute_strain_designs(model_gpr,
                               sd_modules=[sd.SDModule(model_gpr, SUPPRESS, constraints=['r_bm >= 0.5'])],
-                              max_cost=2, max_solutions=3, solution_approach=POPULATE,
-                              gene_kos=gene_kos, compress=True, solver=curr_solver, seed=1)
+                              max_cost=2,
+                              max_solutions=3,
+                              solution_approach=POPULATE,
+                              gene_kos=gene_kos,
+                              compress=True,
+                              solver=curr_solver,
+                              seed=1)
     assert snapshot(model_gpr) == before
 
 
