@@ -144,8 +144,10 @@ class Cplex_MILP_LP(Cplex):
         if not indic_constr == None:
             # cast variables and translate coefficient matrix A to right input format for CPLEX
             _A = sparse.csr_matrix(indic_constr.A)
-            A = [[_A.indices[_A.indptr[i]:_A.indptr[i + 1]].astype(int).tolist(),
-                  _A.data[_A.indptr[i]:_A.indptr[i + 1]].astype(float).tolist()] for i in range(_A.shape[0])]
+            A = [[
+                _A.indices[_A.indptr[i]:_A.indptr[i + 1]].astype(int).tolist(),
+                _A.data[_A.indptr[i]:_A.indptr[i + 1]].astype(float).tolist()
+            ] for i in range(_A.shape[0])]
             b = [float(i) for i in indic_constr.b]
             sense = [str(i) for i in indic_constr.sense]
             indvar = [int(i) for i in indic_constr.binv]
