@@ -324,10 +324,10 @@ class SDMILP(SDProblem, MILP_LP):
         """Verify computed strain design"""
         sols_orig = self._expand_z_to_orig(sols)
         valid = [False] * sols_orig.shape[0]
+
         def _split(z_map, sol_row):
             """Columns of z_map the solution switches off, and the complement."""
-            inactive = [col for z_i, col, sense in zip(z_map.row, z_map.col, z_map.data)
-                        if np.logical_xor(sol_row[z_i], sense == -1)]
+            inactive = [col for z_i, col, sense in zip(z_map.row, z_map.col, z_map.data) if np.logical_xor(sol_row[z_i], sense == -1)]
             keep = np.ones(z_map.shape[1], dtype=bool)
             keep[inactive] = False
             return inactive, np.nonzero(keep)[0].tolist()
