@@ -2,7 +2,9 @@ Releases are normally cut by the `Build and Upload Python Package` GitHub action
 which is triggered manually and takes the new version number as its input. It
 bumps the version, formats the repository, creates the tag and release, and
 uploads to PyPI and the `cnapy` Anaconda channel. The steps below are the manual
-equivalent, for the case where the action cannot be used.
+equivalent, for the case where the action cannot be used. The Anaconda upload is a job of
+its own: if only that fails, use "Re-run failed jobs" on the run, since PyPI rejects a
+version it already has.
 
 The conda-forge package (`straindesign-cobra`, feedstock
 https://github.com/conda-forge/straindesign-cobra-feedstock) is not uploaded by
