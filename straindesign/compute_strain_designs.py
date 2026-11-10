@@ -598,9 +598,10 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                         'both lumpings so the reconstruction stays exact, but on a universe this '
                         'usually costs more time than it saves.')
 
-    _free = [k for k, v in list(uncmp_ko_cost.items()) + list(uncmp_ki_cost.items()) +
-             list(locals().get('uncmp_gko_cost', {}).items()) + list(locals().get('uncmp_gki_cost', {}).items())
-             if v == 0.0]
+    _free = [
+        k for k, v in list(uncmp_ko_cost.items()) + list(uncmp_ki_cost.items()) + list(locals().get('uncmp_gko_cost', {}).items()) +
+        list(locals().get('uncmp_gki_cost', {}).items()) if v == 0.0
+    ]
     if _free:
         logging.warning('%d intervention(s) entered at zero cost (%s%s). Adding one to a design '
                         'changes no cost, so designs that differ only in these are all reported and '
@@ -1091,8 +1092,7 @@ def _drop_dominated(sd, group_map, cmp_size1_mcs, uncmp_ko_cost, uncmp_ki_cost):
     every intervention costs something, so this scan is only needed where that breaks down:
     free or rewarding interventions, and size-1 MCS, which are injected past the constraints.
     """
-    if not sd or not (cmp_size1_mcs or
-                      any(c <= 0.0 for c in list(uncmp_ko_cost.values()) + list(uncmp_ki_cost.values()))):
+    if not sd or not (cmp_size1_mcs or any(c <= 0.0 for c in list(uncmp_ko_cost.values()) + list(uncmp_ki_cost.values()))):
         return sd, group_map
     keep = nondominated_sd(sd, uncmp_ko_cost, uncmp_ki_cost)
     if len(keep) == len(sd):
