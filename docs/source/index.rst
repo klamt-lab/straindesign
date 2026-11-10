@@ -22,8 +22,12 @@ StrainDesign
    :target: https://pypi.org/project/straindesign/
    :alt: Current PyPI Version
    
-.. image:: https://anaconda.org/cnapy/straindesign/badges/version.svg
-   :target: https://anaconda.org/cnapy/straindesign/
+.. image:: https://img.shields.io/conda/vn/conda-forge/straindesign-cobra.svg
+   :target: https://anaconda.org/channels/conda-forge/packages/straindesign-cobra/overview
+   :alt: Current conda-forge Version
+
+.. image:: https://img.shields.io/conda/vn/cnapy/straindesign.svg
+   :target: https://anaconda.org/channels/cnapy/packages/straindesign/overview
    :alt: Current Anaconda Version
    
 .. image:: https://readthedocs.org/projects/straindesign/badge/?version=latest
@@ -75,18 +79,24 @@ The comprehensive StrainDesign package for MILP-based strain design computation 
   :width: 40%
   :alt: Plot animation
 
-The default compression uses a pure Python sparse RREF implementation. A legacy Java-based compression via EFMTool :html:`<a href="#ref6"><sup>[6]</sup></a>` is optionally available (see :doc:`legacy_methods`). Note that the Java backend (via JPype) is known to conflict with CPLEX's native library when both are loaded in the same Python session. If you use CPLEX, we recommend the default Python compression backend.
+Network compression uses a pure Python sparse RREF implementation with exact rational arithmetic, following the approach of EFMTool :html:`<a href="#ref6"><sup>[6]</sup></a>`. It has no dependencies beyond NumPy/SciPy.
 
 :html:`<a id="installation"></a>`\ Installation:
 ================================================
 
-The StrainDesign package is available on pip and Anaconda. To install the latest release, run:
+The StrainDesign package is available on PyPI, conda-forge and the ``cnapy`` Anaconda channel. To install the latest release, run:
 
 ``pip install straindesign``
 
 or
 
+``conda install -c conda-forge straindesign-cobra``
+
+or
+
 ``conda install -c cnapy straindesign``
+
+The conda-forge package is named ``straindesign-cobra`` because the name ``straindesign`` is taken on bioconda by an unrelated project. The Python package is ``straindesign`` in every case (``import straindesign``). Do not install ``straindesign-cobra`` and bioconda's ``straindesign`` into the same environment.
 
 Developer Installation:
 -----------------------
@@ -136,7 +146,6 @@ How to cite:
    examples/JN_08_compression.ipynb
    9_cnapy_integration
    api_reference
-   legacy_methods
    developers_guide
    
 .. 

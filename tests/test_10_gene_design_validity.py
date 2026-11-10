@@ -9,8 +9,7 @@ import pytest
 from math import inf
 from cobra.io import read_sbml_model
 import straindesign as sd
-from straindesign.names import (MODULES, MAX_COST, MAX_SOLUTIONS, SOLUTION_APPROACH,
-                                KOCOST, GKOCOST, SOLVER)
+from straindesign.names import (MODULES, MAX_COST, MAX_SOLUTIONS, SOLUTION_APPROACH, KOCOST, GKOCOST, SOLVER)
 from straindesign import SUPPRESS, PROTECT
 
 TOL = 1e-6
@@ -37,11 +36,25 @@ def _apply_gene_design(model, design):
 
 
 def _gpr_mcs_setup(model, gko_cost, solver, approach):
-    modules = [sd.SDModule(model, SUPPRESS, constraints=["1.0 rd_ex >= 1.0 "]),
-               sd.SDModule(model, PROTECT, constraints=[[{'r_bm': 1.0}, '>=', 1.0]])]
-    return {MODULES: modules, MAX_COST: 3, MAX_SOLUTIONS: inf, SOLUTION_APPROACH: approach,
-            KOCOST: {'rs_up': 1.0, 'rd_ex': 1.0, 'rp_ex': 1.1},
-            GKOCOST: gko_cost, SOLVER: solver}
+    modules = [
+        sd.SDModule(model, SUPPRESS, constraints=["1.0 rd_ex >= 1.0 "]),
+        sd.SDModule(model, PROTECT, constraints=[[{
+            'r_bm': 1.0
+        }, '>=', 1.0]])
+    ]
+    return {
+        MODULES: modules,
+        MAX_COST: 3,
+        MAX_SOLUTIONS: inf,
+        SOLUTION_APPROACH: approach,
+        KOCOST: {
+            'rs_up': 1.0,
+            'rd_ex': 1.0,
+            'rp_ex': 1.1
+        },
+        GKOCOST: gko_cost,
+        SOLVER: solver
+    }
 
 
 @pytest.fixture

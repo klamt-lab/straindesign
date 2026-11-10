@@ -1,12 +1,12 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "straindesign"
-version = "1.18"
+version = "1.19.2"
 description = "Computational strain design package for the COBRApy framework"
-readme = {text = "Computational strain design package for the COBRApy framework, offering standard and advanced tools for the analysis and redesign of biological networks", content-type = "text/plain"}
+readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [
@@ -25,14 +25,30 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 dependencies = [
-    "cobra",
+    # 0.32.0 cannot be imported on a default install: cobra/sampling/hopsy.py annotates a class
+    # attribute with `hopsy.Proposal` at class-definition time, but hopsy is an optional extra
+    # (`hopsy; extra == "chrr"`), so `import cobra` raises NameError. Excluding the one broken
+    # release is not a version bound in the sense of the note below -- drop it once cobra ships
+    # a fix. Upstream: https://pypi.org/project/cobra/0.32.0/
+    "cobra!=0.32.0",
     "scipy",
     "matplotlib",
     "psutil",
+    # Imported directly by this package, but every one of them is already a hard
+    # requirement of cobra. They are listed so the imports are declared, and left
+    # deliberately unpinned: contributing no version constraint leaves cobra the
+    # sole authority on which versions get resolved. Do not add bounds here --
+    # that would start a fight with cobra over versions we have no opinion on.
+    "numpy",
+    "pandas",
+    "optlang",
+    "swiglpk",
+    # The only free solver that handles indicator constraints natively. GLPK has
+    # to translate them into big-M, which is documented to give incorrect results
+    # (see glpk_interface.py and test_07_compression.py), so without this a
+    # default install would have no solver able to express the formulation.
+    "pyscipopt",
 ]
-
-[project.optional-dependencies]
-java = ["jpype1"]
 
 [project.urls]
 Homepage = "https://github.com/klamt-lab/straindesign"
@@ -43,5 +59,3 @@ Source = "https://github.com/klamt-lab/straindesign/"
 [tool.setuptools.packages.find]
 include = ["straindesign*"]
 
-[tool.setuptools.package-data]
-straindesign = ["efmtool.jar"]

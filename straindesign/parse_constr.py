@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright 2022 Max Planck Insitute Magdeburg
+# Copyright 2022-2026 Max Planck Institute Magdeburg
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -86,58 +86,6 @@ def parse_linexpr(expr, reaction_ids) -> List:
     return [linexpr2dict(e, reaction_ids) if type(e) is str else e for e in expr]
 
 
-def lineq2mat(equations, reaction_ids) -> Tuple[sparse.csr_matrix, Tuple, sparse.csr_matrix, Tuple]:
-    """Translates *linear* (in)equalities to matrices
-    
-    Input inequalities in the form of strings is translated into matrices and vectors. The reaction
-    list defines the order of variables and thus the columns of the resulting matrices, the order
-    of (in)equalities will be preserved in the output matrices. As an example, take the input:
-    
-    equations = ["2 c - b +3 a <= 2","c - b = 0","2 b -a >=-2"], reaction_ids = ["a","b","c"]
-    
-    This will be translated to the form A_ineq * x <= b_ineq, A_eq * x = b_eq and hence to
-    
-    A_ineq = sparse.csr_matrix([[3,-1,2],[1,-2,0]]), b_ineq = [2,2],
-    A_eq = sparse.csr_matrix([[1,-2,0]]), b_eq = [0]
-    
-    Args:
-        equations (list of str): 
-            (List of) (in)equalities in string form equations=["r1 + 3 r2 = 0.3", "-5 r3 -r4 <= -0.5"]
-            
-        reaction_ids (list of str): 
-            List of reaction identifiers or variable names that are used to recognize variables in
-            the provided (in)equalities
-
-    Returns:
-        (Tuple): 
-        A_ineq, b_ineq, A_eq, b_eq. Coefficient matrices and right hand sides that represent the input
-        (in)equalities as matrix-vector multiplications
-    """
-    numr = len(reaction_ids)
-    A_ineq = sparse.csr_matrix((0, numr))
-    b_ineq = []
-    A_eq = sparse.csr_matrix((0, numr))
-    b_eq = []
-    for equation in equations:
-        try:
-            lhs, rhs = re.split(r"<=|=|>=", equation)
-            eq_sign = re.search(r"<=|>=|=", equation)[0]
-            rhs = float(rhs)
-        except:
-            raise Exception("Equations must contain exactly one (in)equality sign: <=,=,>=. Right hand side must be a float number.")
-        A = linexpr2mat(lhs, reaction_ids)
-        if eq_sign == "=":
-            A_eq = sparse.vstack((A_eq, A))
-            b_eq += [rhs]
-        elif eq_sign == "<=":
-            A_ineq = sparse.vstack((A_ineq, A))
-            b_ineq += [rhs]
-        elif eq_sign == ">=":
-            A_ineq = sparse.vstack((A_ineq, -A))
-            b_ineq += [-rhs]
-    return A_ineq, b_ineq, A_eq, b_eq
-
-
 def lineq2list(equations, reaction_ids) -> List:
     """Translates *linear* (in)equalities to list format: [lhs,sign,rhs]
     
@@ -179,15 +127,15 @@ def lineq2list(equations, reaction_ids) -> List:
 
 def lineqlist2str(D):
     """Translates a *linear* (in)equality from the list format [lhs,sign,rhs] to a string
-    
+
     E.g. input: D=[{"a":3.0,"b":-1.0,"c":2.0},"<=",2.0]] is translated to: out="3.0 a - 1.0 b + 2.0 c <= 2"
-    
+
     Args:
-        D (list): 
+        D (list):
             (In)equality in list form, e.g.: D=[{"a":3.0,"b":-1.0,"c":2.0},"<=",2.0]]
 
     Returns:
-        (str): 
+        (str):
         A list of (in)equalities in string form
 
     """
@@ -401,31 +349,3 @@ def linexprdict2str(D):
         return expr
     else:
         return ""
-
-
-def get_rids(expr, reaction_ids):
-    """Get reaction identifiers that are present in string
-    
-    E.g.: input: D={"R1":-1.0, "R3": 2.0}, translates to the string:  "- 1.0 R1 + 2.0 R3"
-    
-    Args:
-        expr (str): 
-            A character string
-                        
-        reaction_ids (list of str): 
-            List of reaction identifiers or variable names
-
-    Returns:
-        (list of str): 
-        A list of strings containing the reaction/variable strings present in the input string
-    """
-    expr_parts = [re.sub(r"^(\s|-|\+|\()*|(\s|-|\+|\|<|\=|>)*$", "", part) for part in expr.split()]
-    reacIDs = []
-    for part in expr_parts:
-        if part in reaction_ids:
-            reacIDs += [part]
-            continue
-        if re.match(r"^\d*\.{0,1}\d*$", part) is not None:
-            continue
-        raise Exception("Expression invalid. Unknown identifier " + part + ".")
-    return reacIDs

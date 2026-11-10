@@ -29,7 +29,7 @@ which drifts with every edit. Grep for the symbol.
 
 1. [**Orientation & the strain-design problem**](#ch1) — the MCS problem, SUPPRESS/PROTECT/bilevel semantics, interventions & cost, the binary `z` vector, invocation, and the master notation table.
 2. [**The constraint-based foundation**](#ch2) — `Sv=0`, the flux polytope/cone, FBA & FVA as LPs, the internal standard form, and the convex geometry needed for duality.
-3. [**Network compression**](#ch3) — exact rational nullspace compression; parallel, coupled, conservation and blocked reductions; lump scaling; GPR propagation and simplification; compression maps; and the legacy efmtool backend.
+3. [**Network compression**](#ch3) — exact rational nullspace compression; parallel, coupled, conservation and blocked reductions; lump scaling; GPR propagation and simplification; compression maps;.
 4. [**GPR integration**](#ch4) — GPR reduction and Boolean simplification, `extend_model_gpr`, reversible splitting, module remapping, and the two-compression-pass boundary.
 5. [**FVA in preprocessing**](#ch5) — pre-compression sign classification, desired-region essentiality, final bound/module FVA, the single-classical-module fold, and size-1 MCS extraction.
 6. [**Dualization (the mathematical core)**](#ch6) — LP duality, Farkas certificates, and the strong-duality encodings shared by the supported module types.
@@ -67,9 +67,7 @@ straindesign/
 ├── gurobi_interface.py             # Gurobi backend (Gurobi_MILP_LP)
 ├── scip_interface.py               # SCIP backend (SCIP_MILP_LP)
 ├── glpk_interface.py               # GLPK backend (GLPK_MILP_LP)
-├── efmtool_cmp_interface.py        # EFMtool JAR interface (legacy compression backend)
 ├── pool.py                         # SDPool: cross-platform multiprocessing pool
-└── efmtool.jar                     # Bundled EFMtool binary
 ```
 
 Which chapter covers which module: compression → [Ch 3](#ch3); GPR / networktools → [Ch 4](#ch4), [Ch 12](#ch12); FVA / lptools /
@@ -1082,7 +1080,7 @@ nonzero flux in any steady state — a *contradicting* group. Then the master *a
 and `contradicting_removed` is set, which is the flag that triggers a re-iteration of
 the whole pass (→): removing a contradicting group changes the flux space and may make
 previously-uncoupled reactions coupled. A consistent (nonempty) group removes only the slaves
-. This bound-intersection logic replaced a Java-era behaviour that could drop
+. This bound-intersection logic replaced an earlier behaviour that could drop
 reactions incorrectly; getting the translate-and-intersect direction right (especially the `λ<0` flip
 and the `±inf` handling) is exactly the subject of the closed issue #44 cautionary tale in [Ch 10](#ch10).
 
@@ -1107,9 +1105,7 @@ Two design points. First, this is a **row-rank reduction**, complementary to the
 §3.4 — together they push `S` toward full rank (the §3.1 hypothesis). Second, the *ordering* matters:
 conservation removal runs *before* the expensive coupled step in each cycle (`compress_model`,
 –). Fewer metabolite rows means the nullspace RREF that drives coupling detection operates
-on a smaller matrix, so removing dependent rows first makes the costliest stage cheaper. (There is a
-legacy Java oracle, `_remove_conservation_relations_java` at, selectable via the
-`efmtool_rref` backend; the default `sparse_rref` path uses the pure-Python exact RREF above.)
+on a smaller matrix, so removing dependent rows first makes the costliest stage cheaper.
 
 ### 3.6 Blocked and zero-flux removal
 
@@ -1264,202 +1260,6 @@ at each step. The complete decompression semantics — expanding a knockout of a
 correct combination of original knockouts, handling parallel-vs-serial multiplicity, size-1 MCS
 re-injection, and gene translation — are owned by [Ch 9](#ch9); this section only fixes the structure of the
 map that [Ch 9](#ch9) consumes.
-
-
-### 3.11 The legacy efmtool (Java) backend
-
-Everything in §3.2–§3.10 describes the **default** compression engine: the pure-Python, exact
-integer/rational `sparse_rref` backend. That engine is a *reimplementation*. The original backend —
-and the one every pre-1.15 release actually ran — was **efmtool**, Marco Terzer's Java tool for
-elementary-flux-mode enumeration and network compression (the compression stage of efmtool is exactly
-the coupled/zero/contradicting reduction that §3.4/§3.6 now do in Python). It is still shipped and
-still reachable, selected with `compression_backend='efmtool_rref'`, and this section documents how the
-bridge works and *why* it has been demoted to legacy. Reading it also explains the vocabulary the
-Python code inherited: the Python `CompressionMethod` enum (`compression.py`), the Python class
-name `StoichMatrixCompressor` (`compression.py`), and the `CoupledZero`/`CoupledCombine`/
-`CoupledContradicting` method names are all deliberate echoes of the efmtool Java API they replaced.
-
-#### 3.11.1 What efmtool is and how straindesign reaches it
-
-efmtool is a Java library (namespace `ch.javasoft.*`, packaged as `efmtool.jar` alongside the Python
-sources at `straindesign/efmtool.jar`). straindesign uses only its *compression* half — not its EFM
-enumeration — through the classes loaded in `efmtool_cmp_interface.py`–:
-`ch.javasoft.smx.impl.DefaultBigIntegerRationalMatrix` (an arbitrary-precision rational matrix),
-`ch.javasoft.smx.ops.Gauss` (rational Gaussian elimination), `ch.javasoft.metabolic.compress.
-StoichMatrixCompressor` and `CompressionMethod`, and `ch.javasoft.math.BigFraction` /
-`java.math.BigInteger`. The bridge is **JPype**: `_start_jvm` (`efmtool_cmp_interface.py`) starts an
-in-process JVM, adds `efmtool.jar` to the classpath, and imports the Java classes via
-`jpype.imports` so they become callable Python objects.
-
-The routing has three layers.
-
-1. **Import time.** `__init__.py`– calls `_start_jvm` *eagerly* at `import straindesign`.
-   This is a no-op when jpype1 or a JVM is absent (neither is a package dependency), so a normal install
-   never touches Java. When Java *is* present the JVM must be started here — before NumPy/OpenBLAS spins
-   up worker threads — or JNI calls later crash with SIGBUS/SIGSEGV (`__init__.py`–; the code is
-   littered with such mitigations, see §3.11.4).
-2. **Backend selection.** `compute_strain_designs` reads the kwarg
-   `compression_backend = kwargs.get('compression_backend', 'sparse_rref')`
-   (`compute_strain_designs.py`) and threads it into both `compress_model` calls
-   . `compress_model` sets `use_java = (compression_backend == 'efmtool_rref')`
-   (`compression.py`).
-3. **Dispatch inside the fixpoint.** Crucially, `efmtool_rref` does **not** replace the whole
-   compression pipeline — only two of its three reducers. Inside the alternating fixpoint (§3.7,
-   `compression.py`–):
-   - **Parallel merge** (step 1, §3.8) is **always** the Python hash-based `compress_model_parallel` —
-     efmtool has no equivalent and it is never routed to Java.
-   - **Conservation removal** (step 2, §3.5) forks on `use_java` : Java goes through
-     `_remove_conservation_relations_java`, Python through `remove_conservation_relations`.
-   - **Coupled merge** (step 3, §3.4) forks inside `compress_model_coupled`: Java calls
-     `compress_model_java` (`efmtool_cmp_interface.py`), Python calls `compress_cobra_model`.
-
-   So `efmtool_rref` is really a **hybrid**: Python parallel-merge + Java conservation-removal + Java
-   coupled-merge, iterated by the same Python fixpoint driver. The two backends differ only in the
-   *nullspace/rank algorithm* used for steps 2 and 3.
-
-#### 3.11.2 Data marshalling: cobra model → Java → cobra model
-
-The coupled step, `compress_model_java` (`efmtool_cmp_interface.py`), is where the interesting
-marshalling lives. It mutates the cobra model in place and returns the same
-`{compressed_id: {orig_id: factor}}` reaction map that the Python backend produces, so the rest of the
-pipeline (module remapping, cost compression, decompression in [Ch 9](#ch9)) is backend-agnostic.
-
-**Into Java.**
-- `stoichmat_coeff_to_fraction(model)` first converts every stoichiometric coefficient to an
-  exact `Fraction`/sympy-`Rational` — the same exactness discipline as §3.2.1, done *before* any Java
-  call.
-- All gene rules are cleared, `r.gene_reaction_rule = ''`, matching the Python coupled path
-  (§3.9); GPR is re-attached afterward (below).
-- A `DefaultBigIntegerRationalMatrix(num_met, num_active)` is allocated and filled column by
-  column. Reactions whose upper bound is `≤ 0` are **flipped** to the forward direction
-  (`model.reactions[mi] *= -1`,–) and their index recorded in `flipped`; efmtool's
-  compressor assumes a canonical orientation. Each coefficient `v` is converted by
-  `sympyRat2jBigIntegerPair` into a Java `BigInteger` numerator/denominator pair — using
-  `BigInteger.valueOf` for values that fit in 63 bits and `BigInteger(str(...))` otherwise — and set as
-  a `BigFraction(n, d)`. This path is **exact**: efmtool's `DefaultBigIntegerRational
-  Matrix` is arbitrary-precision, so the Java core does *not* overflow.
-- A `StoichMatrixCompressor(subset_compression)` is built, where `subset_compression =
-  [CoupledZero, CoupledCombine, CoupledContradicting]` : remove structurally
-  zero-flux reactions, combine coupled groups, and drop contradicting groups — the Java analogues of
-  §3.3's three removal kinds. `smc.compress(stoich_mat, reversible, …, reacNames, None)`
-  returns a `comprec` whose `post` matrix is the reaction transformation (the Java counterpart of the
-  Python `post` in §3.3, `v_original = post · v_compressed`).
-
-**Back to Python.** Here is the seam that matters for correctness:
-
-```python
-subset_matrix = jpypeArrayOfArrays2numpy_mat(comprec.post.getDoubleRows())   # :424 — DOUBLES
-```
-
-The *structure* of the compression (which original reaction maps into which compressed column, and the
-zero pattern) is read back as a **double-precision** numpy matrix via `getDoubleRows`. The
-per-reaction merge then:
-- flags a reaction zero-flux iff its `subset_matrix` row is all-zero;
-- for each compressed column `j`, gathers members from `subset_matrix[:,j].nonzero`, scales
-  each member's stoichiometry by the **exact** factor `jBigFraction2sympyRat(comprec.post.
-  getBigFractionValueAt(ai, j))` (–, exact `BigFraction → sympy.Rational`), and **rescales
-  its bounds by `/= abs(subset_matrix[ai, j])`** (–, i.e. by a **double**);
-- merges member reactions into the group representative, concatenating ids with `*` and truncating past
-  ~220 chars to `...` — the same naming convention as the parallel backend (§3.8);
-- records `subset_rxns`/`subset_stoich` per representative (negating the stoich for `flipped`
-  reactions,–) and finally assembles `rational_map` from them.
-
-So the *factors* are exact rationals, but the *pattern detection and the bound rescaling* pass through
-double precision. The `suppressed_reactions` argument — reaction ids that must survive
-because a strain-design module references them — are excluded from the active set entirely and re-added
-as standalone identity entries, a workaround for efmtool's `CoupledContradicting` step,
-which will otherwise delete reactions it deems inconsistent (contrast the Python backend, which keeps
-them via the exact bounds-intersection of §3.4.4). Back in `compress_model_coupled` the Java branch
-then sweeps up any leftover `(0,0)` reactions (`compression.py`–) and — identically to the
-Python branch — re-attaches the **AND-combined GPR** from the pre-merge snapshot
-(`compression.py`–). GPR propagation is therefore the *same* for both backends on the
-coupled step.
-
-**The conservation path.** `_remove_conservation_relations_java` (`compression.py`) builds `S` as
-a LIL matrix, **densifies its transpose** (`stoich_mat.transpose.toarray`), and hands it
-to `basic_columns_rat_java` (`efmtool_cmp_interface.py`). That function wraps the dense array into a
-`DefaultBigIntegerRationalMatrix` via `numpy_mat2jpypeArrayOfArrays` — which builds a **`JDouble[rows,
-cols]`** — then runs `Gauss.getRationalInstance.rowEchelon(...)` and returns the
-pivot columns, i.e. the independent metabolite rows; the non-pivot metabolites are dependent
-(conservation relations) and removed (`compression.py`–). This is the exact-RREF
-independence oracle of §3.5, but computed in Java — and note it marshals the stoichiometry through a
-**dense double** array, both memory-heavy on genome-scale models and lossy for large coefficients.
-
-#### 3.11.3 Why it is legacy
-
-The pure-Python `sparse_rref` engine (§3.2) was written to replace efmtool for four concrete reasons,
-each a decisive advantage on a genome-scale correctness/performance workload:
-
-1. **No JVM / JPype dependency.** efmtool needs a JVM, the `efmtool.jar`, `jpype1`, and `sympy` all
-   present and version-compatible (`_init_java`, `efmtool_cmp_interface.py`, raises `ImportError`
-   for any missing piece). The Python backend needs only NumPy/SciPy, which straindesign already
-   depends on. A default that requires a working Java toolchain is a default that fails on many
-   installs.
-2. **Native-crash fragility.** The bridge is defensive to a degree that itself signals the risk:
-   eager JVM startup ordered before OpenBLAS threads (§3.11.1); `gc.disable` wrapped around *every*
-   JNI block (`efmtool_cmp_interface.py`–,–) because Python's garbage collector
-   finalizing a JPype proxy mid-call causes Bus error / SIGSEGV; an `atexit` JVM-shutdown hook to dodge
-   a JPype teardown race. None of this can occur in a pure-Python engine.
-3. **Big-integer safety at the interface.** efmtool's Java core is arbitrary-precision (`DefaultBig
-   IntegerRationalMatrix`), so the *internal* arithmetic does not overflow. The hazard is at the
-   **marshalling boundary**: the compression structure and bound rescaling are read back through
-   `getDoubleRows` and `abs(subset_matrix[...])` in double precision (§3.11.2), and conservation
-   removal pushes `S` through a dense `JDouble` array. On models whose exact subdeterminants are huge —
-   the verified extreme is **yeast-GEM, needing ~263-bit coefficients** (§3.2.5) — a double cannot
-   represent those magnitudes, so bound rescaling and pattern detection silently lose precision. The
-   Python engine keeps *everything* in Python big integers / `Fraction` end to end and switches to a
-   dict-of-`Fraction` store above int64 (§3.2.5), so it is exact even on yeast-GEM. This is the single
-   most important reason the Python path is the default.
-4. **It is the default and the tested path.** The measured pipeline numbers (§3.1, and the iML1515
-   timings in CONTEXT) are all on `sparse_rref`; that is the code that receives ongoing correctness
-   work (e.g. the bounds-intersection fix of §3.4.4 / issue #44).
-
-**The trade-off, honestly stated.** efmtool is not bad code — it is a mature, well-tested Java library
-whose fraction-free rational Gauss elimination is fast compiled code, and for a decade it *was* the
-compression engine for this and related tools. If you have a JVM handy and a model whose coefficients
-stay comfortably inside double range, `efmtool_rref` will produce a correct compression at competitive
-speed. Its costs are the heavy dependency stack, the native-crash surface, and the double-precision
-marshalling seam. Given a pure-Python alternative that is exact to arbitrary precision, needs no JVM,
-and is the maintained default, the Java backend earns its "legacy" label: **there is essentially no
-production reason to select it.** The realistic remaining uses are (a) cross-validation — regression-
-testing the Python engine's output against the historical efmtool result on a model both can handle —
-and (b) a fallback if a bug were ever found in the Python RREF. For everyday strain design, leave
-`compression_backend` at its default.
-
-#### 3.11.4 Behavioral differences to be aware of
-
-The two backends are *intended* to produce the same lossless flux-space compression, but they are not
-byte-identical and a few divergences are worth knowing:
-
-- **GPR propagation is identical on the coupled step.** Both backends clear gene rules before merging
-  and re-attach the AND-combined GPR from the saved AST snapshot in `compress_model_coupled`
-  (`compression.py`–), and the parallel OR-combine is always the Python
-  `compress_model_parallel` (§3.9). So GPR handling does *not* diverge between backends.
-- **Protected reactions are honored only by the Python backend.** `compress_model` passes gene-
-  controlled reactions as `protected_reactions` (`no_coupled_compress_reacs`, `compression.py`–
-  ) so they survive COMPRESS #1 un-merged and gene multiplicity is preserved for GPR
-  integration (§3.4.2, [Ch 4](#ch4)). `compress_model_java` **ignores `protected_reactions`** — it reads only
-  `suppressed_reactions`, which `compress_model` never populates on this path. On the Java backend those
-  reactions can therefore be lumped in COMPRESS #1, a genuine semantic divergence in the gene-KO
-  pipeline.
-- **Contradicting groups are handled differently.** efmtool's `CoupledContradicting` deletes groups it
-  finds inconsistent (the reason `suppressed_reactions` exists as a shield). The Python backend instead
-  computes the exact **bounds intersection** of the coupled group and removes only genuinely
-  empty/zero groups (§3.4.4). This is precisely the logic whose Java-era version "could drop reactions
-  incorrectly" — the cautionary tale of closed issue #44 ([Ch 10](#ch10)). The two backends can thus disagree on
-  which reactions a contradicting group costs you.
-- **Direction bookkeeping differs.** The Java path physically flips `ub ≤ 0` reactions (`*= -1`) and
-  negates their recorded stoich (`efmtool_cmp_interface.py`–,–); the Python
-  coupled backend carries sign inside the exact `ratios` (§3.4.3). Same flux space, different maps —
-  which is fine because decompression ([Ch 9](#ch9)) consumes whichever map its backend produced.
-- **Bound rescaling precision.** Java rescales merged-reaction bounds by a **double**
-  (`efmtool_cmp_interface.py`–); the Python backend intersects bounds using exact rationals
-  (§3.4.4). On well-scaled models this is invisible; on large-coefficient models it is another place the
-  Java path can drift.
-
-The safe reading: `efmtool_rref` is preserved for provenance and cross-checking, exercises the same
-fixpoint and produces the same *kind* of map, but the exact-arithmetic Python backend is the one whose
-compression you should trust for correctness-sensitive strain design.
 
 
 (ch4)=
@@ -5926,9 +5726,7 @@ pytest tests -v --log-cli-level=INFO --junit-xml=test-results.xml
 ```
 
 **CI matrix** (`.github/workflows/CI-test.yml`): OS `ubuntu-latest` / `windows-latest`; Python
-`3.10`–`3.13`; both `pip` and `conda`. CPLEX is excluded for Python 3.13 (max supported: 3.12). A
-JPype/JVM-shutdown segfault on Ubuntu is tolerated via a JUnit-XML exit-code check rather than the raw
-process exit code.
+`3.10`–`3.13`; both `pip` and `conda`. CPLEX is excluded for Python 3.13 (max supported: 3.12).
 
 **Correctness gates.** The canonical known-answer tests are the ones to keep green after any change to
 the pipeline: gene-level MCS on `e_coli_core` = **455** solutions, and on `iML1515` = **393**. These

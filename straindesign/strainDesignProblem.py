@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright 2022 Max Planck Insitute Magdeburg
+# Copyright 2022-2026 Max Planck Institute Magdeburg
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -86,9 +86,10 @@ class SDProblem:
             the big-M method by default (with COBRA standard M=1000). M should be chosen 'sufficiently large' 
             to avoid computational artifacts and 'sufficiently small' to avoid numerical issues.
             
-        essential_kis (optional (set)):
-            A set of reactions that are marked as addable and that are essential for at least one of the
-            strain design modules. Providing such "essential knock-ins" may speed up the strain design computation.
+        essential_kis (optional (set of str)):
+            Reaction identifiers that are marked as addable and that are essential for at least one of the
+            strain design modules. Their intervention binaries are fixed to 1, since a solution that omits
+            them cannot satisfy the module they are essential for.
             
     Returns:
         (SDProblem):
@@ -153,21 +154,28 @@ class SDProblem:
         for i in [i for i, x in enumerate(self.cost) if np.isnan(x)]:
             self.cost[i] = 0.0
         # Top 3 fixed rows of A_ineq (with the b_ineq values assembled just below):
-        #   row 0 (idx_row_maxcost):  -cost . z <= 0        -> total intervention cost >= 0
+        #   row 0 (idx_row_maxcost):  -cost . z <= inf      -> left open, see below
         #   row 1 (idx_row_mincost):   cost . z <= max_cost -> total intervention cost <= max_cost (budget cap)
         #   row 2 (idx_row_obj):       objective placeholder row (set later via fixObjective)
         # NOTE: the maxcost/mincost names are historical and read counter-intuitively -- row 0 is the
-        # >= 0 lower bracket, row 1 is the <= max_cost upper cap.
+        # lower bracket on total cost, row 1 is the <= max_cost upper cap.
+        # Row 0 used to read `total cost >= 0`. That is implied whenever every cost is
+        # non-negative, and z is binary, so the objective is bounded without it. Its only
+        # effect was on negative intervention costs, which are a documented way of forcing
+        # a reaction into every solution: give it a large negative cost and set max_cost
+        # accordingly, so any solution omitting it is unaffordable. The bracket made that
+        # infeasible by construction. The row is kept so that row indices -- and the
+        # z_map_constr_ineq columns aligned to them -- stay put.
         self.idx_row_maxcost = 0
         self.idx_row_mincost = 1
         self.idx_row_obj = 2
         self.A_ineq = sparse.csr_matrix([[-i for i in self.cost], self.cost, [0 for _ in range(self.num_z)]])
         if self.max_cost is None:
-            self.b_ineq = [0.0, float(np.sum(np.abs(self.cost))), np.inf]
+            self.b_ineq = [np.inf, float(np.sum(np.abs(self.cost))), np.inf]
         else:
-            self.b_ineq = [0.0, float(self.max_cost), np.inf]
+            self.b_ineq = [np.inf, float(self.max_cost), np.inf]
         self.z_map_constr_ineq = sparse.csc_matrix((numr, 3))
-        self.lb = [1.0 if r in self.essential_kis else 0.0 for r in model.reactions]
+        self.lb = [0.0 for _ in model.reactions]
         self.ub = [1.0 - float(i) for i in self.z_non_targetable]
         self.idx_z = [i for i in range(0, numr)]
         self.c = [0.0] * numr
@@ -198,12 +206,34 @@ class SDProblem:
 
         # Save continous part of MILP for easy strain design validation
         cont_vars = [i for i in range(0, self.A_ineq.shape[1]) if not i in self.idx_z]
-        self.cont_MILP = ContMILP(self.A_ineq[:, cont_vars], self.b_ineq.copy(), self.A_eq[:, cont_vars], self.b_eq.copy(),
+        # The three leading rows constrain z alone (both cost brackets and the objective
+        # placeholder). Once the z columns are dropped they read 0 <= rhs, which says
+        # nothing about the continuous system but turns every verification infeasible as
+        # soon as a cost is negative enough to make max_cost negative. Neutralise their
+        # right-hand sides here rather than dropping the rows, since z_map_constr_ineq
+        # columns are indexed by row position.
+        cont_b_ineq = self.b_ineq.copy()
+        for r in (self.idx_row_maxcost, self.idx_row_mincost, self.idx_row_obj):
+            cont_b_ineq[r] = np.inf
+        self.cont_MILP = ContMILP(self.A_ineq[:, cont_vars], cont_b_ineq, self.A_eq[:, cont_vars], self.b_eq.copy(),
                                   [self.lb[i] for i in cont_vars], [self.ub[i] for i in cont_vars], [self.c[i] for i in cont_vars],
                                   self.z_map_constr_ineq.tocoo(), self.z_map_constr_eq.tocoo(), self.z_map_vars[:, cont_vars].tocoo())
 
         # 4. Link LP module to z-variables
         self.link_z()
+
+        # An essential knock-in has to be part of every design. Required by a row rather than by
+        # pinning the binary's lower bound: with the bound form SCIP's populate re-reports the
+        # same design instead of reporting infeasible once the designs are exhausted (measured;
+        # the other three solvers are indifferent to which form is used). link_z's step 7 leaves
+        # inverted z's alone, so nothing downstream depends on the pinned bound.
+        _ess = [i for i, r in enumerate(model.reactions) if r.id in self.essential_kis]
+        if _ess:
+            _rows = sparse.lil_matrix((len(_ess), self.A_ineq.shape[1]))
+            for _k, _i in enumerate(_ess):
+                _rows[_k, _i] = -1.0
+            self.A_ineq = sparse.vstack((self.A_ineq, _rows.tocsr()), format='csr')
+            self.b_ineq = list(self.b_ineq) + [-1.0] * len(_ess)
 
         # if there are only mcs modules, minimize the knockout costs,
         # otherwise use objective function(s) from modules
@@ -278,9 +308,9 @@ class SDProblem:
                 logging.warning('  Module FVA range for %s is inconsistent (min %g > max %g), no bound '
                                 'override applied.' % (rid, lim.minimum, lim.maximum))
                 continue
-            lo = 0.0 if lim.minimum >= tol else None       # convincingly non-negative in-module
-            hi = 0.0 if lim.maximum <= -tol else None      # convincingly non-positive in-module
-            if lo is not None or hi is not None:           # both sides fixed == blocked in-module
+            lo = 0.0 if lim.minimum >= tol else None  # convincingly non-negative in-module
+            hi = 0.0 if lim.maximum <= -tol else None  # convincingly non-positive in-module
+            if lo is not None or hi is not None:  # both sides fixed == blocked in-module
                 override[rid] = (lo, hi)
         return override
 
@@ -335,23 +365,19 @@ class SDProblem:
                 # Inequality: c_v · x_v + tol · c_dual · d <= 0  (actual >= tol * optimal)
                 n_v, n_ref, n_d = len(c_v), len(c_inner), len(c_inner_dual)
                 c_dual_scaled = [inner_opt_tol * c for c in c_inner_dual]
-                ineq_link = sparse.hstack((sparse.csr_matrix(c_v), sparse.csr_matrix((1, n_ref)),
-                                           sparse.csr_matrix(c_dual_scaled)))
-                eq_link = sparse.hstack((sparse.csr_matrix((1, n_v)), sparse.csr_matrix(c_inner),
-                                          sparse.csr_matrix(c_inner_dual)))
-                A_ineq_p = sparse.vstack((sparse.block_diag((A_ineq_v, A_ineq_inner, A_ineq_dual)),
-                                          ineq_link)).tocsr()
+                ineq_link = sparse.hstack((sparse.csr_matrix(c_v), sparse.csr_matrix((1, n_ref)), sparse.csr_matrix(c_dual_scaled)))
+                eq_link = sparse.hstack((sparse.csr_matrix((1, n_v)), sparse.csr_matrix(c_inner), sparse.csr_matrix(c_inner_dual)))
+                A_ineq_p = sparse.vstack((sparse.block_diag((A_ineq_v, A_ineq_inner, A_ineq_dual)), ineq_link)).tocsr()
                 b_ineq_p = b_ineq_v + b_ineq_inner + b_ineq_dual + [0.0]
-                A_eq_p = sparse.vstack((sparse.block_diag((A_eq_v, A_eq_inner, A_eq_dual)),
-                                        eq_link)).tocsr()
+                A_eq_p = sparse.vstack((sparse.block_diag((A_eq_v, A_eq_inner, A_eq_dual)), eq_link)).tocsr()
                 b_eq_p = b_eq_v + b_eq_inner + b_eq_dual + [0.0]
                 lb_p = lb_v + lb_inner + lb_dual
                 ub_p = ub_v + ub_inner + ub_dual
                 z_map_vars_p = sparse.hstack((z_map_vars_v, z_map_vars_inner, z_map_vars_dual))
-                z_map_constr_ineq_p = sparse.hstack((z_map_constr_ineq_v, z_map_constr_ineq_inner,
-                    z_map_constr_ineq_dual, sparse.csc_matrix((self.num_z, 1))))
-                z_map_constr_eq_p = sparse.hstack((z_map_constr_eq_v, z_map_constr_eq_inner,
-                    z_map_constr_eq_dual, sparse.csc_matrix((self.num_z, 1))))
+                z_map_constr_ineq_p = sparse.hstack(
+                    (z_map_constr_ineq_v, z_map_constr_ineq_inner, z_map_constr_ineq_dual, sparse.csc_matrix((self.num_z, 1))))
+                z_map_constr_eq_p = sparse.hstack(
+                    (z_map_constr_eq_v, z_map_constr_eq_inner, z_map_constr_eq_dual, sparse.csc_matrix((self.num_z, 1))))
             else:
                 # Exact inner optimality (original code)
                 A_ineq_p = sparse.block_diag((A_ineq_v, A_ineq_dual)).tocsr()
@@ -679,12 +705,10 @@ class SDProblem:
                 A_eq_base = sparse.block_diag((A_eq_p, A_eq_p, A_eq_dl))
                 b_eq_ext = b_eq_p + b_eq_p + b_eq_dl
                 # Equality anchor: c_out · x_ref + c_dl · d_out = 0
-                eq_link = sparse.hstack((sparse.csr_matrix((1, n_p)),
-                    sparse.csr_matrix(c_out_in_p), sparse.csr_matrix(c_dl)))
+                eq_link = sparse.hstack((sparse.csr_matrix((1, n_p)), sparse.csr_matrix(c_out_in_p), sparse.csr_matrix(c_dl)))
                 # Relaxed inequality: c_out · x_actual + tol * c_dl · d_out <= 0
                 c_dl_scaled = [outer_opt_tol * v for v in c_dl]
-                iq_link = sparse.hstack((sparse.csr_matrix(c_out_in_p),
-                    sparse.csr_matrix((1, n_p)), sparse.csr_matrix(c_dl_scaled)))
+                iq_link = sparse.hstack((sparse.csr_matrix(c_out_in_p), sparse.csr_matrix((1, n_p)), sparse.csr_matrix(c_dl_scaled)))
                 A_eq_p = sparse.vstack((A_eq_base, eq_link)).tocsr()
                 b_eq_p = b_eq_ext + [0.0]
                 A_ineq_p = sparse.vstack((A_ineq_ext, iq_link)).tocsr()
@@ -692,16 +716,16 @@ class SDProblem:
                 lb_p = lb_p + lb_p + lb_dl
                 ub_p = ub_p + ub_p + ub_dl
                 z_map_vars_p = sparse.hstack((z_map_vars_p, z_map_vars_p, z_map_vars_dl))
-                z_map_constr_ineq_p = sparse.hstack((z_map_constr_ineq_p, z_map_constr_ineq_p,
-                    z_map_constr_ineq_dl, sparse.csc_matrix((self.num_z, 1))))
-                z_map_constr_eq_p = sparse.hstack((z_map_constr_eq_p, z_map_constr_eq_p,
-                    z_map_constr_eq_dl, sparse.csc_matrix((self.num_z, 1))))
+                z_map_constr_ineq_p = sparse.hstack(
+                    (z_map_constr_ineq_p, z_map_constr_ineq_p, z_map_constr_ineq_dl, sparse.csc_matrix((self.num_z, 1))))
+                z_map_constr_eq_p = sparse.hstack(
+                    (z_map_constr_eq_p, z_map_constr_eq_p, z_map_constr_eq_dl, sparse.csc_matrix((self.num_z, 1))))
             else:
                 # Exact outer optimality (original code)
                 A_ineq_p = sparse.block_diag((A_ineq_p, A_ineq_dl)).tocsr()
                 b_ineq_p = b_ineq_p + b_ineq_dl
-                A_eq_p = sparse.vstack((sparse.block_diag((A_eq_p, A_eq_dl)),
-                    sparse.hstack((sparse.csr_matrix(c_out_in_p), sparse.csr_matrix(c_dl))))).tocsr()
+                A_eq_p = sparse.vstack((sparse.block_diag(
+                    (A_eq_p, A_eq_dl)), sparse.hstack((sparse.csr_matrix(c_out_in_p), sparse.csr_matrix(c_dl))))).tocsr()
                 b_eq_p = b_eq_p + b_eq_dl + [0.0]
                 lb_p = lb_p + lb_dl
                 ub_p = ub_p + ub_dl
@@ -817,39 +841,37 @@ class SDProblem:
         #    constraint (gurobi/cplex) or the constant self.M (glpk/user-M).
         knockable_constr_ineq = np.unique(self.z_map_constr_ineq.nonzero()[1])
 
-        _idxz = set(self.idx_z)                                          # O(1) membership in the scan below
+        _idxz = set(self.idx_z)  # O(1) membership in the scan below
         cont_vars = [i not in _idxz for i in range(0, numvars)]
-        M_lb = [self.lb[i] for i in np.nonzero(cont_vars)[0]]
-        M_ub = [self.ub[i] for i in np.nonzero(cont_vars)[0]]
+        _cont_idx = np.nonzero(cont_vars)[0]
+        M_lb = np.array([self.lb[i] for i in _cont_idx], dtype=float)
+        M_ub = np.array([self.ub[i] for i in _cont_idx], dtype=float)
         M_A = self.A_ineq[knockable_constr_ineq, :][:, cont_vars].tocsr()
 
         num_Ms = M_A.shape[0]
-        max_Ax = [np.nan] * num_Ms
 
         # max(a*x) from bounds: zero rows -> 0; single-variable rows -> coeff*(ub if coeff>0 else lb),
         # or +inf if that bound is infinite; multi-variable rows -> +inf (unbounded dual constraint).
-        n_zero = 0
-        n_single = 0
-        n_multi = 0
-        for i in range(num_Ms):
-            row = M_A.getrow(i)
-            nnz = row.nnz
-            if nnz == 0:
-                max_Ax[i] = 0.0
-                n_zero += 1
-            elif nnz == 1:
-                col_idx = row.indices[0]
-                coeff = row.data[0]
-                if coeff > 0:
-                    max_Ax[i] = coeff * M_ub[col_idx] if not isinf(M_ub[col_idx]) else np.inf
-                else:
-                    max_Ax[i] = coeff * M_lb[col_idx] if not isinf(M_lb[col_idx]) else np.inf
-                n_single += 1
-            else:
-                max_Ax[i] = np.inf
-                n_multi += 1
+        # Row arity comes from the index pointers, so this reads the whole matrix once instead of
+        # slicing out one row object per constraint.
+        _indptr = M_A.indptr
+        row_nnz = np.diff(_indptr)
+        max_Ax = np.full(num_Ms, np.inf)
+        max_Ax[row_nnz == 0] = 0.0
+        single = np.nonzero(row_nnz == 1)[0]
+        if single.size:
+            _at = _indptr[single]
+            col_idx = M_A.indices[_at]
+            coeff = M_A.data[_at]
+            bnd = np.where(coeff > 0, M_ub[col_idx], M_lb[col_idx])
+            # an infinite bound gives +inf whatever the coefficient's sign; zero it out first so
+            # the product never evaluates inf*0
+            max_Ax[single] = np.where(np.isinf(bnd), np.inf, coeff * np.where(np.isinf(bnd), 0.0, bnd))
+        n_zero = int(np.count_nonzero(row_nnz == 0))
+        n_single = int(single.size)
+        n_multi = num_Ms - n_zero - n_single
         logging.info('  Bounding MILP: %d constraints (%d zero, %d single-var, %d multi-var->indicator/M).' %
-                      (num_Ms, n_zero, n_single, n_multi))
+                     (num_Ms, n_zero, n_single, n_multi))
 
         # round Ms up to 5 digits
         Ms = [np.ceil(M * 1e5) / 1e5 if not isinf(M) else self.M for M in max_Ax]
@@ -942,7 +964,11 @@ class SDProblem:
         #   where every first entry of a row is positive
         # - search for row duplicates
         # - delete one if their first row entry had the same sign, lump to equality if they had opposite signs
-        first_entry_A_ineq_sign = [np.sign(a.data[0]) if a.nnz > 0 else 0 for a in self.A_ineq]
+        _ineq_indptr = self.A_ineq.indptr
+        _ineq_nnz = np.diff(_ineq_indptr)
+        first_entry_A_ineq_sign = np.zeros(self.A_ineq.shape[0])
+        _nonempty = np.nonzero(_ineq_nnz)[0]
+        first_entry_A_ineq_sign[_nonempty] = np.sign(self.A_ineq.data[_ineq_indptr[_nonempty]])
         Ab_find_dupl = sparse.hstack((sparse.diags(first_entry_A_ineq_sign) * self.A_ineq, \
                                       sparse.coo_matrix(
                                           sparse.diags(first_entry_A_ineq_sign) * self.b_ineq).transpose(), \
@@ -954,9 +980,13 @@ class SDProblem:
         ident_rows = []  # duplicate rows as Tuple (i,j,k): first row, second row, positive or negative duplicate
         row_key = {}
         dupl_groups = {}
+        Ab_find_dupl.sort_indices()  # so a row's key does not depend on the order entries were stored in
+        _dupl_indptr = Ab_find_dupl.indptr
+        _dupl_indices = Ab_find_dupl.indices
+        _dupl_data = Ab_find_dupl.data
         for i in knockable_constr_ineq_ic:
-            row = Ab_find_dupl.getrow(i)
-            key = (row.indices.tobytes(), row.data.tobytes())
+            start, end = _dupl_indptr[i], _dupl_indptr[i + 1]
+            key = (_dupl_indices[start:end].tobytes(), _dupl_data[start:end].tobytes())
             row_key[i] = key
             dupl_groups.setdefault(key, []).append(i)
         for i in knockable_constr_ineq_ic:  # ascending
@@ -965,13 +995,17 @@ class SDProblem:
                     ident_rows += [(i, j, first_entry_A_ineq_sign[i] * first_entry_A_ineq_sign[j])]
         # replace two ineqs by one eq
         self.z_map_constr_ineq = self.z_map_constr_ineq.tocsc()
-        A_eq = sparse.csr_matrix((0, self.A_ineq.shape[1]))
-        z_eq = sparse.csc_matrix((self.num_z, 0))
-        b_eq = []
-        for j in [i for i in range(len(ident_rows)) if ident_rows[i][2] == -1]:
-            A_eq = sparse.vstack((A_eq, self.A_ineq[ident_rows[j][0]]))
-            b_eq += [self.b_ineq[ident_rows[j][0]]]
-            z_eq = sparse.hstack((z_eq, self.z_map_constr_ineq[:, ident_rows[j][0]]))
+        # gather the rows to lump in one slice each: stacking inside the loop rebuilds the whole
+        # matrix on every iteration
+        lump_rows = [ir[0] for ir in ident_rows if ir[2] == -1]
+        if lump_rows:
+            A_eq = self.A_ineq[lump_rows, :]
+            b_eq = [self.b_ineq[i] for i in lump_rows]
+            z_eq = self.z_map_constr_ineq[:, lump_rows]
+        else:
+            A_eq = sparse.csr_matrix((0, self.A_ineq.shape[1]))
+            z_eq = sparse.csc_matrix((self.num_z, 0))
+            b_eq = []
         # Add to global equality problem part
         knockable_constr_eq_ic = [i + len(self.b_eq) for i in range(len(b_eq))]
         self.A_eq = sparse.vstack((self.A_eq, A_eq), 'csr')
@@ -983,9 +1017,11 @@ class SDProblem:
             remove_ineq = np.array([], 'int')
         else:
             remove_ineq = np.unique(np.hstack([[ir[0], ir[1]] if ir[2] == -1 else [ir[1]] for ir in ident_rows]))
-        keep_ineq = [i for i in range(self.A_ineq.shape[0]) if i not in remove_ineq]
-        knockable_constr_ineq_ic = [True if i in knockable_constr_ineq_ic else False for i in range(self.A_ineq.shape[0])]
-        knockable_constr_ineq_ic = np.nonzero([knockable_constr_ineq_ic[i] for i in keep_ineq])[0]
+        _remove = set(int(i) for i in remove_ineq)
+        _is_ic = np.zeros(self.A_ineq.shape[0], dtype=bool)
+        _is_ic[list(knockable_constr_ineq_ic)] = True
+        keep_ineq = [i for i in range(self.A_ineq.shape[0]) if i not in _remove]
+        knockable_constr_ineq_ic = np.nonzero(_is_ic[keep_ineq])[0]
         self.A_ineq = self.A_ineq[keep_ineq, :]
         self.b_ineq = [self.b_ineq[i] for i in keep_ineq]
         self.z_map_constr_ineq = self.z_map_constr_ineq[:, keep_ineq]
@@ -1006,10 +1042,12 @@ class SDProblem:
         self.indic_constr = IndicatorConstraints(ic_binv, ic_A, ic_b, ic_sense, ic_indicval)
 
         # b6. Remove knockable (in)equalities from static problem, as they are now indicator constraints
-        keep_ineq = [False if i in knockable_constr_ineq_ic else True for i in range(self.A_ineq.shape[0])]
+        _drop_ineq = set(int(i) for i in knockable_constr_ineq_ic)
+        _drop_eq = set(int(i) for i in knockable_constr_eq_ic)
+        keep_ineq = [i not in _drop_ineq for i in range(self.A_ineq.shape[0])]
         self.A_ineq = self.A_ineq[keep_ineq, :]
         self.b_ineq = [self.b_ineq[i] for i in range(len(keep_ineq)) if keep_ineq[i]]
-        keep_eq = [False if i in knockable_constr_eq_ic else True for i in range(self.A_eq.shape[0])]
+        keep_eq = [i not in _drop_eq for i in range(self.A_eq.shape[0])]
         self.A_eq = self.A_eq[keep_eq, :]
         self.b_eq = [self.b_eq[i] for i in range(len(keep_eq)) if keep_eq[i]]
 
@@ -1030,17 +1068,26 @@ class SDProblem:
         Aec = self.A_eq.tocsc() if self.A_eq.shape[0] else None
         budget_rows = {self.idx_row_maxcost, self.idx_row_mincost, self.idx_row_obj}
         z_with_ind = set(int(b) for b in self.indic_constr.binv) if self.indic_constr is not None else set()
+        # which columns carry a z-link: one pass over the stored entries rather than a column
+        # slice per binary
+        _is_budget = np.zeros(Aic.shape[0], dtype=bool)
+        for r in budget_rows:
+            if r is not None and 0 <= r < Aic.shape[0]:
+                _is_budget[r] = True
+        _col_of = np.repeat(np.arange(Aic.shape[1]), np.diff(Aic.indptr))
+        _links = np.zeros(Aic.shape[1], dtype=bool)
+        _links[_col_of[~_is_budget[Aic.indices] & (Aic.data != 0)]] = True
+        _links_eq = np.diff(Aec.indptr) > 0 if Aec is not None else np.zeros(Aic.shape[1], dtype=bool)
         n_free = 0
         for z in range(self.num_z):
             if self.z_non_targetable[z] or self.z_inverted[z] or self.lb[z] > 0 or self.ub[z] == 0:
                 continue
             if z in z_with_ind:
                 continue
-            col = Aic.getcol(z).tocoo()
-            if any((r not in budget_rows) and v != 0 for r, v in zip(col.row.tolist(), col.data.tolist())):
-                continue                       # finite-M z-link -> controls a row
-            if Aec is not None and Aec.getcol(z).nnz:
-                continue                       # equality z-link
+            if _links[z]:
+                continue  # finite-M z-link -> controls a row
+            if _links_eq[z]:
+                continue  # equality z-link
             self.ub[z] = 0.0
             n_free += 1
         if n_free:
@@ -1126,7 +1173,7 @@ def build_primal_from_cbm(model, V_ineq=None, v_ineq=None, V_eq=None, v_eq=None,
                     lb[i] = max(lb[i], float(lo))
                 if hi is not None:
                     ub[i] = min(ub[i], float(hi))
-                if lb[i] > ub[i]:            # numeric guard: never emit an inconsistent block
+                if lb[i] > ub[i]:  # numeric guard: never emit an inconsistent block
                     lb[i], ub[i] = float(lo), float(hi)
     z_map_vars = sparse.identity(numr, 'd', format="csc")
     z_map_constr_eq = sparse.csc_matrix((numr, A_eq.shape[0]))

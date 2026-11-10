@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright 2022 Max Planck Insitute Magdeburg
+# Copyright 2022-2026 Max Planck Institute Magdeburg
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -185,13 +185,13 @@ class SDSolutions(object):
                     candidate_reacs.update(r.id for r in model.genes.get_by_id(g).reactions)
             for r in candidate_reacs:
                 gpr_r = rxn_gpr[r]
-                if gpr_r.eval(ko_off):             # reaction still possible under the interventions
-                    if not gpr_r.eval(all_off):    # ... only because of a knock-in
+                if gpr_r.eval(ko_off):  # reaction still possible under the interventions
+                    if not gpr_r.eval(all_off):  # ... only because of a knock-in
                         reac_ki.add(r)
-                else:                              # reaction dead under the interventions
-                    if gpr_r.eval(noki_off):       # ... the knock-out is what killed it
+                else:  # reaction dead under the interventions
+                    if gpr_r.eval(noki_off):  # ... the knock-out is what killed it
                         reac_ko.add(r)
-                    else:                          # ... dead regardless (e.g. an un-made knock-in)
+                    else:  # ... dead regardless (e.g. an un-made knock-in)
                         reac_no_ki.add(r)
             reaction_sd[i].update({k: -1.0 for k in reac_ko})
             reaction_sd[i].update({k: 1.0 for k in reac_ki})
@@ -214,18 +214,21 @@ class SDSolutions(object):
         Returns:
             (sd_cost, itv_bounds, has_complex_regul_itv)
         """
-        # compute intervention costs
+        # compute intervention costs.
+        # A reaction may appear in both the knockout and the knock-in dict, since ko_cost
+        # defaults to every reaction whenever only ki_cost is given. Charging each dict
+        # separately would then bill one intervention twice, so the sign of the entry
+        # picks the dict: positive is an addition, negative a removal. This matches how
+        # SDProblem prices interventions and how filter_sd_maxcost selects the cost.
         sd_cost = [0 for _ in range(len(cost_sd))]
-        if KOCOST in sd_setup:
-            for k, v in sd_setup[KOCOST].items():
-                for i, s in enumerate(cost_sd):
-                    if k in s and s[k] != 0:
-                        sd_cost[i] += float(v)
-        if KICOST in sd_setup:
-            for k, v in sd_setup[KICOST].items():
-                for i, s in enumerate(cost_sd):
-                    if k in s and s[k] != 0:
-                        sd_cost[i] += float(v)
+        ko_c, ki_c = sd_setup.get(KOCOST, {}), sd_setup.get(KICOST, {})
+        for i, s in enumerate(cost_sd):
+            for k, v in s.items():
+                if v == 0:
+                    continue
+                src = (ki_c if k in ki_c else ko_c) if v > 0 else (ko_c if k in ko_c else ki_c)
+                if k in src:
+                    sd_cost[i] += float(src[k])
         if GKOCOST in sd_setup:
             for k, v in sd_setup[GKOCOST].items():
                 for i, s in enumerate(cost_sd):
@@ -461,8 +464,7 @@ class SDSolutions(object):
 
         # Expand
         expanded = expand_sd([compressed_sd[grp_idx].copy()], cmp_mapReac)
-        expanded = filter_sd_maxcost(expanded, meta['max_cost'],
-                                     meta['uncmp_ko_cost'], meta['uncmp_ki_cost'])
+        expanded = filter_sd_maxcost(expanded, meta['max_cost'], meta['uncmp_ko_cost'], meta['uncmp_ki_cost'])
         # Postprocess regulatory interventions (inline to avoid circular import)
         reg_cost = meta.get('uncmp_reg_cost', {})
         for s in expanded:
@@ -475,12 +477,11 @@ class SDSolutions(object):
 
         # GPR translation + costs/bounds
         if self._model is None:
-            raise RuntimeError(
-                'This SDSolutions was loaded without a model, so compressed '
-                'groups cannot be expanded. Reload with '
-                'SDSolutions.load(file, model=True) to rebuild the embedded '
-                'model, or call attach_model(model) with the original model '
-                'that was passed to compute_strain_designs.')
+            raise RuntimeError('This SDSolutions was loaded without a model, so compressed '
+                               'groups cannot be expanded. Reload with '
+                               'SDSolutions.load(file, model=True) to rebuild the embedded '
+                               'model, or call attach_model(model) with the original model '
+                               'that was passed to compute_strain_designs.')
         model = self._model
         if self.is_gene_sd:
             reaction_sd_exp, gene_sd_exp = self._translate_genes_to_reactions(expanded, model)
@@ -490,8 +491,7 @@ class SDSolutions(object):
             gene_sd_exp = None
             cost_sd = expanded
 
-        sd_cost_exp, itv_bounds_exp, has_complex = self._compute_costs_and_bounds(
-            cost_sd, reaction_sd_exp, model, self.sd_setup)
+        sd_cost_exp, itv_bounds_exp, has_complex = self._compute_costs_and_bounds(cost_sd, reaction_sd_exp, model, self.sd_setup)
         if has_complex:
             self.has_complex_regul_itv = True
 
@@ -676,11 +676,11 @@ class SDSolutions(object):
             obj = pickle.load(f)
 
         def _resolve(arg, embedded):
-            if arg is True:                       # rebuild the embedded snapshot
+            if arg is True:  # rebuild the embedded snapshot
                 return model_from_dict(embedded) if embedded is not None else None
-            if arg is None or arg is False:       # attach nothing
+            if arg is None or arg is False:  # attach nothing
                 return None
-            return arg                            # an explicit cobra model
+            return arg  # an explicit cobra model
 
         obj._model = _resolve(model, getattr(obj, '_embedded_model_dict', None))
         obj._cmp_model = _resolve(cmp_model, getattr(obj, '_embedded_cmp_model_dict', None))

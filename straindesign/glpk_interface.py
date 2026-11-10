@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright 2022 Max Planck Insitute Magdeburg
+# Copyright 2022-2026 Max Planck Institute Magdeburg
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -387,8 +387,7 @@ class GLPK_MILP_LP():
         # GLPK meth: 1=primal, 2=dual, 3=dual+pricing
         if method == LP_METHOD_BARRIER:
             logging.warning('GLPK does not support barrier method, falling back to dual simplex.')
-        _map = {LP_METHOD_AUTO: 1, LP_METHOD_PRIMAL: 1,
-                LP_METHOD_DUAL: 2, LP_METHOD_BARRIER: 2}
+        _map = {LP_METHOD_AUTO: 1, LP_METHOD_PRIMAL: 1, LP_METHOD_DUAL: 2, LP_METHOD_BARRIER: 2}
         self.lp_params.meth = _map.get(method, 1)
 
     def get_lp_method(self):

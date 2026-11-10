@@ -5,6 +5,11 @@ channels:
 dependencies:
   - python
   - scipy
-  - matplotlib
+  - matplotlib-base
   - psutil
+  - numpy
+  - pandas
+  - optlang
+  - swiglpk
+  - pyscipopt
   - conda-forge::cobra

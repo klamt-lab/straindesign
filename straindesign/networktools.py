@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright 2022 Max Planck Insitute Magdeburg
+# Copyright 2022-2026 Max Planck Institute Magdeburg
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -52,6 +52,7 @@ def _sb_noop(self, lb, ub):
 
 
 # -- Cobra-level suppression replacements ------------------------------------
+
 
 def _suppressed_set_id(self, value):
     """Bypass solver variable rename: write _id and update DictList index."""
@@ -158,7 +159,7 @@ def _suppressed_copy(model):
     extension's ``add_metabolites`` calls run without building (or pushing constraints into) a live
     solver.
     """
-    iface = model.solver.interface          # captured before stubbing
+    iface = model.solver.interface  # captured before stubbing
     saved = model._solver
     orig_copy = next(o for cls, attr, o in _ORIG_COBRA if cls is Model and attr == 'copy')
     try:
@@ -168,6 +169,7 @@ def _suppressed_copy(model):
         model._solver = saved
     new._solver = _CarrierSolver(iface)
     return new
+
 
 _ORIG_CONTAINER_GETITEM = None  # saved Container.__getitem__
 
@@ -272,10 +274,10 @@ def _suppressed_add_metabolites(self, metabolite_list):
 
 # -- Saved originals (None = not suppressed) ----------------------------------
 
-_ORIG_SLC = None   # (cls, method) for Constraint.set_linear_coefficients
-_ORIG_SB = None    # (cls, method) for Variable.set_bounds
+_ORIG_SLC = None  # (cls, method) for Constraint.set_linear_coefficients
+_ORIG_SB = None  # (cls, method) for Variable.set_bounds
 _ORIG_OSLC = None  # (cls, method) for Objective.set_linear_coefficients
-_ORIG_COBRA = []   # list of (cls, attr_name, original) for cobra-level patches
+_ORIG_COBRA = []  # list of (cls, attr_name, original) for cobra-level patches
 
 
 def _suppress_lp_updates(model):
@@ -399,6 +401,33 @@ def _is_lp_suppressed():
     return _ORIG_SLC is not None or _ORIG_SB is not None or _ORIG_OSLC is not None or len(_ORIG_COBRA) > 0
 
 
+def set_suppressed_objective(model, coefficients, direction='max'):
+    """Record a linear objective on a model whose solver was never populated.
+
+    ``model.objective = ...`` writes into the optlang problem, which is exactly what
+    :func:`suppress_lp_context` exists to avoid -- and on a model assembled inside that context
+    there are no variables to write to, so the objective is silently lost and later reads raise.
+    This records it on the model instead, where StrainDesign's LP tools look for it
+    (:func:`straindesign.lptools.model_objective`). Unlike the objective the context manager
+    captures for itself, this one outlives the context.
+
+    Args:
+        model (cobra.Model):
+
+            The model to record the objective on.
+
+        coefficients (dict):
+
+            Objective coefficients, keyed by reaction id.
+
+        direction (str): (Default: 'max')
+
+            'max' or 'min'.
+    """
+    model._suppressed_obj = {str(k): float(v) for k, v in coefficients.items()}
+    model._suppressed_obj_direction = direction
+
+
 @contextmanager
 def suppress_lp_context(model):
     """Context manager that suppresses all solver-touching operations.
@@ -412,13 +441,24 @@ def suppress_lp_context(model):
     """
     entered_here = not _is_lp_suppressed()
     if entered_here:
-        # Capture objective and reaction IDs before suppression (solver still live)
-        obj_dict = {}
-        for rxn in model.reactions:
+        # Capture objective and reaction IDs before suppression (solver still live). A model that
+        # already carries a recorded objective -- one built by set_suppressed_objective, whose
+        # solver was never populated -- keeps it: there is nothing live to re-read, and reading
+        # would either raise or quietly report no objective at all.
+        recorded = getattr(model, '_suppressed_obj', None)
+        if recorded is not None:
+            obj_dict = dict(recorded)
+        else:
+            obj_dict = {}
+            for rxn in model.reactions:
+                try:
+                    c = rxn.objective_coefficient
+                    if c != 0:
+                        obj_dict[rxn.id] = float(c)
+                except Exception:
+                    pass
             try:
-                c = rxn.objective_coefficient
-                if c != 0:
-                    obj_dict[rxn.id] = float(c)
+                model._suppressed_obj_direction = model.objective_direction
             except Exception:
                 pass
         _pre_ids = {r.id for r in model.reactions}
@@ -434,12 +474,13 @@ def suppress_lp_context(model):
             current_ids = {r.id for r in model.reactions}
             # Use the stored objective (compression may have updated it)
             final_obj = getattr(model, '_suppressed_obj', obj_dict)
-            if hasattr(model, '_suppressed_obj'):
+            if recorded is not None:
+                model._suppressed_obj = dict(final_obj)  # the record outlives the context
+            elif hasattr(model, '_suppressed_obj'):
                 del model._suppressed_obj
             if current_ids != _pre_ids:
                 if model.groups:
-                    kept = {c.id for c in
-                            list(model.reactions) + list(model.metabolites) + list(model.genes)}
+                    kept = {c.id for c in list(model.reactions) + list(model.metabolites) + list(model.genes)}
                     for grp in model.groups:
                         stale = [m for m in grp.members if m.id not in kept]
                         if stale:
@@ -461,17 +502,20 @@ def with_suppressed_lp(func):
 
     The first positional argument must be a cobra Model.
     """
+
     @wraps(func)
     def wrapper(*args, **kwargs):
         model = args[0]
         with suppress_lp_context(model):
             return func(*args, **kwargs)
+
     return wrapper
 
 
 # =============================================================================
 # I/O Suppression
 # =============================================================================
+
 
 @contextmanager
 def _silent_io():
@@ -484,7 +528,6 @@ def _silent_io():
 from straindesign.compression import (
     compress_model,
     compress_model_coupled,
-    compress_model_efmtool,  # backward-compat alias
     compress_model_parallel,
     remove_blocked_reactions,
     remove_ext_mets,
@@ -609,6 +652,7 @@ def gene_kos_to_constraints(model, gene_kos):
 
     return [[{r: 1}, '=', 0] for r in sorted(knocked_out_reactions)]
 
+
 def _build_cmp_reverse_map(cmp_map):
     """Build reverse lookup: original reaction ID -> final compressed ID.
 
@@ -669,10 +713,9 @@ def compress_constraints(constraints, cmp_mapReac):
                 coeff_dict = c[0]
                 lumped = [k for k in coeff_dict if k in old_reac_val]
                 if lumped:
-                    coeff_dict[new_reac] = sum(
-                        coeff_dict.pop(k) * old_reac_val[k] for k in lumped
-                    )
+                    coeff_dict[new_reac] = sum(coeff_dict.pop(k) * old_reac_val[k] for k in lumped)
     return constraints
+
 
 def resolve_gene_constraints(model, constraints):
     """Scan constraints for gene IDs/names and replace with reaction constraints.
@@ -1203,14 +1246,18 @@ def compress_ki_ko_cost(kocost, kicost, cmp_mapReac):
         reac_map_exp = cmp["reac_map_exp"]
         parallel = cmp["parallel"]
         cmp.update({KOCOST: kocost, KICOST: kicost})
+        # Both blocks below decide by which original reactions a lump contains, so they must
+        # read the vectors as they entered this step. The KO block rebinds kocost to a vector
+        # keyed by lump names, against which the original ids in reac_map_exp never match.
+        kocost_in = kocost
         if kocost:
             ko_cost_new = {}
             for r in reac_map_exp:
-                if np.any([s in kocost for s in reac_map_exp[r]]):
+                if np.any([s in kocost_in for s in reac_map_exp[r]]):
                     if not parallel and not np.any([s in kicost for s in reac_map_exp[r]]):
-                        ko_cost_new[r] = np.min([kocost[s] for s in reac_map_exp[r] if s in kocost])
+                        ko_cost_new[r] = np.min([kocost_in[s] for s in reac_map_exp[r] if s in kocost_in])
                     elif parallel:
-                        ko_cost_new[r] = np.sum([kocost[s] for s in reac_map_exp[r] if s in kocost])
+                        ko_cost_new[r] = np.sum([kocost_in[s] for s in reac_map_exp[r] if s in kocost_in])
             kocost = ko_cost_new
         if kicost:
             ki_cost_new = {}
@@ -1218,7 +1265,7 @@ def compress_ki_ko_cost(kocost, kicost, cmp_mapReac):
                 if np.any([s in kicost for s in reac_map_exp[r]]):
                     if not parallel:
                         ki_cost_new[r] = np.sum([kicost[s] for s in reac_map_exp[r] if s in kicost])
-                    elif parallel and not np.any([s in kocost for s in reac_map_exp[r]]):
+                    elif parallel and not np.any([s in kocost_in for s in reac_map_exp[r]]):
                         ki_cost_new[r] = np.min([kicost[s] for s in reac_map_exp[r] if s in kicost])
             kicost = ki_cost_new
     return kocost, kicost, cmp_mapReac
@@ -1347,6 +1394,43 @@ def expand_sd(sd, cmp_mapReac):
     return sd
 
 
+def itv_cost(k, v, kocost, kicost):
+    """Cost of one intervention, picking the dict by the sign of the entry.
+
+    A reaction may appear in both dicts, since kocost defaults to every reaction. The value's
+    sign says which kind of intervention was made: positive is an addition, negative a removal.
+    """
+    if v == 0:
+        return 0
+    if v > 0:  # knock-in
+        return kicost[k] if k in kicost else kocost.get(k, 0)
+    return kocost[k] if k in kocost else kicost.get(k, 0)  # knock-out
+
+
+def nondominated_sd(sd, kocost, kicost):
+    """Indices of the strain designs no comparable, strictly cheaper design dominates.
+
+    A design is reported when no other design that is a subset or a superset of it costs
+    strictly less. With only positive intervention costs every superset is more expensive,
+    so this reduces to keeping the inclusion-minimal designs -- which the exclusion
+    constraints already guarantee, making the scan a no-op. It earns its keep once an
+    intervention is free or rewarding: then taking it can pay for itself, and the smaller
+    design is the dominated one. Designs of equal cost are all kept.
+
+    Returns:
+        (list of int): Indices into sd to keep, in order.
+    """
+    sets = [frozenset(k for k, v in m.items() if v != 0 and k != '**cost**') for m in sd]
+    costs = [np.sum([itv_cost(k, v, kocost, kicost) for k, v in m.items() if k != '**cost**']) for m in sd]
+    keep = [
+        i for i, si in enumerate(sets)
+        if not any(costs[j] < costs[i] - 1e-8 and (sj <= si or sj >= si) for j, sj in enumerate(sets) if j != i)
+    ]
+    if len(keep) < len(sd):
+        logging.info('  Discarded %d strain design(s) dominated by a cheaper comparable one.' % (len(sd) - len(keep)))
+    return keep
+
+
 def filter_sd_maxcost(sd, max_cost, kocost, kicost):
     """Filter out strain designs that exceed the maximum allowed intervention costs
     
@@ -1359,11 +1443,11 @@ def filter_sd_maxcost(sd, max_cost, kocost, kicost):
     # non-made KIs are marked by 0.0 and non-made KOs don't appear.
     # We count costs of interventions made, which are marked by v != 0.
     if max_cost:
-        costs = [np.sum([(kocost[k] if k in kocost else kicost.get(k, 0)) if v != 0 else 0
-                         for k, v in m.items()]) for m in sd]
-        sd = [sd[i] for i in range(len(sd)) if costs[i] <= max_cost + 1e-8]
+        costs = [np.sum([itv_cost(k, v, kocost, kicost) for k, v in m.items()]) for m in sd]
+        keep = [i for i in range(len(sd)) if costs[i] <= max_cost + 1e-8]
+        sd = [sd[i] for i in keep]
         # sort strain designs by intervention costs
-        [s.update({'**cost**': c}) for s, c in zip(sd, costs)]
+        [sd[j].update({'**cost**': costs[i]}) for j, i in enumerate(keep)]
         sd.sort(key=lambda x: x.pop('**cost**'))
     return sd
 
@@ -1381,21 +1465,6 @@ def modules_coeff_to_fraction(sd_modules):
                 if param in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                     for reac in module[param].keys():
                         module[param][reac] = float_to_fraction(module[param][reac])
-    return sd_modules
-
-
-def modules_coeff2float(sd_modules):
-    """Convert coefficients occurring in SDModule objects to floats"""
-    for i, module in enumerate(sd_modules):
-        for param in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
-            if param in module and module[param] is not None:
-                if param == CONSTRAINTS:
-                    for constr in module[CONSTRAINTS]:
-                        for reac in constr[0].keys():
-                            constr[0][reac] = float(constr[0][reac])
-                if param in [INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
-                    for reac in module[param].keys():
-                        module[param][reac] = float(module[param][reac])
     return sd_modules
 
 
@@ -1441,14 +1510,12 @@ from collections import OrderedDict as _OrderedDict
 from operator import attrgetter as _attrgetter
 from fractions import Fraction as _Fraction
 import math as _math
-from cobra.io.dict import (_metabolite_to_dict, _metabolite_from_dict,
-                           _gene_to_dict, gene_from_dict, _fix_type, _update_optional,
-                           _OPTIONAL_REACTION_ATTRIBUTES, _ORDERED_OPTIONAL_REACTION_KEYS,
-                           _OPTIONAL_MODEL_ATTRIBUTES, _ORDERED_OPTIONAL_MODEL_KEYS)
+from cobra.io.dict import (_metabolite_to_dict, _metabolite_from_dict, _gene_to_dict, gene_from_dict, _fix_type, _update_optional,
+                           _OPTIONAL_REACTION_ATTRIBUTES, _ORDERED_OPTIONAL_REACTION_KEYS, _OPTIONAL_MODEL_ATTRIBUTES,
+                           _ORDERED_OPTIONAL_MODEL_KEYS)
 from cobra.util.solver import set_objective as _set_objective
 
-_INF_TOKENS = {'inf': _math.inf, 'infinity': _math.inf, '+inf': _math.inf,
-               '-inf': -_math.inf, '-infinity': -_math.inf}
+_INF_TOKENS = {'inf': _math.inf, 'infinity': _math.inf, '+inf': _math.inf, '-inf': -_math.inf, '-infinity': -_math.inf}
 
 
 def _num_to_json(v):
@@ -1458,13 +1525,13 @@ def _num_to_json(v):
     if isinstance(v, bool):
         return v
     if isinstance(v, _Fraction):
-        return str(v)                                    # exact: '1/3', '10', '-1/2'
+        return str(v)  # exact: '1/3', '10', '-1/2'
     num, den = getattr(v, 'numerator', None), getattr(v, 'denominator', None)
     if num is not None and den is not None and not isinstance(v, int):
-        return '%d/%d' % (int(num), int(den))            # sympy Rational etc.
-    v = _fix_type(v)                                     # numpy -> native python
+        return '%d/%d' % (int(num), int(den))  # sympy Rational etc.
+    v = _fix_type(v)  # numpy -> native python
     if isinstance(v, float) and (_math.isinf(v) or _math.isnan(v)):
-        return str(v)                                    # 'inf', '-inf', 'nan'
+        return str(v)  # 'inf', '-inf', 'nan'
     return v
 
 
@@ -1477,7 +1544,7 @@ def _num_from_json(v):
             return _INF_TOKENS[low]
         if low == 'nan':
             return _math.nan
-        return _Fraction(v)                              # 'num/den' or integer string
+        return _Fraction(v)  # 'num/den' or integer string
     return v
 
 
@@ -1489,8 +1556,7 @@ def _reaction_to_json(reaction, obj_coeff=0):
     new['id'] = reaction.id
     new['name'] = reaction.name
     new['metabolites'] = _OrderedDict(
-        (str(met), _num_to_json(reaction.metabolites[met]))
-        for met in sorted(reaction.metabolites, key=_attrgetter('id')))
+        (str(met), _num_to_json(reaction.metabolites[met])) for met in sorted(reaction.metabolites, key=_attrgetter('id')))
     new['lower_bound'] = _num_to_json(reaction.lower_bound)
     new['upper_bound'] = _num_to_json(reaction.upper_bound)
     new['gene_reaction_rule'] = reaction.gene_reaction_rule
@@ -1511,9 +1577,8 @@ def _reaction_from_json(reaction, model):
         if k in {'objective_coefficient', 'reversibility', 'reaction'}:
             continue
         elif k == 'metabolites':
-            new_reaction.add_metabolites(_OrderedDict(
-                (model.metabolites.get_by_id(str(met)), _num_from_json(coeff))
-                for met, coeff in v.items()))
+            new_reaction.add_metabolites(
+                _OrderedDict((model.metabolites.get_by_id(str(met)), _num_from_json(coeff)) for met, coeff in v.items()))
         elif k in {'lower_bound', 'upper_bound'}:
             setattr(new_reaction, k, _num_from_json(v))
         else:
@@ -1568,10 +1633,8 @@ def model_from_dict(obj):
     model.add_metabolites([_metabolite_from_dict(m) for m in obj['metabolites']])
     model.genes.extend([gene_from_dict(g) for g in obj['genes']])
     model.add_reactions([_reaction_from_json(r, model) for r in obj['reactions']])
-    objective_reactions = [r for r in obj['reactions']
-                           if _num_from_json(r.get('objective_coefficient', 0)) != 0]
-    coefficients = {model.reactions.get_by_id(r['id']): _num_from_json(r['objective_coefficient'])
-                    for r in objective_reactions}
+    objective_reactions = [r for r in obj['reactions'] if _num_from_json(r.get('objective_coefficient', 0)) != 0]
+    coefficients = {model.reactions.get_by_id(r['id']): _num_from_json(r['objective_coefficient']) for r in objective_reactions}
     _set_objective(model, coefficients)
     for k, v in obj.items():
         if k in {'id', 'name', 'notes', 'compartments', 'annotation'}:

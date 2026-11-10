@@ -259,32 +259,47 @@ def test_doubleopt(curr_solver, model_doubleopt):
     need to achieve 60% of their optima.
     """
     # Knockable: organism-internal reactions + shared sinks (enable cross-feeding KOs)
-    ko_reacs = [r.id for r in model_doubleopt.reactions if r.id.startswith('A_R') or r.id.startswith('B_R')
-                or r.id in ['A_10', 'B_10', 'shared_R_D', 'shared_R_C']]
+    ko_reacs = [
+        r.id
+        for r in model_doubleopt.reactions
+        if r.id.startswith('A_R') or r.id.startswith('B_R') or r.id in ['A_10', 'B_10', 'shared_R_D', 'shared_R_C']
+    ]
     kocost = {r: 1 for r in ko_reacs}
 
     # --- Exact DOUBLEOPT: tight coupling via shared sink KOs ---
-    modules_exact = [sd.SDModule(model_doubleopt, DOUBLEOPT,
-                                 inner_objective='A_BM',
-                                 outer_objective='B_BM',
-                                 constraints=['A_BM >= 0.1', 'B_BM >= 0.1'])]
+    modules_exact = [
+        sd.SDModule(model_doubleopt, DOUBLEOPT, inner_objective='A_BM', outer_objective='B_BM', constraints=['A_BM >= 0.1', 'B_BM >= 0.1'])
+    ]
     sol_exact = sd.compute_strain_designs(model_doubleopt.copy(),
-        sd_modules=modules_exact, max_cost=6, max_solutions=inf,
-        solution_approach=POPULATE, ko_cost=kocost, solver=curr_solver, compress=False)
+                                          sd_modules=modules_exact,
+                                          max_cost=6,
+                                          max_solutions=inf,
+                                          solution_approach=POPULATE,
+                                          ko_cost=kocost,
+                                          solver=curr_solver,
+                                          compress=False)
     assert len(sol_exact.reaction_sd) > 0, \
         "Exact DOUBLEOPT should find solutions when shared sinks are knockable"
     min_cost_exact = min(sum(abs(v) for v in s.values()) for s in sol_exact.reaction_sd)
 
     # --- Relaxed DOUBLEOPT: 60% optimality tolerance finds cheaper solutions ---
-    modules_relaxed = [sd.SDModule(model_doubleopt, DOUBLEOPT,
-                                   inner_objective='A_BM',
-                                   outer_objective='B_BM',
-                                   inner_opt_tol=0.6,
-                                   outer_opt_tol=0.6,
-                                   constraints=['A_BM >= 0.1', 'B_BM >= 0.1'])]
+    modules_relaxed = [
+        sd.SDModule(model_doubleopt,
+                    DOUBLEOPT,
+                    inner_objective='A_BM',
+                    outer_objective='B_BM',
+                    inner_opt_tol=0.6,
+                    outer_opt_tol=0.6,
+                    constraints=['A_BM >= 0.1', 'B_BM >= 0.1'])
+    ]
     sol_relaxed = sd.compute_strain_designs(model_doubleopt.copy(),
-        sd_modules=modules_relaxed, max_cost=3, max_solutions=inf,
-        solution_approach=POPULATE, ko_cost=kocost, solver=curr_solver, compress=False)
+                                            sd_modules=modules_relaxed,
+                                            max_cost=3,
+                                            max_solutions=inf,
+                                            solution_approach=POPULATE,
+                                            ko_cost=kocost,
+                                            solver=curr_solver,
+                                            compress=False)
     assert len(sol_relaxed.reaction_sd) > 0, \
         "Relaxed DOUBLEOPT should find solutions with opt_tol=0.6"
     min_cost_relaxed = min(sum(abs(v) for v in s.values()) for s in sol_relaxed.reaction_sd)
@@ -348,9 +363,14 @@ def test_dump_preprocessed(model_small_example, tmp_path):
 
     # Step 1: Dump preprocessed data (should return early without solving)
     sol_dump = sd.compute_strain_designs(model_small_example,
-        sd_modules=modules, max_cost=inf, max_solutions=inf,
-        solution_approach='any', ki_cost=kicost, solver=solver,
-        compress=True, dump_preprocessed=dump_path)
+                                         sd_modules=modules,
+                                         max_cost=inf,
+                                         max_solutions=inf,
+                                         solution_approach='any',
+                                         ki_cost=kicost,
+                                         solver=solver,
+                                         compress=True,
+                                         dump_preprocessed=dump_path)
     import os
     assert os.path.exists(dump_path), "Dump file should exist"
 
@@ -387,9 +407,13 @@ def test_lazy_expansion(model_small_example):
     csd.LAZY_EXPANSION_THRESHOLD = 1  # Force lazy mode
     try:
         sol = sd.compute_strain_designs(model_small_example,
-            sd_modules=modules, max_cost=inf, max_solutions=inf,
-            solution_approach='any', ki_cost=kicost, solver=solver,
-            compress=True)
+                                        sd_modules=modules,
+                                        max_cost=inf,
+                                        max_solutions=inf,
+                                        solution_approach='any',
+                                        ki_cost=kicost,
+                                        solver=solver,
+                                        compress=True)
         if sol.is_lazy:
             assert sol.get_num_materialized() < sol.get_num_sols(), \
                 "Lazy mode: materialized < estimated total"
@@ -403,3 +427,269 @@ def test_lazy_expansion(model_small_example):
             pass
     finally:
         csd.LAZY_EXPANSION_THRESHOLD = orig_threshold
+
+
+def _two_route_network():
+    """R1: -> A, R2/R3: A -> B, R4: B ->.
+
+    Two elementary flux vectors, {R1,R2,R4} and {R1,R3,R4}; exactly one uses R2.
+    Small enough that the expected answer can be written down rather than computed.
+    """
+    from cobra import Model, Reaction, Metabolite
+    m = Model('two_route')
+    A, B = Metabolite('A'), Metabolite('B')
+    for rid, stoich in [('R1', {A: 1.0}), ('R2', {A: -1.0, B: 1.0}), ('R3', {A: -1.0, B: 1.0}), ('R4', {B: -1.0})]:
+        r = Reaction(rid)
+        r.lower_bound, r.upper_bound = 0.0, 10.0
+        m.add_reactions([r])
+        r.add_metabolites(stoich)
+    m.objective = 'R4'
+    return m
+
+
+def _designs(solution):
+    return sorted(sorted(k for k, v in d.items() if v != 0) for d in solution.get_reaction_sd())
+
+
+@pytest.mark.timeout(30)
+def test_efv_enumeration_via_knockins(curr_solver):
+    """A PROTECT module with every reaction addable enumerates minimal supports.
+
+    A minimal set of reactions whose presence keeps the region inhabited is an
+    elementary flux vector, so both routes must come back and neither may be padded.
+    """
+    model = _two_route_network()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, PROTECT, constraints=['R4 >= 1'])],
+                                    max_cost=3,
+                                    ki_cost={r: 1.0 for r in ['R1', 'R2', 'R3', 'R4']},
+                                    solution_approach='populate',
+                                    solver=curr_solver,
+                                    compress=False)
+    assert _designs(sol) == [['R1', 'R2', 'R4'], ['R1', 'R3', 'R4']]
+
+
+@pytest.mark.timeout(30)
+def test_negative_cost_forces_reaction_into_every_design(curr_solver):
+    """A large negative cost forces a reaction in while the budget still bounds the rest.
+
+    Omitting R2 leaves only positive costs, which cannot reach a negative budget, so
+    the route through R3 is excluded and only the R2 route survives.
+    """
+    model = _two_route_network()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, PROTECT, constraints=['R4 >= 1'])],
+                                    max_cost=-97,
+                                    ki_cost={
+                                        'R1': 1.0,
+                                        'R2': -100.0,
+                                        'R3': 1.0,
+                                        'R4': 1.0
+                                    },
+                                    solution_approach='populate',
+                                    solver=curr_solver,
+                                    compress=False)
+    assert _designs(sol) == [['R1', 'R2', 'R4']]
+    assert list(sol.sd_cost) == [-98.0]
+
+
+@pytest.mark.timeout(30)
+def test_intervention_costs_are_not_counted_twice(curr_solver):
+    """A reaction named as a knock-in is billed once, not once per cost dictionary."""
+    model = _two_route_network()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, PROTECT, constraints=['R4 >= 1'])],
+                                    max_cost=3,
+                                    ki_cost={r: 1.0 for r in ['R1', 'R2', 'R3', 'R4']},
+                                    solution_approach='populate',
+                                    solver=curr_solver,
+                                    compress=False)
+    for design, cost in zip(sol.get_reaction_sd(), sol.sd_cost):
+        assert cost == len([k for k, v in design.items() if v != 0])
+
+
+@pytest.mark.timeout(30)
+def test_knockin_candidates_are_not_also_knockout_candidates(curr_solver):
+    """Naming a reaction addable must not leave it removable as well.
+
+    Reactions the caller did not name stay knockable, so mixed problems are unaffected;
+    but when every reaction is a knock-in candidate no design may propose a knockout.
+    """
+    model = _two_route_network()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, SUPPRESS, constraints=['R4 >= 1'])],
+                                    max_cost=3,
+                                    ki_cost={r: 1.0 for r in ['R1', 'R2', 'R3', 'R4']},
+                                    solution_approach='populate',
+                                    solver=curr_solver,
+                                    compress=False)
+    assert not [k for d in sol.get_reaction_sd() for k, v in d.items() if v < 0]
+
+
+@pytest.mark.timeout(30)
+def test_rewarding_intervention_beats_the_design_without_it(curr_solver):
+    """A design is reported only when no comparable design costs less.
+
+    With a negative cost, taking R2 costs less than not taking it, so the design that
+    takes it dominates the one that does not -- the reverse of the usual case, where a
+    larger design always costs more and the smaller one wins.
+    """
+    model = _two_route_network()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, PROTECT, constraints=['R4 >= 1'])],
+                                    max_cost=3,
+                                    ki_cost={
+                                        'R1': 1.0,
+                                        'R2': -5.0,
+                                        'R3': 1.0,
+                                        'R4': 1.0
+                                    },
+                                    solution_approach='populate',
+                                    solver=curr_solver,
+                                    compress=False)
+    designs = _designs(sol)
+    assert designs, 'expected at least one design'
+    assert all('R2' in d for d in designs), designs
+
+
+@pytest.mark.timeout(30)
+def test_zero_cost_intervention_ties_instead_of_dominating(curr_solver):
+    """At zero cost neither variant is cheaper, so both are reported."""
+    model = _two_route_network()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, PROTECT, constraints=['R4 >= 1'])],
+                                    max_cost=3,
+                                    ki_cost={
+                                        'R1': 1.0,
+                                        'R2': 0.0,
+                                        'R3': 1.0,
+                                        'R4': 1.0
+                                    },
+                                    solution_approach='populate',
+                                    solver=curr_solver,
+                                    compress=False)
+    designs = _designs(sol)
+    assert ['R1', 'R2', 'R4'] in designs, designs
+    assert ['R1', 'R3', 'R4'] in designs, designs
+
+
+@pytest.mark.timeout(60)
+def test_positive_costs_keep_the_smaller_design_only(curr_solver):
+    """The classical rule is unchanged: no reported design contains another."""
+    model = _two_route_network()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, SUPPRESS, constraints=['R4 >= 1'])],
+                                    max_cost=3,
+                                    ko_cost={
+                                        'R1': 1.0,
+                                        'R2': 1.0,
+                                        'R3': 1.0,
+                                        'R4': 1.0
+                                    },
+                                    solution_approach='populate',
+                                    solver=curr_solver,
+                                    compress=False)
+    designs = [set(d) for d in _designs(sol)]
+    for i, a in enumerate(designs):
+        for j, b in enumerate(designs):
+            assert i == j or not a < b, (a, b)
+
+
+@pytest.mark.timeout(30)
+def test_trim_preserves_binaries_outside_the_intervention_block(curr_solver):
+    """A binary that is not an intervention must survive trimming, and stay binary.
+
+    _trim_z_variables remapped indicator binaries through the z-block alone and rebuilt vtype
+    from the z-count, so a binary appended past the interventions either raised a KeyError or
+    was silently retyped as continuous -- and a continuous variable driving an indicator
+    constraint relaxes its row fractionally instead of switching it.
+    """
+    from scipy import sparse as _sp
+
+    model = _two_route_network()
+    seen = {}
+
+    class _Probe(sd.SDMILP):
+
+        def _trim_z_variables(self):
+            col = self.A_ineq.shape[1]
+
+            def pad(m):
+                return _sp.hstack((m, _sp.csr_matrix((m.shape[0], 1))), format='csr')
+
+            self.A_ineq = pad(self.A_ineq)
+            self.A_eq = pad(self.A_eq)
+            self.indic_constr.A = pad(_sp.csr_matrix(self.indic_constr.A))
+            self.c = list(self.c) + [0.0]
+            self.lb = list(self.lb) + [0.0]
+            self.ub = list(self.ub) + [1.0]
+            self.vtype += 'B'
+            if len(self.indic_constr.binv):  # glpk uses big-M and has no indicators
+                self.indic_constr.binv[0] = col  # key one on it, as a row gate would
+                seen['keyed'] = True
+            super()._trim_z_variables()
+            seen['vtype'] = self.vtype
+            seen['binv'] = [int(b) for b in self.indic_constr.binv]
+
+    _Probe(model, [sd.SDModule(model, SUPPRESS, constraints=['R4 >= 1'])], ko_cost={'R1': 1.0, 'R2': 1.0}, solver=curr_solver)
+
+    # the appended column is the last one and must still be binary after renumbering
+    assert seen['vtype'][-1] == 'B', seen['vtype'][-8:]
+    if seen.get('keyed'):
+        assert seen['binv'][0] == len(seen['vtype']) - 1
+        assert seen['vtype'][seen['binv'][0]] == 'B'
+
+
+@pytest.mark.parametrize('gene_kos', [False, True])
+def test_caller_model_is_left_untouched(curr_solver, model_gpr, gene_kos):
+    """compute_strain_designs must not modify the model it was handed.
+
+    Preprocessing works on its own copy: compression lumps reactions, the GPR extension adds
+    pseudo-reactions and the FVAs retighten bounds, none of which the caller asked for. Only
+    one copy is taken, so this is the invariant that keeps that safe.
+    """
+
+    def snapshot(m):
+        return ([r.id for r in m.reactions], [g.id for g in m.genes], [x.id for x in m.metabolites],
+                [(r.lower_bound, r.upper_bound) for r in m.reactions], [r.gene_reaction_rule for r in m.reactions], {
+                    r.id: r.objective_coefficient for r in m.reactions if r.objective_coefficient != 0
+                }, [sorted((x.id, v) for x, v in r.metabolites.items()) for r in m.reactions])
+
+    before = snapshot(model_gpr)
+    sd.compute_strain_designs(model_gpr,
+                              sd_modules=[sd.SDModule(model_gpr, SUPPRESS, constraints=['r_bm >= 0.5'])],
+                              max_cost=2,
+                              max_solutions=3,
+                              solution_approach=POPULATE,
+                              gene_kos=gene_kos,
+                              compress=True,
+                              solver=curr_solver,
+                              seed=1)
+    assert snapshot(model_gpr) == before
+
+
+def test_objective_survives_a_suppressed_build(curr_solver, model_gpr):
+    """A model assembled under suppression carries its objective outside the solver.
+
+    ``model.objective = ...`` writes into the optlang problem, so a model built inside
+    suppress_lp_context -- which is the point of the context -- would silently lose it and
+    raise on the next read. set_suppressed_objective records it where the LP tools look.
+    """
+    import cobra
+    from straindesign.networktools import suppress_lp_context, set_suppressed_objective
+    from straindesign.lptools import model_objective
+
+    reference = sd.fba(model_gpr, obj={'r_bm': 1.0}, obj_sense='maximize', solver=curr_solver)
+
+    with suppress_lp_context(cobra.Model('shell')):
+        bare = cobra.Model('bare')
+        bare.add_metabolites([cobra.Metabolite(m.id) for m in model_gpr.metabolites])
+        bare.add_reactions([cobra.Reaction(r.id) for r in model_gpr.reactions])
+        for r in model_gpr.reactions:
+            new = bare.reactions.get_by_id(r.id)
+            new.add_metabolites({m.id: v for m, v in r.metabolites.items()})
+            new.bounds = r.bounds
+        set_suppressed_objective(bare, {'r_bm': 1.0}, 'max')
+
+    assert model_objective(bare) == ({'r_bm': 1.0}, 'max')
+    assert sd.fba(bare, solver=curr_solver).objective_value == pytest.approx(reference.objective_value)

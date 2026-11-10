@@ -14,13 +14,33 @@ on:
 
 permissions:
   contents: write
+  # Lets the runner mint the short-lived OIDC token that PyPI trusted publishing
+  # exchanges for an upload token. Without it the publish step has no credential
+  # at all, now that no API token is stored.
+  id-token: write
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: build_and_publish
     steps:
+    # Anyone with write access can dispatch a workflow, and this one publishes
+    # irreversibly to PyPI. Fail loudly rather than skipping, so a dispatch that
+    # does nothing cannot be mistaken for a release that worked.
+    - name: Restrict releases to the maintainer
+      if: github.actor != 'VonAlphaBisZulu'
+      run: |
+        echo "::error::Releases may only be dispatched by VonAlphaBisZulu (dispatched by: ${{ github.actor }})"
+        exit 1
+    # Checked out over SSH with a write deploy key. The ruleset protecting main
+    # requires changes to arrive by pull request and lists DeployKey as a bypass
+    # actor, so the version-bump commit can only be pushed with this key. The key
+    # is an environment secret of build_and_publish, so no other workflow can
+    # read it -- unlike a bypass for github-actions[bot], which would apply to
+    # every workflow in the repository.
     - uses: actions/checkout@v4
+      with:
+        ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
     - name: Print version number
       run: echo ${{ github.event.inputs.version }}
     - name: set up Python
@@ -29,7 +49,7 @@ jobs:
         python-version: '3.x'
     - name: update version number
       run: |
-        python ./.github/update_version.py setup.py ${{ github.event.inputs.version }}
+        python ./.github/update_version.py pyproject.toml ${{ github.event.inputs.version }}
         python ./.github/update_version.py conda-recipe/meta.yaml ${{ github.event.inputs.version }}
         python ./.github/update_version.py docs/source/conf.py ${{ github.event.inputs.version }}
     - name: install yapf
@@ -38,6 +58,20 @@ jobs:
         pip install yapf
     - name: format repository with yapf in google-python format
       run: yapf -i -r --style ./.github/style.yapf .
+    # Build and validate the distributions before anything is published or pushed:
+    # a failure here leaves the repository untouched, with no tag, release or
+    # version-bump commit to unwind.
+    - name: Install build and twine
+      run: |
+        pip install --upgrade build twine
+    - name: Clean PyPi build directories
+      run: rm -rf dist
+    - name: Build for PyPi
+      run: |
+        python -m build
+    - name: Check the built distributions
+      run: |
+        twine check dist/*
     - name: retrieve name and E-Mail configuration
       run: |
         git config --global user.name ${{ secrets.NAME_GITHUB }}
@@ -52,6 +86,13 @@ jobs:
       run: git fetch
     - name: push code to main
       run: git push
+    # No password: the action falls back to trusted publishing, authenticating as
+    # this workflow in this repository against the publisher configured on PyPI.
+    - name: Publish to PyPI
+      uses: pypa/gh-action-pypi-publish@release/v1
+    # Tag and release only once PyPI has accepted the upload. A version cannot be
+    # re-uploaded to PyPI even after deletion, so the release must not advertise a
+    # version that never made it there.
     - name: Create Release
       env:
         GITHUB_TOKEN: ${{ github.token }}
@@ -59,30 +100,40 @@ jobs:
         gh release create "v${{ github.event.inputs.version }}" \
           --title "v${{ github.event.inputs.version }}" \
           --notes "${{ github.event.inputs.description }}"
-    - name: Install setuptools, wheel and twine
-      run: |
-        pip install build setuptools wheel twine
-    - name: Clean PyPi build directories
-      run: rm -rf dist
-    - name: Build for PyPi
-      run: |
-        python setup.py sdist bdist_wheel
-    - name: Publish to PyPI
-      uses: pypa/gh-action-pypi-publish@release/v1
+    # The conda-forge package (straindesign-cobra) needs no step here: the
+    # conda-forge bot picks the new version up from PyPI and opens a pull
+    # request on the feedstock, which a feedstock maintainer merges.
+
+  # A job of its own: if it fails, "Re-run failed jobs" repeats only this part. The deploy job cannot
+  # be repeated for a version PyPI already has.
+  conda:
+    needs: deploy
+    runs-on: ubuntu-latest
+    environment: build_and_publish
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash -l {0}
+    steps:
+    # The tag, not the commit the workflow was dispatched on, which predates the version bump.
+    - uses: actions/checkout@v4
       with:
-        password: ${{ secrets.PYPI_API_TOKEN }}
-    - name: Install conda dependencies
-      run: conda install anaconda-client conda-build
-    - name: Clean Anaconda build directories
-      run: rm -rf ~/conda-bld
+        ref: v${{ github.event.inputs.version }}
+    # Runner images no longer all ship conda (Ubuntu 26.04 does not), so set it up as CI-test.yml does.
+    - name: Set up conda-build and anaconda-client with Micromamba
+      uses: mamba-org/setup-micromamba@v2
+      with:
+        environment-name: straindesign
+        micromamba-version: latest
+        create-args: >-
+          python=3.12
+          anaconda-client
+          conda-build
+        post-cleanup: 'none'
     - name: Build and publish on Anaconda
       env:
         ANACONDA_API_TOKEN: ${{ secrets.ANACONDA_API_TOKEN }}
       run: |
         conda build conda-recipe/. -c conda-forge --croot ~/conda-bld
-        conda config --set anaconda_upload yes
-        /usr/share/miniconda/bin/anaconda --token $ANACONDA_API_TOKEN upload -u cnapy ~/conda-bld/noarch/straindesign*
-    - name: Final clean up
-      run: |
-        rm -rf dist
-        rm -rf ~/conda-bld
+        anaconda --token "$ANACONDA_API_TOKEN" upload -u cnapy ~/conda-bld/noarch/straindesign*

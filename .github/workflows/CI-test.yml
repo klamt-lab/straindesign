@@ -69,14 +69,6 @@ jobs:
           echo 'export PATH="${{ env.pythonLocation }}/bin:$PATH"' >> ~/.bash_profile
       - name: Check Python Version
         run: python --version
-      - name: Java Setup
-        uses: actions/setup-java@v5
-        with:
-          distribution: 'temurin' # See 'Supported distributions' for available options
-          java-version: '21'
-      - name: Set JAVA_HOME for mac OS
-        if: runner.os == 'macOS'
-        run: echo "JAVA_HOME=$(/usr/libexec/java_home)" >> "$GITHUB_ENV"
       - name: Build for PyPI (if pip)
         if: matrix.package-manager == 'pip'
         run: |
@@ -97,10 +89,6 @@ jobs:
         if: matrix.package-manager == 'pip'
         run: |
           pip install pyscipopt
-      - name: Install jpype1 (pip)
-        if: matrix.package-manager == 'pip'
-        run: |
-          pip install jpype1
       - name: Install pytest (pip)
         if: matrix.package-manager == 'pip'
         run: |
@@ -139,13 +127,12 @@ jobs:
         if: matrix.package-manager == 'conda'
         run: |
           micromamba install -c conda-forge pyscipopt scip
-      - name: Install jpype1 (conda)
-        if: matrix.package-manager == 'conda'
-        run: |
-          pip install jpype1
       - name: Install pytest (conda)
         if: matrix.package-manager == 'conda'
         run: |
           micromamba install pytest pytest-timeout
+      # --downstream reads CNApy's source to check the names it imports from this
+      # package. It needs network and tracks a branch we do not control, so it is
+      # limited to the quarterly scheduled run rather than gating pull requests.
       - name: Test with pytest
-        run: pytest tests -v --medium --log-cli-level=INFO
+        run: pytest tests -v --medium ${{ github.event_name == 'schedule' && '--downstream' || '' }} --log-cli-level=INFO

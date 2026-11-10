@@ -2,6 +2,14 @@
 from .test_01_load_models_and_solvers import *
 import straindesign as sd
 
+# StrainDesign imports the plotting stack on first use, so without this the first test to plot
+# pays for it inside its own timeout. On a runner with no matplotlib font cache that build alone
+# takes longer than the 15 s budget, and because the test is killed part-way the cache is never
+# written -- so every following plot test starts the build again and dies the same way. Paying
+# for it here, at collection, puts it outside every test's clock, which is where it sat when the
+# import was still at module level in lptools.
+sd.lptools._ensure_plotting()
+
 
 @pytest.mark.timeout(15)
 def test_plot_2d_flux_space(curr_solver, model_weak_coupling):
@@ -28,8 +36,7 @@ def test_plot_3d_space(curr_solver, model_weak_coupling):
 def test_plot_2d_point(curr_solver, model_weak_coupling):
     """0D: fix both axes to single values, should show a dot."""
     constr = ['r4 = 0', 'r7 = 0', 'r9 = 0', 'r_P = 2', 'r_BM = 4']
-    dp, tri, _ = sd.plot_flux_space(model_weak_coupling, ('r_P', 'r_BM'),
-                                    constraints=constr, plt_backend='template')
+    dp, tri, _ = sd.plot_flux_space(model_weak_coupling, ('r_P', 'r_BM'), constraints=constr, plt_backend='template')
     assert len(dp) == 1
 
 
@@ -37,8 +44,7 @@ def test_plot_2d_point(curr_solver, model_weak_coupling):
 def test_plot_2d_line(curr_solver, model_weak_coupling):
     """1D: fix one axis, line along the other."""
     constr = ['r4 = 0', 'r7 = 0', 'r9 = 0', 'r_P = 2']
-    dp, tri, _ = sd.plot_flux_space(model_weak_coupling, ('r_P', 'r_BM'),
-                                    constraints=constr, plt_backend='template')
+    dp, tri, _ = sd.plot_flux_space(model_weak_coupling, ('r_P', 'r_BM'), constraints=constr, plt_backend='template')
     assert len(dp) >= 2
 
 
@@ -46,6 +52,5 @@ def test_plot_2d_line(curr_solver, model_weak_coupling):
 def test_plot_3d_point(curr_solver, model_weak_coupling):
     """0D in 3D: all axes fixed, should show a dot."""
     constr = ['r4 = 0', 'r7 = 0', 'r9 = 0', 'r_BM = 2', 'r_P = 2', 'r_Q = 2']
-    dp, tri, _ = sd.plot_flux_space(model_weak_coupling, ('r_P', 'r_BM', 'r_Q'),
-                                    constraints=constr, plt_backend='template')
+    dp, tri, _ = sd.plot_flux_space(model_weak_coupling, ('r_P', 'r_BM', 'r_Q'), constraints=constr, plt_backend='template')
     assert len(dp) == 1

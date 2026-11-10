@@ -1,3 +1,19 @@
+#!/usr/bin/env python3
+#
+# Copyright 2025-2026 Max Planck Institute Magdeburg
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 """
 Metabolic network compression using nullspace-based coupling detection.
 
@@ -85,7 +101,6 @@ def _lcm_list(numbers: List[int]) -> int:
 
 # Rational Matrix with Sparse Storage
 
-
 _INT64_MAX = (1 << 63) - 1
 
 
@@ -109,6 +124,9 @@ class RationalMatrix:
         self._den_sparse: Optional[csr_matrix] = None  # Denominators
         self._csc_cache: Optional[csc_matrix] = None
         self._batch_mode = False
+        # Column edits between begin_batch_edit() and end_batch_edit() go to {col: {row: (num, den)}}
+        # and are written back to the int sparse store once, at end_batch_edit().
+        self._batch_cols: Optional[Dict[int, Dict[int, Tuple[int, int]]]] = None
         # Big-integer fallback: scipy.sparse only holds <=64-bit ints, so exact results whose
         # coefficients exceed int64 (e.g. yeast-GEM's nullspace) are stored here as {row:{col:Fraction}}
         # and _num_sparse/_den_sparse stay None. See is_bigint() / to_coo_exact().
@@ -154,15 +172,16 @@ class RationalMatrix:
             for c in range(cols):
                 val = arr[r, c]
                 if val != 0:
-                    frac = float_to_fraction(val, max_precision, max_denom)
+                    if isinstance(val, (Fraction, int, np.integer)):
+                        frac = Fraction(val)
+                    else:
+                        frac = float_to_fraction(val, max_precision, max_denom)
                     row_idx.append(r)
                     col_idx.append(c)
                     num_data.append(frac.numerator)
                     den_data.append(frac.denominator)
 
-        num_sparse = csr_matrix((num_data, (row_idx, col_idx)), shape=(rows, cols), dtype=np.int64)
-        den_sparse = csr_matrix((den_data, (row_idx, col_idx)), shape=(rows, cols), dtype=np.int64)
-        return cls._from_sparse(num_sparse, den_sparse)
+        return cls._build_from_sparse_data(row_idx, col_idx, num_data, den_data, rows, cols)
 
     @classmethod
     def from_cobra_model(cls, model, max_precision: int = 6, max_denom: int = 100) -> 'RationalMatrix':
@@ -191,9 +210,27 @@ class RationalMatrix:
                     num_data.append(frac.numerator)
                     den_data.append(frac.denominator)
 
-        num_sparse = csr_matrix((num_data, (row_idx, col_idx)), shape=(num_mets, num_rxns), dtype=np.int64)
-        den_sparse = csr_matrix((den_data, (row_idx, col_idx)), shape=(num_mets, num_rxns), dtype=np.int64)
-        return cls._from_sparse(num_sparse, den_sparse)
+        return cls._build_from_sparse_data(row_idx, col_idx, num_data, den_data, num_mets, num_rxns)
+
+    @classmethod
+    def from_fractions(cls, entries, shape: Tuple[int, int]) -> 'RationalMatrix':
+        """Build from exact entries ``(row, col, value)``, where value is a Fraction or an int.
+
+        Values of unlimited size are accepted; storage ratchets to arbitrary precision only when
+        the int64 sparse representation cannot hold them.
+        """
+        rows, cols, nums, dens = [], [], [], []
+        for r, c, v in entries:
+            frac = v if isinstance(v, Fraction) else Fraction(v)
+            if frac == 0:
+                continue
+            if not (0 <= r < shape[0] and 0 <= c < shape[1]):
+                raise IndexError(f"entry ({r}, {c}) outside shape {shape}")
+            rows.append(int(r))
+            cols.append(int(c))
+            nums.append(frac.numerator)
+            dens.append(frac.denominator)
+        return cls._build_from_sparse_data(rows, cols, nums, dens, shape[0], shape[1])
 
     @classmethod
     def _build_from_sparse_data(cls, row_indices: List[int], col_indices: List[int], numerators: List[int], denominators: List[int],
@@ -217,6 +254,46 @@ class RationalMatrix:
         result._dict_frac = dic
         return result
 
+    # Exact access, independent of which store backs the matrix
+
+    def _require_sparse_store(self, op: str) -> None:
+        if self._dict_frac is not None:
+            raise NotImplementedError(f"{op} is not available on a big-integer RationalMatrix; its coefficients exceed "
+                                      "int64 and are held as exact Fractions. Use nullspace()/basic_columns(), or "
+                                      "to_coo_exact() to export.")
+
+    def _iter_row_fractions(self) -> Iterator[Tuple[int, Dict[int, Fraction]]]:
+        """Yield (row, {col: Fraction}) for every non-empty row."""
+        if self._dict_frac is not None:
+            for r, cd in self._dict_frac.items():
+                row = {c: v for c, v in cd.items() if v}
+                if row:
+                    yield int(r), row
+            return
+        num_csr = self._num_sparse.tocsr()
+        den_csr = self._den_sparse.tocsr()
+        for r in range(self._rows):
+            start, end = num_csr.indptr[r], num_csr.indptr[r + 1]
+            row = {}
+            for i in range(start, end):
+                num = int(num_csr.data[i])
+                if num == 0:
+                    continue
+                den = int(den_csr.data[i]) or 1
+                row[int(num_csr.indices[i])] = Fraction(num, den)
+            if row:
+                yield r, row
+
+    def _nnz_per_column(self) -> np.ndarray:
+        counts = np.zeros(self._cols, dtype=np.int64)
+        if self._dict_frac is not None:
+            for cd in self._dict_frac.values():
+                for c, v in cd.items():
+                    if v:
+                        counts[c] += 1
+            return counts
+        return np.diff(self._num_sparse.tocsc().indptr)
+
     # Size queries
 
     def get_row_count(self) -> int:
@@ -229,6 +306,7 @@ class RationalMatrix:
 
     def iter_column_fractions(self, col: int) -> Iterator[Tuple[int, Fraction]]:
         """Iterate over non-zero entries in column as (row, Fraction) pairs."""
+        self._require_sparse_store('iter_column_fractions')
         if self._csc_cache is None:
             self._csc_cache = self._num_sparse.tocsc()
             self._den_csc_cache = self._den_sparse.tocsc()
@@ -245,6 +323,7 @@ class RationalMatrix:
 
     def get_signum(self, row: int, col: int) -> int:
         """Return sign of element: -1, 0, or 1."""
+        self._require_sparse_store('get_signum')
         num = self._num_sparse[row, col]
         if num > 0:
             return 1
@@ -255,32 +334,69 @@ class RationalMatrix:
     # Batch edit mode
 
     def begin_batch_edit(self):
-        """Enter batch edit mode - delays cache invalidation."""
+        """Enter batch edit mode: column edits accumulate in a column store, the sparse matrices and
+        the cached column view stay as they were until end_batch_edit()."""
+        self._require_sparse_store('begin_batch_edit')
         self._batch_mode = True
-        self._num_sparse = self._num_sparse.tolil()
-        self._den_sparse = self._den_sparse.tolil()
+        self._batch_cols = None
+
+    def _batch_column_store(self) -> Dict[int, Dict[int, Tuple[int, int]]]:
+        """{col: {row: (num, den)}} of the current entries; built on first use within a batch."""
+        if self._batch_cols is None:
+            num_csc = self._num_sparse.tocsc()
+            den_csc = self._den_sparse.tocsc()
+            indptr, indices = num_csc.indptr, num_csc.indices
+            num_data, den_data = num_csc.data.tolist(), den_csc.data.tolist()
+            store: Dict[int, Dict[int, Tuple[int, int]]] = {}
+            for c in range(self._cols):
+                start, end = indptr[c], indptr[c + 1]
+                if start == end:
+                    continue
+                col = {}
+                for idx in range(start, end):
+                    n = num_data[idx]
+                    if n != 0:
+                        col[int(indices[idx])] = (n, den_data[idx])
+                if col:
+                    store[c] = col
+            self._batch_cols = store
+        return self._batch_cols
 
     def end_batch_edit(self):
-        """Exit batch edit mode - converts back to CSR and invalidates cache."""
+        """Exit batch edit mode: write the accumulated column edits back and invalidate the cache."""
         self._batch_mode = False
-        self._num_sparse = self._num_sparse.tocsr()
-        self._den_sparse = self._den_sparse.tocsr()
+        if self._batch_cols is not None:
+            rows, cols, nums, dens = [], [], [], []
+            for c, col in self._batch_cols.items():
+                for r, (n, d) in col.items():
+                    if n != 0:
+                        rows.append(r)
+                        cols.append(c)
+                        nums.append(n)
+                        dens.append(d)
+            rebuilt = RationalMatrix._build_from_sparse_data(rows, cols, nums, dens, self._rows, self._cols)
+            self._num_sparse, self._den_sparse = rebuilt._num_sparse, rebuilt._den_sparse
+            self._dict_frac = rebuilt._dict_frac
+            self._batch_cols = None
         self._csc_cache = None
 
     # Matrix operations
 
     def clone(self) -> 'RationalMatrix':
         """Create a deep copy."""
+        self._require_sparse_store('clone')
         return RationalMatrix._from_sparse(self._num_sparse.copy(), self._den_sparse.copy())
 
     def submatrix(self, rows: int, cols: int) -> 'RationalMatrix':
         """Extract top-left submatrix of given dimensions."""
+        self._require_sparse_store('submatrix')
         num_sub = self._num_sparse[:rows, :cols].copy()
         den_sub = self._den_sparse[:rows, :cols].copy()
         return RationalMatrix._from_sparse(num_sub, den_sub)
 
     def remove_rows(self, keep_indices: List[int]) -> None:
         """Keep only the specified rows."""
+        self._require_sparse_store('remove_rows')
         keep = np.array(keep_indices, dtype=np.intp)
         self._num_sparse = self._num_sparse[keep, :]
         self._den_sparse = self._den_sparse[keep, :]
@@ -289,6 +405,7 @@ class RationalMatrix:
 
     def remove_columns(self, keep_indices: List[int]) -> None:
         """Keep only the specified columns."""
+        self._require_sparse_store('remove_columns')
         keep = np.array(keep_indices, dtype=np.intp)
         self._num_sparse = self._num_sparse[:, keep]
         self._den_sparse = self._den_sparse[:, keep]
@@ -299,66 +416,54 @@ class RationalMatrix:
         """Add scalar * column[src] to column[dst]. dst[i] += (num/den) * src[i]"""
         if scalar_num == 0:
             return
+        if not self._batch_mode:
+            self.begin_batch_edit()
+            try:
+                self.add_scaled_column(dst_col, src_col, scalar_num, scalar_den)
+            finally:
+                self.end_batch_edit()
+            return
 
-        num_lil = self._num_sparse
-        den_lil = self._den_sparse
-
-        # Get source column entries
-        if hasattr(num_lil, 'rows'):  # LIL format
-            src_rows = num_lil.rows[src_col] if num_lil.format == 'csc' else None
-
-        # Convert to CSC for efficient column access
-        num_csc = num_lil.tocsc() if num_lil.format != 'csc' else num_lil
-        den_csc = den_lil.tocsc() if den_lil.format != 'csc' else den_lil
-
-        start = num_csc.indptr[src_col]
-        end = num_csc.indptr[src_col + 1]
-
-        for idx in range(start, end):
-            row = num_csc.indices[idx]
-            src_num = int(num_csc.data[idx])
-            src_den = int(den_csc.data[idx])
-
+        store = self._batch_column_store()
+        src = store.get(src_col)
+        if not src:
+            return
+        dst = store.setdefault(dst_col, {})
+        for row, (src_num, src_den) in list(src.items()):
             if src_num == 0:
                 continue
-
-            # Get current dst value
-            dst_num = int(num_lil[row, dst_col])
-            dst_den = int(den_lil[row, dst_col]) if dst_num != 0 else 1
-
-            # Compute: dst + (scalar_num/scalar_den) * (src_num/src_den)
-            # = dst_num/dst_den + (scalar_num * src_num)/(scalar_den * src_den)
+            # dst + (scalar_num/scalar_den) * (src_num/src_den)
             add_num = scalar_num * src_num
             add_den = scalar_den * src_den
-
-            if dst_num == 0:
+            cur = dst.get(row)
+            if cur is None or cur[0] == 0:
                 new_num, new_den = add_num, add_den
             else:
-                # Common denominator addition
+                dst_num, dst_den = cur
                 new_num = dst_num * add_den + add_num * dst_den
                 new_den = dst_den * add_den
-
-            # Reduce
             if new_num != 0:
                 g = gcd(abs(new_num), new_den)
-                new_num //= g
-                new_den //= g
-
-            num_lil[row, dst_col] = new_num
-            den_lil[row, dst_col] = new_den if new_num != 0 else 0
-
-        self._invalidate_cache()
+                dst[row] = (new_num // g, new_den // g)
+            else:
+                dst.pop(row, None)
 
     def scale_column(self, col: int, scalar_num: int, scalar_den: int) -> None:
         """Multiply a column by a scalar: col[i] *= scalar_num/scalar_den."""
         if scalar_num == 0 or scalar_num == scalar_den:
             return
-        num_lil, den_lil = self._num_sparse, self._den_sparse
-        num_csc = num_lil.tocsc() if num_lil.format != 'csc' else num_lil
-        den_csc = den_lil.tocsc() if den_lil.format != 'csc' else den_lil
-        entries = [(num_csc.indices[i], int(num_csc.data[i]), int(den_csc.data[i]))
-                   for i in range(num_csc.indptr[col], num_csc.indptr[col + 1])]
-        for row, cur_num, cur_den in entries:
+        if not self._batch_mode:
+            self.begin_batch_edit()
+            try:
+                self.scale_column(col, scalar_num, scalar_den)
+            finally:
+                self.end_batch_edit()
+            return
+
+        col_entries = self._batch_column_store().get(col)
+        if not col_entries:
+            return
+        for row, (cur_num, cur_den) in list(col_entries.items()):
             if cur_num == 0:
                 continue
             new_num, new_den = cur_num * scalar_num, cur_den * scalar_den
@@ -368,9 +473,10 @@ class RationalMatrix:
             if g:
                 new_num //= g
                 new_den //= g
-            num_lil[row, col] = new_num
-            den_lil[row, col] = new_den if new_num != 0 else 0
-        self._invalidate_cache()
+            if new_num != 0:
+                col_entries[row] = (new_num, new_den)
+            else:
+                col_entries.pop(row, None)
 
     # Conversion
 
@@ -391,10 +497,9 @@ class RationalMatrix:
         Returns numerator matrix scaled by LCM of denominators, plus the LCM.
         """
         if self.is_bigint():
-            raise OverflowError(
-                "coefficients exceed int64 and cannot be stored in a scipy sparse matrix; "
-                "use to_coo_exact() / to_sparse_pattern(), or the public sparse_nullspace() helper "
-                "which returns an ExactCOO in that case.")
+            raise OverflowError("coefficients exceed int64 and cannot be stored in a scipy sparse matrix; "
+                                "use to_coo_exact() / to_sparse_pattern(), or the public sparse_nullspace() helper "
+                                "which returns an ExactCOO in that case.")
         # Empty matrix (e.g. a 0-dimensional nullspace)
         if self._den_sparse is None:
             return csr_matrix((self._rows, self._cols), dtype=np.int64), 1
@@ -405,8 +510,7 @@ class RationalMatrix:
         common_denom = _lcm_list([int(d) for d in dens if d != 0])
         coo_num = self._num_sparse.tocoo()
         coo_den = self._den_sparse.tocoo()
-        scaled_data = [int(num) * (common_denom // int(den)) if num != 0 else 0
-                       for num, den in zip(coo_num.data, coo_den.data)]
+        scaled_data = [int(num) * (common_denom // int(den)) if num != 0 else 0 for num, den in zip(coo_num.data, coo_den.data)]
         scaled = csr_matrix((scaled_data, (coo_num.row, coo_num.col)), shape=(self._rows, self._cols), dtype=np.int64)
         return scaled, common_denom
 
@@ -427,13 +531,17 @@ class RationalMatrix:
         if self._dict_frac is not None:
             for r, cd in self._dict_frac.items():
                 for c, f in cd.items():
-                    rows.append(int(r)); cols.append(int(c)); fracs.append(f)
+                    rows.append(int(r))
+                    cols.append(int(c))
+                    fracs.append(f)
         elif self._num_sparse is not None:
             coo_num = self._num_sparse.tocoo()
             coo_den = self._den_sparse.tocoo()
             for r, c, n, d in zip(coo_num.row, coo_num.col, coo_num.data, coo_den.data):
                 if n != 0:
-                    rows.append(int(r)); cols.append(int(c)); fracs.append(Fraction(int(n), int(d)))
+                    rows.append(int(r))
+                    cols.append(int(c))
+                    fracs.append(Fraction(int(n), int(d)))
         denom = _lcm_list([f.denominator for f in fracs]) if fracs else 1
         data = [int(f.numerator) * (denom // f.denominator) for f in fracs]
         return ExactCOO(rows, cols, data, (self._rows, self._cols), denom)
@@ -454,11 +562,16 @@ class RationalMatrix:
                 rd = {}
                 for c, f in cd.items():
                     if f != 0:
-                        ai.append(int(r)); aj.append(int(c)); rd[int(c)] = f
+                        ai.append(int(r))
+                        aj.append(int(c))
+                        rd[int(c)] = f
                 if rd:
                     row_data[int(r)] = rd
             pattern = csr_matrix(([1] * len(ai), (ai, aj)), shape=(self._rows, self._cols), dtype=np.int8)
             return pattern, row_data
+
+        if self._num_sparse is None:  # e.g. the empty kernel of a matrix with full column rank
+            return csr_matrix((self._rows, self._cols), dtype=np.int8), {}
 
         # Build pattern matrix (just 1s for structure)
         coo_num = self._num_sparse.tocoo()
@@ -511,7 +624,7 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
 
     # Column sorting: sparse columns first
     # col_order[sorted_pos] = original_col
-    nnz_per_col = np.diff(rm._num_sparse.tocsc().indptr)
+    nnz_per_col = rm._nnz_per_column()
     col_order = np.argsort(nnz_per_col, kind='stable').tolist()
     col_inverse = [0] * cols
     for sorted_pos, orig_col in enumerate(col_order):
@@ -519,26 +632,12 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
 
     # Convert to integer matrix (scale each row by LCM of denominators)
     # Store column indices in sorted space
-    num_csr = rm._num_sparse.tocsr()
-    den_csr = rm._den_sparse.tocsr()
-
     data: Dict[int, Dict[int, int]] = {}
-    for r in range(rows):
-        start, end = num_csr.indptr[r], num_csr.indptr[r + 1]
-        if start == end:
-            continue
-
-        # Compute row LCM of denominators
-        row_dens = [int(den_csr.data[i]) for i in range(start, end) if den_csr.data[i] != 0]
-        row_lcm = reduce(lcm, row_dens, 1) if row_dens else 1
-
-        # Scale numerators; store using sorted column index
+    for r, row_fracs in rm._iter_row_fractions():
+        row_lcm = reduce(lcm, (f.denominator for f in row_fracs.values()), 1)
         row_data = {}
-        for i in range(start, end):
-            num = int(num_csr.data[i])
-            den = int(den_csr.data[i]) if den_csr.data[i] != 0 else 1
-            orig_col = int(num_csr.indices[i])
-            scaled = num * (row_lcm // den)
+        for orig_col, frac in row_fracs.items():
+            scaled = frac.numerator * (row_lcm // frac.denominator)
             if scaled != 0:
                 row_data[col_inverse[orig_col]] = scaled
         if row_data:
@@ -679,7 +778,7 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
         _eliminate(prd, pval, pcol, targets, False)
         holders = pivcol_holders.get(pcol)
         if holders:
-            holders.difference_update(above)   # pcol is now cleared from those rows
+            holders.difference_update(above)  # pcol is now cleared from those rows
 
     # Final GCD reduction of the pivot rows (insurance; rows are already reduced per step).
     for key in pivot_keys:
@@ -690,12 +789,10 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
                 row_data[c] //= row_gcd
 
     # Translate results back to original column space, keyed by pivot index (rref_data[i] = pivot i).
-    original_data = {i: {col_order[sc]: v for sc, v in data[key].items()}
-                     for i, key in enumerate(pivot_keys)}
+    original_data = {i: {col_order[sc]: v for sc, v in data[key].items()} for i, key in enumerate(pivot_keys)}
     pivot_cols_original = [col_order[p] for p in pivot_cols_sorted]
 
     return original_data, rank, pivot_cols_original
-
 
 
 def _nullspace_sparse(matrix: RationalMatrix) -> RationalMatrix:
@@ -724,6 +821,24 @@ def _nullspace_sparse(matrix: RationalMatrix) -> RationalMatrix:
     # For each free column f, the nullspace vector has:
     # - Entry 1 at position f (the free variable)
     # - Entry -rref[i,f]/rref[i,pivot_i] at each pivot position
+    # The entries are collected from the nonzeros of the RREF, so the cost follows its fill and not
+    # (pivot rows) x (free columns), which reaches 10^8 dictionary lookups per nullspace on
+    # genome-scale networks.
+    entries_of_free = {free_col: [] for free_col in free_cols}
+    for i, pivot_col in enumerate(pivot_cols):
+        row_data = rref_data.get(i, {})
+        pivot_val = row_data.get(pivot_col, 1)  # Should always exist
+        for col, val_at_free in row_data.items():
+            if val_at_free != 0 and col in entries_of_free:
+                # Nullspace entry: -val_at_free / pivot_val
+                g = gcd(abs(val_at_free), abs(pivot_val))
+                num = -val_at_free // g
+                den = pivot_val // g
+                # Ensure positive denominator
+                if den < 0:
+                    num, den = -num, -den
+                entries_of_free[col].append((pivot_col, num, den))
+
     row_indices, col_indices = [], []
     numerators, denominators = [], []
 
@@ -735,22 +850,11 @@ def _nullspace_sparse(matrix: RationalMatrix) -> RationalMatrix:
         denominators.append(1)
 
         # Entries from RREF for pivot variables
-        for i, pivot_col in enumerate(pivot_cols):
-            row_data = rref_data.get(i, {})
-            val_at_free = row_data.get(free_col, 0)
-            if val_at_free != 0:
-                pivot_val = row_data.get(pivot_col, 1)  # Should always exist
-                # Nullspace entry: -val_at_free / pivot_val
-                g = gcd(abs(val_at_free), abs(pivot_val))
-                num = -val_at_free // g
-                den = pivot_val // g
-                # Ensure positive denominator
-                if den < 0:
-                    num, den = -num, -den
-                row_indices.append(pivot_col)
-                col_indices.append(k)
-                numerators.append(num)
-                denominators.append(den)
+        for pivot_col, num, den in entries_of_free[free_col]:
+            row_indices.append(pivot_col)
+            col_indices.append(k)
+            numerators.append(num)
+            denominators.append(den)
 
     return RationalMatrix._build_from_sparse_data(row_indices, col_indices, numerators, denominators, cols, nullity)
 
@@ -793,8 +897,10 @@ def sparse_nullspace(matrix):
 
     Parameters
     ----------
-    matrix : scipy.sparse matrix, numpy.ndarray, or RationalMatrix
+    matrix : scipy.sparse matrix, numpy.ndarray, RationalMatrix, or ExactCOO
         Input with integer or rational entries. Floats are converted to nearby rationals.
+        Entries too large for signed 64-bit integers are accepted through RationalMatrix
+        (see ``RationalMatrix.from_fractions``) or ExactCOO, which scipy sparse cannot hold.
 
     Returns
     -------
@@ -808,6 +914,9 @@ def sparse_nullspace(matrix):
     """
     if isinstance(matrix, RationalMatrix):
         rm = matrix
+    elif isinstance(matrix, ExactCOO):
+        rm = RationalMatrix.from_fractions(
+            ((r, c, Fraction(int(v), int(matrix.denom))) for r, c, v in zip(matrix.rows, matrix.cols, matrix.data)), matrix.shape)
     elif sparse.issparse(matrix):
         A = matrix.tocsr()
         if np.issubdtype(A.dtype, np.integer):
@@ -815,13 +924,25 @@ def sparse_nullspace(matrix):
             den = csr_matrix((np.ones(A.nnz, dtype=np.int64), A.indices.copy(), A.indptr.copy()), shape=A.shape)
             rm = RationalMatrix._from_sparse(num, den)
         else:
-            rm = RationalMatrix.from_numpy(A.toarray())
+            rows, cols, nums, dens = [], [], [], []
+            for r in range(A.shape[0]):
+                for i in range(A.indptr[r], A.indptr[r + 1]):
+                    frac = float_to_fraction(A.data[i])
+                    if frac:
+                        rows.append(r)
+                        cols.append(int(A.indices[i]))
+                        nums.append(frac.numerator)
+                        dens.append(frac.denominator)
+            rm = RationalMatrix._build_from_sparse_data(rows, cols, nums, dens, *A.shape)
     else:
         rm = RationalMatrix.from_numpy(np.asarray(matrix))
     K = nullspace(rm)
     if K.is_bigint():
         return K.to_coo_exact()
-    csr, _ = K.to_sparse_csr()
+    try:
+        csr, _ = K.to_sparse_csr()
+    except OverflowError:
+        return K.to_coo_exact()
     return csr
 
 
@@ -924,7 +1045,10 @@ class _Size:
 class _WorkRecord:
     """Mutable state during compression algorithm."""
 
-    def __init__(self, stoich: RationalMatrix, meta_names: List[str], reac_names: List[str],
+    def __init__(self,
+                 stoich: RationalMatrix,
+                 meta_names: List[str],
+                 reac_names: List[str],
                  bounds: Optional[List[Tuple[float, float]]] = None):
         rows, cols = stoich.get_row_count(), stoich.get_column_count()
         self.pre = RationalMatrix.identity(rows)
@@ -1330,10 +1454,9 @@ class StoichMatrixCompressor:
                     return min(fin) if fin else None
 
                 def _lam(r):
-                    return 1.0 if ratios[r] is None else float(abs(ratios[r]))   # master's own ratio is 1
+                    return 1.0 if ratios[r] is None else float(abs(ratios[r]))  # master's own ratio is 1
 
-                bounded = [(b, r) for r in group for b in [_small_bound(r)]
-                           if b is not None and 0.1 <= _lam(r) <= 10]
+                bounded = [(b, r) for r in group for b in [_small_bound(r)] if b is not None and 0.1 <= _lam(r) <= 10]
                 keep = min(bounded)[1] if bounded else max(group, key=lambda r: nnz[r])
                 self._restore_group_scale(work, group, ratios, keep)
 
@@ -1347,8 +1470,7 @@ class StoichMatrixCompressor:
 
         return contradicting_removed
 
-    def _restore_group_scale(self, work: _WorkRecord, group: List[int],
-                             ratios: List[Optional[Fraction]], keep: int) -> None:
+    def _restore_group_scale(self, work: _WorkRecord, group: List[int], ratios: List[Optional[Fraction]], keep: int) -> None:
         """Express a merged group in the units of one of its members.
 
         A lump's ratios are fixed but its overall scale is free, and merging into ``group[0]`` can
@@ -1360,7 +1482,7 @@ class StoichMatrixCompressor:
         master = group[0]
         if keep == master:
             return
-        lam = abs(ratios[keep])                     # |.| so the reaction keeps its orientation
+        lam = abs(ratios[keep])  # |.| so the reaction keeps its orientation
         if lam == 0 or lam == 1:
             return
         # v_master = ratios[keep] * v_keep, so re-expressing the lump in v_keep multiplies the
@@ -1493,11 +1615,12 @@ def remove_conservation_relations(model) -> None:
         model.remove_metabolites(dependent_mets)
 
 
-def compress_cobra_model(model,
-                         methods: Optional[List[Union[str, CompressionMethod]]] = None,
-                         in_place: bool = True,
-                         suppressed_reactions: Set[str] = set(),
-                         protected_reactions: Set[str] = set()) -> CompressionResult:
+def compress_cobra_model(
+    model,
+    methods: Optional[List[Union[str, CompressionMethod]]] = None,
+    in_place: bool = True,
+    suppressed_reactions: Set[str] = set(),
+    protected_reactions: Set[str] = set()) -> CompressionResult:
     """
     Compress a COBRA model using nullspace-based coupling detection.
 
@@ -1545,7 +1668,8 @@ def compress_cobra_model(model,
     # Run compression
     compressor = StoichMatrixCompressor(*compression_methods)
     bounds = [(float(r.lower_bound), float(r.upper_bound)) for r in model.reactions]
-    compression_record = compressor.compress(stoich_matrix, metabolite_names, reaction_names, suppressed_reactions, bounds, protected_reactions)
+    compression_record = compressor.compress(stoich_matrix, metabolite_names, reaction_names, suppressed_reactions, bounds,
+                                             protected_reactions)
 
     # Apply to model (uses direct manipulation, bypasses solver)
     reaction_map = _apply_compression_to_model(model, compression_record, reaction_names)
@@ -1675,10 +1799,7 @@ def _apply_compression_to_model(model, compression_record, original_reaction_nam
         # Update stored objective through compression factors
         obj_dict = getattr(model, '_suppressed_obj', None)
         if obj_dict is not None:
-            merged_obj = sum(
-                obj_dict.pop(original_reaction_names[idx], 0.0) * float(coeff)
-                for idx, coeff in contributing
-            )
+            merged_obj = sum(obj_dict.pop(original_reaction_names[idx], 0.0) * float(coeff) for idx, coeff in contributing)
             if merged_obj != 0:
                 obj_dict[main_rxn.id] = merged_obj
 
@@ -1768,12 +1889,12 @@ def stoichmat_coeff_to_fraction(model) -> None:
     for rxn in model.reactions:
         for met, coeff in rxn._metabolites.items():
             if isinstance(coeff, Fraction):
-                continue                                        # already exact
+                continue  # already exact
             elif isinstance(coeff, (float, int)):
-                rxn._metabolites[met] = float_to_fraction(coeff)          # -> Fraction
-            elif hasattr(coeff, 'p'):                           # sympy.Rational -> Fraction
+                rxn._metabolites[met] = float_to_fraction(coeff)  # -> Fraction
+            elif hasattr(coeff, 'p'):  # sympy.Rational -> Fraction
                 rxn._metabolites[met] = Fraction(int(coeff.p), int(coeff.q))
-            elif hasattr(coeff, 'numerator'):                   # other Rational -> Fraction
+            elif hasattr(coeff, 'numerator'):  # other Rational -> Fraction
                 rxn._metabolites[met] = Fraction(coeff.numerator, coeff.denominator)
             else:
                 raise TypeError(f"Unsupported coefficient type: {type(coeff)}")
@@ -1832,8 +1953,10 @@ def _expr_to_gpr_string(expr):
         return expr
     op, args = expr
     other = 'or' if op == 'and' else 'and'
-    parts = [f'({s})' if isinstance(a, tuple) and a[0] == other else s
-             for a, s in sorted(((a, _expr_to_gpr_string(a)) for a in args), key=lambda p: p[1])]
+    parts = [
+        f'({s})' if isinstance(a, tuple) and a[0] == other else s
+        for a, s in sorted(((a, _expr_to_gpr_string(a)) for a in args), key=lambda p: p[1])
+    ]
     return f' {op} '.join(parts)
 
 
@@ -1851,7 +1974,6 @@ def _combine_gprs(gpr_bodies, op):
 
 
 # High-Level Compression API
-
 
 # Monotone (positive-unate) GPR-rule simplification
 #
@@ -1880,35 +2002,63 @@ def _gpr_parse(s):
     Accepts both ``and``/``or`` and ``*``/``+`` operators, and is robust to any gene id,
     including digit-leading or dotted names.
     """
-    toks = list(_gpr_tokenize(s)); pos = 0
-    def peek(): return toks[pos] if pos < len(toks) else None
+    toks = list(_gpr_tokenize(s))
+    pos = 0
+
+    def peek():
+        return toks[pos] if pos < len(toks) else None
+
     def eat():
-        nonlocal pos; t = toks[pos]; pos += 1; return t
+        nonlocal pos
+        t = toks[pos]
+        pos += 1
+        return t
+
     def p_or():
         n = [p_and()]
-        while peek() in ('or', '+'): eat(); n.append(p_and())
+        while peek() in ('or', '+'):
+            eat()
+            n.append(p_and())
         return ('OR', n) if len(n) > 1 else n[0]
+
     def p_and():
         n = [p_atom()]
-        while peek() in ('and', '*'): eat(); n.append(p_atom())
+        while peek() in ('and', '*'):
+            eat()
+            n.append(p_atom())
         return ('AND', n) if len(n) > 1 else n[0]
+
     def p_atom():
-        if peek() == '(': eat(); e = p_or(); eat(); return e
+        if peek() == '(':
+            eat()
+            e = p_or()
+            eat()
+            return e
         return ('VAR', eat())
+
     return p_or()
 
 
 # variable <-> bit mapping (reset per rule via simplify_gpr_string)
-_GPR_VMAP = {}; _GPR_VINV = []
+_GPR_VMAP = {}
+_GPR_VINV = []
+
+
 def _gpr_bit(v):
     i = _GPR_VMAP.get(v)
     if i is None:
-        i = len(_GPR_VINV); _GPR_VMAP[v] = i; _GPR_VINV.append(v)
+        i = len(_GPR_VINV)
+        _GPR_VMAP[v] = i
+        _GPR_VINV.append(v)
     return 1 << i
+
+
 def _gpr_lits_of(mask):
     out = []
     while mask:
-        l = mask & -mask; out.append(('VAR', _GPR_VINV[l.bit_length() - 1])); mask ^= l
+        l = mask & -mask
+        out.append(('VAR', _GPR_VINV[l.bit_length() - 1]))
+        mask ^= l
     return out
 
 
@@ -1929,11 +2079,12 @@ def _gpr_absorb(cubes):
 
 def _gpr_to_dnf(node):
     t = node[0]
-    if t == 'VAR':   return [_gpr_bit(node[1])]
+    if t == 'VAR': return [_gpr_bit(node[1])]
     if t == 'CONST': return [] if not node[1] else [0]
     if t == 'OR':
         cov = []
-        for ch in node[1]: cov += _gpr_to_dnf(ch)
+        for ch in node[1]:
+            cov += _gpr_to_dnf(ch)
         return _gpr_absorb(cov)
     if t == 'AND':
         cov = [0]
@@ -1945,8 +2096,10 @@ def _gpr_to_dnf(node):
 
 
 def _gpr_common(cubes):
-    it = iter(cubes); c = next(it)
-    for x in it: c &= x
+    it = iter(cubes)
+    c = next(it)
+    for x in it:
+        c &= x
     return c
 
 
@@ -1955,7 +2108,9 @@ def _gpr_lit_counts(F):
     for c in F:
         m = c
         while m:
-            l = m & -m; cnt[l] = cnt.get(l, 0) + 1; m ^= l
+            l = m & -m
+            cnt[l] = cnt.get(l, 0) + 1
+            m ^= l
     return cnt
 
 
@@ -1975,18 +2130,21 @@ def _gpr_candidate_divisors(F):
     if len(F) < 2: return []
     cnt = _gpr_lit_counts(F)
     reps = sorted((x for x, n in cnt.items() if n >= 2), key=lambda x: -cnt[x])
-    seen = set(); out = []
+    seen = set()
+    out = []
     for l in reps:
         K = tuple(sorted(_gpr_one_kernel(F, l)))
         if len(K) >= 2 and K not in seen:
-            seen.add(K); out.append(list(K))
+            seen.add(K)
+            out.append(list(K))
     return out
 
 
 def _gpr_divide(F, D):
     """Exact algebraic division: (Q, R) with D*Q disjoint-union R == F (correctness guaranteed
     regardless of divisor quality -- a quotient cube is accepted only if D*Q stays inside F)."""
-    Fs = set(F); quo = None
+    Fs = set(F)
+    quo = None
     for d in D:
         vd = {c & ~d for c in F if (c & d) == d}
         quo = vd if quo is None else (quo & vd)
@@ -1999,8 +2157,8 @@ def _gpr_divide(F, D):
 
 def _gpr_factor(F):
     F = _gpr_absorb(F)
-    if not F:     return ('CONST', False)
-    if F == [0]:  return ('CONST', True)
+    if not F: return ('CONST', False)
+    if F == [0]: return ('CONST', True)
     if len(F) == 1:
         lits = _gpr_lits_of(F[0])
         return lits[0] if len(lits) == 1 else ('AND', lits)
@@ -2028,9 +2186,9 @@ def _gpr_factor(F):
 def _gpr_est_cubes(node):
     """Upper bound on DNF cube count (product across ANDs, sum across ORs); cheap, no expansion."""
     t = node[0]
-    if t == 'VAR':   return 1
+    if t == 'VAR': return 1
     if t == 'CONST': return 1
-    if t == 'OR':    return sum(_gpr_est_cubes(c) for c in node[1])
+    if t == 'OR': return sum(_gpr_est_cubes(c) for c in node[1])
     if t == 'AND':
         p = 1
         for c in node[1]:
@@ -2040,6 +2198,8 @@ def _gpr_est_cubes(node):
 
 
 _GPR_WARN = []
+
+
 def _gpr_factor_auto(node, budget=50000):
     """Global factoring within budget; AND-split above it. Never splits an OR unless one single
     OR-block alone exceeds budget (logged as a last resort -- raise the budget to avoid)."""
@@ -2067,7 +2227,9 @@ def simplify_gpr_string(rule, budget=50000):
     """Return a leaf-minimized, boolean-equivalent monotone GPR string ('' passes through)."""
     if not rule or not rule.strip():
         return rule
-    _GPR_VMAP.clear(); _GPR_VINV.clear(); _GPR_WARN.clear()
+    _GPR_VMAP.clear()
+    _GPR_VINV.clear()
+    _GPR_WARN.clear()
     return _gpr_to_string(_gpr_factor_auto(_gpr_parse(rule), budget))
 
 
@@ -2086,14 +2248,45 @@ def simplify_model_gprs(model, budget=50000):
         try:
             new = simplify_gpr_string(s, budget)
             if new and new != s:
-                r.gene_reaction_rule = new; nchg += 1
+                r.gene_reaction_rule = new
+                nchg += 1
         except Exception as e:
             logging.warning('gpr_simplify: kept original GPR for %s (%s)' % (r.id, type(e).__name__))
     logging.info('  GPR rule simplification: %d rules, %d rewritten.' % (n, nchg))
 
 
-def compress_model(model, no_par_compress_reacs=set(), compression_backend='sparse_rref', propagate_gpr=False,
-                   no_coupled_compress_reacs=set()):
+def _detach_gprs(model):
+    """Clear every reaction's GPR and its gene links, as ``gene_reaction_rule = ''`` on each reaction
+    would, without parsing or copying a rule per reaction. Genes stay in the model."""
+    from cobra.core.gene import GPR
+    for r in model.reactions:
+        for g in r._genes:
+            g._reaction.discard(r)
+        r._genes = set()
+        r._gpr = GPR()
+
+
+def _reattach_gpr(rxn, gpr, genes):
+    """Give ``rxn`` back a GPR object and gene links taken from it before _detach_gprs."""
+    rxn._gpr = gpr
+    rxn._genes = set(genes)
+    for g in genes:
+        g._reaction.add(rxn)
+
+
+def _rename_lumped(reac_set, reac_map_exp):
+    """Carry a set of reaction ids through one compression step, in place."""
+    if reac_set is None:
+        return
+    lumped_into = {old: new_reac for new_reac, old_reac_val in reac_map_exp.items() for old in old_reac_val}
+    for r in list(reac_set):
+        new_reac = lumped_into.get(r)
+        if new_reac is not None:
+            reac_set.discard(r)
+            reac_set.add(new_reac)
+
+
+def compress_model(model, no_par_compress_reacs=set(), propagate_gpr=False, no_coupled_compress_reacs=set(), targetable_rxns=None):
     """Compress a metabolic model using multiple techniques.
 
     Performs blocked reaction removal, conservation relation removal, and
@@ -2108,11 +2301,6 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
             un-merged through COMPRESS#1 so that gene multiplicity is preserved exactly once
             GPR rules are integrated (correct gene-regulatory semantics under compression).
             To also exempt them from parallel merging, include them in no_par_compress_reacs.
-        compression_backend: Compression backend to use:
-            - 'sparse_rref' (default): Pure Python sparse integer RREF.
-              No external dependencies beyond NumPy/SciPy.
-            - 'efmtool_rref' (legacy): Java-based EFMTool via JPype.
-              Requires a JVM and the jpype1 package.
         propagate_gpr: If True, propagate and simplify GPR rules through
             compression (AND for coupled, OR for parallel merges).
             Empty GPR rules are correctly handled: skipped in AND (always
@@ -2124,18 +2312,9 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
     """
     from straindesign.networktools import suppress_lp_context, _is_lp_suppressed
     no_coupled_compress_reacs = set(no_coupled_compress_reacs)
+    targetable = None if targetable_rxns is None else set(targetable_rxns)
     with suppress_lp_context(model):
         cmp_mapReac = []
-        use_java = (compression_backend == 'efmtool_rref')
-        if use_java:
-            # The Python compressor re-expresses each lump in one member's units (see
-            # StoichMatrixCompressor._restore_group_scale); the legacy Java backend does not, so a
-            # lump can come out at an extreme scale. The returned map carries the factor, so
-            # expanding a design stays exact -- but a bound stated on a lumped reaction is read in
-            # the lump's units, which is how 'biomass >= 0.001' can end up below feasibility tolerance.
-            LOG.warning('  Compression backend "efmtool_rref" does not normalize lumped-reaction '
-                        'scales; bounds and constraints on lumped reactions are expressed in the '
-                        'lump\'s units. Use "sparse_rref" if you constrain lumped reactions.')
         LOG.info('  Removing blocked reactions.')
         remove_blocked_reactions(model)
         LOG.info('  Converting coefficients to rationals.')
@@ -2147,18 +2326,15 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
 
             # 1. Parallel (cheap — hash-based, no RREF)
             LOG.info(f'  Compression {run}: Lumping parallel reactions.')
-            reac_map_exp = compress_model_parallel(model, no_par_compress_reacs,
-                                                    propagate_gpr=propagate_gpr)
+            reac_map_exp = compress_model_parallel(model, no_par_compress_reacs, propagate_gpr=propagate_gpr, targetable_rxns=targetable)
             parallel_changed = numr > len(reac_map_exp)
             if parallel_changed:
                 LOG.info(f'  Reduced to {len(reac_map_exp)} reactions.')
                 cmp_mapReac.append({"reac_map_exp": reac_map_exp, "parallel": True})
+                _rename_lumped(targetable, reac_map_exp)
 
             # 2. Conservation relation removal (reduces S rows for RREF)
-            if use_java:
-                _remove_conservation_relations_java(model)
-            else:
-                remove_conservation_relations(model)
+            remove_conservation_relations(model)
 
             # 3. Exit if either parallel or coupled found nothing (after
             #    at least one full cycle).  If one step found nothing,
@@ -2171,15 +2347,9 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
             # 4. Coupled (expensive — nullspace/RREF)
             numr_pre = len(model.reactions)
             LOG.info(f'  Compression {run}: Lumping coupled reactions.')
-            reac_map_exp = compress_model_coupled(model, compression_backend,
-                                                  propagate_gpr=propagate_gpr,
-                                                  protected_reactions=no_coupled_compress_reacs)
-            for new_reac, old_reac_val in reac_map_exp.items():
-                old_reacs = [r for r in no_par_compress_reacs if r in old_reac_val]
-                if old_reacs:
-                    for r in old_reacs:
-                        no_par_compress_reacs.remove(r)
-                    no_par_compress_reacs.add(new_reac)
+            reac_map_exp = compress_model_coupled(model, propagate_gpr=propagate_gpr, protected_reactions=no_coupled_compress_reacs)
+            _rename_lumped(no_par_compress_reacs, reac_map_exp)
+            _rename_lumped(targetable, reac_map_exp)
             coupled_changed = numr_pre > len(reac_map_exp)
             if coupled_changed:
                 LOG.info(f'  Reduced to {len(reac_map_exp)} reactions.')
@@ -2198,38 +2368,20 @@ def compress_model(model, no_par_compress_reacs=set(), compression_backend='spar
     return cmp_mapReac
 
 
-def _remove_conservation_relations_java(model) -> None:
-    """Remove conservation relations using Java efmtool."""
-    from . import efmtool_cmp_interface as efm
-    stoich_mat = create_stoichiometric_matrix(model, array_type='lil')
-    basic_mets = efm.basic_columns_rat_java(stoich_mat.transpose().toarray(), tolerance=0)
-    dependent = [model.metabolites[i] for i in set(range(len(model.metabolites))) - set(basic_mets)]
-    if dependent:
-        model.remove_metabolites(dependent)
-
-
-def compress_model_coupled(model, compression_backend='sparse_rref', propagate_gpr=False,
-                           suppressed_reactions=set(), protected_reactions=set()):
+def compress_model_coupled(model, propagate_gpr=False, protected_reactions=set()):
     """Compress by lumping stoichiometrically coupled (dependent) reactions.
 
     Identifies groups of reactions whose flux vectors are proportional in every
     steady state (i.e. they share a common nullspace direction) and merges each
-    group into a single lumped reaction.  Both the pure-Python and legacy Java
-    backends perform this operation; the compression_backend controls the nullspace algorithm.
+    group into a single lumped reaction, via the sparse integer RREF nullspace.
 
     Args:
         model: COBRA model to compress in-place
-        compression_backend: 'sparse_rref' (default, Python) or 'efmtool_rref' (Java legacy)
         propagate_gpr: If True, AND-combine GPR rules of merged reactions
             (with sympy simplification). Empty GPRs are skipped. Default False.
-        suppressed_reactions: Set of reaction IDs to exclude from compression
-            (Java backend only). Used to protect reactions referenced in strain
-            design constraints from being deleted by the Java compressor's
-            CoupledContradicting logic. Ignored for the Python backend (which
-            handles contradicting groups correctly via bounds intersection).
         protected_reactions: Set of reaction IDs to exempt from coupled merging
             (kept as their own reactions; the rest of their coupled group still
-            merges). Python (sparse_rref) backend only. Used to keep gene-controlled
+            merges). Used to keep gene-controlled
             reactions intact through compression before GPR integration so that the
             gene multiplicity is preserved (correct gene-regulatory semantics).
 
@@ -2239,47 +2391,38 @@ def compress_model_coupled(model, compression_backend='sparse_rref', propagate_g
     # Compression is pure linear algebra; keep it off the optlang solver.
     from straindesign.networktools import suppress_lp_context
     with suppress_lp_context(model):
-        # Save GPR AST bodies before either backend clears them
+        # Save GPR AST bodies before compression clears them
         if propagate_gpr:
-            saved_gpr_bodies = {r.id: r.gpr.body for r in model.reactions}
+            saved_gprs = {r.id: (r._gpr, r._genes, r.gene_reaction_rule) for r in model.reactions}
 
-        if compression_backend == 'efmtool_rref':
-            from .efmtool_cmp_interface import compress_model_java
-            reaction_map = compress_model_java(model, suppressed_reactions=suppressed_reactions)
-            # Clean up any remaining zero-flux reactions that the Java compressor created.
-            zero_flux = {r for r in model.reactions if r.lower_bound == 0 and r.upper_bound == 0}
-            for r in zero_flux:
-                reaction_map.pop(r.id, None)
-            if zero_flux:
-                model.remove_reactions(list(zero_flux), remove_orphans=True)
-        else:
-            # Clear gene rules to match Java behavior
-            for r in model.reactions:
-                r.gene_reaction_rule = ''
+        # Gene rules are cleared here and re-derived below from the saved ASTs, so a lumped
+        # reaction's rule is the AND-combination of its members rather than one member's.
+        _detach_gprs(model)
 
-            result = compress_cobra_model(model, methods=CompressionMethod.standard(), in_place=True,
-                                          protected_reactions=protected_reactions)
-            reaction_map = result.reaction_map
+        result = compress_cobra_model(model, methods=CompressionMethod.standard(), in_place=True, protected_reactions=protected_reactions)
+        reaction_map = result.reaction_map
 
-        # Propagate GPR rules: AND-combine contributing reactions' GPR ASTs
+        # Propagate GPR rules: AND-combine contributing reactions' GPR ASTs. A reaction whose
+        # rule comes out unchanged gets its own GPR object and gene links back instead of a
+        # re-parse through the cobra setter.
         if propagate_gpr:
             for cmp_id, orig_map in reaction_map.items():
                 try:
                     rxn = model.reactions.get_by_id(cmp_id)
                 except KeyError:
                     continue
-                gpr_bodies = [saved_gpr_bodies.get(orig_id) for orig_id in orig_map]
-                rxn.gene_reaction_rule = _combine_gprs(gpr_bodies, 'and')
+                gpr_bodies = [saved_gprs[orig_id][0].body if orig_id in saved_gprs else None for orig_id in orig_map]
+                combined = _combine_gprs(gpr_bodies, 'and')
+                saved = saved_gprs.get(cmp_id) if len(orig_map) == 1 else None
+                if saved is not None and combined == saved[2]:
+                    _reattach_gpr(rxn, saved[0], saved[1])
+                else:
+                    rxn.gene_reaction_rule = combined
 
     return reaction_map
 
 
-# Backward-compatibility alias (old name referenced efmtool, but the function
-# is backend-agnostic — the new name compress_model_coupled is preferred).
-compress_model_efmtool = compress_model_coupled
-
-
-def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
+def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False, targetable_rxns=None):
     """Compress by lumping parallel reactions.
 
     Args:
@@ -2287,11 +2430,15 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
         protected_rxns: Reactions exempt from parallel compression
         propagate_gpr: If True, OR-combine GPR rules of lumped reactions
             (with sympy simplification). Default False.
+        targetable_rxns: Reactions that carry an intervention binary. When given,
+            targetable and non-targetable reactions are never lumped together: the
+            lump's binary would force the non-targetable member's flux to zero, an
+            intervention the original model cannot perform. Pass None to lump purely
+            by stoichiometry.
 
     Returns:
         dict: Mapping {compressed_id: {orig_id: factor, ...}}
     """
-    old_num_reac = len(model.reactions)
     old_reac_ids = [r.id for r in model.reactions]
 
     if propagate_gpr:
@@ -2304,21 +2451,23 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
     ub = [float(r.upper_bound) for r in model.reactions]
     fwd = [1 if (isinf(u) and f > 0 or isinf(l) and f < 0) else 0 for f, l, u in zip(factor, lb, ub)]
     rev = [1 if (isinf(l) and f > 0 or isinf(u) and f < 0) else 0 for f, l, u in zip(factor, lb, ub)]
-    inh = [i + 1 if not ((isinf(ub[i]) or ub[i] == 0) and (isinf(lb[i]) or lb[i] == 0)) else 0
-           for i in range(len(model.reactions))]
+    inh = [i + 1 if not ((isinf(ub[i]) or ub[i] == 0) and (isinf(lb[i]) or lb[i] == 0)) else 0 for i in range(len(model.reactions))]
 
     # Canonical scale-invariant key per reaction: normalize the stoichiometry row by its first
     # nonzero coefficient in exact rational arithmetic, so reactions parallel up to any rational
     # scale factor share a key (e.g. -1 A -> 2 B and -3 A -> 6 B both give ((A, 1), (B, -2))). The
     # reversibility (fwd/rev) and inhomogeneous-bound (inh) flags are part of the key so only
     # reactions with matching bound structure are lumped.
+    tgt = [0] * len(model.reactions) if targetable_rxns is None else \
+        [1 if r.id in targetable_rxns else 0 for r in model.reactions]
+
     def _parallel_key(i):
         cols, vals = stoichmat_T.rows[i], stoichmat_T.data[i]
         if not vals:
-            return ((), fwd[i], rev[i], inh[i])
+            return ((), fwd[i], rev[i], inh[i], tgt[i])
         f0 = float_to_fraction(vals[0])
         stoich = tuple((int(c), float_to_fraction(v) / f0) for c, v in zip(cols, vals))
-        return (stoich, fwd[i], rev[i], inh[i])
+        return (stoich, fwd[i], rev[i], inh[i], tgt[i])
 
     # Find parallel reactions by exact key comparison (hash pre-filter, then full compare)
     protected = [r.id in protected_rxns for r in model.reactions]
@@ -2367,27 +2516,22 @@ def compress_model_parallel(model, protected_rxns=set(), propagate_gpr=False):
     # Set combined GPR rules on surviving reactions
     if propagate_gpr:
         for rxn, combined_gpr in group_gpr:
-            rxn.gene_reaction_rule = combined_gpr
+            if combined_gpr != rxn.gene_reaction_rule:
+                rxn.gene_reaction_rule = combined_gpr
 
     # Build compression map with flux-split fractions.
     # For parallel reactions, the compressed flux is the total through all
     # members.  Each member's fraction is proportional to |first_coeff|
     # (its stoichiometric scale relative to the representative).
     rational_map = {}
-    subT = np.zeros((old_num_reac, len(model.reactions)))
-    for i in range(subT.shape[1]):
+    for i in range(len(model.reactions)):
         group = subset_list[i]
-        for j in group:
-            subT[j, i] = 1
         if len(group) == 1:
             rational_map[model.reactions[i].id] = {old_reac_ids[group[0]]: Fraction(1)}
         else:
             scales = [abs(factor[j]) for j in group]
             total = sum(Fraction(s).limit_denominator(1000) for s in scales)
-            rational_map[model.reactions[i].id] = {
-                old_reac_ids[j]: Fraction(abs(factor[j])).limit_denominator(1000) / total
-                for j in group
-            }
+            rational_map[model.reactions[i].id] = {old_reac_ids[j]: Fraction(abs(factor[j])).limit_denominator(1000) / total for j in group}
 
     return rational_map
 
@@ -2413,7 +2557,6 @@ __all__ = [
     # High-level API
     'compress_model',
     'compress_model_coupled',
-    'compress_model_efmtool',  # backward-compat alias
     'compress_model_parallel',
     # GPR propagation helpers
     '_gpr_ast_to_expr',

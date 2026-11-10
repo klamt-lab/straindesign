@@ -2,3 +2,8 @@ cobra
 scipy
 matplotlib
 psutil
+numpy
+pandas
+optlang
+swiglpk
+pyscipopt

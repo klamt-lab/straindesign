@@ -20,8 +20,8 @@ from straindesign.compression import (
 from cobra.core.gene import GPR
 from sympy import simplify_logic
 
-
 # ── GPR extension + compression ──────────────────────────────────────
+
 
 @pytest.mark.timeout(15)
 def test_gpr_extension_compression1(model_gpr):
@@ -38,8 +38,12 @@ def test_gpr_extension_compression1(model_gpr):
     cmp_map = sd.compress_model(model_gpr)
     assert (len(model_gpr.reactions) == 16)
     gkocost, gkicost, cmp_map = sd.compress_ki_ko_cost(gkocost, gkicost, cmp_map)
-    assert (len(gkocost) == 4)
-    assert (len(gkicost) == 3)
+    # The second compression step lumps g7's block in parallel with g5/g9's. A parallel lump
+    # carries flux while any member does, so it is switched off only by knocking out all its
+    # knockout candidates, and the knock-in among them cannot turn it on -- it is a knockout
+    # candidate costing the sum of those, and g7 stops being an addition candidate.
+    assert (len(gkocost) == 5)
+    assert (len(gkicost) == 2)
 
 
 @pytest.mark.timeout(15)
@@ -61,33 +65,33 @@ def test_gpr_extension_compression2(model_gpr):
 
 # ── GPR propagation helper unit tests ────────────────────────────────
 
+
 class TestGprAstToExpr:
     # None is special-cased (identity check); the rest share one assertion shape.
     def test_none_returns_none(self):
         assert _gpr_ast_to_expr(None) is None
 
-    @pytest.mark.parametrize("node,expected", [
-        (ast.Name(id='g1'), 'g1'),
-        (ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')]),
-         ('and', ('g1', 'g2'))),
-        (ast.BoolOp(op=ast.Or(), values=[ast.Name(id='g1'), ast.Name(id='g2')]),
-         ('or', ('g1', 'g2'))),
-        # (g1 and g2) or g3
-        (ast.BoolOp(op=ast.Or(), values=[
-            ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')]),
-            ast.Name(id='g3')]),
-         ('or', (('and', ('g1', 'g2')), 'g3'))),
-        # g1 and (g2 and g3) -> flattened
-        (ast.BoolOp(op=ast.And(), values=[
-            ast.Name(id='g1'),
-            ast.BoolOp(op=ast.And(), values=[ast.Name(id='g2'), ast.Name(id='g3')])]),
-         ('and', ('g1', 'g2', 'g3'))),
-    ], ids=['single_gene', 'and', 'or', 'nested', 'nested_same_op_flattened'])
+    @pytest.mark.parametrize(
+        "node,expected",
+        [
+            (ast.Name(id='g1'), 'g1'),
+            (ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')]), ('and', ('g1', 'g2'))),
+            (ast.BoolOp(op=ast.Or(), values=[ast.Name(id='g1'), ast.Name(id='g2')]), ('or', ('g1', 'g2'))),
+            # (g1 and g2) or g3
+            (ast.BoolOp(op=ast.Or(), values=[ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')]),
+                                             ast.Name(id='g3')]), ('or', (('and', ('g1', 'g2')), 'g3'))),
+            # g1 and (g2 and g3) -> flattened
+            (ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'),
+                                              ast.BoolOp(op=ast.And(), values=[ast.Name(id='g2'), ast.Name(id='g3')])]),
+             ('and', ('g1', 'g2', 'g3'))),
+        ],
+        ids=['single_gene', 'and', 'or', 'nested', 'nested_same_op_flattened'])
     def test_gpr_ast_to_expr(self, node, expected):
         assert _gpr_ast_to_expr(node) == expected
 
 
 class TestExprToGprString:
+
     @pytest.mark.parametrize("expr,expected", [
         (None, ''),
         ('g1', 'g1'),
@@ -95,7 +99,8 @@ class TestExprToGprString:
         (('or', ['g1', 'g2']), 'g1 or g2'),
         (('or', [('and', ['g1', 'g2']), 'g3']), '(g1 and g2) or g3'),
         (('and', [('or', ['g1', 'g2']), 'g3']), '(g1 or g2) and g3'),
-    ], ids=['none', 'single_gene', 'and', 'or', 'nested_and_in_or', 'nested_or_in_and'])
+    ],
+                             ids=['none', 'single_gene', 'and', 'or', 'nested_and_in_or', 'nested_or_in_and'])
     def test_expr_to_gpr_string(self, expr, expected):
         assert _expr_to_gpr_string(expr) == expected
 
@@ -112,38 +117,42 @@ class TestExprToGprString:
 
 
 class TestCombineGprAnd:
-    @pytest.mark.parametrize("nodes,expected", [
-        ([None, None], ''),
-        ([ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')])],
-         'g1 and g2'),
-        # Empty GPR (None) should be skipped in AND combination.
-        ([ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')]), None, None],
-         'g1 and g2'),
-        ([ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')]),
-          ast.Name(id='g3')],
-         'g1 and g2 and g3'),
-        # AND of overlapping expressions should simplify: (g1 and g2) AND (g1 and g3).
-        ([ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')]),
-          ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g3')])],
-         'g1 and g2 and g3'),
-        ([], ''),
-    ], ids=['all_empty', 'single_non_empty', 'skip_empty', 'two_non_empty',
-            'simplification', 'empty_list'])
+
+    @pytest.mark.parametrize(
+        "nodes,expected",
+        [
+            ([None, None], ''),
+            ([ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')])], 'g1 and g2'),
+            # Empty GPR (None) should be skipped in AND combination.
+            ([ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')]), None, None], 'g1 and g2'),
+            ([ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')]),
+              ast.Name(id='g3')], 'g1 and g2 and g3'),
+            # AND of overlapping expressions should simplify: (g1 and g2) AND (g1 and g3).
+            ([
+                ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g2')]),
+                ast.BoolOp(op=ast.And(), values=[ast.Name(id='g1'), ast.Name(id='g3')])
+            ], 'g1 and g2 and g3'),
+            ([], ''),
+        ],
+        ids=['all_empty', 'single_non_empty', 'skip_empty', 'two_non_empty', 'simplification', 'empty_list'])
     def test_combine_gprs_and(self, nodes, expected):
         assert _combine_gprs(nodes, 'and') == expected
 
 
 class TestCombineGprOr:
-    @pytest.mark.parametrize("nodes,expected", [
-        # If any reaction has empty GPR (always active), result is empty.
-        ([ast.Name(id='g1'), None], ''),
-        ([None, None], ''),
-        ([ast.Name(id='g1'), ast.Name(id='g2')], 'g1 or g2'),
-        # OR with duplicate terms should deduplicate: g1 OR g1 -> g1.
-        ([ast.Name(id='g1'), ast.Name(id='g1')], 'g1'),
-        ([], ''),
-    ], ids=['any_empty_returns_empty', 'all_empty', 'two_non_empty',
-            'deduplication', 'empty_list'])
+
+    @pytest.mark.parametrize(
+        "nodes,expected",
+        [
+            # If any reaction has empty GPR (always active), result is empty.
+            ([ast.Name(id='g1'), None], ''),
+            ([None, None], ''),
+            ([ast.Name(id='g1'), ast.Name(id='g2')], 'g1 or g2'),
+            # OR with duplicate terms should deduplicate: g1 OR g1 -> g1.
+            ([ast.Name(id='g1'), ast.Name(id='g1')], 'g1'),
+            ([], ''),
+        ],
+        ids=['any_empty_returns_empty', 'all_empty', 'two_non_empty', 'deduplication', 'empty_list'])
     def test_combine_gprs_or(self, nodes, expected):
         assert _combine_gprs(nodes, 'or') == expected
 
@@ -158,12 +167,14 @@ class TestCombineGprOr:
 
 # ── GPR propagation integration tests (model_gpr.xml) ────────────────
 
+
 @pytest.fixture
 def gpr_model():
     return read_sbml_model('tests/model_gpr.xml')
 
 
 class TestModelGprCompression:
+
     def test_coupled_compression_propagates_gpr(self, gpr_model):
         """Coupled compression should AND-combine GPR rules, skipping empty ones."""
         remove_blocked_reactions(gpr_model)
@@ -234,8 +245,7 @@ class TestModelGprCompression:
 
         from cobra.core.gene import GPR
         result_sympy = GPR.from_string(target_rxn.gene_reaction_rule).as_symbolic()
-        expected = GPR.from_string(
-            '(g1 and g4 and g7 and g8) or (g1 and g4 and g5 and g8 and g9)').as_symbolic()
+        expected = GPR.from_string('(g1 and g4 and g7 and g8) or (g1 and g4 and g5 and g8 and g9)').as_symbolic()
 
         assert simplify_logic(result_sympy ^ expected) == False, \
             f"GPR mismatch. Got: {result_sympy}, expected: {expected}"
@@ -267,77 +277,3 @@ class TestModelGprCompression:
 
         assert simplify_logic(result_sympy ^ expected) == False, \
             f"GPR mismatch. Got: {result_sympy}, expected: {expected}"
-
-
-@pytest.mark.java
-class TestEfmtoolBackendGpr:
-    """Test GPR propagation with efmtool_rref backend (if Java available)."""
-
-    @pytest.fixture
-    def java_available(self):
-        try:
-            from straindesign.efmtool_cmp_interface import _check_jpype_available
-            if not _check_jpype_available():
-                pytest.skip("jpype not installed")
-            from straindesign.efmtool_cmp_interface import _init_java
-            _init_java()
-        except Exception as e:
-            pytest.skip(f"Java/jpype not available: {e}")
-
-    def test_efmtool_coupled_gpr_matches_sparse_rref(self, gpr_model, java_available):
-        """Both backends should produce semantically equivalent GPR rules."""
-        model_java = copy.deepcopy(gpr_model)
-
-        # Sparse RREF path
-        remove_blocked_reactions(gpr_model)
-        stoichmat_coeff_to_fraction(gpr_model)
-        remove_conservation_relations(gpr_model)
-        rref_map = compress_model_coupled(gpr_model, compression_backend='sparse_rref', propagate_gpr=True)
-
-        # Efmtool path
-        remove_blocked_reactions(model_java)
-        stoichmat_coeff_to_fraction(model_java)
-        remove_conservation_relations(model_java)
-        java_map = compress_model_coupled(model_java, compression_backend='efmtool_rref', propagate_gpr=True)
-
-        def gpr_by_group(model, reac_map):
-            result = {}
-            for rid, orig_map in reac_map.items():
-                key = frozenset(orig_map.keys())
-                rxn = model.reactions.get_by_id(rid)
-                result[key] = rxn.gene_reaction_rule
-            return result
-
-        rref_gprs = gpr_by_group(gpr_model, rref_map)
-        java_gprs = gpr_by_group(model_java, java_map)
-
-        assert rref_gprs.keys() == java_gprs.keys(), \
-            f"Different groups: rref={rref_gprs.keys()}, java={java_gprs.keys()}"
-
-        for group_key in rref_gprs:
-            gpr_rref = rref_gprs[group_key]
-            gpr_java = java_gprs[group_key]
-
-            if not gpr_rref and not gpr_java:
-                continue
-
-            from cobra.core.gene import GPR
-            sym_rref = GPR.from_string(gpr_rref).as_symbolic()
-            sym_java = GPR.from_string(gpr_java).as_symbolic()
-            assert simplify_logic(sym_rref ^ sym_java) == False, \
-                f"GPR mismatch for group {sorted(group_key)}: rref='{gpr_rref}', java='{gpr_java}'"
-
-    def test_efmtool_full_compression_gpr(self, gpr_model, java_available):
-        """Full compression with efmtool backend should preserve gene info."""
-        orig_genes = set()
-        for r in gpr_model.reactions:
-            orig_genes.update(g.id for g in r.genes)
-
-        compress_model(gpr_model, compression_backend='efmtool_rref', propagate_gpr=True)
-
-        compressed_genes = set()
-        for r in gpr_model.reactions:
-            compressed_genes.update(g.id for g in r.genes)
-
-        assert compressed_genes <= orig_genes
-        assert len(compressed_genes) > 0, "All gene information was lost"
