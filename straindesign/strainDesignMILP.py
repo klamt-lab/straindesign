@@ -28,6 +28,57 @@ from straindesign.names import *
 import logging
 
 
+def _drop_non_minimal(sols):
+    """Remove every design that strictly contains another design in the same result.
+
+    An ascending enumeration emits designs of cost k only after excluding every superset of the
+    designs it found at lower cost, so a design containing a smaller one can appear only when
+    that smaller design was NOT found: the solver certified a level exhausted with a design
+    missing. The supersets are valid cut sets but not minimal ones, and their presence is the
+    proof that the result is incomplete. Returns the filtered rows and how many were dropped.
+    """
+    sets = [frozenset(sols[i].indices.tolist()) for i in range(sols.shape[0])]
+    keep = [i for i, a in enumerate(sets) if not any(b < a for b in sets)]
+    return sols[keep], sols.shape[0] - len(keep)
+
+
+def _solve_verification_lp(lp):
+    """Whether a verification LP is feasible.
+
+    The certificate systems are scale-free, and on compressed networks their feasible points have
+    entries of 1e5 and more, so at the 1e-9 tolerance the MILP runs at, round-off alone can make a
+    feasible system read infeasible. CPLEX and Gurobi therefore verify at the solver default of
+    1e-6 and confirm any other verdict with barrier before it counts. Only a definite status shows
+    feasibility: CPLEX 1/5/6 (optimal, also with unscaled infeasibilities), Gurobi 2/13 (optimal,
+    or suboptimal with a point); INF_OR_UNBD, NUMERIC or an aborted solve show nothing.
+    """
+    if lp.solver not in (CPLEX, GUROBI):
+        return not np.isnan(lp.slim_solve())
+    b = lp.backend
+    if lp.solver == GUROBI:
+        b.params.FeasibilityTol = 1e-6
+        b.params.OptimalityTol = 1e-6
+    else:
+        b.parameters.simplex.tolerances.feasibility.set(1e-6)
+        b.parameters.simplex.tolerances.optimality.set(1e-6)
+    for confirm in (False, True):
+        if confirm:
+            lp.set_lp_method(LP_METHOD_BARRIER)
+            lp.set_time_limit(120)  # a confirmation that does not finish confirms nothing
+            if lp.solver == GUROBI:
+                b.params.DualReductions = 0  # INFEASIBLE or OPTIMAL rather than INF_OR_UNBD
+        try:
+            lp.slim_solve()
+        except Exception:
+            pass  # a status the backend does not map (barrier, abort); the raw status decides
+        if lp.solver == GUROBI:
+            if b.Status in (2, 13) and b.SolCount > 0:
+                return True
+        elif b.solution.get_status() in (1, 5, 6):
+            return True
+    return False
+
+
 class SDMILP(SDProblem, MILP_LP):
     """Class that contains functions for the solution of the strain design MILP
      
@@ -357,7 +408,7 @@ class SDMILP(SDProblem, MILP_LP):
                          ub=[self.cont_MILP.ub[i] for i in active_vars],
                          solver=self.solver,
                          seed=self.seed)
-            valid[i] = not np.isnan(lp.slim_solve())
+            valid[i] = _solve_verification_lp(lp)
         return valid
 
     def compute_optimal(self, **kwargs):
@@ -680,6 +731,12 @@ class SDMILP(SDProblem, MILP_LP):
                         self.add_exclusion_constraints(z[i])
             if (status != OPTIMAL):  # or (z[i]*self.cost == self.max_cost):
                 break
+        if sols.shape[0] > 1:
+            sols, n_super = _drop_non_minimal(sols)
+            if n_super:
+                logging.error('%d designs contain a smaller design: the enumeration missed one and '
+                              'the result is INCOMPLETE.' % n_super)
+                status = ERROR
         if status == INFEASIBLE and sols.shape[0] > 0:  # all solutions found or solution limit reached
             status = OPTIMAL
         if status == TIME_LIMIT and sols.shape[0] > 0:  # some solutions found, timelimit reached
