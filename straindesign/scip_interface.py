@@ -174,8 +174,14 @@ class SCIP_MILP(pso.Model):
                 self.setParam('parallel/maxnthreads', milp_threads)
                 self.setParam('parallel/minnthreads', milp_threads)
             self.setEmphasis(0)
-            # self.setParam('numerics/feastol', 1e-9)
-            # self.setParam('numerics/dualfeastol', 1e-9)
+            # Match the integrality tolerance the other backends are pinned to (CPLEX 0, Gurobi
+            # 1e-9). SCIP has no separate integrality tolerance -- feastol serves for both -- and
+            # its 1e-6 default made it the odd one out: a binary resting 1e-6 from 1 buys back
+            # M * 1e-6 of slack in any big-M-linked row, which at M = 1e3 is 1e-3. Measured on a
+            # CarveMe reconstruction, that was enough for SCIP to report a design as optimal while
+            # a reaction it had bought carried no flux.
+            self.setParam('numerics/feastol', 1e-9)
+            self.setParam('numerics/dualfeastol', 1e-9)
             # self.setParam('constraints/indicator/forcerestart',True)
             # Probably all seeds are set by the randomseedshift??
             # self.setParam('branching/random/seed', seed)
