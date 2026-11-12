@@ -34,7 +34,7 @@ which drifts with every edit. Grep for the symbol.
 5. [**FVA in preprocessing**](#ch5) — pre-compression sign classification, desired-region essentiality, final bound/module FVA, the single-classical-module fold, and size-1 MCS extraction.
 6. [**Dualization (the mathematical core)**](#ch6) — LP duality, Farkas certificates, and the strong-duality encodings shared by the supported module types.
 7. [**MILP construction & the z-linking**](#ch7) — block assembly, per-module sign overrides, bound-derived single-row big-M values, native indicators or the intentional blanket M for multi-variable rows, and free-binary elimination.
-8. [**Solving & enumeration**](#ch8) — ANY/BEST/POPULATE objective setups; the iterative loop and superset-excluding integer cuts; solver parameters; the CPLEX-vs-Gurobi gap.
+8. [**Solving & enumeration**](#ch8) — ANY/BEST/POPULATE objective setups; the iterative loop and superset-excluding integer cuts; solver parameters; the CPLEX-vs-Gurobi gap; the MCS enumeration stack on CPLEX and Gurobi (SOS1 gates, cost-level sweep, tilt, anchor controller, restarts).
 9. [**Decompression & solution semantics**](#ch9) — reverse-map expansion of compressed interventions; size-1 MCS re-injection; `filter_sd_maxcost`; the KI value-0/`(nan,nan)` & `strip_non_ki` encoding; gene↔reaction translation.
 10. [**Known issues, gotchas & failure modes**](#ch10) — neutral-gene-KO paths and superset artifacts with mechanism; the in-place dict-mutation footgun; name truncation; numeric-status robustness.
 11. [**Performance, benchmarking & roadmap**](#ch11) — the bottleneck profile; the lever groups; benchmarking discipline (multi-seed, known-answer gates, MCS2/gMCSpy).
@@ -2516,6 +2516,21 @@ so that `z.indices` — the *support* — is exact set membership, which the exc
 `TIME_LIMIT_W_SOL`, `ERROR` (mapped from raw CPLEX/Gurobi codes in the backends). The loops below treat
 `OPTIMAL` and `TIME_LIMIT_W_SOL` as "a usable solution exists" and everything else as "stop".
 
+**What the final status means to a caller, and what changed.** `compute_strain_designs` used to
+rewrite *any* status other than `OPTIMAL`/`TIME_LIMIT_W_SOL` to `OPTIMAL` as soon as one design
+existed. The intent was to recognise exhaustion — an enumeration that finds nothing further ends
+`INFEASIBLE` — but the condition covered every other outcome, so a run that hit its time limit and
+a run whose solver failed mid-enumeration both reported a complete enumeration. `_final_status`
+now promotes only `INFEASIBLE` → `OPTIMAL`, maps `TIME_LIMIT` → `TIME_LIMIT_W_SOL`, and reports
+everything else — including `ERROR` — as it happened.
+
+This is a **behaviour change for callers**: a timed-out computation that previously returned
+`optimal` now returns `time_limit_w_sols`. Code that tests `solution.status == OPTIMAL` as a
+proxy for "did I get designs" should test the design list instead, or accept both constants. The
+old behaviour could not distinguish a proven-complete enumeration from a truncated one, which is
+the whole reason for the change: a dropped solver licence once returned 38 of 438 gene-MCS —
+a strict subset, only the size-1 cost level — with status `optimal`.
+
 ### 8.3 The three approaches, their objective setups, and *why*
 
 All three share the same skeleton: an outer `while` loop that repeatedly asks the solver for a design,
@@ -2877,6 +2892,76 @@ proved unstable.
 
 
 (ch9)=
+### 8.9 The MCS enumeration stack on CPLEX and Gurobi
+
+For classical MCS problems (SUPPRESS / PROTECT modules only) solved with `solution_approach='populate'`
+on CPLEX or Gurobi, the MILP and the enumeration loop differ from the generic description above in
+four places. All of them leave the set of designs unchanged; they change how fast the solver finds
+and proves it. SCIP and GLPK keep the generic path ([8.8](#ch8)).
+
+**Gates as SOS1 sets** (`MILP_LP._gates_as_sos1`). Every indicator gate `z = v -> a·x (sense) b`
+becomes an always-present row with a slack and an SOS1 set that forbids the slack while the gate is on:
+
+| gate sense | row | SOS1 set |
+|---|---|---|
+| `L` | `a·x + vp - vn = b`, `vp, vn >= 0` | `(g, vn)` |
+| `G` | same row | `(g, vp)` |
+| `E` | `a·x - s = b`, `s` free | `(g, s)` |
+
+`g` is `z` when the gate is on at `z = 1`, otherwise a continuous complement `w = 1 - z` (one per
+binary). Solvers in `_EQUALITY_GATE_SPLIT` (Gurobi) give equality gates two sign-restricted parts
+instead, `a·x - sp + sn = b` with SOS1 `(g, sp, sn)`, so the set itself chooses the direction and the
+dual tilt reaches both parts. CPLEX
+additionally receives CellNetAnalyzer's binary structure for the target-region gates first
+(`_CNA_GATE_BINARIES`, `MILP_LP._cna_binaries`): a reversible reaction's equality gate is split by
+direction with two binaries `zp + zn = z`, and every target-region gate is keyed on a binary of its
+own, `i + z >= 1` (enforced while the reaction is present, free once it is knocked out). Both keep the
+feasible `z` unchanged; on CPLEX they are the largest single lever on PROTECT problems.
+
+**The cost-level sweep** (`SDMILP.enumerate_ksweep`). With positive, integer intervention costs and a
+finite budget, the design cost is pinned to `k = 1, 2, …` by the two budget rows and each level is
+enumerated on its own; any other cost structure falls back to `enumerate`. Only while a level is
+pinned is the pool's optimality gap opened: the objective no longer separates wanted from unwanted
+pool members there, so the gap's filtering role is gone. The solver's own certificate that the level is
+exhausted (CPLEX status 129/130; Gurobi an optimal pool search with room left in the pool) ends the
+level without a confirmatory populate. A level that ends without a proof either way (a time limit,
+or a numerical failure that the retry cannot resolve) is never read as exhausted: the run reports a
+time limit or `ERROR` instead.
+
+**Dual tilt** (`dual_tilt`, default `1e-6`). At a pinned level the objective is constant on `z` and
+zero on the certificate variables, so every node LP is a degenerate feasibility problem. A tiny cost
+on the sign-restricted SOS1 slack columns gives the simplex a direction without cutting any
+certificate. On Gurobi the tilt is divided by the Farkas anchor below, so its weight stays the one it
+has at an anchor of 1.
+
+**Farkas anchor controller.** The certificate's normalization row `bᵀy <= -c` ([6.3.3](#ch6)) is exact
+for any `c > 0`; `c` only sets the certificate's scale against the solver's absolute tolerances. The
+MILP is built at `c = 1` and the sweep starts at `c = 1e-5`, which is markedly faster. Validity is
+checked by a slack verification LP (`_verify_slack`) that keeps the design's gate rows with
+non-negative slacks: a design that fails means a certificate passed only within tolerance, so `c` is
+raised 100-fold and the level re-populated; a design with a zero-slack gate is not minimal, which means
+a lower level lost a design, so `c` is lowered and the lower levels redone (everything found stays
+excluded, so those passes only collect the losses). Between levels `c` is steered from the smallest
+gate slack and the largest certificate entry of the accepted designs. After more than three redos the
+solver's exhaustion certificate is no longer trusted for the rest of the run.
+
+**Restarts.** Search time at a level is heavy-tailed in the solver's seed: one seed can spend minutes
+on a level that other seeds finish in seconds, on the same MILP. Each populate is therefore capped in
+*deterministic* work (CPLEX ticks, Gurobi work units) at `max(_RESTART_MIN_WORK, 4 x previous level)`.
+A call that is still returning new designs at the cap is resumed with the cap doubled — the model is
+left untouched, so the solver continues the same tree with its pool. A call that returned nothing new
+has its designs recorded and is restarted from the next seed `seed + 7919·n`, the cap doubling on.
+Every level still ends with a populate that ran to completion, so completeness is unaffected, and
+because both the cap and the restart seeds are deterministic, restarts keep a seeded run repeatable
+on the same machine and thread count. Note that both solvers resume an interrupted search on an unchanged model
+even after a parameter change; `MILP_LP.set_seed` therefore also discards the search tree.
+
+**Populate parameters.** Gurobi runs the pool search with `PoolSearchMode = 2`, `NumericFocus = 0` and
+`Heuristics = 0` (an exhaustive pool search reaches every solution the heuristics would find). CPLEX
+uses pool intensity 3 with the SOS1 gates and an integrality tolerance of `1e-9` (0 disables SOS1
+branching). CPLEX's working memory is set from the memory the process may actually use, i.e. capped
+by any enclosing cgroup (SLURM, containers), which CPLEX itself does not observe.
+
 ## 9. Decompression & solution semantics
 
 The MILP does not run on the model the user handed to `compute_strain_designs`. By the time
