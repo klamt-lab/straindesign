@@ -822,33 +822,41 @@ def _rref_integer_sparse(rm: RationalMatrix, reduced: bool = True) -> Tuple[Dict
     return {i: data[key] for i, key in enumerate(pivot_keys)}, rank, pivot_cols
 
 
-def _kernel_rows(matrix: RationalMatrix) -> Tuple[int, Dict[int, Dict[int, Fraction]]]:
-    """Kernel basis read off the integer RREF, as rows: (nullity, {row: {kernel column: Fraction}}).
+def _kernel_rows(matrix: RationalMatrix) -> Tuple[int, Dict[int, Dict[int, int]], Dict[int, int]]:
+    """Kernel basis read off the integer RREF, as integer rows with one denominator per row.
 
+    Returns (nullity, rows, denominators); kernel entry (r, k) equals rows[r][k] / denominators[r].
     Kernel column k belongs to the k-th free column f (ascending) and has 1 at row f and
     -rref[i, f] / rref[i, pivot_i] at the row of every pivot column. The entries come from the
     nonzeros of the RREF, so the cost follows its fill and not (pivot rows) x (free columns).
-    Within a row the kernel columns ascend; rows without a nonzero are absent.
+    Within a row the kernel columns ascend; rows without a nonzero are absent. A row and its
+    denominator have no common factor, single entries may share one with the denominator.
     """
     cols = matrix.get_column_count()
     rref_data, rank, pivot_cols = _rref_integer_sparse(matrix)
     if rank == cols:
-        return 0, {}
+        return 0, {}, {}
     pivot_set = set(pivot_cols)
     kernel_col = {f: k for k, f in enumerate(c for c in range(cols) if c not in pivot_set)}
-    rows: Dict[int, Dict[int, Fraction]] = {}
+    rows: Dict[int, Dict[int, int]] = {}
+    denominators: Dict[int, int] = {}
     for i, pivot_col in enumerate(pivot_cols):
         row_data = rref_data[i]
         if len(row_data) > 1:
-            pivot_val = row_data[pivot_col]
-            rows[pivot_col] = {kernel_col[c]: Fraction(-v, pivot_val) for c, v in sorted(row_data.items()) if c != pivot_col}
-    one = Fraction(1)
+            pivot_val = row_data.pop(pivot_col)
+            if pivot_val > 0:
+                rows[pivot_col] = {kernel_col[c]: -v for c, v in sorted(row_data.items())}
+                denominators[pivot_col] = pivot_val
+            else:
+                rows[pivot_col] = {kernel_col[c]: v for c, v in sorted(row_data.items())}
+                denominators[pivot_col] = -pivot_val
     for f, k in kernel_col.items():
-        rows[f] = {k: one}
-    return len(kernel_col), rows
+        rows[f] = {k: 1}
+        denominators[f] = 1
+    return len(kernel_col), rows, denominators
 
 
-def _kernel_pattern(rows: Dict[int, Dict[int, Fraction]], num_rows: int, nullity: int) -> csr_matrix:
+def _kernel_pattern(rows: Dict[int, Dict[int, int]], num_rows: int, nullity: int) -> csr_matrix:
     """CSR with a 1 at every nonzero of a kernel given as rows (see _kernel_rows)."""
     indptr = np.zeros(num_rows + 1, dtype=np.int64)
     indices: List[int] = []
@@ -863,22 +871,28 @@ def _kernel_pattern(rows: Dict[int, Dict[int, Fraction]], num_rows: int, nullity
 def _nullspace_sparse(matrix: RationalMatrix) -> RationalMatrix:
     """Compute the nullspace from the integer RREF, one kernel column per free column."""
     cols = matrix.get_column_count()
-    nullity, rows = _kernel_rows(matrix)
+    nullity, rows, denominators = _kernel_rows(matrix)
     if nullity == 0:
         return RationalMatrix(cols, 0)
     # Column-major entry order: the unit entry of each kernel column, then its pivot rows in pivot order.
-    columns: List[List[Tuple[int, Fraction]]] = [[] for _ in range(nullity)]
+    columns: List[List[Tuple[int, int, int]]] = [[] for _ in range(nullity)]
     for r, row in rows.items():
-        for k, frac in row.items():
-            columns[k].append((r, frac))
+        den = denominators[r]
+        if den == 1:
+            for k, num in row.items():
+                columns[k].append((r, num, 1))
+        else:
+            for k, num in row.items():
+                g = gcd(num, den)
+                columns[k].append((r, num // g, den // g))
     row_indices, col_indices = [], []
     numerators, denominators = [], []
     for k, column in enumerate(columns):
-        for r, frac in column[-1:] + column[:-1]:
+        for r, num, den in column[-1:] + column[:-1]:
             row_indices.append(r)
             col_indices.append(k)
-            numerators.append(frac.numerator)
-            denominators.append(frac.denominator)
+            numerators.append(num)
+            denominators.append(den)
     return RationalMatrix._build_from_sparse_data(row_indices, col_indices, numerators, denominators, cols, nullity)
 
 
@@ -1280,14 +1294,14 @@ class StoichMatrixCompressor:
         """
         # Build active submatrix for nullspace computation
         active = work.cmp.submatrix(work.size.metas, work.size.reacs)
-        nullity, kernel_values = _kernel_rows(active)
+        nullity, kernel_values, kernel_denominators = _kernel_rows(active)
         LOG.debug(f"Nullspace: {active.get_row_count()}x{active.get_column_count()} -> kernel {active.get_column_count()}x{nullity}")
 
         # Kernel pattern (CSR for structure) and values (Fractions for exact ratios)
         kernel_pattern = _kernel_pattern(kernel_values, active.get_column_count(), nullity)
 
         # Find zero-flux reactions and merge coupled groups in one pass
-        return self._handle_compress(work, kernel_pattern, kernel_values)
+        return self._handle_compress(work, kernel_pattern, kernel_values, kernel_denominators)
 
     def _find_zero_flux(self, work: _WorkRecord, kernel_sparse) -> set:
         """Find reactions with all-zero kernel rows (indices in current work)."""
@@ -1298,12 +1312,14 @@ class StoichMatrixCompressor:
                 work.stats.inc_zero_flux_reactions()
         return zero_flux
 
-    def _find_coupled_groups(self, kernel_pattern, kernel_values, num_reacs, protected_indices=set()):
+    def _find_coupled_groups(self, kernel_pattern, kernel_values, kernel_denominators, num_reacs, protected_indices=set()):
         """Find groups of coupled reactions from kernel sparsity pattern.
 
         Args:
             kernel_pattern: CSR matrix with 1s at non-zero positions (for indptr/indices)
-            kernel_values: {row: {col: Fraction}} for actual values
+            kernel_values: {row: {col: int}}, the kernel rows scaled to integers
+            kernel_denominators: {row: int}; kernel entry (row, col) is
+                kernel_values[row][col] / kernel_denominators[row]
             protected_indices: optional set of reaction indices that must NOT be merged
                 into any coupled group (kept as their own reactions). The rest of a
                 coupled group is still merged. Used e.g. to keep gene-controlled
@@ -1340,39 +1356,30 @@ class StoichMatrixCompressor:
                     continue
                 group = None
 
-                # Get values for reaction a
-                a_row = kernel_values.get(reac_a, {})
+                # A row is proportional to row a if it is so in the integer rows; the denominators
+                # only enter the ratio.
+                a_row = kernel_values[reac_a]
+                first_col = nonzero_cols[0]
+                a_val = a_row[first_col]
+                a_den = kernel_denominators[reac_a]
 
                 for j in range(i + 1, len(potential)):
                     reac_b = potential[j]
                     if ratios[reac_b] is not None or reac_b in protected_indices:
                         continue
 
-                    # Get values for reaction b
-                    b_row = kernel_values.get(reac_b, {})
+                    b_row = kernel_values[reac_b]
+                    b_val = b_row[first_col]
 
-                    # Compute ratio from first non-zero column
-                    first_col = nonzero_cols[0]
-                    a_val = a_row.get(first_col, Fraction(0))
-                    b_val = b_row.get(first_col, Fraction(0))
-
-                    if b_val == 0:
-                        continue
-
-                    # ratio = a_val / b_val
-                    ratio = a_val / b_val
-
-                    # Check if ratio is consistent across all columns
+                    # Consistent if a_v / b_v equals a_val / b_val in every column
                     is_consistent = True
                     for col in nonzero_cols[1:]:
-                        a_v = a_row.get(col, Fraction(0))
-                        b_v = b_row.get(col, Fraction(0))
-                        if b_v == 0 or a_v / b_v != ratio:
+                        if a_row[col] * b_val != b_row[col] * a_val:
                             is_consistent = False
                             break
 
                     if is_consistent:
-                        ratios[reac_b] = ratio
+                        ratios[reac_b] = Fraction(a_val * kernel_denominators[reac_b], b_val * a_den)
                         if group is None:
                             group = [reac_a]
                         group.append(reac_b)
@@ -1382,7 +1389,7 @@ class StoichMatrixCompressor:
 
         return groups, ratios
 
-    def _handle_compress(self, work: _WorkRecord, kernel_pattern, kernel_values) -> bool:
+    def _handle_compress(self, work: _WorkRecord, kernel_pattern, kernel_values, kernel_denominators) -> bool:
         """Remove zero-flux and merge coupled reactions from a single kernel.
 
         From one nullspace computation:
@@ -1411,7 +1418,7 @@ class StoichMatrixCompressor:
         # stay intact through compression — mapped from names to current indices)
         prot_names = getattr(work, 'protected_names', set())
         protected_idx = {i for i, n in enumerate(work.reac_names) if n in prot_names} if prot_names else set()
-        groups, ratios = self._find_coupled_groups(kernel_pattern, kernel_values, work.size.reacs, protected_idx)
+        groups, ratios = self._find_coupled_groups(kernel_pattern, kernel_values, kernel_denominators, work.size.reacs, protected_idx)
 
         reactions_to_remove = set(zero_flux)
         contradicting_removed = False
