@@ -76,8 +76,9 @@ from straindesign.compression import (
 # faster than the sequential loop, so it pays from a few hundred LPs upwards.
 _PARALLEL_PHASE2_MIN = 500
 # Above that count, the first LPs are solved sequentially as a probe (until _PROBE_LPS of them or
-# _PROBE_SECONDS have passed); the rest goes to the pool only if the probe's rate projects more
-# sequential work than the pool takes to start, measured at about 2 s plus 0.07 s per worker.
+# _PROBE_SECONDS have passed); the rest goes to the pool only if the time the pool saves at the
+# probe's rate (all but one worker's share of the sequential time) exceeds what the pool takes to
+# start, measured at about 2 s plus 0.07 s per worker.
 _PROBE_LPS = 50
 _PROBE_SECONDS = 0.5
 _POOL_START_SECONDS = 2.0
@@ -85,6 +86,9 @@ _POOL_START_SECONDS_PER_WORKER = 0.07
 # Sequential Phase 2 replaces its LP by a freshly built one after this many solves. CPLEX is exempt: its
 # results are the same without the rebuild, and each rebuild costs a cold solve.
 _PHASE2_REBUILD_EVERY = 200
+# Objectives are handed to the pool in this many chunks per worker. One chunk each leaves workers idle
+# while the slowest chunk finishes; the LPs of a genome-scale model differ in cost by orders of magnitude.
+_POOL_CHUNKS_PER_WORKER = 4
 # The push LPs are solved in batches of _PUSH_BATCH until a batch resolves fewer than _PUSH_MIN_YIELD
 # directions per LP. A push LP takes as long as two to ten single-objective LPs of the sequential
 # Phase 2, which resolve about one direction each.
@@ -494,7 +498,7 @@ def speedy_fva(model, **kwargs):
     # The pool's start-up is a fixed cost of seconds, while an LP of a small network solves in well
     # under a millisecond, so the objective count alone cannot tell which dispatch is faster. The
     # sequential loop runs first as a probe and hands the remaining objectives to the pool only when
-    # their projected sequential time exceeds what the pool takes to start.
+    # the pool would save more of their projected sequential time than it takes to start.
     handoff = False
     # GLPK stays sequential: its pool worker rebuilds the LP for every objective, which took
     # minutes on iMLcore where the warm-started loop takes two seconds.
@@ -549,8 +553,8 @@ def speedy_fva(model, **kwargs):
                 if seq_count >= _PROBE_LPS or elapsed >= _PROBE_SECONDS:
                     probe = False
                     n_left = 2 * n_orig - int(res_max.sum() + res_min.sum())
-                    handoff = seq_count > 0 and elapsed / seq_count * n_left > (_POOL_START_SECONDS +
-                                                                                _POOL_START_SECONDS_PER_WORKER * threads)
+                    seconds_left = elapsed / seq_count * n_left if seq_count > 0 else 0.0
+                    handoff = seconds_left * (1.0 - 1.0 / threads) > _POOL_START_SECONDS + _POOL_START_SECONDS_PER_WORKER * threads
                     if handoff:
                         break
                     if push_deferred:
@@ -669,7 +673,7 @@ def speedy_fva(model, **kwargs):
         x_par = [nan] * (2 * n_orig)
         t0 = _time.perf_counter()
         with SDPool(threads, initializer=fva_worker_init, initargs=(A_ineq, b_ineq, A_eq, b_eq, lb.tolist(), ub.tolist(), solver)) as pool:
-            chunk_size = max(1, len(unresolved) // threads)
+            chunk_size = max(1, len(unresolved) // (threads * _POOL_CHUNKS_PER_WORKER))
             for i, value in pool.imap_unordered(fva_worker_compute, unresolved, chunksize=chunk_size):
                 x_par[i] = value
         t_solve += _time.perf_counter() - t0
