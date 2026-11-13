@@ -82,6 +82,9 @@ _PROBE_LPS = 50
 _PROBE_SECONDS = 0.5
 _POOL_START_SECONDS = 2.0
 _POOL_START_SECONDS_PER_WORKER = 0.07
+# Sequential Phase 2 replaces its LP by a freshly built one after this many solves. CPLEX is exempt: its
+# results are the same without the rebuild, and each rebuild costs a cold solve.
+_PHASE2_REBUILD_EVERY = 200
 # The push LPs are solved in batches of _PUSH_BATCH until a batch resolves fewer than _PUSH_MIN_YIELD
 # directions per LP. A push LP takes as long as two to ten single-objective LPs of the sequential
 # Phase 2, which resolve about one direction each.
@@ -557,7 +560,7 @@ def speedy_fva(model, **kwargs):
                             continue
 
             # Periodic rebuild to limit warm-start degeneration
-            if seq_count > 0 and seq_count % 200 == 0:
+            if solver != CPLEX and seq_count > 0 and seq_count % _PHASE2_REBUILD_EVERY == 0:
                 _rebuild_lp()
 
             sig = -direction
