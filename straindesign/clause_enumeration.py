@@ -49,7 +49,7 @@ from straindesign.names import OPTIMAL, INFEASIBLE
 
 # seconds of oracle LPs within one level before worker processes are started; starting them costs
 # a few seconds, which a short level never earns back
-_PARALLEL_AFTER = 1.0
+_PARALLEL_AFTER = 3.0
 
 # multipliers smaller than this, relative to the largest gate multiplier, are solver noise; the
 # measured gap between real multipliers and noise spans 1e-8 to 1e-15

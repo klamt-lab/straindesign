@@ -837,26 +837,32 @@ class SCIP_LP(pso.LP):
 
     def solve_verdict(self) -> Tuple[List, float]:
         """Solve the LP and report only what was proven: OPTIMAL with the solution, INFEASIBLE, or
-        ERROR. A simplex failure from the stored basis (it happens after coefficient changes) is
-        answered with a solve from scratch, and that failing, with one from scratch under SoPlex's
-        aggressive scaling, before ERROR is returned.
+        ERROR. A simplex failure ("error in LP solver", seen after coefficient changes and on
+        badly scaled systems) is answered step by step: a solve from scratch, one under SoPlex's
+        aggressive scaling, then with the feasibility tolerances relaxed from 1e-9 to 1e-8 and
+        1e-7 for that solve. ERROR is returned when all of them fail.
 
         Returns:
             (Tuple[List, float])
 
             solution_vector (None unless OPTIMAL), optimization_status
         """
-        scaling = self.getIntParam(pso.SCIP_LPPARAM.SCALING)
-        for from_scratch, scale in ((0, scaling), (1, scaling), (1, 2)):
-            self.setIntParam(pso.SCIP_LPPARAM.FROMSCRATCH, from_scratch)
-            self.setIntParam(pso.SCIP_LPPARAM.SCALING, scale)
+        P = pso.SCIP_LPPARAM
+        scaling, tol = self.getIntParam(P.SCALING), self.getRealParam(P.FEASTOL)
+        for from_scratch, scale, relax in ((0, scaling, 1), (1, scaling, 1), (1, 2, 1), (1, 2, 10), (1, 2, 100)):
+            self.setIntParam(P.FROMSCRATCH, from_scratch)
+            self.setIntParam(P.SCALING, scale)
+            self.setRealParam(P.FEASTOL, tol * relax)
+            self.setRealParam(P.DUALFEASTOL, tol * relax)
             try:
                 opt = self.optimize()
             except Exception:
                 continue
             finally:
-                self.setIntParam(pso.SCIP_LPPARAM.FROMSCRATCH, 0)
-                self.setIntParam(pso.SCIP_LPPARAM.SCALING, scaling)
+                self.setIntParam(P.FROMSCRATCH, 0)
+                self.setIntParam(P.SCALING, scaling)
+                self.setRealParam(P.FEASTOL, tol)
+                self.setRealParam(P.DUALFEASTOL, tol)
             if self.isOptimal():
                 return self.getPrimal(), OPTIMAL
             if self.isInfinity(opt) and not self.isPrimalFeasible():
