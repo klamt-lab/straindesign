@@ -228,6 +228,7 @@ class SCIP_MILP(pso.Model):
         self._sd_lb = [-inf if v is None else float(v) for v in lb]
         self._sd_ub = [inf if v is None else float(v) for v in ub]
         self._sd_vtype = vtype
+        self._sd_threads = milp_threads
         self._sd_enum = None
         # Each row goes in as a single expression built from the terms cached above. Adding an
         # empty row and then one addConsCoeff per nonzero costs a PySCIPOpt call per matrix
@@ -531,22 +532,22 @@ class SCIP_MILP(pso.Model):
             z_rows, c_rows = split_rows([r for i, r in enumerate(self._sd_rows) if i not in cost_rows], is_z)
             if self._sd_enum is None or self._sd_enum_rows != len(c_rows):
                 oracle = GateOracle(c_rows, self._sd_lb, self._sd_ub, np.flatnonzero(~is_z), ic, SCIP_LP)
-                self._sd_enum = ClauseEnumerator(oracle, z_cols, len(self._sd_vtype))
+                self._sd_enum = ClauseEnumerator(oracle, z_cols, len(self._sd_vtype), workers=self._sd_threads or 0)
                 self._sd_enum_rows = len(c_rows)
             enum = self._sd_enum
             enum.load_z_rows(z_rows, np.array(self._sd_ub)[z_cols], self._sd_rows[cost_rows[0]], self._sd_rows[cost_rows[1]])
         except NotApplicable as e:
             logging.info('  clause enumeration not applicable (%s); enumerating in a SCIP tree' % e)
             return None
-        calls, secs, nodes, t0 = enum.oracle.n_calls, enum.oracle.seconds, enum.n_nodes, t.time()
+        calls, secs, nodes, t0 = enum.oracle.n_calls + enum.n_worker_lps, enum.oracle.seconds, enum.n_nodes, t.time()
         try:
             found, complete = enum.enumerate(self.getParam('limits/time'))
         except NumericalTrouble as e:
             logging.error('Clause enumeration failed: %s.' % e)
             return [], nan, ERROR
-        logging.info('  clause enumeration, cost %g: %d designs, %d nodes, %d LPs (%.1f s of %.1f s), %d clauses' %
-                     (enum.level, len(found), enum.n_nodes - nodes, enum.oracle.n_calls - calls,
-                      enum.oracle.seconds - secs, t.time() - t0, enum.P.n + enum.n_static_mixed))
+        logging.info('  clause enumeration, cost %g: %d designs, %d nodes, %d LPs, %.1f s (%.1f s in this process\'s LPs), %d clauses' %
+                     (enum.level, len(found), enum.n_nodes - nodes, enum.oracle.n_calls + enum.n_worker_lps - calls,
+                      t.time() - t0, enum.oracle.seconds - secs, enum.P.n + enum.n_static_mixed))
         self.pool_exhausted = self.level_enumerated = complete
         sols = []
         for S in found:
@@ -557,6 +558,11 @@ class SCIP_MILP(pso.Model):
         if sols:
             return sols, 0.0, OPTIMAL if complete else TIME_LIMIT_W_SOL
         return [], nan, INFEASIBLE if complete else TIME_LIMIT
+
+    def end_enumeration(self):
+        """Release what populate keeps between the cost levels of one enumeration (worker processes)."""
+        if self._sd_enum is not None:
+            self._sd_enum.close()
 
     def add_sos1(self, sets):
         """Add SOS1 sets: at most one member of each may be nonzero (weights only order members)."""

@@ -1196,6 +1196,8 @@ class SDMILP(SDProblem, MILP_LP):
                 if endtime - time.time() <= 0:
                     hit_timelimit = True
                 break
+        if hasattr(self.backend, 'end_enumeration'):
+            self.backend.end_enumeration()
         # The level rows keep their last value on the object, so leave the pool and the work limit as
         # every other caller expects to find them.
         self.set_pool_gap(False)

@@ -40,9 +40,14 @@ Requirements, checked by :func:`split_rows` and :meth:`ClauseEnumerator.load_z_r
 """
 
 import logging
+import queue
 import time
 import numpy as np
 from scipy import sparse
+
+# seconds of oracle LPs within one level before worker processes are started; starting them costs
+# a few seconds, which a short level never earns back
+_PARALLEL_AFTER = 1.0
 
 # multipliers smaller than this, relative to the largest gate multiplier, are solver noise; the
 # measured gap between real multipliers and noise spans 1e-8 to 1e-15
@@ -107,6 +112,7 @@ class GateOracle:
     """
 
     def __init__(self, c_rows, lb, ub, cont, indic_constr, lp_class):
+        self.init_args = (c_rows, lb, ub, cont, indic_constr, lp_class)
         n = len(lb)
         pos = np.full(n, -1)
         pos[cont] = np.arange(len(cont))
@@ -199,6 +205,45 @@ class GateOracle:
             self.seconds += time.time() - t0
 
 
+_worker = {}
+
+
+def _worker_init(oracle_args, z_cols, n_cols):
+    """Build this worker process's own oracle LP."""
+    _worker['oracle'] = GateOracle(*oracle_args)
+    _worker['z_cols'] = np.array(z_cols, int)
+    _worker['pos'] = np.full(n_cols, -1)
+    _worker['pos'][_worker['z_cols']] = np.arange(len(z_cols))
+    _worker['n_cols'] = n_cols
+
+
+def _worker_leaf(S_idx, candidates):
+    """Ask the oracle for S plus each candidate in turn, skipping candidates that a clause found
+    earlier in this call already rules out.
+
+    Returns:
+        (S_idx, candidates that complete a design, clauses as (positive, negative) z positions,
+        number of LPs)
+    """
+    o, z_cols, pos = _worker['oracle'], _worker['z_cols'], _worker['pos']
+    in_S = set(int(i) for i in S_idx)
+    designs, clauses, n0 = [], [], o.n_calls
+    for e in candidates:
+        e = int(e)
+        if any(e not in pc and nc <= in_S | {e} for pc, nc in clauses):
+            continue
+        z_one = np.zeros(_worker['n_cols'], bool)
+        z_one[z_cols[S_idx]] = True
+        z_one[z_cols[e]] = True
+        gates = o.query(z_one)
+        if gates is None:
+            designs.append(e)
+        else:
+            clauses.append((set(int(i) for i in pos[o.gate_z[gates[o.gate_val[gates] == 0]]]),
+                            set(int(i) for i in pos[o.gate_z[gates[o.gate_val[gates] == 1]]])))
+    return S_idx, designs, [(sorted(pc), sorted(nc)) for pc, nc in clauses], o.n_calls - n0
+
+
 class _Rows:
     """Growing boolean matrix, one row per clause part."""
 
@@ -226,13 +271,22 @@ class ClauseEnumerator:
     such a clause still hits it after growing, and each node only has to look at the clauses its
     parent left unhit.
 
+    With workers > 1, the sets that differ in their last intervention only are handed to worker
+    processes, each with an oracle LP of its own (call :meth:`close` after the last level). The clauses they find reach the search when a
+    worker reports back; until then the search may ask for sets such a clause would have ruled
+    out, which costs LPs and never a design.
+
     Args:
         oracle (GateOracle)
         z_cols (list of int): the binary columns of the MILP
         n_cols (int): number of MILP columns
+        workers (int): number of worker processes for the oracle LPs (0 or 1: none)
     """
 
-    def __init__(self, oracle, z_cols, n_cols):
+    def __init__(self, oracle, z_cols, n_cols, workers=0):
+        self.workers = workers if workers and workers > 1 else 0
+        self.pool = None
+        self.n_worker_lps = 0
         self.oracle = oracle
         self.z_cols = np.array(z_cols, int)
         self.n_cols = n_cols
@@ -288,8 +342,11 @@ class ClauseEnumerator:
         if gates is None:
             return True
         o = self.oracle
-        pos_cols = self.pos[o.gate_z[gates[o.gate_val[gates] == 0]]]
-        neg_cols = self.pos[o.gate_z[gates[o.gate_val[gates] == 1]]]
+        self._store(self.pos[o.gate_z[gates[o.gate_val[gates] == 0]]], self.pos[o.gate_z[gates[o.gate_val[gates] == 1]]])
+        return False
+
+    def _store(self, pos_cols, neg_cols):
+        """Keep a clause the oracle returned."""
         if len(neg_cols):
             # found during the search, valid beyond this level: keep it ahead of the level's rows
             self._add_mixed(pos_cols, neg_cols)
@@ -300,7 +357,50 @@ class ClauseEnumerator:
             self.n_static_mixed += 1
         else:
             self.P.add(pos_cols)
-        return False
+
+    def _submit(self, S, candidates):
+        """Hand S and its last-intervention candidates to a worker; collect what has come back."""
+        if self.pool is None:
+            from straindesign.pool import SDPool
+            self.pool = SDPool(self.workers, initializer=_worker_init, initargs=(self.oracle.init_args, self.z_cols, self.n_cols))
+            self.done = queue.Queue()
+            self.n_pending = 0
+        self.pool.apply_async(_worker_leaf, (np.flatnonzero(S), candidates), callback=self.done.put, error_callback=self.done.put)
+        self.n_pending += 1
+        self._collect(wait=self.n_pending >= 2 * self.workers)
+
+    def _collect(self, wait=False, everything=False):
+        """Take finished worker tasks into the clause store. wait: block for one result;
+        everything: block until no task is pending."""
+        while self.pool is not None and self.n_pending:
+            try:
+                res = self.done.get(block=wait or everything)
+            except queue.Empty:
+                return
+            self.n_pending -= 1
+            wait = False
+            if isinstance(res, BaseException):
+                raise res
+            S_idx, designs, clauses, n_lps = res
+            self.n_worker_lps += n_lps
+            for pos_cols, neg_cols in clauses:
+                self._store(np.array(pos_cols, int), np.array(neg_cols, int))
+            for e in designs:
+                T = np.zeros(self.m, bool)
+                T[S_idx] = True
+                T[e] = True
+                self._record(T)
+
+    def close(self):
+        """Stop the worker processes. They are started within a level and kept for the next one, so
+        the caller closes the enumerator after its last level."""
+        if self.pool is not None:
+            self.pool.terminate()
+            self.pool.join()
+            self.pool = None
+
+    def __del__(self):
+        self.close()
 
     def _violated_mixed(self, S):
         n = self.Mp.n
@@ -315,10 +415,16 @@ class ClauseEnumerator:
         """
         self.found = []
         self.deadline = time.time() + time_limit
+        self.parallel_from = self.oracle.seconds + _PARALLEL_AFTER
         try:
             self._descend(np.zeros(self.m, bool), ~self.allowed, 0.0, np.arange(self.P.n), self.P.n)
+            self._collect(everything=True)
         except _Timeout:
+            self.close()
             return self.found, False
+        except BaseException:
+            self.close()
+            raise
         return self.found, True
 
     def _record(self, S):
@@ -332,6 +438,7 @@ class ClauseEnumerator:
         self.n_nodes += 1
         if time.time() > self.deadline:
             raise _Timeout()
+        self._collect()
         P = self.P
         while True:
             if P.n > n_seen:
@@ -353,7 +460,18 @@ class ClauseEnumerator:
         cand = np.vstack((P.a[unhit] & free, self.Mp.a[mixed] & free))
         if left < 2 * self.cost[free].min():
             # one more intervention fits: it has to repair every violated clause on its own
-            for e in np.flatnonzero(cand.all(0) & (self.cost == left)):
+            last = np.flatnonzero(cand.all(0) & (self.cost == left))
+            if self.workers and len(last) and self.oracle.seconds > self.parallel_from:
+                keep = []
+                for e in last:
+                    T = S.copy()
+                    T[e] = True
+                    if not len(self._violated_mixed(T)):
+                        keep.append(int(e))
+                if keep:
+                    self._submit(S, keep)
+                return
+            for e in last:
                 if P.n > n_seen and not P.a[n_seen:P.n, e].all():
                     continue
                 T = S.copy()
