@@ -72,6 +72,7 @@ def test_knock_ins_keep_the_solve_and_exclude_loop(model_weak_coupling, caplog, 
         solution = sd.compute_strain_designs(model_weak_coupling, sd_modules=_weak_coupling(model_weak_coupling),
                                              max_cost=3, max_solutions=inf, solution_approach=POPULATE, solver=SCIP,
                                              ko_cost=kos, ki_cost={'r3': 1.0, 'r6': 1.0}, compress=False)
-    assert solution.status == OPTIMAL
+    # no design fits the budget, which a proven enumeration reports as INFEASIBLE
+    assert solution.status == INFEASIBLE and not solution.reaction_sd
     messages = [r.getMessage() for r in caplog.records]
     assert not any('clause enumeration, cost' in m or 'cb-reject' in m for m in messages)
