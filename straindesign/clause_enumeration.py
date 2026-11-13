@@ -35,8 +35,8 @@ Requirements, checked by :func:`split_rows` and :meth:`ClauseEnumerator.load_z_r
 :class:`NotApplicable` is raised otherwise and the caller keeps its own enumeration):
 
 - every row holds binaries only or continuous variables only, and all integer variables are binary;
-- the rows over the binaries are a pinned positive cost (``cost.z <= k`` and ``-cost.z <= -k``) and
-  clauses (exclusion rows).
+- the rows over the binaries are the two cost rows, pinning a positive cost (``cost.z <= k`` and
+  ``-cost.z <= -k``), and clauses (exclusion rows).
 """
 
 import logging
@@ -209,6 +209,7 @@ class _Rows:
     def add(self, cols):
         if self.n == self.a.shape[0]:
             self.a = np.vstack((self.a, np.zeros_like(self.a)))
+        self.a[self.n] = False
         self.a[self.n, cols] = True
         self.n += 1
 
@@ -243,42 +244,37 @@ class ClauseEnumerator:
         self.n_static_mixed = 0
         self.n_nodes = 0
 
-    def load_z_rows(self, z_rows, ub_z):
-        """Read the pinned cost and the exclusion rows from the MILP's rows over the binaries.
+    def load_z_rows(self, z_rows, ub_z, cost_upper, cost_lower):
+        """Set the level from the two cost rows and read the exclusion rows over the binaries.
 
         Args:
-            z_rows (list): (indices, values, rhs, is_equality) per row
+            z_rows (list): the rows over the binaries other than the two cost rows, as
+                (indices, values, rhs, is_equality)
             ub_z (numpy array): upper bounds of the binaries, in the order of z_cols
+            cost_upper, cost_lower: the rows ``cost.z <= k`` and ``-cost.z <= -k``
         """
         self.Mp.n = self.Mn.n = self.n_static_mixed
-        upper, lower = [], []
         for idx, val, rhs, is_eq in z_rows:
             val = np.asarray(val, float)
             if not is_eq and val.clip(min=0).sum() <= rhs:  # cannot be violated
                 continue
-            if is_eq:
-                raise NotApplicable('an equality row over the binaries')
-            if (np.abs(val) == 1).all() and rhs == (val > 0).sum() - 1:
+            if not is_eq and (np.abs(val) == 1).all() and rhs == (val > 0).sum() - 1:
                 self._add_mixed(self.pos[np.asarray(idx)[val < 0]], self.pos[np.asarray(idx)[val > 0]])
-            elif (val > 0).all() and rhs >= 0:
-                upper.append((idx, val, rhs))
-            elif (val < 0).all() and rhs <= 0:
-                lower.append((idx, -val, -rhs))
             else:
                 raise NotApplicable('a row over the binaries is neither a cost bound nor a clause')
-        if len(upper) != 1 or len(lower) != 1:
-            raise NotApplicable('the cost is not pinned by one upper and one lower row')
+        if cost_upper is None or cost_lower is None or cost_upper[3] or cost_lower[3]:
+            raise NotApplicable('the cost rows are not known')
         cost = np.zeros(self.m)
-        cost[self.pos[upper[0][0]]] = upper[0][1]
+        cost[self.pos[cost_upper[0]]] = cost_upper[1]
         low = np.zeros(self.m)
-        low[self.pos[lower[0][0]]] = lower[0][1]
-        if not np.array_equal(cost, low) or upper[0][2] != lower[0][2]:
+        low[self.pos[cost_lower[0]]] = -np.asarray(cost_lower[1])
+        if not np.array_equal(cost, low) or cost_upper[2] != -cost_lower[2]:
             raise NotApplicable('the cost is not pinned to one level')
         self.allowed = np.asarray(ub_z) > 0.5
         if (cost[self.allowed] <= 0).any():
             raise NotApplicable('an intervention without positive cost')
         self.cost = cost
-        self.level = upper[0][2]
+        self.level = cost_upper[2]
 
     def _add_mixed(self, pos_cols, neg_cols):
         self.Mp.add(pos_cols)

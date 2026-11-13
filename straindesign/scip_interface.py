@@ -525,13 +525,16 @@ class SCIP_MILP(pso.Model):
                     or set(z_cols) != set(int(j) for j in self._sd_ko_cols) \
                     or any(self._sd_lb[j] != 0 for j in z_cols):
                 raise NotApplicable('binaries other than free knockout columns behind indicator constraints')
-            z_rows, c_rows = split_rows(self._sd_rows, is_z)
+            cost_rows = getattr(self, '_sd_cost_rows', None)
+            if cost_rows is None:
+                raise NotApplicable('the cost rows are not known')
+            z_rows, c_rows = split_rows([r for i, r in enumerate(self._sd_rows) if i not in cost_rows], is_z)
             if self._sd_enum is None or self._sd_enum_rows != len(c_rows):
                 oracle = GateOracle(c_rows, self._sd_lb, self._sd_ub, np.flatnonzero(~is_z), ic, SCIP_LP)
                 self._sd_enum = ClauseEnumerator(oracle, z_cols, len(self._sd_vtype))
                 self._sd_enum_rows = len(c_rows)
             enum = self._sd_enum
-            enum.load_z_rows(z_rows, np.array(self._sd_ub)[z_cols])
+            enum.load_z_rows(z_rows, np.array(self._sd_ub)[z_cols], self._sd_rows[cost_rows[0]], self._sd_rows[cost_rows[1]])
         except NotApplicable as e:
             logging.info('  clause enumeration not applicable (%s); enumerating in a SCIP tree' % e)
             return None
