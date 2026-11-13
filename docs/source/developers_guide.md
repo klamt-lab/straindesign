@@ -861,7 +861,7 @@ where `_eliminate` first divides `pv, ev` by `g = gcd(pv, ev)` to get `pv_scaled
 Everything stays integer.
 
 **Two cases, split on the multiplier of the target row.** On genome-scale stoichiometric matrices
-94–100 % of all eliminations have `pv_scaled = ±1` (the pivot value divides the target entry; most
+85–100 % of all eliminations have `pv_scaled = ±1` (the pivot value divides the target entry; most
 pivots are ±1). In that case the target row is not rescaled at all, so the update is applied *in
 place* and touches only the entries the target shares with the (sparse) pivot row. This matters most
 in back-substitution, where the targets are the long, filled pivot rows: rebuilding them for every
