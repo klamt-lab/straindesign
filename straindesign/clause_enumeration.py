@@ -60,6 +60,10 @@ _PROOF_TOL = 1e-6
 
 # oracle answer for an assignment that has neither a proof of infeasibility nor a feasible point
 UNDECIDED = 'undecided'
+# a system whose rows can all be met to within this is not called infeasible
+_FEAS_TOL = 1e-9
+# proofs supported by at most this many rows are re-derived and checked in rational arithmetic
+_EXACT_MAX_ROWS = 60
 
 
 class NotApplicable(Exception):
@@ -97,6 +101,83 @@ def split_rows(rows, is_z):
     return z_rows, c_rows, m_rows
 
 
+def _exact_margin(A, b, y, lb, ub):
+    """Confirm in rational arithmetic that rows ``A x <= b`` have no solution in the box [lb, ub].
+
+    The floating-point multipliers y only say which rows carry the proof and roughly how. The
+    multipliers are re-derived exactly: wherever a column is unbounded on a side on which the
+    combination y^T A must not be negative (or positive), and the floating-point combination is
+    zero there, it is required to be exactly zero; y is projected onto the rational null space of
+    those conditions. Signs and the margin are then evaluated with fractions. The input numbers
+    are taken as the exact rationals the floats represent.
+
+    Args:
+        A (sparse matrix), b (array): the supporting rows
+        y (array): their approximate multipliers, positive
+        lb, ub (arrays): bounds of all columns
+
+    Returns:
+        True if the proof holds exactly.
+    """
+    from fractions import Fraction
+    A = sparse.csc_matrix(A)
+    k = A.shape[0]
+    d = A.T @ y
+    scale = np.abs(d).max(initial=0.0) + np.abs(A).multiply(y[:, None]).max()
+    cols = np.flatnonzero(np.diff(A.indptr))
+    column = {j: [(int(i), Fraction(float(v))) for i, v in zip(A.indices[A.indptr[j]:A.indptr[j + 1]], A.data[A.indptr[j]:A.indptr[j + 1]])]
+              for j in cols}
+    zero = []  # columns on which the combination has to vanish exactly
+    for j in cols:
+        tiny = abs(d[j]) <= 1e-9 * scale
+        if (np.isinf(ub[j]) and (tiny or d[j] < 0)) or (np.isinf(lb[j]) and (tiny or d[j] > 0)):
+            if not tiny:
+                return False
+            zero.append(j)
+    # null space of the conditions sum_i y_i A[i, j] = 0, j in zero, by fraction Gauss-Jordan
+    M = [[Fraction(0)] * k for _ in zero]
+    for r, j in enumerate(zero):
+        for i, v in column[j]:
+            M[r][i] = v
+    pivots, r = [], 0
+    for c in range(k):
+        p = next((i for i in range(r, len(M)) if M[i][c] != 0), None)
+        if p is None:
+            continue
+        M[r], M[p] = M[p], M[r]
+        inv = 1 / M[r][c]
+        M[r] = [v * inv for v in M[r]]
+        for i in range(len(M)):
+            if i != r and M[i][c] != 0:
+                f = M[i][c]
+                M[i] = [a - f * e for a, e in zip(M[i], M[r])]
+        pivots.append(c)
+        r += 1
+    free = [c for c in range(k) if c not in pivots]
+    if not free:
+        return False
+    # free multipliers keep their value (as a nearby rational), the pivot ones follow exactly
+    y_exact = [Fraction(0)] * k
+    for c in free:
+        y_exact[c] = Fraction(float(y[c])).limit_denominator(10**12)
+    for row, c in zip(M, pivots):
+        y_exact[c] = -sum(row[f] * y_exact[f] for f in free)
+    if any(v < 0 for v in y_exact) or not any(y_exact):
+        return False
+    margin = -sum(v * Fraction(float(bi)) for v, bi in zip(y_exact, b))
+    for j in cols:
+        dj = sum(v * y_exact[i] for i, v in column[j])
+        if dj > 0:
+            if np.isinf(lb[j]):
+                return False
+            margin += dj * Fraction(float(lb[j]))
+        elif dj < 0:
+            if np.isinf(ub[j]):
+                return False
+            margin += dj * Fraction(float(ub[j]))
+    return margin > 0
+
+
 class GateOracle:
     """Decide for a 0/1 assignment of the binaries whether the continuous system is feasible.
 
@@ -120,8 +201,8 @@ class GateOracle:
         cont (numpy int array): indices of the continuous columns
         indic_constr: the MILP's indicator constraints (A, b, sense, binv, indicval), or None
         lp_class: LP backend, constructed as lp_class(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub), with
-            the methods chgBound, chgSide and infinity of pyscipopt's LP and a solve_verdict()
-            that returns (solution, OPTIMAL | INFEASIBLE | ERROR)
+            the methods chgBound, chgSide, getDual and infinity of pyscipopt's LP and a
+            solve_verdict() that returns (solution, OPTIMAL | INFEASIBLE | ERROR)
     """
 
     def __init__(self, c_rows, m_rows, lb, ub, cont, indic_constr, lp_class):
@@ -196,44 +277,98 @@ class GateOracle:
         self.active = np.ones(len(self.gate_cols), bool)
         self.n_calls = 0
         self.n_undecided = 0
+        self.n_by_violation = 0  # proofs taken from the minimal-violation LP ...
+        self.n_exact = 0  # ... of which confirmed in rational arithmetic
         self.seconds = 0.0
         self.system = None
 
-    def _feasible_point_exists(self, active):
-        """Solve the continuous system itself with the given gates active. Used for the
-        assignments without an infeasibility proof, which are few (the designs), so the sides of
-        all gate rows are set on each call.
+    def _relaxed_system(self, active, relax):
+        """The LP "minimise t subject to every row and active gate relaxed by t, bounds kept",
+        with t fixed to 0 unless `relax`. Built on first use; a call sets the sides of all gate rows.
 
         Returns:
-            OPTIMAL if a feasible point was found, INFEASIBLE or ERROR otherwise.
+            (solution, status) of solve_verdict
         """
         lp_class = self.init_args[-1]
+        n = len(self.cols)
         if self.system is None:
-            ri, ci, vv, lhs, rhs = [], [], [], [], []
-            for idx, val, b, is_eq in self.rows:
+            ri, ci, vv, rhs, row_gate = [], [], [], [], []
+
+            def add(idx, val, b, gate=-1):
                 ri.extend([len(rhs)] * len(idx))
                 ci.extend(self.pos[idx])
                 vv.extend(val)
-                lhs.append(b if is_eq else -np.inf)
                 rhs.append(b)
-            self.first_gate_row = len(rhs)
-            for idx, val, sense, b in self.gates:
-                ri.extend([len(rhs)] * len(idx))
-                ci.extend(self.pos[idx])
-                vv.extend(val)
-                lhs.append(-np.inf)
-                rhs.append(np.inf)
-            A = sparse.csr_matrix((vv, (ri, ci)), shape=(len(rhs), len(self.cols)))
-            self.system = lp_class([0.0] * len(self.cols), A, [0.0] * len(rhs), sparse.csr_matrix((0, len(self.cols))), [],
-                                   list(self.lb[self.cols]), list(self.ub[self.cols]))
-            inf = self.system.infinity()
-            for i in range(self.first_gate_row):
-                self.system.chgSide(i, max(lhs[i], -inf), min(rhs[i], inf))
+                row_gate.append(gate)
+
+            for idx, val, b, is_eq in self.rows:
+                add(idx, np.asarray(val, float), b)
+                if is_eq:
+                    add(idx, -np.asarray(val, float), -b)
+            for g, (idx, val, sense, b) in enumerate(self.gates):
+                if sense in 'LE':
+                    add(idx, np.asarray(val, float), b, g)
+                if sense in 'GE':
+                    add(idx, -np.asarray(val, float), -b, g)
+            m = len(rhs)
+            self.sys_A = sparse.csr_matrix((vv, (ri, ci)), shape=(m, n))
+            self.sys_b = np.array(rhs, float)
+            self.sys_gate = np.array(row_gate)
+            self.sys_gate_rows = np.flatnonzero(self.sys_gate >= 0)
+            A = sparse.hstack((self.sys_A, -np.ones((m, 1))), format='csr')
+            self.system = lp_class([0.0] * n + [1.0], A, list(rhs), sparse.csr_matrix((0, n + 1)), [],
+                                   list(self.lb[self.cols]) + [0.0], list(self.ub[self.cols]) + [0.0])
+            self.sys_on = np.ones(m, bool)
         lp = self.system
         inf = lp.infinity()
-        for g, (idx, val, sense, b) in enumerate(self.gates):
-            lp.chgSide(self.first_gate_row + g, b if active[g] and sense in 'GE' else -inf, b if active[g] and sense in 'LE' else inf)
-        return lp.solve_verdict()[1]
+        on = self.sys_on.copy()
+        on[self.sys_gate_rows] = active[self.sys_gate[self.sys_gate_rows]]
+        for i in np.flatnonzero(on != self.sys_on):
+            lp.chgSide(i, -inf, self.sys_b[i] if on[i] else inf)
+        self.sys_on = on
+        lp.chgBound(n, 0.0, inf if relax else 0.0)
+        return lp.solve_verdict()
+
+    def _proof_from_violation(self, active):
+        """Decide an assignment that the proof LP could not: minimise the uniform violation t of
+        its rows. A positive minimum t* comes with dual multipliers y >= 0, sum(y) = 1, and these
+        are an infeasibility proof on a scale the simplex handles even where the proof LP's
+        normalisation needs multipliers of 1e6 and more (a biomass coefficient of 1e-7 does that).
+        The proof is checked without any solver tolerance:
+
+            margin = sum_j min over [lb_j, ub_j] of d_j x_j  -  y.b  > 0,     d = y^T A
+
+        and then, where the supporting rows are few, once more in exact rational arithmetic with
+        the multipliers re-derived from their support (:func:`_exact_margin`).
+
+        Returns:
+            the gates of the proof, or None if there is no usable proof
+        """
+        x, status = self._relaxed_system(active, relax=True)
+        if status != OPTIMAL:
+            raise NumericalTrouble('the minimal-violation LP of an assignment did not solve')
+        self.min_violation = x[len(self.cols)]
+        if self.min_violation <= _FEAS_TOL:
+            return None
+        y = np.abs(np.array(self.system.getDual()))
+        y[~self.sys_on] = 0.0
+        y[y < _REL_ZERO * y.max(initial=0.0)] = 0.0
+        if not y.any():
+            return None
+        y /= y.sum()
+        rows = np.flatnonzero(y)
+        lb, ub = self.lb[self.cols], self.ub[self.cols]
+        d = self.sys_A.T @ y
+        d[np.abs(d) < 1e-14 * np.abs(d).max(initial=0.0)] = 0.0  # cancellation noise
+        with np.errstate(invalid='ignore'):
+            low = np.where(d > 0, d * lb, np.where(d < 0, d * ub, 0.0))
+        margin = low.sum() - y @ self.sys_b
+        exact = len(rows) <= _EXACT_MAX_ROWS and _exact_margin(self.sys_A[rows], self.sys_b[rows], y[rows], lb, ub)
+        if not exact and not (np.isfinite(margin) and margin > 0.5 * self.min_violation):
+            return None
+        self.n_by_violation += 1
+        self.n_exact += bool(exact)
+        return np.unique(self.sys_gate[rows][self.sys_gate[rows] >= 0])
 
     def query(self, z_one):
         """Ask whether the assignment admits a feasible continuous system.
@@ -244,9 +379,8 @@ class GateOracle:
         Returns:
             None if the system is feasible (the assignment is a design), the clause of the
             infeasibility proof as (positive columns, negative columns) of the MILP if it is not,
-            or UNDECIDED when the LP solver finds neither a proof nor a feasible point (a system
-            infeasible by less than the solver resolves, or a proof LP it cannot solve). An
-            undecided assignment is not a design.
+            or UNDECIDED when there is neither a feasible point nor a proof that passes its
+            checks (see :meth:`_proof_from_violation`). An undecided assignment is not a design.
         """
         t0 = time.time()
         lp = self.lp
@@ -270,12 +404,14 @@ class GateOracle:
                 if not self.active[gates].all():
                     raise NumericalTrouble('an oracle LP used a gate that is switched off')
                 return np.unique(self.gate_z[gates[self.gate_val[gates] == 0]]), np.unique(self.gate_z[gates[self.gate_val[gates] == 1]])
-            # no proof: none exists, or the proof LP failed numerically (seen where the system is
-            # infeasible by a margin that needs multipliers beyond what the simplex handles)
-            point = self._feasible_point_exists(active)
+            # no proof: none exists, or the proof LP failed numerically
+            point = self._relaxed_system(active, relax=False)[1]
             if point == OPTIMAL:
                 return None
             if point == INFEASIBLE:
+                gates = self._proof_from_violation(active)
+                if gates is not None:
+                    return np.unique(self.gate_z[gates[self.gate_val[gates] == 0]]), np.unique(self.gate_z[gates[self.gate_val[gates] == 1]])
                 self.n_undecided += 1
                 return UNDECIDED
             raise NumericalTrouble('an oracle LP ended without a verdict')

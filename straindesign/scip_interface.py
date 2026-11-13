@@ -548,9 +548,12 @@ class SCIP_MILP(pso.Model):
         logging.info('  clause enumeration, cost %g: %d designs, %d nodes, %d LPs, %.1f s (%.1f s in this process\'s LPs), %d clauses' %
                      (enum.level, len(found), enum.n_nodes - nodes, enum.oracle.n_calls + enum.n_worker_lps - calls,
                       t.time() - t0, enum.oracle.seconds - secs, enum.P.n + enum.n_static_mixed))
+        if enum.oracle.n_by_violation:
+            logging.info('  %d infeasibility proofs so far came from the minimal-violation LP, %d of them confirmed in '
+                         'rational arithmetic (this process only).' % (enum.oracle.n_by_violation, enum.oracle.n_exact))
         if enum.n_undecided:
-            logging.warning('  %d candidate sets so far have neither a feasible point nor an infeasibility proof the '
-                            'LP solver can produce; they are not reported as designs.' % enum.n_undecided)
+            logging.warning('  %d candidate sets so far have neither a feasible point nor an infeasibility proof that '
+                            'passes its checks; they are not reported as designs.' % enum.n_undecided)
         self.pool_exhausted = self.level_enumerated = complete
         sols = []
         for S in found:
@@ -816,7 +819,7 @@ class SCIP_LP(pso.LP):
             solution_vector, optimal_value, optimization_status
         """
         try:
-            min_cx = self.optimize()  # this function was inherited from super().solve() during initialization
+            min_cx = self._optimize_with_retries()
             if self.isInfinity(-min_cx):  # solution
                 min_cx = -inf
                 status = UNBOUNDED
@@ -835,38 +838,51 @@ class SCIP_LP(pso.LP):
             x = [nan] * len(self.getPrimal())
             return x, min_cx, ERROR
 
+    def _optimize_with_retries(self):
+        """Solve; after a simplex failure ("error in LP solver": a singular or badly scaled basis)
+        try again from scratch, then under SoPlex's aggressive scaling, then with the feasibility
+        tolerances relaxed tenfold and hundredfold for that one solve.
+
+        Returns:
+            the objective value pyscipopt reports. Raises the last exception if every attempt fails.
+        """
+        P = pso.SCIP_LPPARAM
+        scaling, tol = self.getIntParam(P.SCALING), self.getRealParam(P.FEASTOL)
+        for from_scratch, scale, relax in ((0, scaling, 1), (1, scaling, 1), (1, 2, 1), (1, 2, 10), (1, 2, 100)):
+            if from_scratch:
+                self.setIntParam(P.FROMSCRATCH, 1)
+                self.setIntParam(P.SCALING, scale)
+                self.setRealParam(P.FEASTOL, tol * relax)
+                self.setRealParam(P.DUALFEASTOL, tol * relax)
+            try:
+                return self.optimize()
+            except Exception as e:
+                error = e
+            finally:
+                if from_scratch:
+                    self.setIntParam(P.FROMSCRATCH, 0)
+                    self.setIntParam(P.SCALING, scaling)
+                    self.setRealParam(P.FEASTOL, tol)
+                    self.setRealParam(P.DUALFEASTOL, tol)
+        raise error
+
     def solve_verdict(self) -> Tuple[List, float]:
         """Solve the LP and report only what was proven: OPTIMAL with the solution, INFEASIBLE, or
-        ERROR. A simplex failure ("error in LP solver", seen after coefficient changes and on
-        badly scaled systems) is answered step by step: a solve from scratch, one under SoPlex's
-        aggressive scaling, then with the feasibility tolerances relaxed from 1e-9 to 1e-8 and
-        1e-7 for that solve. ERROR is returned when all of them fail.
+        ERROR (every attempt of :meth:`_optimize_with_retries` failed, or no verdict).
 
         Returns:
             (Tuple[List, float])
 
             solution_vector (None unless OPTIMAL), optimization_status
         """
-        P = pso.SCIP_LPPARAM
-        scaling, tol = self.getIntParam(P.SCALING), self.getRealParam(P.FEASTOL)
-        for from_scratch, scale, relax in ((0, scaling, 1), (1, scaling, 1), (1, 2, 1), (1, 2, 10), (1, 2, 100)):
-            self.setIntParam(P.FROMSCRATCH, from_scratch)
-            self.setIntParam(P.SCALING, scale)
-            self.setRealParam(P.FEASTOL, tol * relax)
-            self.setRealParam(P.DUALFEASTOL, tol * relax)
-            try:
-                opt = self.optimize()
-            except Exception:
-                continue
-            finally:
-                self.setIntParam(P.FROMSCRATCH, 0)
-                self.setIntParam(P.SCALING, scaling)
-                self.setRealParam(P.FEASTOL, tol)
-                self.setRealParam(P.DUALFEASTOL, tol)
-            if self.isOptimal():
-                return self.getPrimal(), OPTIMAL
-            if self.isInfinity(opt) and not self.isPrimalFeasible():
-                return None, INFEASIBLE
+        try:
+            opt = self._optimize_with_retries()
+        except Exception:
+            return None, ERROR
+        if self.isOptimal():
+            return self.getPrimal(), OPTIMAL
+        if self.isInfinity(opt) and not self.isPrimalFeasible():
+            return None, INFEASIBLE
         return None, ERROR
 
     def slim_solve(self) -> float:
@@ -881,7 +897,7 @@ class SCIP_LP(pso.LP):
             Optimum value of the objective function.
         """
         try:
-            opt = self.optimize()  # this function was inherited from super().solve() during initialization
+            opt = self._optimize_with_retries()
             if self.isInfinity(-opt):  # solution
                 opt = -inf
             elif self.isInfinity(opt):
