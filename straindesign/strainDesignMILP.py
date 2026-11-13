@@ -1158,6 +1158,10 @@ class SDMILP(SDProblem, MILP_LP):
                         break
                     if trust_certificate and self.pool_exhausted:
                         break
+                    # a backend that walks the level itself to the end (not a solver's pool
+                    # certificate) has nothing left to confirm
+                    if getattr(self.backend, 'level_enumerated', False):
+                        break
                 elif status == ERROR:
                     # A solver failure is not an empty level. Treating it as one silently drops
                     # every design at this cardinality and every level above it.

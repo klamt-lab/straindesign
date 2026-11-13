@@ -20,6 +20,7 @@
 
 from scipy import sparse
 from numpy import isnan, nan, inf, isinf, sum, nonzero, random
+import numpy as np
 import pyscipopt as pso
 from straindesign.names import *
 from typing import Tuple, List
@@ -221,6 +222,13 @@ class SCIP_MILP(pso.Model):
         self.trms = [list(x[i].terms.items())[0][0] for i in range(numvars)]
 
         self.constr = []
+        # what populate's clause enumeration reads: every row as data, in the order of self.constr
+        # (None for an indicator constraint), and the column bounds and types
+        self._sd_rows = []
+        self._sd_lb = [-inf if v is None else float(v) for v in lb]
+        self._sd_ub = [inf if v is None else float(v) for v in ub]
+        self._sd_vtype = vtype
+        self._sd_enum = None
         # Each row goes in as a single expression built from the terms cached above. Adding an
         # empty row and then one addConsCoeff per nonzero costs a PySCIPOpt call per matrix
         # entry, which at genome scale is hundreds of thousands of them. The rows stay
@@ -252,6 +260,7 @@ class SCIP_MILP(pso.Model):
                         e = pso.scip.Expr({self.trms[j]: d for j, d in zip(a.indices, a.data)})
                         f = pso.scip.ExprCons(e, lhs=None, rhs=b[k])
                         self.constr += [self.addConsIndicator(f, binvar=z, initial=False)]
+                        self._sd_rows.append(None)
 
         # set parameters
         self.max_tlim = self.getParam('limits/time')
@@ -323,6 +332,7 @@ class SCIP_MILP(pso.Model):
             rhs = float(b[i])
             f = pso.scip.ExprCons(e, lhs=rhs, rhs=rhs) if sense == '==' else pso.scip.ExprCons(e, lhs=None, rhs=rhs)
             rows.append(self.addCons(f, modifiable=True))
+            self._sd_rows.append((indices[start:end].copy(), data[start:end].astype(float), rhs, sense == '=='))
         return rows
 
     def solve(self) -> Tuple[List, float, float]:
@@ -426,7 +436,11 @@ class SCIP_MILP(pso.Model):
             solution_vectors, optimal_value, optimization_status
         """
         try:
+            self.level_enumerated = False
             if getattr(self, '_sd_ko_cols', None) is not None:
+                by_clauses = self._populate_by_clauses()
+                if by_clauses is not None:
+                    return by_clauses
                 # one tree per level: exclusions posted inside it by the constraint handler
                 self.freeTransform()
                 if not hasattr(self, '_sd_cb'):
@@ -483,12 +497,63 @@ class SCIP_MILP(pso.Model):
                 self.freeTransform()
                 for j in range(numrows, totrows):
                     self.chgRhs(self.constr[j], None)
+                    self._sd_rows[j] = None
                 return sols, min_cx, status
         except:
             logging.error('Error while running SCIP.')
             min_cx = nan
             x = []
             return x, min_cx, ERROR
+
+    def _populate_by_clauses(self):
+        """Enumerate the pinned cost level with LPs only (see clause_enumeration).
+
+        Sets `level_enumerated` when the level was enumerated to the end; the caller then needs no
+        second populate to confirm that nothing is left. SD_SCIP_CLAUSES=0 switches the method off.
+
+        Returns:
+            None if the MILP does not have the required structure, else what populate returns.
+        """
+        from straindesign.clause_enumeration import GateOracle, ClauseEnumerator, NotApplicable, NumericalTrouble, split_rows
+        if os.environ.get('SD_SCIP_CLAUSES', '1').lower() in ('0', 'off', 'false'):
+            return None
+        try:
+            ic = self._sd_indic
+            is_z = np.array([t != 'C' for t in self._sd_vtype])
+            z_cols = np.flatnonzero(is_z)
+            if ic is None or not len(ic.sense) or any(t not in 'BC' for t in self._sd_vtype) \
+                    or set(z_cols) != set(int(j) for j in self._sd_ko_cols) \
+                    or any(self._sd_lb[j] != 0 for j in z_cols):
+                raise NotApplicable('binaries other than free knockout columns behind indicator constraints')
+            z_rows, c_rows = split_rows(self._sd_rows, is_z)
+            if self._sd_enum is None or self._sd_enum_rows != len(c_rows):
+                oracle = GateOracle(c_rows, self._sd_lb, self._sd_ub, np.flatnonzero(~is_z), ic, SCIP_LP)
+                self._sd_enum = ClauseEnumerator(oracle, z_cols, len(self._sd_vtype))
+                self._sd_enum_rows = len(c_rows)
+            enum = self._sd_enum
+            enum.load_z_rows(z_rows, np.array(self._sd_ub)[z_cols])
+        except NotApplicable as e:
+            logging.info('  clause enumeration not applicable (%s); enumerating in a SCIP tree' % e)
+            return None
+        calls, secs, nodes, t0 = enum.oracle.n_calls, enum.oracle.seconds, enum.n_nodes, t.time()
+        try:
+            found, complete = enum.enumerate(self.getParam('limits/time'))
+        except NumericalTrouble as e:
+            logging.error('Clause enumeration failed: %s.' % e)
+            return [], nan, ERROR
+        logging.info('  clause enumeration, cost %g: %d designs, %d nodes, %d LPs (%.1f s of %.1f s), %d clauses' %
+                     (enum.level, len(found), enum.n_nodes - nodes, enum.oracle.n_calls - calls,
+                      enum.oracle.seconds - secs, t.time() - t0, enum.P.n + enum.n_static_mixed))
+        self.pool_exhausted = self.level_enumerated = complete
+        sols = []
+        for S in found:
+            x = [0.0] * len(self._sd_vtype)
+            for j in z_cols[S]:
+                x[j] = 1.0
+            sols.append(x)
+        if sols:
+            return sols, 0.0, OPTIMAL if complete else TIME_LIMIT_W_SOL
+        return [], nan, INFEASIBLE if complete else TIME_LIMIT
 
     def add_sos1(self, sets):
         """Add SOS1 sets: at most one member of each may be nonzero (weights only order members)."""
@@ -521,6 +586,9 @@ class SCIP_MILP(pso.Model):
         """Set the upper bounds to a given vector"""
         self.freeTransform()
         for i in range(len(ub)):
+            self._sd_ub[ub[i][0]] = float(ub[i][1])
+            if self._sd_vtype[ub[i][0]] == 'C':
+                self._sd_enum = None
             if not isinf(ub[i][1]):
                 self.chgVarUb(self.vars[ub[i][0]], float(ub[i][1]))
             else:
@@ -613,6 +681,11 @@ class SCIP_MILP(pso.Model):
         self.chgRhs(self.constr[idx], None)
         # add new constraint and replace constraint pointer in list
         self.constr[idx] = self.addCons(pso.Expr() <= 0, modifiable=True)
+        nz = [i for i, a in enumerate(a_ineq) if a != 0]
+        old = self._sd_rows[idx]
+        if any(self._sd_vtype[i] == 'C' for i in nz) or (old is not None and any(self._sd_vtype[i] == 'C' for i in old[0])):
+            self._sd_enum = None
+        self._sd_rows[idx] = (np.array(nz, int), np.array([a_ineq[i] for i in nz], float), float(b_ineq), False)
         for i, a in enumerate(a_ineq):
             self.addConsCoeff(self.constr[idx], self.vars[i], a)
         if isinf(b_ineq):
