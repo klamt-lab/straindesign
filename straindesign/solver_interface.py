@@ -25,6 +25,7 @@ from straindesign import avail_solvers, GLPK
 from straindesign.indicatorConstraints import IndicatorConstraints
 from straindesign.names import *
 import logging
+import os
 
 
 # Solvers that get CellNetAnalyzer's binary structure for the target-region gates (own gate
