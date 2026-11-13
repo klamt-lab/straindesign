@@ -531,6 +531,14 @@ class ClauseEnumerator:
         n = self.Mp.n
         return np.flatnonzero(~(self.Mp.a[:n] & S).any(1) & ~(self.Mn.a[:n] & ~S).any(1))
 
+    def _breaking(self, S):
+        """Bits of the interventions whose addition to S violates a clause with a negative part:
+        the clause has no positive literal in S and exactly that one negative literal outside S."""
+        n = self.Mp.n
+        missing = self.Mn.a[:n] & ~S
+        rows = ~(self.Mp.a[:n] & S).any(1) & (_count_bits(missing) == 1) & ~(self.Mp.a[:n] & missing).any(1)
+        return np.bitwise_or.reduce(missing[rows], axis=0) if rows.any() else np.zeros_like(S)
+
     def enumerate(self, time_limit=np.inf):
         """Enumerate every set of cost `level` that satisfies all clauses and is a design.
 
@@ -594,17 +602,17 @@ class ClauseEnumerator:
         cand = np.vstack((P.a[unhit] & free, self.Mp.a[mixed] & free))
         if left < 2 * cheapest:
             # one more intervention fits: it has to repair every violated clause on its own
-            last = np.flatnonzero(_unpack(np.bitwise_and.reduce(cand, axis=0) & self.exact[left], self.m))
+            last = np.bitwise_and.reduce(cand, axis=0) & self.exact[left] & ~self._breaking(S)
+            last = np.flatnonzero(_unpack(last, self.m))
             if self.workers and len(last) and self.oracle.seconds > self.parallel_from:
-                keep = [int(e) for e in last if not len(self._violated_mixed(_with_bit(S, e)))]
-                if keep:
-                    self._submit(S, keep)
+                self._submit(S, [int(e) for e in last])
                 return
+            n_mixed = self.Mp.n
             for e in last:
                 if P.n > n_seen and not _has_bit(P.a[n_seen:P.n], e).all():
                     continue
                 T = _with_bit(S, e)
-                if len(self._violated_mixed(T)):
+                if self.Mp.n > n_mixed and len(self._violated_mixed(T)):
                     continue
                 if self._ask(T):
                     self._record(T)
