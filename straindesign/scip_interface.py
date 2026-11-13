@@ -522,18 +522,18 @@ class SCIP_MILP(pso.Model):
             ic = self._sd_indic
             is_z = np.array([t != 'C' for t in self._sd_vtype])
             z_cols = np.flatnonzero(is_z)
-            if ic is None or not len(ic.sense) or any(t not in 'BC' for t in self._sd_vtype) \
+            if any(t not in 'BC' for t in self._sd_vtype) \
                     or set(z_cols) != set(int(j) for j in self._sd_ko_cols) \
                     or any(self._sd_lb[j] != 0 for j in z_cols):
-                raise NotApplicable('binaries other than free knockout columns behind indicator constraints')
+                raise NotApplicable('integer columns other than free knockout binaries')
             cost_rows = getattr(self, '_sd_cost_rows', None)
             if cost_rows is None:
                 raise NotApplicable('the cost rows are not known')
-            z_rows, c_rows = split_rows([r for i, r in enumerate(self._sd_rows) if i not in cost_rows], is_z)
-            if self._sd_enum is None or self._sd_enum_rows != len(c_rows):
-                oracle = GateOracle(c_rows, self._sd_lb, self._sd_ub, np.flatnonzero(~is_z), ic, SCIP_LP)
+            z_rows, c_rows, m_rows = split_rows([r for i, r in enumerate(self._sd_rows) if i not in cost_rows], is_z)
+            if self._sd_enum is None or self._sd_enum_rows != len(c_rows) + len(m_rows):
+                oracle = GateOracle(c_rows, m_rows, self._sd_lb, self._sd_ub, np.flatnonzero(~is_z), ic, SCIP_LP)
                 self._sd_enum = ClauseEnumerator(oracle, z_cols, len(self._sd_vtype), workers=self._sd_threads or 0)
-                self._sd_enum_rows = len(c_rows)
+                self._sd_enum_rows = len(c_rows) + len(m_rows)
             enum = self._sd_enum
             enum.load_z_rows(z_rows, np.array(self._sd_ub)[z_cols], self._sd_rows[cost_rows[0]], self._sd_rows[cost_rows[1]])
         except NotApplicable as e:
@@ -831,6 +831,30 @@ class SCIP_LP(pso.LP):
             min_cx = nan
             x = [nan] * len(self.getPrimal())
             return x, min_cx, ERROR
+
+    def solve_verdict(self) -> Tuple[List, float]:
+        """Solve the LP and report only what was proven: OPTIMAL with the solution, INFEASIBLE, or
+        ERROR. A simplex failure from the stored basis (it happens after coefficient changes) is
+        answered with one solve from scratch before ERROR is returned.
+
+        Returns:
+            (Tuple[List, float])
+
+            solution_vector (None unless OPTIMAL), optimization_status
+        """
+        for from_scratch in (0, 1):
+            self.setIntParam(pso.SCIP_LPPARAM.FROMSCRATCH, from_scratch)
+            try:
+                opt = self.optimize()
+            except Exception:
+                continue
+            finally:
+                self.setIntParam(pso.SCIP_LPPARAM.FROMSCRATCH, 0)
+            if self.isOptimal():
+                return self.getPrimal(), OPTIMAL
+            if self.isInfinity(opt) and not self.isPrimalFeasible():
+                return None, INFEASIBLE
+        return None, ERROR
 
     def slim_solve(self) -> float:
         """Solve the LP, but return only the optimal value
