@@ -384,6 +384,19 @@ def speedy_fva(model, **kwargs):
             incumbent_min[at_lb] = lb[at_lb]
             total_bound_resolved += n_lb
 
+    def _witness(x_local):
+        """Update the incumbents from a feasible flux vector.
+
+        Open directions follow every vector. A resolved bound is the variable bound or the optimum
+        of its own LP, and the fluxes of another objective's vertex carry solver noise of about
+        1e-9, so a resolved bound moves only for a flux that beats it by more than _WITNESS_TOL.
+        """
+        with np.errstate(invalid='ignore'):
+            lift_max = ~res_max | (x_local > incumbent_max + _WITNESS_TOL * (1.0 + np.abs(incumbent_max)))
+            lift_min = ~res_min | (x_local < incumbent_min - _WITNESS_TOL * (1.0 + np.abs(incumbent_min)))
+        np.maximum(incumbent_max, x_local, out=incumbent_max, where=lift_max)
+        np.minimum(incumbent_min, x_local, out=incumbent_min, where=lift_min)
+
     t_phase['setup'] = _time.perf_counter() - _tp0 - t_phase['compress']
 
     # ------------------------------------------------------------------
@@ -449,8 +462,7 @@ def speedy_fva(model, **kwargs):
                 if scan_status == OPTIMAL:
                     x_scan = np.array(x_list_scan[:n_orig], dtype=np.float64)
                     _bound_scan(x_scan)
-                    np.maximum(incumbent_max, x_scan, out=incumbent_max)
-                    np.minimum(incumbent_min, x_scan, out=incumbent_min)
+                    _witness(x_scan)
             n_done_iter = int(res_max.sum() + res_min.sum())
             if verbose:
                 logging.debug(f"  push batch {push_iter}: +{n_done_iter - before} "
@@ -629,8 +641,7 @@ def speedy_fva(model, **kwargs):
                 # resolves other unresolved directions (at-bound check
                 # on non-zero values that improve the incumbent).
                 x_arr = np.array(x_list[:n_orig], dtype=np.float64)
-                np.maximum(incumbent_max, x_arr, out=incumbent_max)
-                np.minimum(incumbent_min, x_arr, out=incumbent_min)
+                _witness(x_arr)
                 _bound_scan(x_arr)
                 x_last = x_arr
             else:
@@ -762,6 +773,7 @@ _REV_CHUNK = 4
 _ZERO_SNAP = 1e-11  # |flux| below this is solver noise, not a direction; 0 disables snapping
 _MAX_STATUS_RETRIES = 2  # fresh-LP retries before a bound is reported unresolved
 _DEGEN_TOL = 1e-6  # warm-start guard: fresh optimum must not fall below a known-achievable incumbent
+_WITNESS_TOL = 1e-8  # a flux vector lifts an already resolved bound only beyond this (relative to 1 + |bound|)
 
 
 def _rev_structural_sweep(model):
