@@ -2878,6 +2878,29 @@ the pool one solution at a time. It supports indicator constraints natively (so 
 its seed enters via `randomization/randomseedshift`. It is correct but slower than a native pool, hence
 the "consider `compute_optimal`" advice.
 
+Inside the k-sweep (`enumerate_ksweep`, the default for MCS problems with positive integer costs and no
+knock-ins) SCIP's `populate` does not solve a MILP at all. `clause_enumeration.py` enumerates the pinned
+cost level with LPs:
+
+- For a fixed `z` the continuous part of the MILP is an LP (gates switched on or off, right-hand sides of
+  the rows that mix `z` and continuous columns evaluated). `GateOracle` solves its alternative (Farkas)
+  system, minimising the multipliers of everything that depends on `z`, warm-started from the previous
+  query. A solution is an infeasibility proof and yields a **clause** over `z`: one of the gates in the
+  proof has to be switched off, or one of its `z`-dependent bounds relaxed. No solution, together with a
+  feasible point of the continuous system itself, makes `z` a **design**. Neither proof nor point
+  (infeasible by less than SoPlex resolves) is `UNDECIDED`: that one set is excluded, not reported, and
+  counted in a warning.
+- `ClauseEnumerator` walks the sets of interventions depth-first, branching over the positive literals of
+  a violated clause, and asks the oracle only for sets that satisfy every clause so far. Clauses persist
+  across cost levels. The level ends when the walk ends, so `backend.level_enumerated` lets the k-sweep
+  skip its confirmatory populate.
+- With `milp_threads > 1` the sets that differ only in their last intervention go to worker processes
+  (`SDPool`), each with its own oracle LP. A clause that arrives late costs LPs, never a design.
+- `populate` falls back to the constraint-handler tree (`_ScipRejectRecorder`) when the structure does not
+  fit (integer columns that are not knockout binaries, rows over `z` other than the cost pin and
+  exclusion clauses); with knock-in columns the k-sweep leaves SCIP on the solve-and-exclude loop.
+  `SD_SCIP_CLAUSES=0` switches the clause enumeration off.
+
 **GLPK** (`glpk_interface.py`) emulates `populate` the same solve-and-exclude way, but with two
 extra handicaps. First, GLPK has **no indicator constraints at all**, so z-linking is done entirely by
 **big-M**, defaulting to the COBRA bound `M = bound_thres` (typically 1000, `strainDesignProblem.py`).

@@ -373,18 +373,51 @@ def _worker_leaf(S_idx, candidates):
     return S_idx, designs, [(sorted(pc), sorted(nc)) for pc, nc in clauses], undecided, o.n_calls - n0
 
 
+def _pack(mask):
+    """Boolean array -> its bits in 64-bit words (little end first, zero padded)."""
+    bits = np.zeros(-(-len(mask) // 64) * 64, bool)
+    bits[:len(mask)] = mask
+    return np.packbits(bits, bitorder='little').view(np.uint64)
+
+
+def _unpack(words, m):
+    """64-bit words -> boolean array of length m."""
+    return np.unpackbits(words.view(np.uint8), bitorder='little')[:m].astype(bool)
+
+
+def _has_bit(rows, e):
+    """For each row of bit words: is bit e set."""
+    return (rows[:, e >> 6] >> np.uint64(e & 63)) & np.uint64(1) == 1
+
+
+def _with_bit(words, e):
+    out = words.copy()
+    out[e >> 6] |= np.uint64(1) << np.uint64(e & 63)
+    return out
+
+
+_BITS_OF_BYTE = np.array([bin(i).count('1') for i in range(256)])
+
+
+def _count_bits(rows):
+    """Number of set bits per row."""
+    return _BITS_OF_BYTE[np.ascontiguousarray(rows).view(np.uint8)].sum(1)
+
+
 class _Rows:
-    """Growing boolean matrix, one row per clause part."""
+    """Growing bit matrix, one row per clause part, 64 columns to a word."""
 
     def __init__(self, width):
-        self.a = np.zeros((256, width), bool)
+        self.width = width
+        self.a = np.zeros((256, -(-width // 64)), np.uint64)
         self.n = 0
 
     def add(self, cols):
         if self.n == self.a.shape[0]:
             self.a = np.vstack((self.a, np.zeros_like(self.a)))
-        self.a[self.n] = False
-        self.a[self.n, cols] = True
+        mask = np.zeros(self.width, bool)
+        mask[cols] = True
+        self.a[self.n] = _pack(mask)
         self.n += 1
 
 
@@ -401,8 +434,8 @@ class ClauseEnumerator:
     parent left unhit.
 
     With workers > 1, the sets that differ in their last intervention only are handed to worker
-    processes, each with an oracle LP of its own (call :meth:`close` after the last level). The clauses they find reach the search when a
-    worker reports back; until then the search may ask for sets such a clause would have ruled
+    processes, each with an oracle LP of its own (call :meth:`close` after the last level). The
+    clauses they find reach the search when a worker reports back; until then the search may ask for sets such a clause would have ruled
     out, which costs LPs and never a design.
 
     Args:
@@ -465,9 +498,10 @@ class ClauseEnumerator:
         self.Mn.add(neg_cols)
 
     def _ask(self, S):
-        """Query the oracle for the set S; a clause it returns is stored. True if S is a design."""
+        """Query the oracle for the set S (bit words); a clause it returns is stored. True if S
+        is a design."""
         z_one = np.zeros(self.n_cols, bool)
-        z_one[self.z_cols[S]] = True
+        z_one[self.z_cols[_unpack(S, self.m)]] = True
         clause = self.oracle.query(z_one)
         if clause is None:
             return True
@@ -481,7 +515,8 @@ class ClauseEnumerator:
         """Exclude exactly the set S (the oracle could not decide it): any other set differs from
         it by an intervention it lacks or one it does not share."""
         self.n_undecided += 1
-        self._store(np.flatnonzero(~S), np.flatnonzero(S))
+        mask = _unpack(S, self.m)
+        self._store(np.flatnonzero(~mask), np.flatnonzero(mask))
 
     def _store(self, pos_cols, neg_cols):
         """Keep a clause the oracle returned."""
@@ -503,7 +538,7 @@ class ClauseEnumerator:
             self.pool = SDPool(self.workers, initializer=_worker_init, initargs=(self.oracle.init_args, self.z_cols, self.n_cols))
             self.done = queue.Queue()
             self.n_pending = 0
-        self.pool.apply_async(_worker_leaf, (np.flatnonzero(S), candidates), callback=self.done.put, error_callback=self.done.put)
+        self.pool.apply_async(_worker_leaf, (np.flatnonzero(_unpack(S, self.m)), candidates), callback=self.done.put, error_callback=self.done.put)
         self.n_pending += 1
         self._collect(wait=self.n_pending >= 2 * self.workers)
 
@@ -521,18 +556,15 @@ class ClauseEnumerator:
                 raise res
             S_idx, designs, clauses, undecided, n_lps = res
             self.n_worker_lps += n_lps
+            mask = np.zeros(self.m, bool)
+            mask[S_idx] = True
+            S = _pack(mask)
             for e in undecided:
-                T = np.zeros(self.m, bool)
-                T[S_idx] = True
-                T[e] = True
-                self._rule_out(T)
+                self._rule_out(_with_bit(S, e))
             for pos_cols, neg_cols in clauses:
                 self._store(np.array(pos_cols, int), np.array(neg_cols, int))
             for e in designs:
-                T = np.zeros(self.m, bool)
-                T[S_idx] = True
-                T[e] = True
-                self._record(T)
+                self._record(_with_bit(S, e))
 
     def close(self):
         """Stop the worker processes. They are started within a level and kept for the next one, so
@@ -559,8 +591,12 @@ class ClauseEnumerator:
         self.found = []
         self.deadline = time.time() + time_limit
         self.parallel_from = self.oracle.seconds + _PARALLEL_AFTER
+        # per remaining budget: the interventions that still fit, and those that use it up
+        self.fits, self.exact = {}, {}
+        self.cost_masks = [(c, _pack(self.cost == c)) for c in np.unique(self.cost[self.allowed])]
         try:
-            self._descend(np.zeros(self.m, bool), ~self.allowed, 0.0, np.arange(self.P.n), self.P.n)
+            S = _pack(np.zeros(self.m, bool))
+            self._descend(S, _pack(~self.allowed), 0.0, np.arange(self.P.n), self.P.n)
             self._collect(everything=True)
         except _Timeout:
             self.close()
@@ -571,13 +607,14 @@ class ClauseEnumerator:
         return self.found, True
 
     def _record(self, S):
-        self.found.append(S.copy())
+        mask = _unpack(S, self.m)
+        self.found.append(mask)
         self.Mp.add([])
-        self.Mn.add(np.flatnonzero(S))
+        self.Mn.add(np.flatnonzero(mask))
 
     def _descend(self, S, barred, cost_S, unhit, n_seen):
-        """S: chosen interventions; barred: interventions this subtree must not use; unhit: positive
-        clauses among the first n_seen that S does not hit."""
+        """S: chosen interventions; barred: interventions this subtree must not use (both as bit
+        words); unhit: positive clauses among the first n_seen that S does not hit."""
         self.n_nodes += 1
         if time.time() > self.deadline:
             raise _Timeout()
@@ -597,40 +634,35 @@ class ClauseEnumerator:
                 self._record(S)
                 return
         left = self.level - cost_S
-        free = ~barred & ~S & (self.cost <= left)
+        if left not in self.fits:
+            self.fits[left] = _pack(self.allowed & (self.cost <= left))
+            self.exact[left] = _pack(self.allowed & (self.cost == left))
+        free = ~barred & ~S & self.fits[left]
         if not free.any():
             return
+        cheapest = next(c for c, mask in self.cost_masks if (free & mask).any())
         cand = np.vstack((P.a[unhit] & free, self.Mp.a[mixed] & free))
-        if left < 2 * self.cost[free].min():
+        if left < 2 * cheapest:
             # one more intervention fits: it has to repair every violated clause on its own
-            last = np.flatnonzero(cand.all(0) & (self.cost == left))
+            last = np.flatnonzero(_unpack(np.bitwise_and.reduce(cand, axis=0) & self.exact[left], self.m))
             if self.workers and len(last) and self.oracle.seconds > self.parallel_from:
-                keep = []
-                for e in last:
-                    T = S.copy()
-                    T[e] = True
-                    if not len(self._violated_mixed(T)):
-                        keep.append(int(e))
+                keep = [int(e) for e in last if not len(self._violated_mixed(_with_bit(S, e)))]
                 if keep:
                     self._submit(S, keep)
                 return
             for e in last:
-                if P.n > n_seen and not P.a[n_seen:P.n, e].all():
+                if P.n > n_seen and not _has_bit(P.a[n_seen:P.n], e).all():
                     continue
-                T = S.copy()
-                T[e] = True
+                T = _with_bit(S, e)
                 if len(self._violated_mixed(T)):
                     continue
                 if self._ask(T):
                     self._record(T)
             return
-        count = cand.sum(1)
+        count = _count_bits(cand)
         i = int(count.argmin())
         if count[i] == 0:
             return
-        barred = barred.copy()
-        for e in np.flatnonzero(cand[i]):
-            T = S.copy()
-            T[e] = True
-            self._descend(T, barred, cost_S + self.cost[e], unhit[~P.a[unhit, e]], n_seen)
-            barred[e] = True
+        for e in np.flatnonzero(_unpack(cand[i], self.m)):
+            self._descend(_with_bit(S, e), barred, cost_S + self.cost[e], unhit[~_has_bit(P.a[unhit], e)], n_seen)
+            barred = _with_bit(barred, e)
