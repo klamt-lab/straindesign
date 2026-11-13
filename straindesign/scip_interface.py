@@ -25,6 +25,96 @@ from straindesign.names import *
 from typing import Tuple, List
 import time as t
 import logging
+import os
+from builtins import sum as builtins_sum
+
+
+
+class _ScipRejectRecorder(pso.Conshdlr):
+    """Record every LP-feasible integral point over the knockout columns and reject it with its
+    superset-exclusion row, posted from the enforcement callbacks, so ONE tree enumerates a pinned
+    level and ends "infeasible" when nothing is left. Included with check/enforce priority below
+    the linear and indicator handlers, so only points feasible for the rows reach it."""
+
+    def __init__(self, owner, ko_cols):
+        super().__init__()
+        self.owner = owner
+        self.ko = [int(j) for j in ko_cols]
+        self.reset()
+
+    def reset(self):
+        self.sols, self.seen, self.pending = [], set(), []
+
+    def _design(self, sol):
+        z = self.owner.vars
+        return tuple(j for j in self.ko if self.model.getSolVal(sol, z[j]) > 0.5)
+
+    def _gates_hold(self, x):
+        """The indicator rows are added to the LP lazily, so an LP point can reach this handler
+        while it violates a gate that is active at its z. Such a point is not a design and must
+        not be excluded (its supersets could be), so the gated rows are checked here."""
+        for members in getattr(self.owner, '_sd_sos1', []) or []:
+            if builtins_sum(1 for i in members if abs(x[i]) > 1e-6) > 1:
+                return False
+        ic = getattr(self.owner, '_sd_indic', None)
+        if ic is None:
+            return True
+        for i in range(len(ic.sense)):
+            zval = x[ic.binv[i]]
+            if round(zval) != ic.indicval[i]:
+                continue
+            row = ic.A[i]
+            lhs = 0.0
+            for j, d in zip(row.indices, row.data):
+                lhs += d * x[j]
+            b = ic.b[i]
+            if ic.sense[i] == 'E' and abs(lhs - b) > 1e-6:
+                return False
+            if ic.sense[i] == 'L' and lhs > b + 1e-6:
+                return False
+            if ic.sense[i] == 'G' and lhs < b - 1e-6:
+                return False
+        return True
+
+    def _reject(self, sol):
+        S = self._design(sol)
+        if S and S not in self.seen:
+            x = [self.model.getSolVal(sol, v) for v in self.owner.vars]
+            if not self._gates_hold(x):
+                return
+            self.seen.add(S)
+            self.sols.append(x)
+            self.pending.append(S)
+
+    def _post(self):
+        z = self.owner.vars
+        while self.pending:
+            S = self.pending.pop()
+            self.model.addCons(pso.quicksum(z[j] for j in S) <= len(S) - 1)
+
+    def conscheck(self, constraints, solution, checkintegrality, checklprows, printreason, completely):
+        self._reject(solution)
+        return {'result': pso.SCIP_RESULT.INFEASIBLE}
+
+    def consenfolp(self, constraints, nusefulconss, solinfeasible):
+        # a point another handler (linear, indicator) already declared infeasible is not a design;
+        # the indicator rows are added lazily (initial=False), so this happens at every node
+        if solinfeasible:
+            return {'result': pso.SCIP_RESULT.FEASIBLE}
+        self._reject(None)
+        self._post()
+        return {'result': pso.SCIP_RESULT.CONSADDED}
+
+    def consenfops(self, constraints, nusefulconss, solinfeasible, objinfeasible):
+        if solinfeasible or objinfeasible:
+            return {'result': pso.SCIP_RESULT.FEASIBLE}
+        self._reject(None)
+        self._post()
+        return {'result': pso.SCIP_RESULT.CONSADDED}
+
+    def conslock(self, constraint, locktype, nlockspos, nlocksneg):
+        for j in self.ko:
+            self.model.addVarLocks(self.owner.vars[j], nlockspos + nlocksneg, nlockspos + nlocksneg)
 
 
 class SCIP_MILP(pso.Model):
@@ -140,6 +230,7 @@ class SCIP_MILP(pso.Model):
 
         self.setMinimize()
 
+        self._sd_indic = indic_constr
         # add indicator constraints
         if indic_constr is not None:
             for i in range(len(indic_constr.sense)):
@@ -187,6 +278,20 @@ class SCIP_MILP(pso.Model):
         # self.setParam('display/lpinfo',False)
         # self.setParam('reoptimization/enable',True)
         self.setParam('display/verblevel', 0)
+        if 'B' in vtype or 'I' in vtype:
+            # SoPlex at its defaults stops with "unresolved numerical troubles" on the certificate
+            # system beyond small cut sets (e_coli_core, cost 4, in both populate modes); aggressive
+            # scaling with the primal simplex finishes the enumeration. SD_SCIP_PARAMS overrides.
+            self.setParam('lp/scaling', 2)
+            self.setParam('lp/initalgorithm', 'p')
+            self.setParam('lp/resolvealgorithm', 'p')
+        # SD_SCIP_PARAMS="name=value;name=value" for experiments (mirrors bench_params for the others)
+        for item in (os.environ.get('SD_SCIP_PARAMS') or '').replace(',', ';').split(';'):
+            if '=' in item:
+                name, _, val = item.partition('=')
+                v = val.strip()
+                v = True if v.lower() == 'true' else False if v.lower() == 'false' else (int(v) if v.lstrip('-').isdigit() else float(v) if v.replace('.', '', 1).replace('e-', '', 1).replace('e', '', 1).lstrip('-').isdigit() else v)
+                self.setParam(name.strip(), v)
         # SCIP_PARAMEMPHASIS_DEFAULT     = 0,        /**< use default values */
         # SCIP_PARAMEMPHASIS_CPSOLVER    = 1,        /**< get CP like search (e.g. no LP relaxation) */
         # SCIP_PARAMEMPHASIS_EASYCIP     = 2,        /**< solve easy problems fast */
@@ -321,6 +426,30 @@ class SCIP_MILP(pso.Model):
             solution_vectors, optimal_value, optimization_status
         """
         try:
+            if getattr(self, '_sd_ko_cols', None) is not None:
+                # one tree per level: exclusions posted inside it by the constraint handler
+                self.freeTransform()
+                if not hasattr(self, '_sd_cb'):
+                    self._sd_cb = _ScipRejectRecorder(self, self._sd_ko_cols)
+                    self.includeConshdlr(self._sd_cb, 'sdreject', 'record and exclude every integral point',
+                                         enfopriority=-3000000, chckpriority=-3000000, needscons=False)
+                self._sd_cb.reset()
+                # dual presolve reductions may drop integer points of equal objective; the level's
+                # certificate is the tree ending infeasible, so they must be off (same as the
+                # prototype, and the Gurobi/CPLEX lesson of 2026-09-21)
+                self.setBoolParam('misc/allowstrongdualreds', False)
+                self.setBoolParam('misc/allowweakdualreds', False)
+                self.optimize()
+                status = self.getStatus()
+                self.pool_exhausted = status == 'infeasible'
+                logging.info('  cb-reject: %d candidates, status %s' % (len(self._sd_cb.sols), status))
+                if self._sd_cb.sols:
+                    return [list(v) for v in self._sd_cb.sols], 0.0, OPTIMAL
+                if status == 'infeasible':
+                    return [], nan, INFEASIBLE
+                if status in ['timelimit', 'userinterrupt']:
+                    return [], nan, TIME_LIMIT
+                return [], nan, ERROR
             if n > 0:
                 sols = []
                 stoptime = t.time() + self.getParam('limits/time')
@@ -360,6 +489,13 @@ class SCIP_MILP(pso.Model):
             min_cx = nan
             x = []
             return x, min_cx, ERROR
+
+    def add_sos1(self, sets):
+        """Add SOS1 sets: at most one member of each may be nonzero (weights only order members)."""
+        self.freeTransform()
+        self._sd_sos1 = [[int(i) for i in members] for members in sets]
+        for members in self._sd_sos1:
+            self.addConsSOS1([self.vars[i] for i in members], weights=[float(k + 1) for k in range(len(members))])
 
     def set_objective(self, c):
         """Set the objective function with a vector"""
