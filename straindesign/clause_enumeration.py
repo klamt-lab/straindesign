@@ -60,6 +60,7 @@ _PROOF_TOL = 1e-6
 
 # oracle answer for an assignment that has neither a proof of infeasibility nor a feasible point
 UNDECIDED = 'undecided'
+FEASIBLE = 'feasible'
 # a system whose rows can all be met to within this is not called infeasible
 _FEAS_TOL = 1e-9
 # proofs supported by at most this many rows are re-derived and checked in rational arithmetic
@@ -279,6 +280,7 @@ class GateOracle:
         self.n_undecided = 0
         self.n_by_violation = 0  # proofs taken from the minimal-violation LP ...
         self.n_exact = 0  # ... of which confirmed in rational arithmetic
+        self.n_within_tolerance = 0  # sets feasible only to within the tolerance, by that LP
         self.seconds = 0.0
         self.system = None
 
@@ -341,20 +343,24 @@ class GateOracle:
         and then, where the supporting rows are few, once more in exact rational arithmetic with
         the multipliers re-derived from their support (:func:`_exact_margin`).
 
+        A minimum of at most 1e-9 means the rows can all be met to within the feasibility
+        tolerance every LP verdict here rests on, so the assignment counts as feasible, unless
+        the rational check proves the opposite.
+
         Returns:
-            the gates of the proof, or None if there is no usable proof
+            the gates of the proof; FEASIBLE; or None if there is neither a usable proof nor a
+            point within tolerance
         """
         x, status = self._relaxed_system(active, relax=True)
         if status != OPTIMAL:
             raise NumericalTrouble('the minimal-violation LP of an assignment did not solve')
         self.min_violation = x[len(self.cols)]
-        if self.min_violation <= _FEAS_TOL:
-            return None
+        within_tolerance = self.min_violation <= _FEAS_TOL
         y = np.abs(np.array(self.system.getDual()))
         y[~self.sys_on] = 0.0
         y[y < _REL_ZERO * y.max(initial=0.0)] = 0.0
         if not y.any():
-            return None
+            return FEASIBLE if within_tolerance else None
         y /= y.sum()
         rows = np.flatnonzero(y)
         lb, ub = self.lb[self.cols], self.ub[self.cols]
@@ -364,6 +370,9 @@ class GateOracle:
             low = np.where(d > 0, d * lb, np.where(d < 0, d * ub, 0.0))
         margin = low.sum() - y @ self.sys_b
         exact = len(rows) <= _EXACT_MAX_ROWS and _exact_margin(self.sys_A[rows], self.sys_b[rows], y[rows], lb, ub)
+        if within_tolerance and not exact:
+            self.n_within_tolerance += 1
+            return FEASIBLE
         if not exact and not (np.isfinite(margin) and margin > 0.5 * self.min_violation):
             return None
         self.n_by_violation += 1
@@ -408,13 +417,14 @@ class GateOracle:
             point = self._relaxed_system(active, relax=False)[1]
             if point == OPTIMAL:
                 return None
-            if point == INFEASIBLE:
-                gates = self._proof_from_violation(active)
-                if gates is not None:
-                    return np.unique(self.gate_z[gates[self.gate_val[gates] == 0]]), np.unique(self.gate_z[gates[self.gate_val[gates] == 1]])
-                self.n_undecided += 1
-                return UNDECIDED
-            raise NumericalTrouble('an oracle LP ended without a verdict')
+            # no point either (or that LP failed as well): the minimal violation decides
+            gates = self._proof_from_violation(active)
+            if gates is FEASIBLE:
+                return None
+            if gates is not None:
+                return np.unique(self.gate_z[gates[self.gate_val[gates] == 0]]), np.unique(self.gate_z[gates[self.gate_val[gates] == 1]])
+            self.n_undecided += 1
+            return UNDECIDED
         finally:
             self.seconds += time.time() - t0
 

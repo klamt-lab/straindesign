@@ -551,6 +551,9 @@ class SCIP_MILP(pso.Model):
         if enum.oracle.n_by_violation:
             logging.info('  %d infeasibility proofs so far came from the minimal-violation LP, %d of them confirmed in '
                          'rational arithmetic (this process only).' % (enum.oracle.n_by_violation, enum.oracle.n_exact))
+        if enum.oracle.n_within_tolerance:
+            logging.info('  %d sets so far are feasible only to within 1e-9 of row violation (no exact point, no proof '
+                         'against them); they are passed on as designs.' % enum.oracle.n_within_tolerance)
         if enum.n_undecided:
             logging.warning('  %d candidate sets so far have neither a feasible point nor an infeasibility proof that '
                             'passes its checks; they are not reported as designs.' % enum.n_undecided)
@@ -838,52 +841,68 @@ class SCIP_LP(pso.LP):
             x = [nan] * len(self.getPrimal())
             return x, min_cx, ERROR
 
-    def _optimize_with_retries(self):
+    def _optimize_with_retries(self, settled=None):
         """Solve; after a simplex failure ("error in LP solver": a singular or badly scaled basis)
-        try again from scratch, then under SoPlex's aggressive scaling, then with the feasibility
-        tolerances relaxed tenfold and hundredfold for that one solve.
+        try again from scratch, then with SoPlex's own simplifier in place of the default
+        presolver, then under aggressive scaling, then with the feasibility tolerances relaxed
+        tenfold and hundredfold for that one solve.
+
+        Args:
+            settled (callable): given the objective value, says whether the solve ended with a
+                usable status; an attempt that does not is repeated like a failed one.
 
         Returns:
-            the objective value pyscipopt reports. Raises the last exception if every attempt fails.
+            the objective value pyscipopt reports, or None if `settled` rejected every attempt.
+            Raises the last exception if every attempt failed.
         """
         P = pso.SCIP_LPPARAM
-        scaling, tol = self.getIntParam(P.SCALING), self.getRealParam(P.FEASTOL)
-        for from_scratch, scale, relax in ((0, scaling, 1), (1, scaling, 1), (1, 2, 1), (1, 2, 10), (1, 2, 100)):
+        scaling, presolving, tol = self.getIntParam(P.SCALING), self.getIntParam(P.PRESOLVING), self.getRealParam(P.FEASTOL)
+        error = None
+        for from_scratch, presolve, scale, relax in ((0, presolving, scaling, 1), (1, presolving, scaling, 1), (1, 1, scaling, 1),
+                                                     (1, 1, 2, 1), (1, 1, 2, 10), (1, 1, 2, 100)):
             if from_scratch:
                 self.setIntParam(P.FROMSCRATCH, 1)
+                self.setIntParam(P.PRESOLVING, presolve)
                 self.setIntParam(P.SCALING, scale)
                 self.setRealParam(P.FEASTOL, tol * relax)
                 self.setRealParam(P.DUALFEASTOL, tol * relax)
             try:
-                return self.optimize()
+                opt = self.optimize()
+                if settled is None or settled(opt):
+                    return opt
+                error = None
             except Exception as e:
                 error = e
             finally:
                 if from_scratch:
                     self.setIntParam(P.FROMSCRATCH, 0)
+                    self.setIntParam(P.PRESOLVING, presolving)
                     self.setIntParam(P.SCALING, scaling)
                     self.setRealParam(P.FEASTOL, tol)
                     self.setRealParam(P.DUALFEASTOL, tol)
-        raise error
+        if error is not None:
+            raise error
+        return None
 
     def solve_verdict(self) -> Tuple[List, float]:
         """Solve the LP and report only what was proven: OPTIMAL with the solution, INFEASIBLE, or
-        ERROR (every attempt of :meth:`_optimize_with_retries` failed, or no verdict).
+        ERROR (no attempt of :meth:`_optimize_with_retries` ended optimal or infeasible).
 
         Returns:
             (Tuple[List, float])
 
             solution_vector (None unless OPTIMAL), optimization_status
         """
+        infeasible = lambda opt: self.isInfinity(opt) and not self.isPrimalFeasible()
         try:
-            opt = self._optimize_with_retries()
+            opt = self._optimize_with_retries(lambda opt: self.isOptimal() or infeasible(opt))
         except Exception:
+            return None, ERROR
+        if opt is None:
             return None, ERROR
         if self.isOptimal():
             return self.getPrimal(), OPTIMAL
-        if self.isInfinity(opt) and not self.isPrimalFeasible():
-            return None, INFEASIBLE
-        return None, ERROR
+        return None, INFEASIBLE
 
     def slim_solve(self) -> float:
         """Solve the LP, but return only the optimal value
