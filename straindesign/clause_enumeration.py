@@ -19,10 +19,11 @@
 """Enumerate one pinned cost level of a strain design MILP with linear programs only.
 
 The strain design MILP couples its binaries z to the continuous variables through indicator
-constraints ("gates") and through rows that bound a continuous expression by a term in z. For a
-fixed z the continuous part is therefore an LP, and a z is a design exactly when that LP is
-feasible. When it is infeasible, a Farkas proof names the gates that cannot all stay active and the
-bounds that would have to be relaxed, which is a clause over z that every design has to satisfy:
+constraints ("gates") and through rows that hold a binary next to continuous columns; the latter
+are turned into gates too (see :class:`GateOracle`). For a fixed z the continuous part is therefore
+an LP, and a z is a design exactly when that LP is feasible. When it is infeasible, a Farkas proof
+names the gates that cannot all stay active, which is a clause over z that every design has to
+satisfy:
 
     sum(z_b for gates active at z=0) + sum(1 - z_b for gates active at z=1) >= 1
 
@@ -99,37 +100,61 @@ def split_rows(rows, is_z):
 class GateOracle:
     """Decide for a 0/1 assignment of the binaries whether the continuous system is feasible.
 
-    The LP is the alternative (Farkas) system of
+    A binary that appears in a row next to continuous columns is given a continuous copy in [0, 1],
+    tied to the binary by two gates of its own (z = 0 -> copy <= 0, z = 1 -> copy >= 1). After that
+    every dependence on z is a gate, and the LP is the alternative (Farkas) system of
 
-        A x <= b,   Aeq x = beq,   lb <= x <= ub,   the gates active at the assignment,
-        and the mixed rows  a x <= b - c z  at the assignment,
+        A x <= b,   Aeq x = beq,   lb <= x <= ub,   and the gates active at the assignment,
 
-    normalised to ``multipliers . rhs = -1``. It minimises the multipliers of what depends on z:
-    the gates, and the mixed rows whose right-hand side a different z could relax. Between two
-    queries only bounds of gate multipliers and, for mixed rows, one coefficient and the objective
-    change, so the dual simplex restarts from the last basis.
+    normalised to ``multipliers . rhs = -1``, minimising the multipliers of the gates. Between two
+    queries only bounds of gate multipliers change, so the dual simplex restarts from the last
+    basis.
 
-    A proof stays valid for every z that keeps its gates active and does not relax one of its
-    mixed rows. Hence the clause: a gate active at z_b = 0 contributes the literal z_b, one active
-    at z_b = 1 the literal (not z_b); a mixed row contributes z_j for c_j < 0 where z_j is 0, and
-    (not z_j) for c_j > 0 where z_j is 1.
+    A proof stays valid for every z that keeps its gates active. Hence the clause: a gate active
+    at z_b = 0 contributes the literal z_b, one active at z_b = 1 the literal (not z_b).
 
     Args:
         c_rows (list): rows over the continuous columns, as (indices, values, rhs, is_equality)
         m_rows (list): rows over binaries and continuous columns, same format
         lb, ub (list of float): bounds of all columns of the MILP
         cont (numpy int array): indices of the continuous columns
-        indic_constr: the MILP's indicator constraints (A, b, sense, binv, indicval)
+        indic_constr: the MILP's indicator constraints (A, b, sense, binv, indicval), or None
         lp_class: LP backend, constructed as lp_class(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub), with
-            the methods chgBound, chgCoef, chgObj and infinity of pyscipopt's LP and a
-            solve_verdict() that returns (solution, OPTIMAL | INFEASIBLE | ERROR)
+            the methods chgBound, chgSide and infinity of pyscipopt's LP and a solve_verdict()
+            that returns (solution, OPTIMAL | INFEASIBLE | ERROR)
     """
 
     def __init__(self, c_rows, m_rows, lb, ub, cont, indic_constr, lp_class):
         self.init_args = (c_rows, m_rows, lb, ub, cont, indic_constr, lp_class)
         n = len(lb)
+        lb, ub = np.array(lb, float), np.array(ub, float)
+        is_cont = np.zeros(n, bool)
+        is_cont[cont] = True
+        copied = sorted({int(j) for idx, _, _, _ in m_rows for j in np.asarray(idx)[~is_cont[idx]]})
+        lb[copied], ub[copied] = 0.0, 1.0
+        cols = np.concatenate((np.asarray(cont, int), np.array(copied, int)))  # the LP's variables
         pos = np.full(n, -1)
-        pos[cont] = np.arange(len(cont))
+        pos[cols] = np.arange(len(cols))
+        # gates as (variables, coefficients, sense, rhs), with the binary and the value that switch them on
+        gates, gate_z, gate_val = [], [], []
+        if indic_constr is not None:
+            G = sparse.csr_matrix(indic_constr.A)
+            for g in range(G.shape[0]):
+                row = G.getrow(g)
+                if (pos[row.indices] < 0).any() or not is_cont[row.indices].all():
+                    raise NotApplicable('an indicator row holds a binary column')
+                gates.append((row.indices, row.data, indic_constr.sense[g], indic_constr.b[g]))
+                gate_z.append(indic_constr.binv[g])
+                gate_val.append(indic_constr.indicval[g])
+        for j in copied:
+            gates += [(np.array([j]), np.array([1.0]), 'L', 0.0), (np.array([j]), np.array([1.0]), 'G', 1.0)]
+            gate_z += [j, j]
+            gate_val += [0, 1]
+        self.gates = gates
+        self.gate_z, self.gate_val = np.array(gate_z, int), np.array(gate_val, int)
+        self.rows = list(c_rows) + list(m_rows)
+        self.cols, self.pos, self.lb, self.ub = cols, pos, lb, ub
+
         ri, ci, vv, rhs, lo = [], [], [], [], []
 
         def add(idx, val, b, free=False, sign=1.0):
@@ -141,142 +166,74 @@ class GateOracle:
             lo.append(-np.inf if free else 0.0)
             return k
 
-        for idx, val, b, is_eq in c_rows:
+        for idx, val, b, is_eq in self.rows:
             add(idx, val, b, free=is_eq)
-        for j in cont:
+        for j in cols:
             if not np.isinf(ub[j]):
                 add([j], [1.0], ub[j])
             if not np.isinf(lb[j]):
                 add([j], [1.0], lb[j], sign=-1.0)
-        # mixed rows: one multiplier per inequality (an equality is two), with the binaries' part
-        # kept as (columns, coefficients) to evaluate the right-hand side at an assignment
-        self.mix_col, self.mix_base, self.mix_z, self.mix_c = [], [], [], []
-        for idx, val, b, is_eq in m_rows:
-            idx, val = np.asarray(idx), np.asarray(val, float)
-            on_x = pos[idx] >= 0
-            for sign in ((1.0, -1.0) if is_eq else (1.0,)):
-                self.mix_col.append(add(idx[on_x], val[on_x], b, sign=sign))
-                self.mix_base.append(sign * b)
-                self.mix_z.append(idx[~on_x])
-                self.mix_c.append(sign * val[~on_x])
-        G = sparse.csr_matrix(indic_constr.A) if indic_constr is not None else sparse.csr_matrix((0, n))
-        self.gate_z = np.array(indic_constr.binv, int) if indic_constr is not None else np.zeros(0, int)
-        self.gate_val = np.array(indic_constr.indicval, int) if indic_constr is not None else np.zeros(0, int)
         self.gate_cols = []
-        for g in range(G.shape[0]):
-            row = G.getrow(g)
-            if (pos[row.indices] < 0).any():
-                raise NotApplicable('an indicator row holds a binary column')
-            cols = []
-            if indic_constr.sense[g] in 'LE':
-                cols.append(add(row.indices, row.data, indic_constr.b[g]))
-            if indic_constr.sense[g] in 'GE':
-                cols.append(add(row.indices, row.data, indic_constr.b[g], sign=-1.0))
-            self.gate_cols.append(cols)
+        for idx, val, sense, b in gates:
+            mult = []
+            if sense in 'LE':
+                mult.append(add(idx, val, b))
+            if sense in 'GE':
+                mult.append(add(idx, val, b, sign=-1.0))
+            self.gate_cols.append(mult)
         m = len(rhs)
-        self.norm_row = len(cont)
-        self.R = sparse.csr_matrix((vv, (ri, ci)), shape=(len(cont), m))
+        self.R = sparse.csr_matrix((vv, (ri, ci)), shape=(len(cols), m))
         self.rhs = np.array(rhs, float)
         obj = np.zeros(m)
-        self.on_z = np.zeros(m, bool)  # multipliers of gates and mixed rows
         self.col_gate = np.full(m, -1)
-        self.col_mix = np.full(m, -1)
-        for g, cols in enumerate(self.gate_cols):
-            obj[cols] = 1.0
-            self.on_z[cols] = True
-            self.col_gate[cols] = g
-        self.on_z[self.mix_col] = True
-        self.col_mix[self.mix_col] = np.arange(len(self.mix_col))
-        # mixed rows per binary, to update only what an assignment changes
-        self.z_mix = {}
-        for k, zs in enumerate(self.mix_z):
-            for j in zs:
-                self.z_mix.setdefault(int(j), []).append(k)
-        # a dense normalisation row in the LP, so that the mixed rows' entries exist to be changed
-        A_eq = sparse.vstack((self.R, sparse.csr_matrix(self.rhs)), format='lil')
-        for col in self.mix_col:
-            if A_eq[self.norm_row, col] == 0:
-                A_eq[self.norm_row, col] = 1.0
-        b_eq = [0.0] * len(cont) + [-1.0]
-        self.lp = lp_class(list(obj), sparse.csr_matrix((0, m)), [], A_eq.tocsr(), b_eq, lo, [np.inf] * m)
+        for g, mult in enumerate(self.gate_cols):
+            obj[mult] = 1.0
+            self.col_gate[mult] = g
+        self.is_gate_col = self.col_gate >= 0
+        A_eq = sparse.vstack((self.R, sparse.csr_matrix(self.rhs)), format='csr')
+        b_eq = [0.0] * len(cols) + [-1.0]
+        self.lp = lp_class(list(obj), sparse.csr_matrix((0, m)), [], A_eq, b_eq, lo, [np.inf] * m)
         self.active = np.ones(len(self.gate_cols), bool)
-        self.z_last = None
-        self.mix_obj = np.zeros(len(self.mix_col))
         self.n_calls = 0
         self.n_undecided = 0
         self.seconds = 0.0
         self.system = None
 
-    def _feasible_point_exists(self, z_one):
-        """Solve the continuous system itself at the assignment. Used for the assignments without
-        an infeasibility proof, which are few (the designs), so every side is set on each call.
+    def _feasible_point_exists(self, active):
+        """Solve the continuous system itself with the given gates active. Used for the
+        assignments without an infeasibility proof, which are few (the designs), so the sides of
+        all gate rows are set on each call.
 
         Returns:
             OPTIMAL if a feasible point was found, INFEASIBLE or ERROR otherwise.
         """
-        c_rows, m_rows, lb, ub, cont, ic, lp_class = self.init_args
+        lp_class = self.init_args[-1]
         if self.system is None:
-            n = len(lb)
-            pos = np.full(n, -1)
-            pos[cont] = np.arange(len(cont))
-            ri, ci, vv = [], [], []
-            self.sys_rows = []  # per row: (kind, data), in LP row order
-            def add(idx, val):
-                keep = pos[np.asarray(idx)] >= 0
-                ri.extend([len(self.sys_rows)] * int(keep.sum()))
-                ci.extend(pos[np.asarray(idx)[keep]])
-                vv.extend(np.asarray(val, float)[keep])
-            for idx, val, b, is_eq in c_rows:
-                add(idx, val)
-                self.sys_rows.append(('fixed', (b if is_eq else -np.inf, b)))
-            for idx, val, b, is_eq in m_rows:
-                idx, val = np.asarray(idx), np.asarray(val, float)
-                add(idx, val)
-                self.sys_rows.append(('mixed', (b, is_eq, idx[pos[idx] < 0], val[pos[idx] < 0])))
-            G = sparse.csr_matrix(ic.A) if ic is not None else sparse.csr_matrix((0, n))
-            for g in range(G.shape[0]):
-                row = G.getrow(g)
-                add(row.indices, row.data)
-                self.sys_rows.append(('gate', (g, ic.sense[g], ic.b[g])))
-            m = len(self.sys_rows)
-            A = sparse.csr_matrix((vv, (ri, ci)), shape=(m, len(cont)))
-            self.system = lp_class([0.0] * len(cont), A, [0.0] * m, sparse.csr_matrix((0, len(cont))), [],
-                                   [lb[j] for j in cont], [ub[j] for j in cont])
+            ri, ci, vv, lhs, rhs = [], [], [], [], []
+            for idx, val, b, is_eq in self.rows:
+                ri.extend([len(rhs)] * len(idx))
+                ci.extend(self.pos[idx])
+                vv.extend(val)
+                lhs.append(b if is_eq else -np.inf)
+                rhs.append(b)
+            self.first_gate_row = len(rhs)
+            for idx, val, sense, b in self.gates:
+                ri.extend([len(rhs)] * len(idx))
+                ci.extend(self.pos[idx])
+                vv.extend(val)
+                lhs.append(-np.inf)
+                rhs.append(np.inf)
+            A = sparse.csr_matrix((vv, (ri, ci)), shape=(len(rhs), len(self.cols)))
+            self.system = lp_class([0.0] * len(self.cols), A, [0.0] * len(rhs), sparse.csr_matrix((0, len(self.cols))), [],
+                                   list(self.lb[self.cols]), list(self.ub[self.cols]))
+            inf = self.system.infinity()
+            for i in range(self.first_gate_row):
+                self.system.chgSide(i, max(lhs[i], -inf), min(rhs[i], inf))
         lp = self.system
         inf = lp.infinity()
-        for i, (kind, data) in enumerate(self.sys_rows):
-            if kind == 'fixed':
-                lo, hi = data
-            elif kind == 'mixed':
-                b, is_eq, zs, c = data
-                hi = b - c[z_one[zs]].sum()
-                lo = hi if is_eq else -np.inf
-            else:
-                g, sense, b = data
-                on = z_one[self.gate_z[g]] == (self.gate_val[g] == 1)
-                lo = b if on and sense in 'GE' else -np.inf
-                hi = b if on and sense in 'LE' else np.inf
-            lp.chgSide(i, max(lo, -inf), min(hi, inf))
+        for g, (idx, val, sense, b) in enumerate(self.gates):
+            lp.chgSide(self.first_gate_row + g, b if active[g] and sense in 'GE' else -inf, b if active[g] and sense in 'LE' else inf)
         return lp.solve_verdict()[1]
-
-    def _set_mixed(self, z_one):
-        """Right-hand sides and objective weights of the mixed rows at the assignment."""
-        if self.z_last is None:
-            todo = range(len(self.mix_col))
-            self.rhs[self.mix_col] = np.nan
-        else:
-            todo = sorted({k for j in np.flatnonzero(z_one != self.z_last) for k in self.z_mix.get(int(j), ())})
-        for k in todo:
-            col, zs, c = self.mix_col[k], self.mix_z[k], self.mix_c[k]
-            val = self.mix_base[k] - c[z_one[zs]].sum()
-            if val != self.rhs[col]:
-                self.lp.chgCoef(self.norm_row, col, float(val))
-                self.rhs[col] = val
-            weight = 1.0 if ((c > 0) & z_one[zs]).any() or ((c < 0) & ~z_one[zs]).any() else 0.0
-            if weight != self.mix_obj[k] or self.z_last is None:
-                self.lp.chgObj(col, weight)
-                self.mix_obj[k] = weight
-        self.z_last = z_one.copy()
 
     def query(self, z_one):
         """Ask whether the assignment admits a feasible continuous system.
@@ -298,31 +255,22 @@ class GateOracle:
             for col in self.gate_cols[g]:
                 lp.chgBound(col, 0.0, inf if active[g] else 0.0)
         self.active = active
-        if self.mix_col:
-            self._set_mixed(z_one)
         y, status = lp.solve_verdict()
         self.n_calls += 1
         try:
             if status == OPTIMAL:
                 y = np.array(y)
-                size = np.abs(y[self.on_z])
+                size = np.abs(y[self.is_gate_col])
                 keep = size > _REL_ZERO * max(size.max(initial=0.0), 1e-300)
-                y[np.flatnonzero(self.on_z)[~keep]] = 0.0
+                y[np.flatnonzero(self.is_gate_col)[~keep]] = 0.0
                 if np.abs(self.R @ y).max(initial=0.0) > _PROOF_TOL or abs(self.rhs @ y + 1.0) > _PROOF_TOL:
                     raise NumericalTrouble('the infeasibility proof of an oracle LP does not hold')
-                used = np.flatnonzero(self.on_z)[keep]
-                gates = np.unique(self.col_gate[used][self.col_gate[used] >= 0])
+                gates = np.unique(self.col_gate[np.flatnonzero(self.is_gate_col)[keep]])
                 if not self.active[gates].all():
                     raise NumericalTrouble('an oracle LP used a gate that is switched off')
-                pos_cols = list(self.gate_z[gates[self.gate_val[gates] == 0]])
-                neg_cols = list(self.gate_z[gates[self.gate_val[gates] == 1]])
-                for k in self.col_mix[used][self.col_mix[used] >= 0]:
-                    zs, c = self.mix_z[k], self.mix_c[k]
-                    pos_cols.extend(zs[(c < 0) & ~z_one[zs]])
-                    neg_cols.extend(zs[(c > 0) & z_one[zs]])
-                return np.unique(np.array(pos_cols, int)), np.unique(np.array(neg_cols, int))
+                return np.unique(self.gate_z[gates[self.gate_val[gates] == 0]]), np.unique(self.gate_z[gates[self.gate_val[gates] == 1]])
             if status == INFEASIBLE:
-                point = self._feasible_point_exists(z_one)
+                point = self._feasible_point_exists(active)
                 if point == OPTIMAL:
                     return None
                 if point == INFEASIBLE:
