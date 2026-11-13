@@ -485,7 +485,7 @@ def speedy_fva(model, **kwargs):
     # minutes on iMLcore where the warm-started loop takes two seconds.
     probe = n_remaining >= _PARALLEL_PHASE2_MIN and threads > 1 and solver != GLPK
     if n_remaining > 0:
-        # Sequential dispatch — simple loop, no hub-first, no dual check
+        # Sequential dispatch: one warm-started LP, objectives in the order _next_objective picks them
         prev_col = -1
 
         def _rebuild_lp():
@@ -497,117 +497,150 @@ def speedy_fva(model, **kwargs):
         seq_count = 0
         t_seq0 = _time.perf_counter()
 
-        for j in range(n_orig):
-            if handoff:
+        x_last = None  # flux vector of the latest optimal solve: the vertex the next solve starts from
+
+        def _next_objective():
+            """Pick the next unresolved (reaction index, direction), or None when all are resolved.
+
+            The warm-started simplex needs the fewest pivots for a direction whose best known value
+            is already attained at the current vertex, so those go first. Otherwise the direction
+            whose current flux is closest to its best known value is taken.
+            """
+            open_max = ~res_max
+            open_min = ~res_min
+            if x_last is None:
+                cand = np.flatnonzero(open_max | open_min)
+                if not len(cand):
+                    return None
+                return int(cand[0]), (1 if open_max[cand[0]] else -1)
+            with np.errstate(invalid='ignore'):  # resolved directions may hold inf or nan
+                gap_max = np.where(open_max, (incumbent_max - x_last) / (1.0 + np.abs(incumbent_max)), np.inf)
+                gap_min = np.where(open_min, (x_last - incumbent_min) / (1.0 + np.abs(incumbent_min)), np.inf)
+            j_max = int(np.argmin(gap_max))
+            j_min = int(np.argmin(gap_min))
+            if not open_max[j_max] and not open_min[j_min]:
+                return None
+            if open_max[j_max] and (not open_min[j_min] or gap_max[j_max] <= max(gap_min[j_min], 1e-12)):
+                return j_max, 1
+            return j_min, -1
+
+        while not handoff:
+            nxt = _next_objective()
+            if nxt is None:
                 break
-            for direction in (1, -1):
-                if direction == 1 and res_max[j]:
-                    continue
-                if direction == -1 and res_min[j]:
-                    continue
-                if probe:
-                    elapsed = _time.perf_counter() - t_seq0
-                    if seq_count >= _PROBE_LPS or elapsed >= _PROBE_SECONDS:
-                        probe = False
-                        n_left = 2 * n_orig - int(res_max.sum() + res_min.sum())
-                        handoff = seq_count > 0 and elapsed / seq_count * n_left > (_POOL_START_SECONDS +
-                                                                                    _POOL_START_SECONDS_PER_WORKER * threads)
-                        if handoff:
-                            break
-                        if push_deferred:
-                            push_deferred = False
-                            _push_phase()
-                            if (res_max if direction == 1 else res_min)[j]:
-                                continue
-
-                # Periodic rebuild to limit warm-start degeneration
-                if seq_count > 0 and seq_count % 200 == 0:
-                    _rebuild_lp()
-
-                sig = -direction
-                for attempt in range(_MAX_STATUS_RETRIES + 1):
-                    if prev_col < 0 or prev_col == j:
-                        C = [[j, float(sig)]]
-                    else:
-                        C = [[j, float(sig)], [prev_col, 0.0]]
-                    if solver in ('cplex', 'gurobi'):
-                        lp.backend.set_objective_idx(C)
-                    else:
-                        lp.set_objective_idx(C)
-                    prev_col = j
-
-                    t0 = _time.perf_counter()
-                    x_list, obj_val, status = lp.solve()
-                    t_solve += _time.perf_counter() - t0
-                    lps_solved += 1
-                    seq_count += 1
-
-                    # Feasibility was established once at setup and only the objective changes
-                    # here, so a non-optimal status is a solver artifact, not an answer.
-                    if status in (OPTIMAL, UNBOUNDED) or attempt == _MAX_STATUS_RETRIES:
+            j, direction = nxt
+            if probe:
+                elapsed = _time.perf_counter() - t_seq0
+                if seq_count >= _PROBE_LPS or elapsed >= _PROBE_SECONDS:
+                    probe = False
+                    n_left = 2 * n_orig - int(res_max.sum() + res_min.sum())
+                    handoff = seq_count > 0 and elapsed / seq_count * n_left > (_POOL_START_SECONDS +
+                                                                                _POOL_START_SECONDS_PER_WORKER * threads)
+                    if handoff:
                         break
-                    _rebuild_lp()
+                    if push_deferred:
+                        push_deferred = False
+                        _push_phase()
+                        if (res_max if direction == 1 else res_min)[j]:
+                            continue
 
-                if status == UNBOUNDED:
-                    if direction == 1:
-                        res_max[j] = True
-                        incumbent_max[j] = np.inf
-                    else:
-                        res_min[j] = True
-                        incumbent_min[j] = -np.inf
-                    continue
-                elif status != OPTIMAL:
-                    unresolved_bounds.append((reaction_ids[j], direction, status))
-                    if direction == 1:
-                        res_max[j] = True
-                        incumbent_max[j] = nan
-                    else:
-                        res_min[j] = True
-                        incumbent_min[j] = nan
-                    continue
+            # Periodic rebuild to limit warm-start degeneration
+            if seq_count > 0 and seq_count % 200 == 0:
+                _rebuild_lp()
 
-                # Guard: LP optimum must not be worse than incumbent
-                if direction == 1:
-                    val, inc = -obj_val, incumbent_max[j]
-                    bad = np.isfinite(inc) and val < inc - _DEGEN_TOL * (1 + abs(inc))
-                else:
-                    val, inc = obj_val, incumbent_min[j]
-                    bad = np.isfinite(inc) and val > inc + _DEGEN_TOL * (1 + abs(inc))
-                if bad:
-                    _rebuild_lp()
+            sig = -direction
+            for attempt in range(_MAX_STATUS_RETRIES + 1):
+                if prev_col < 0 or prev_col == j:
                     C = [[j, float(sig)]]
-                    if solver in ('cplex', 'gurobi'):
-                        lp.backend.set_objective_idx(C)
-                    else:
-                        lp.set_objective_idx(C)
-                    prev_col = j
-                    t0 = _time.perf_counter()
-                    x_list, obj_val, status = lp.solve()
-                    t_solve += _time.perf_counter() - t0
-                    lps_solved += 1
-                    seq_count += 1
+                else:
+                    C = [[j, float(sig)], [prev_col, 0.0]]
+                if solver in ('cplex', 'gurobi'):
+                    lp.backend.set_objective_idx(C)
+                else:
+                    lp.set_objective_idx(C)
+                prev_col = j
 
-                if status == UNBOUNDED:
-                    if direction == 1:
-                        res_max[j] = True
-                        incumbent_max[j] = np.inf
-                    else:
-                        res_min[j] = True
-                        incumbent_min[j] = -np.inf
-                elif status == OPTIMAL:
-                    if direction == 1:
-                        res_max[j] = True
-                        incumbent_max[j] = -obj_val
-                    else:
-                        res_min[j] = True
-                        incumbent_min[j] = obj_val
-                    # Co-optimization scan: check if this vertex also
-                    # resolves other unresolved directions (at-bound check
-                    # on non-zero values that improve the incumbent).
-                    x_arr = np.array(x_list[:n_orig], dtype=np.float64)
-                    np.maximum(incumbent_max, x_arr, out=incumbent_max)
-                    np.minimum(incumbent_min, x_arr, out=incumbent_min)
-                    _bound_scan(x_arr)
+                t0 = _time.perf_counter()
+                x_list, obj_val, status = lp.solve()
+                t_solve += _time.perf_counter() - t0
+                lps_solved += 1
+                seq_count += 1
+
+                # Feasibility was established once at setup and only the objective changes
+                # here, so a non-optimal status is a solver artifact, not an answer.
+                if status in (OPTIMAL, UNBOUNDED) or attempt == _MAX_STATUS_RETRIES:
+                    break
+                _rebuild_lp()
+
+            if status == UNBOUNDED:
+                if direction == 1:
+                    res_max[j] = True
+                    incumbent_max[j] = np.inf
+                else:
+                    res_min[j] = True
+                    incumbent_min[j] = -np.inf
+                continue
+            elif status != OPTIMAL:
+                unresolved_bounds.append((reaction_ids[j], direction, status))
+                if direction == 1:
+                    res_max[j] = True
+                    incumbent_max[j] = nan
+                else:
+                    res_min[j] = True
+                    incumbent_min[j] = nan
+                continue
+
+            # Guard: LP optimum must not be worse than incumbent
+            if direction == 1:
+                val, inc = -obj_val, incumbent_max[j]
+                bad = np.isfinite(inc) and val < inc - _DEGEN_TOL * (1 + abs(inc))
+            else:
+                val, inc = obj_val, incumbent_min[j]
+                bad = np.isfinite(inc) and val > inc + _DEGEN_TOL * (1 + abs(inc))
+            if bad:
+                _rebuild_lp()
+                C = [[j, float(sig)]]
+                if solver in ('cplex', 'gurobi'):
+                    lp.backend.set_objective_idx(C)
+                else:
+                    lp.set_objective_idx(C)
+                prev_col = j
+                t0 = _time.perf_counter()
+                x_list, obj_val, status = lp.solve()
+                t_solve += _time.perf_counter() - t0
+                lps_solved += 1
+                seq_count += 1
+
+            if status == UNBOUNDED:
+                if direction == 1:
+                    res_max[j] = True
+                    incumbent_max[j] = np.inf
+                else:
+                    res_min[j] = True
+                    incumbent_min[j] = -np.inf
+            elif status == OPTIMAL:
+                if direction == 1:
+                    res_max[j] = True
+                    incumbent_max[j] = -obj_val
+                else:
+                    res_min[j] = True
+                    incumbent_min[j] = obj_val
+                # Co-optimization scan: check if this vertex also
+                # resolves other unresolved directions (at-bound check
+                # on non-zero values that improve the incumbent).
+                x_arr = np.array(x_list[:n_orig], dtype=np.float64)
+                np.maximum(incumbent_max, x_arr, out=incumbent_max)
+                np.minimum(incumbent_min, x_arr, out=incumbent_min)
+                _bound_scan(x_arr)
+                x_last = x_arr
+            else:
+                unresolved_bounds.append((reaction_ids[j], direction, status))
+                if direction == 1:
+                    res_max[j] = True
+                    incumbent_max[j] = nan
+                else:
+                    res_min[j] = True
+                    incumbent_min[j] = nan
 
     if handoff:
         # Parallel dispatch via SDPool
