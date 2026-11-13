@@ -63,7 +63,7 @@ UNDECIDED = 'undecided'
 # a system whose rows can all be met to within this is not called infeasible
 _FEAS_TOL = 1e-9
 # proofs supported by at most this many rows are re-derived and checked in rational arithmetic
-_EXACT_MAX_ROWS = 60
+_EXACT_MAX_ROWS = 500
 
 
 class NotApplicable(Exception):
