@@ -5,6 +5,7 @@ import pytest
 from .test_01_load_models_and_solvers import *
 import straindesign as sd
 import straindesign.clause_enumeration as clause_enumeration
+import numpy as np
 from numpy import inf
 from straindesign.names import *
 
@@ -76,3 +77,48 @@ def test_knock_ins_keep_the_solve_and_exclude_loop(model_weak_coupling, caplog, 
     assert solution.status == INFEASIBLE and not solution.reaction_sd
     messages = [r.getMessage() for r in caplog.records]
     assert not any('clause enumeration, cost' in m or 'cb-reject' in m for m in messages)
+
+
+def _tiny_coefficient_system(threshold):
+    """a = 1e-7 * g (a precursor of g with a tiny coefficient), a <= 0 (knocked out), g >= threshold,
+    as rows A x <= b over x = (a, g), both columns unbounded above."""
+    from scipy import sparse
+    A = sparse.csr_matrix(np.array([[-1.0, 1e-7], [1.0, 0.0], [0.0, -1.0]]))
+    b = np.array([0.0, 0.0, -threshold])
+    return A, b, np.array([0.0, 0.0]), np.array([np.inf, np.inf])
+
+
+def test_exact_margin_confirms_a_proof_through_a_tiny_coefficient():
+    """Infeasible by 0.05 * 1e-7 in the rows: the multipliers, given only to float accuracy and
+    slightly off, are re-derived exactly and the proof holds."""
+    A, b, lb, ub = _tiny_coefficient_system(0.05)
+    y = np.array([1.0, 1.0, 1e-7 * (1 + 3e-12)])
+    assert clause_enumeration._exact_margin(A, b, y / y.sum(), lb, ub)
+
+
+def test_exact_margin_rejects_a_feasible_system():
+    """With the threshold at 0 the same rows have the solution a = g = 0, so no multipliers prove
+    anything."""
+    A, b, lb, ub = _tiny_coefficient_system(0.0)
+    y = np.array([1.0, 1.0, 1e-7])
+    assert not clause_enumeration._exact_margin(A, b, y / y.sum(), lb, ub)
+
+
+def test_oracle_decides_a_set_the_proof_lp_cannot(monkeypatch):
+    """One gate (z = 0 -> a <= 0) on the tiny-coefficient system. Whatever the proof LP does with
+    multipliers of 1e7, the answer for z = 0 has to be a clause on that gate, and z = 1 a design."""
+    from types import SimpleNamespace
+    from scipy import sparse
+    from straindesign.scip_interface import SCIP_LP
+    # columns: z, a, g
+    c_rows = [(np.array([1, 2]), np.array([-1.0, 1e-7]), 0.0, False), (np.array([2]), np.array([-1.0]), -0.05, False)]
+    gate = SimpleNamespace(A=sparse.csr_matrix(np.array([[0.0, 1.0, 0.0]])), b=[0.0], sense='L', binv=[0], indicval=[0])
+    oracle = clause_enumeration.GateOracle(c_rows, [], [0.0, 0.0, 0.0], [1.0, np.inf, np.inf], np.array([1, 2]), gate, SCIP_LP)
+    pos, neg = oracle.query(np.array([False, False, False]))
+    assert list(pos) == [0] and len(neg) == 0
+    assert oracle.query(np.array([True, False, False])) is None
+    # the same with the proof LP switched off: the minimal-violation LP alone has to decide
+    monkeypatch.setattr(oracle.lp, 'solve_verdict', lambda: (None, ERROR))
+    pos, neg = oracle.query(np.array([False, False, False]))
+    assert list(pos) == [0] and len(neg) == 0 and oracle.n_by_violation == 1 and oracle.n_exact == 1
+    assert oracle.query(np.array([True, False, False])) is None

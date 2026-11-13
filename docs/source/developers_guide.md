@@ -2886,10 +2886,16 @@ cost level with LPs:
   the rows that mix `z` and continuous columns evaluated). `GateOracle` solves its alternative (Farkas)
   system, minimising the multipliers of everything that depends on `z`, warm-started from the previous
   query. A solution is an infeasibility proof and yields a **clause** over `z`: one of the gates in the
-  proof has to be switched off, or one of its `z`-dependent bounds relaxed. No solution, together with a
-  feasible point of the continuous system itself, makes `z` a **design**. Neither proof nor point
-  (infeasible by less than SoPlex resolves) is `UNDECIDED`: that one set is excluded, not reported, and
-  counted in a warning.
+  proof has to be switched off. No solution, together with a feasible point of the continuous system
+  itself, makes `z` a **design**.
+- When there is neither (the proof LP normalises to `multipliers . rhs = -1`, which a proof through a
+  biomass coefficient of 1e-7 cannot meet at simplex accuracy), the oracle minimises the uniform violation
+  `t` of the rows. That LP always has an optimum. For `t* > 1e-9` its dual, normalised to `sum(y) = 1`, is
+  the proof; it is checked against the bound box without a solver tolerance and re-derived in rational
+  arithmetic when it rests on at most 500 rows (`_exact_margin`). For `t* <= 1e-9` the set is feasible to
+  within tolerance and passed on as a design unless the rational check proves it infeasible. Only a set
+  with `t* > 1e-9` whose proof fails both checks is `UNDECIDED`: excluded alone, not reported, counted in a
+  warning.
 - `ClauseEnumerator` walks the sets of interventions depth-first, branching over the positive literals of
   a violated clause, and asks the oracle only for sets that satisfy every clause so far. Clauses persist
   across cost levels. The level ends when the walk ends, so `backend.level_enumerated` lets the k-sweep
