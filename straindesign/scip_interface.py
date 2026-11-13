@@ -843,9 +843,10 @@ class SCIP_LP(pso.LP):
 
     def _optimize_with_retries(self, settled=None):
         """Solve; after a simplex failure ("error in LP solver": a singular or badly scaled basis)
-        try again from scratch, then with SoPlex's own simplifier in place of the default
-        presolver, then under aggressive scaling, then with the feasibility tolerances relaxed
-        tenfold and hundredfold for that one solve.
+        try again from scratch, then under SoPlex's aggressive scaling, then with the feasibility
+        tolerances relaxed tenfold and hundredfold for that one solve. The presolving parameter is
+        left alone: switching it through this interface returned solutions of the wrong length
+        (value 1) or called a bounded LP unbounded (value 0).
 
         Args:
             settled (callable): given the objective value, says whether the solve ended with a
@@ -856,13 +857,11 @@ class SCIP_LP(pso.LP):
             Raises the last exception if every attempt failed.
         """
         P = pso.SCIP_LPPARAM
-        scaling, presolving, tol = self.getIntParam(P.SCALING), self.getIntParam(P.PRESOLVING), self.getRealParam(P.FEASTOL)
+        scaling, tol = self.getIntParam(P.SCALING), self.getRealParam(P.FEASTOL)
         error = None
-        for from_scratch, presolve, scale, relax in ((0, presolving, scaling, 1), (1, presolving, scaling, 1), (1, 1, scaling, 1),
-                                                     (1, 1, 2, 1), (1, 1, 2, 10), (1, 1, 2, 100)):
+        for from_scratch, scale, relax in ((0, scaling, 1), (1, scaling, 1), (1, 2, 1), (1, 2, 10), (1, 2, 100)):
             if from_scratch:
                 self.setIntParam(P.FROMSCRATCH, 1)
-                self.setIntParam(P.PRESOLVING, presolve)
                 self.setIntParam(P.SCALING, scale)
                 self.setRealParam(P.FEASTOL, tol * relax)
                 self.setRealParam(P.DUALFEASTOL, tol * relax)
@@ -876,7 +875,6 @@ class SCIP_LP(pso.LP):
             finally:
                 if from_scratch:
                     self.setIntParam(P.FROMSCRATCH, 0)
-                    self.setIntParam(P.PRESOLVING, presolving)
                     self.setIntParam(P.SCALING, scaling)
                     self.setRealParam(P.FEASTOL, tol)
                     self.setRealParam(P.DUALFEASTOL, tol)

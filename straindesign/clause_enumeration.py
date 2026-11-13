@@ -46,7 +46,7 @@ import queue
 import time
 import numpy as np
 from scipy import sparse
-from straindesign.names import OPTIMAL, INFEASIBLE
+from straindesign.names import OPTIMAL, INFEASIBLE, ERROR
 
 # seconds of oracle LPs within one level before worker processes are started; starting them costs
 # a few seconds, which a short level never earns back
@@ -274,8 +274,10 @@ class GateOracle:
         self.is_gate_col = self.col_gate >= 0
         A_eq = sparse.vstack((self.R, sparse.csr_matrix(self.rhs)), format='csr')
         b_eq = [0.0] * len(cols) + [-1.0]
-        self.lp = lp_class(list(obj), sparse.csr_matrix((0, m)), [], A_eq, b_eq, lo, [np.inf] * m)
+        self.new_proof_lp = lambda: lp_class(list(obj), sparse.csr_matrix((0, m)), [], A_eq, b_eq, lo, [np.inf] * m)
+        self.lp = self.new_proof_lp()
         self.active = np.ones(len(self.gate_cols), bool)
+        self.n_rebuilt = 0  # LPs set up afresh after the solver failed on the object in use
         self.n_calls = 0
         self.n_undecided = 0
         self.n_by_violation = 0  # proofs taken from the minimal-violation LP ...
@@ -284,7 +286,7 @@ class GateOracle:
         self.seconds = 0.0
         self.system = None
 
-    def _relaxed_system(self, active, relax):
+    def _relaxed_system(self, active, relax, retried=False):
         """The LP "minimise t subject to every row and active gate relaxed by t, bounds kept",
         with t fixed to 0 unless `relax`. Built on first use; a call sets the sides of all gate rows.
 
@@ -329,7 +331,13 @@ class GateOracle:
             lp.chgSide(i, -inf, self.sys_b[i] if on[i] else inf)
         self.sys_on = on
         lp.chgBound(n, 0.0, inf if relax else 0.0)
-        return lp.solve_verdict()
+        x, status = lp.solve_verdict()
+        if status == ERROR and not retried:
+            # SoPlex can fail on an LP object with a history and solve the same LP set up afresh
+            self.system = None
+            self.n_rebuilt += 1
+            return self._relaxed_system(active, relax, retried=True)
+        return x, status
 
     def _proof_from_violation(self, active):
         """Decide an assignment that the proof LP could not: minimise the uniform violation t of
@@ -400,6 +408,13 @@ class GateOracle:
                 lp.chgBound(col, 0.0, inf if active[g] else 0.0)
         self.active = active
         y, status = lp.solve_verdict()
+        if status == ERROR:
+            lp = self.lp = self.new_proof_lp()
+            self.n_rebuilt += 1
+            for g in np.flatnonzero(~active):
+                for col in self.gate_cols[g]:
+                    lp.chgBound(col, 0.0, 0.0)
+            y, status = lp.solve_verdict()
         self.n_calls += 1
         try:
             if status == OPTIMAL:

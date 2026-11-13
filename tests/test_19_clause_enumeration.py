@@ -119,6 +119,7 @@ def test_oracle_decides_a_set_the_proof_lp_cannot(monkeypatch):
     assert oracle.query(np.array([True, False, False])) is None
     # the same with the proof LP switched off: the minimal-violation LP alone has to decide
     monkeypatch.setattr(oracle.lp, 'solve_verdict', lambda: (None, ERROR))
+    monkeypatch.setattr(oracle, 'new_proof_lp', lambda lp=oracle.lp: lp)  # setting it up afresh does not help either
     pos, neg = oracle.query(np.array([False, False, False]))
     assert list(pos) == [0] and len(neg) == 0 and oracle.n_by_violation == 1 and oracle.n_exact == 1
     assert oracle.query(np.array([True, False, False])) is None
