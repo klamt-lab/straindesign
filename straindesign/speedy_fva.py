@@ -56,7 +56,7 @@ from straindesign.lptools import (
 from straindesign.solver_interface import MILP_LP
 from straindesign.pool import SDPool
 from straindesign.parse_constr import parse_constraints, lineqlist2mat
-from straindesign.names import CONSTRAINTS, SOLVER, OPTIMAL, UNBOUNDED, INFEASIBLE, GLPK, LP_METHOD_DUAL
+from straindesign.names import CONSTRAINTS, SOLVER, OPTIMAL, UNBOUNDED, INFEASIBLE, GLPK, CPLEX, LP_METHOD_DUAL
 from straindesign.networktools import suppress_lp_context
 from straindesign.compression import (
     compress_cobra_model,
@@ -199,6 +199,23 @@ def _expand_fva(fva_cmp, cmp_maps, orig_reaction_ids):
         },
         index=orig_reaction_ids,
     )
+
+
+# ---------------------------------------------------------------------------
+# LP helpers
+# ---------------------------------------------------------------------------
+
+
+def _single_thread(lp):
+    """Restrict a warm-started LP to one solver thread and return it.
+
+    The objective loops re-solve one LP thousands of times from the previous basis. CPLEX with
+    its default thread count takes several times longer per such re-solve on genome-scale LPs
+    (Recon3D: 27 ms against 11 ms, Human-GEM: 116 ms against 17 ms).
+    """
+    if lp.solver == CPLEX:
+        lp.backend.parameters.threads.set(1)
+    return lp
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +519,7 @@ def speedy_fva(model, **kwargs):
     if precheck:
         scan_lp, n_scan = _build_abssum_lp(A_eq, b_eq, A_ineq, b_ineq, lb, ub, solver)
         scan_lp.set_lp_method(LP_METHOD_DUAL)
+        _single_thread(scan_lp)
         n_ext = len(scan_lp.c)
 
         # 1b: Iterative push-to-bounds — directed per-reaction objectives
@@ -599,7 +617,7 @@ def speedy_fva(model, **kwargs):
 
         def _rebuild_lp():
             nonlocal lp, prev_col
-            lp = MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb.tolist(), ub=ub.tolist(), solver=solver)
+            lp = _single_thread(MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb.tolist(), ub=ub.tolist(), solver=solver))
             prev_col = -1
 
         _rebuild_lp()
@@ -931,7 +949,7 @@ def fast_reversibility(model, solver=None, compress=True, threads=None):
     b_eq = [0.0] * S.shape[0]
 
     def build():
-        return MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb.tolist(), ub=ub.tolist(), solver=solver)
+        return _single_thread(MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb.tolist(), ub=ub.tolist(), solver=solver))
 
     lp = build()
 
