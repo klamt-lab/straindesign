@@ -54,7 +54,11 @@ _PARALLEL_AFTER = 1.0
 # multipliers smaller than this, relative to the largest gate multiplier, are solver noise; the
 # measured gap between real multipliers and noise spans 1e-8 to 1e-15
 _REL_ZERO = 1e-12
+# a proof is normalised to multipliers . rhs = -1; its combination of the rows has to vanish to this
 _PROOF_TOL = 1e-6
+
+# oracle answer for an assignment that has neither a proof of infeasibility nor a feasible point
+UNDECIDED = 'undecided'
 
 
 class NotApplicable(Exception):
@@ -199,7 +203,61 @@ class GateOracle:
         self.z_last = None
         self.mix_obj = np.zeros(len(self.mix_col))
         self.n_calls = 0
+        self.n_undecided = 0
         self.seconds = 0.0
+        self.system = None
+
+    def _feasible_point_exists(self, z_one):
+        """Solve the continuous system itself at the assignment. Used for the assignments without
+        an infeasibility proof, which are few (the designs), so every side is set on each call.
+
+        Returns:
+            OPTIMAL if a feasible point was found, INFEASIBLE or ERROR otherwise.
+        """
+        c_rows, m_rows, lb, ub, cont, ic, lp_class = self.init_args
+        if self.system is None:
+            n = len(lb)
+            pos = np.full(n, -1)
+            pos[cont] = np.arange(len(cont))
+            ri, ci, vv = [], [], []
+            self.sys_rows = []  # per row: (kind, data), in LP row order
+            def add(idx, val):
+                keep = pos[np.asarray(idx)] >= 0
+                ri.extend([len(self.sys_rows)] * int(keep.sum()))
+                ci.extend(pos[np.asarray(idx)[keep]])
+                vv.extend(np.asarray(val, float)[keep])
+            for idx, val, b, is_eq in c_rows:
+                add(idx, val)
+                self.sys_rows.append(('fixed', (b if is_eq else -np.inf, b)))
+            for idx, val, b, is_eq in m_rows:
+                idx, val = np.asarray(idx), np.asarray(val, float)
+                add(idx, val)
+                self.sys_rows.append(('mixed', (b, is_eq, idx[pos[idx] < 0], val[pos[idx] < 0])))
+            G = sparse.csr_matrix(ic.A) if ic is not None else sparse.csr_matrix((0, n))
+            for g in range(G.shape[0]):
+                row = G.getrow(g)
+                add(row.indices, row.data)
+                self.sys_rows.append(('gate', (g, ic.sense[g], ic.b[g])))
+            m = len(self.sys_rows)
+            A = sparse.csr_matrix((vv, (ri, ci)), shape=(m, len(cont)))
+            self.system = lp_class([0.0] * len(cont), A, [0.0] * m, sparse.csr_matrix((0, len(cont))), [],
+                                   [lb[j] for j in cont], [ub[j] for j in cont])
+        lp = self.system
+        inf = lp.infinity()
+        for i, (kind, data) in enumerate(self.sys_rows):
+            if kind == 'fixed':
+                lo, hi = data
+            elif kind == 'mixed':
+                b, is_eq, zs, c = data
+                hi = b - c[z_one[zs]].sum()
+                lo = hi if is_eq else -np.inf
+            else:
+                g, sense, b = data
+                on = z_one[self.gate_z[g]] == (self.gate_val[g] == 1)
+                lo = b if on and sense in 'GE' else -np.inf
+                hi = b if on and sense in 'LE' else np.inf
+            lp.chgSide(i, max(lo, -inf), min(hi, inf))
+        return lp.solve_verdict()[1]
 
     def _set_mixed(self, z_one):
         """Right-hand sides and objective weights of the mixed rows at the assignment."""
@@ -227,8 +285,10 @@ class GateOracle:
             z_one (numpy bool array over all MILP columns): True where a binary is 1
 
         Returns:
-            None if the system is feasible (the assignment is a design), otherwise the clause of
-            the infeasibility proof as (positive columns, negative columns) of the MILP.
+            None if the system is feasible (the assignment is a design), the clause of the
+            infeasibility proof as (positive columns, negative columns) of the MILP if it is not,
+            or UNDECIDED when the LP solver finds neither a proof nor a feasible point (a system
+            infeasible by less than the solver resolves). An undecided assignment is not a design.
         """
         t0 = time.time()
         lp = self.lp
@@ -248,8 +308,7 @@ class GateOracle:
                 size = np.abs(y[self.on_z])
                 keep = size > _REL_ZERO * max(size.max(initial=0.0), 1e-300)
                 y[np.flatnonzero(self.on_z)[~keep]] = 0.0
-                scale = max(1.0, np.abs(y).max())
-                if np.abs(self.R @ y).max(initial=0.0) > _PROOF_TOL * scale or abs(self.rhs @ y + 1.0) > _PROOF_TOL * scale:
+                if np.abs(self.R @ y).max(initial=0.0) > _PROOF_TOL or abs(self.rhs @ y + 1.0) > _PROOF_TOL:
                     raise NumericalTrouble('the infeasibility proof of an oracle LP does not hold')
                 used = np.flatnonzero(self.on_z)[keep]
                 gates = np.unique(self.col_gate[used][self.col_gate[used] >= 0])
@@ -263,7 +322,12 @@ class GateOracle:
                     neg_cols.extend(zs[(c > 0) & z_one[zs]])
                 return np.unique(np.array(pos_cols, int)), np.unique(np.array(neg_cols, int))
             if status == INFEASIBLE:
-                return None
+                point = self._feasible_point_exists(z_one)
+                if point == OPTIMAL:
+                    return None
+                if point == INFEASIBLE:
+                    self.n_undecided += 1
+                    return UNDECIDED
             raise NumericalTrouble('an oracle LP ended without a verdict')
         finally:
             self.seconds += time.time() - t0
@@ -287,11 +351,11 @@ def _worker_leaf(S_idx, candidates):
 
     Returns:
         (S_idx, candidates that complete a design, clauses as (positive, negative) z positions,
-        number of LPs)
+        candidates the oracle could not decide, number of LPs)
     """
     o, z_cols, pos = _worker['oracle'], _worker['z_cols'], _worker['pos']
     in_S = set(int(i) for i in S_idx)
-    designs, clauses, n0 = [], [], o.n_calls
+    designs, clauses, undecided, n0 = [], [], [], o.n_calls
     for e in candidates:
         e = int(e)
         if any(e not in pc and nc <= in_S | {e} for pc, nc in clauses):
@@ -302,9 +366,11 @@ def _worker_leaf(S_idx, candidates):
         clause = o.query(z_one)
         if clause is None:
             designs.append(e)
+        elif clause is UNDECIDED:
+            undecided.append(e)
         else:
             clauses.append((set(int(i) for i in pos[clause[0]]), set(int(i) for i in pos[clause[1]])))
-    return S_idx, designs, [(sorted(pc), sorted(nc)) for pc, nc in clauses], o.n_calls - n0
+    return S_idx, designs, [(sorted(pc), sorted(nc)) for pc, nc in clauses], undecided, o.n_calls - n0
 
 
 class _Rows:
@@ -350,6 +416,7 @@ class ClauseEnumerator:
         self.workers = workers if workers and workers > 1 else 0
         self.pool = None
         self.n_worker_lps = 0
+        self.n_undecided = 0
         self.oracle = oracle
         self.z_cols = np.array(z_cols, int)
         self.n_cols = n_cols
@@ -404,8 +471,17 @@ class ClauseEnumerator:
         clause = self.oracle.query(z_one)
         if clause is None:
             return True
-        self._store(self.pos[clause[0]], self.pos[clause[1]])
+        if clause is UNDECIDED:
+            self._rule_out(S)
+        else:
+            self._store(self.pos[clause[0]], self.pos[clause[1]])
         return False
+
+    def _rule_out(self, S):
+        """Exclude exactly the set S (the oracle could not decide it): any other set differs from
+        it by an intervention it lacks or one it does not share."""
+        self.n_undecided += 1
+        self._store(np.flatnonzero(~S), np.flatnonzero(S))
 
     def _store(self, pos_cols, neg_cols):
         """Keep a clause the oracle returned."""
@@ -443,8 +519,13 @@ class ClauseEnumerator:
             wait = False
             if isinstance(res, BaseException):
                 raise res
-            S_idx, designs, clauses, n_lps = res
+            S_idx, designs, clauses, undecided, n_lps = res
             self.n_worker_lps += n_lps
+            for e in undecided:
+                T = np.zeros(self.m, bool)
+                T[S_idx] = True
+                T[e] = True
+                self._rule_out(T)
             for pos_cols, neg_cols in clauses:
                 self._store(np.array(pos_cols, int), np.array(neg_cols, int))
             for e in designs:

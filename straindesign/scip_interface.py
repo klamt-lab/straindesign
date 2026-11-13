@@ -548,6 +548,9 @@ class SCIP_MILP(pso.Model):
         logging.info('  clause enumeration, cost %g: %d designs, %d nodes, %d LPs, %.1f s (%.1f s in this process\'s LPs), %d clauses' %
                      (enum.level, len(found), enum.n_nodes - nodes, enum.oracle.n_calls + enum.n_worker_lps - calls,
                       t.time() - t0, enum.oracle.seconds - secs, enum.P.n + enum.n_static_mixed))
+        if enum.n_undecided:
+            logging.warning('  %d candidate sets so far were infeasible by less than the LP solver resolves '
+                            '(no feasible point, no proof); they are not reported as designs.' % enum.n_undecided)
         self.pool_exhausted = self.level_enumerated = complete
         sols = []
         for S in found:
@@ -835,21 +838,25 @@ class SCIP_LP(pso.LP):
     def solve_verdict(self) -> Tuple[List, float]:
         """Solve the LP and report only what was proven: OPTIMAL with the solution, INFEASIBLE, or
         ERROR. A simplex failure from the stored basis (it happens after coefficient changes) is
-        answered with one solve from scratch before ERROR is returned.
+        answered with a solve from scratch, and that failing, with one from scratch under SoPlex's
+        aggressive scaling, before ERROR is returned.
 
         Returns:
             (Tuple[List, float])
 
             solution_vector (None unless OPTIMAL), optimization_status
         """
-        for from_scratch in (0, 1):
+        scaling = self.getIntParam(pso.SCIP_LPPARAM.SCALING)
+        for from_scratch, scale in ((0, scaling), (1, scaling), (1, 2)):
             self.setIntParam(pso.SCIP_LPPARAM.FROMSCRATCH, from_scratch)
+            self.setIntParam(pso.SCIP_LPPARAM.SCALING, scale)
             try:
                 opt = self.optimize()
             except Exception:
                 continue
             finally:
                 self.setIntParam(pso.SCIP_LPPARAM.FROMSCRATCH, 0)
+                self.setIntParam(pso.SCIP_LPPARAM.SCALING, scaling)
             if self.isOptimal():
                 return self.getPrimal(), OPTIMAL
             if self.isInfinity(opt) and not self.isPrimalFeasible():
