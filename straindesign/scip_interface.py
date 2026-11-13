@@ -549,8 +549,8 @@ class SCIP_MILP(pso.Model):
                      (enum.level, len(found), enum.n_nodes - nodes, enum.oracle.n_calls + enum.n_worker_lps - calls,
                       t.time() - t0, enum.oracle.seconds - secs, enum.P.n + enum.n_static_mixed))
         if enum.n_undecided:
-            logging.warning('  %d candidate sets so far were infeasible by less than the LP solver resolves '
-                            '(no feasible point, no proof); they are not reported as designs.' % enum.n_undecided)
+            logging.warning('  %d candidate sets so far have neither a feasible point nor an infeasibility proof the '
+                            'LP solver can produce; they are not reported as designs.' % enum.n_undecided)
         self.pool_exhausted = self.level_enumerated = complete
         sols = []
         for S in found:

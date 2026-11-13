@@ -245,7 +245,8 @@ class GateOracle:
             None if the system is feasible (the assignment is a design), the clause of the
             infeasibility proof as (positive columns, negative columns) of the MILP if it is not,
             or UNDECIDED when the LP solver finds neither a proof nor a feasible point (a system
-            infeasible by less than the solver resolves). An undecided assignment is not a design.
+            infeasible by less than the solver resolves, or a proof LP it cannot solve). An
+            undecided assignment is not a design.
         """
         t0 = time.time()
         lp = self.lp
@@ -269,13 +270,14 @@ class GateOracle:
                 if not self.active[gates].all():
                     raise NumericalTrouble('an oracle LP used a gate that is switched off')
                 return np.unique(self.gate_z[gates[self.gate_val[gates] == 0]]), np.unique(self.gate_z[gates[self.gate_val[gates] == 1]])
-            if status == INFEASIBLE:
-                point = self._feasible_point_exists(active)
-                if point == OPTIMAL:
-                    return None
-                if point == INFEASIBLE:
-                    self.n_undecided += 1
-                    return UNDECIDED
+            # no proof: none exists, or the proof LP failed numerically (seen where the system is
+            # infeasible by a margin that needs multipliers beyond what the simplex handles)
+            point = self._feasible_point_exists(active)
+            if point == OPTIMAL:
+                return None
+            if point == INFEASIBLE:
+                self.n_undecided += 1
+                return UNDECIDED
             raise NumericalTrouble('an oracle LP ended without a verdict')
         finally:
             self.seconds += time.time() - t0
