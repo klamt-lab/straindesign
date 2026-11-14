@@ -25,6 +25,7 @@ from straindesign import avail_solvers, GLPK
 from straindesign.indicatorConstraints import IndicatorConstraints
 from straindesign.names import *
 import logging
+import os
 
 
 # Solvers that get CellNetAnalyzer's binary structure for the target-region gates (own gate
@@ -211,7 +212,7 @@ class MILP_LP(object):
         # _CNA_GATE_BINARIES first get CellNetAnalyzer's binary structure for the target-region
         # gates, and the SOS1 sets gate on its binaries.
         self.sos1 = []
-        if getattr(self, 'sos1_gates', None) and self.solver in [CPLEX, GUROBI] \
+        if getattr(self, 'sos1_gates', None) and (self.solver in [CPLEX, GUROBI] or (self.solver == SCIP and os.environ.get('SD_SCIP_SOS1'))) \
            and self.indic_constr is not None and self.indic_constr.A.shape[0]:
             indicator_form = (self.c, self.lb, self.ub, self.vtype, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq,
                               self.indic_constr)

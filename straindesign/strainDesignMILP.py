@@ -60,14 +60,17 @@ def _solve_verification_lp(lp, values=False):
     The certificate systems are scale-free, and on compressed networks their feasible points have
     entries of 1e5 and more, so at the 1e-9 tolerance the MILP runs at, round-off alone can make a
     feasible system read infeasible. CPLEX and Gurobi therefore verify at the solver default of
-    1e-6 and confirm any other verdict with barrier before it counts. Only a definite status shows
+    1e-6 and confirm any other verdict with barrier before it counts; SCIP's SoPlex verifies at 1e-6
+    as well, with the retries of its interface. Only a definite status shows
     feasibility: CPLEX 1/5/6 (optimal, also with unscaled infeasibilities), Gurobi 2/13 (optimal,
     or suboptimal with a point); INF_OR_UNBD, NUMERIC or an aborted solve show nothing.
     """
     if lp.solver not in (CPLEX, GUROBI):
-        if not values:
-            return not np.isnan(lp.slim_solve())
+        if lp.solver == SCIP and hasattr(lp.backend, 'set_tolerance'):
+            lp.backend.set_tolerance(1e-6)  # the same tolerance as for the two solvers below
         x, _, status = lp.solve()
+        if not values:
+            return status == OPTIMAL
         return x if status == OPTIMAL else None
     b = lp.backend
     if lp.solver == GUROBI:
@@ -1004,6 +1007,14 @@ class SDMILP(SDProblem, MILP_LP):
         errored = False
         sols = sparse.csr_matrix((0, self.num_z))
         logging.info('Enumerating strain designs (k-sweep) ...')
+        if self.solver == SCIP:
+            # SCIP has no solution pool: its populate enumerates a pinned level itself, over these
+            # columns. Both of its methods exclude a design by the set of its knockouts, which
+            # says nothing about a design made of knock-ins, so with any knock-in column the
+            # backend keeps its solve-and-exclude loop.
+            if not any(self.z_inverted[j] for j in self.idx_z):
+                self.backend._sd_ko_cols = list(self.idx_z)
+                self.backend._sd_cost_rows = (self.idx_row_mincost, self.idx_row_maxcost)
         native = self.solver in (CPLEX, GUROBI)
         # Farkas anchor controller (CPLEX, Gurobi). The certificates form a cone, so the anchor c in
         # b'y <= -c is exact at any positive value; it sets their scale against the solver's absolute
@@ -1154,6 +1165,10 @@ class SDMILP(SDProblem, MILP_LP):
                         break
                     if trust_certificate and self.pool_exhausted:
                         break
+                    # a backend that walks the level itself to the end (not a solver's pool
+                    # certificate) has nothing left to confirm
+                    if getattr(self.backend, 'level_enumerated', False):
+                        break
                 elif status == ERROR:
                     # A solver failure is not an empty level. Treating it as one silently drops
                     # every design at this cardinality and every level above it.
@@ -1184,6 +1199,8 @@ class SDMILP(SDProblem, MILP_LP):
                 if endtime - time.time() <= 0:
                     hit_timelimit = True
                 break
+        if hasattr(self.backend, 'end_enumeration'):
+            self.backend.end_enumeration()
         # The level rows keep their last value on the object, so leave the pool and the work limit as
         # every other caller expects to find them.
         self.set_pool_gap(False)
