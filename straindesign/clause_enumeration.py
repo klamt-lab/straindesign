@@ -418,16 +418,17 @@ class GateOracle:
         self.n_calls += 1
         try:
             if status == OPTIMAL:
+                # a solution is a proof only if it holds up: a solve at relaxed tolerances can leave
+                # weight on a switched-off gate or a residual, and then it counts as no proof
                 y = np.array(y)
+                for g in np.flatnonzero(~active):
+                    y[self.gate_cols[g]] = 0.0
                 size = np.abs(y[self.is_gate_col])
                 keep = size > _REL_ZERO * max(size.max(initial=0.0), 1e-300)
                 y[np.flatnonzero(self.is_gate_col)[~keep]] = 0.0
-                if np.abs(self.R @ y).max(initial=0.0) > _PROOF_TOL or abs(self.rhs @ y + 1.0) > _PROOF_TOL:
-                    raise NumericalTrouble('the infeasibility proof of an oracle LP does not hold')
-                gates = np.unique(self.col_gate[np.flatnonzero(self.is_gate_col)[keep]])
-                if not self.active[gates].all():
-                    raise NumericalTrouble('an oracle LP used a gate that is switched off')
-                return np.unique(self.gate_z[gates[self.gate_val[gates] == 0]]), np.unique(self.gate_z[gates[self.gate_val[gates] == 1]])
+                if np.abs(self.R @ y).max(initial=0.0) <= _PROOF_TOL and abs(self.rhs @ y + 1.0) <= _PROOF_TOL:
+                    gates = np.unique(self.col_gate[np.flatnonzero(self.is_gate_col)[keep]])
+                    return np.unique(self.gate_z[gates[self.gate_val[gates] == 0]]), np.unique(self.gate_z[gates[self.gate_val[gates] == 1]])
             # no proof: none exists, or the proof LP failed numerically
             point = self._relaxed_system(active, relax=False)[1]
             if point == OPTIMAL:
