@@ -60,14 +60,17 @@ def _solve_verification_lp(lp, values=False):
     The certificate systems are scale-free, and on compressed networks their feasible points have
     entries of 1e5 and more, so at the 1e-9 tolerance the MILP runs at, round-off alone can make a
     feasible system read infeasible. CPLEX and Gurobi therefore verify at the solver default of
-    1e-6 and confirm any other verdict with barrier before it counts. Only a definite status shows
+    1e-6 and confirm any other verdict with barrier before it counts; SCIP's SoPlex verifies at 1e-6
+    as well, with the retries of its interface. Only a definite status shows
     feasibility: CPLEX 1/5/6 (optimal, also with unscaled infeasibilities), Gurobi 2/13 (optimal,
     or suboptimal with a point); INF_OR_UNBD, NUMERIC or an aborted solve show nothing.
     """
     if lp.solver not in (CPLEX, GUROBI):
-        if not values:
-            return not np.isnan(lp.slim_solve())
+        if lp.solver == SCIP and hasattr(lp.backend, 'set_tolerance'):
+            lp.backend.set_tolerance(1e-6)  # the same tolerance as for the two solvers below
         x, _, status = lp.solve()
+        if not values:
+            return status == OPTIMAL
         return x if status == OPTIMAL else None
     b = lp.backend
     if lp.solver == GUROBI:

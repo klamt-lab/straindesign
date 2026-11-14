@@ -843,6 +843,11 @@ class SCIP_LP(pso.LP):
             x = [nan] * len(self.getPrimal())
             return x, min_cx, ERROR
 
+    def set_tolerance(self, tol):
+        """Set the primal and dual feasibility tolerance of the LP."""
+        self.setRealParam(pso.SCIP_LPPARAM.FEASTOL, tol)
+        self.setRealParam(pso.SCIP_LPPARAM.DUALFEASTOL, tol)
+
     def _settled(self, opt):
         """A solve ended usably: optimal with a finite solution, or reported infeasible or unbounded.
         (SoPlex can return from a failed solve with a finite objective and NaN in the solution.)"""
