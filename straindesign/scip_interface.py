@@ -822,7 +822,9 @@ class SCIP_LP(pso.LP):
             solution_vector, optimal_value, optimization_status
         """
         try:
-            min_cx = self._optimize_with_retries()
+            min_cx = self._optimize_with_retries(self._settled)
+            if min_cx is None:
+                raise RuntimeError('no attempt ended with a status')
             if self.isInfinity(-min_cx):  # solution
                 min_cx = -inf
                 status = UNBOUNDED
@@ -840,6 +842,13 @@ class SCIP_LP(pso.LP):
             min_cx = nan
             x = [nan] * len(self.getPrimal())
             return x, min_cx, ERROR
+
+    def _settled(self, opt):
+        """A solve ended usably: optimal with a finite solution, or reported infeasible or unbounded.
+        (SoPlex can return from a failed solve with a finite objective and NaN in the solution.)"""
+        if self.isInfinity(opt) or self.isInfinity(-opt):
+            return True
+        return bool(self.isOptimal()) and not isnan(opt) and not any(isnan(v) for v in self.getPrimal())
 
     def _optimize_with_retries(self, settled=None):
         """Solve; after a simplex failure ("error in LP solver": a singular or badly scaled basis)
@@ -893,7 +902,7 @@ class SCIP_LP(pso.LP):
         """
         infeasible = lambda opt: self.isInfinity(opt) and not self.isPrimalFeasible()
         try:
-            opt = self._optimize_with_retries(lambda opt: self.isOptimal() or infeasible(opt))
+            opt = self._optimize_with_retries(lambda opt: infeasible(opt) or (not self.isInfinity(-opt) and self._settled(opt)))
         except Exception:
             return None, ERROR
         if opt is None:
@@ -914,7 +923,9 @@ class SCIP_LP(pso.LP):
             Optimum value of the objective function.
         """
         try:
-            opt = self._optimize_with_retries()
+            opt = self._optimize_with_retries(self._settled)
+            if opt is None:
+                raise RuntimeError('no attempt ended with a status')
             if self.isInfinity(-opt):  # solution
                 opt = -inf
             elif self.isInfinity(opt):
