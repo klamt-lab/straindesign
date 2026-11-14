@@ -848,7 +848,7 @@ class SCIP_LP(pso.LP):
         (SoPlex can return from a failed solve with a finite objective and NaN in the solution.)"""
         if self.isInfinity(opt) or self.isInfinity(-opt):
             return True
-        return bool(self.isOptimal()) and not isnan(opt) and not any(isnan(v) for v in self.getPrimal())
+        return bool(self.isOptimal()) and not isnan(opt) and not isnan(builtins_sum(self.getPrimal()))
 
     def _optimize_with_retries(self, settled=None):
         """Solve; after a simplex failure ("error in LP solver": a singular or badly scaled basis)
