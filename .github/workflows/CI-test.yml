@@ -95,7 +95,7 @@ jobs:
           pip install pytest pytest-timeout
       - name: Set up Conda Environment with Micromamba
         if: matrix.package-manager == 'conda'
-        uses: mamba-org/setup-micromamba@v2
+        uses: mamba-org/setup-micromamba@v3
         with:
           environment-name: straindesign
           micromamba-version: latest
