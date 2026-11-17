@@ -123,3 +123,44 @@ def test_oracle_decides_a_set_the_proof_lp_cannot(monkeypatch):
     pos, neg = oracle.query(np.array([False, False, False]))
     assert list(pos) == [0] and len(neg) == 0 and oracle.n_by_violation == 1 and oracle.n_exact == 1
     assert oracle.query(np.array([True, False, False])) is None
+
+
+@pytest.mark.parametrize("modules", [_weak_coupling, _nested])
+@pytest.mark.parametrize("threads", [1, 2])
+def test_targeted_last_level_keeps_the_designs(model_weak_coupling, modules, threads, caplog, monkeypatch):
+    """The targeted query at the last level only changes which clauses are found, never the designs,
+    in the main process and in worker processes."""
+    monkeypatch.delenv('SD_SCIP_CLAUSES', raising=False)
+    if threads > 1:
+        monkeypatch.setattr(clause_enumeration, '_PARALLEL_AFTER', -1.0)
+    monkeypatch.setenv('SD_CLAUSE_TARGET', '0')
+    plain = _designs(model_weak_coupling, modules(model_weak_coupling), caplog, 'clause enumeration, cost',
+                     compress=True, **{MILP_THREADS: threads})
+    monkeypatch.delenv('SD_CLAUSE_TARGET')
+    targeted = _designs(model_weak_coupling, modules(model_weak_coupling), caplog, 'clause enumeration, cost',
+                        compress=True, **{MILP_THREADS: threads})
+    assert len(plain) > 0
+    assert targeted == plain
+
+
+def test_avoid_steers_the_proof_to_the_other_gate():
+    """g <= a and g <= b, g >= 1, with gates z1 = 0 -> a <= 0 and z2 = 0 -> b <= 0. At z = 0 either gate
+    proves infeasibility alone; the proof has to leave out the gate it is asked to avoid."""
+    from types import SimpleNamespace
+    from scipy import sparse
+    from straindesign.scip_interface import SCIP_LP
+    # columns: z1, z2, a, b, g
+    c_rows = [(np.array([2, 4]), np.array([-1.0, 1.0]), 0.0, False),
+              (np.array([3, 4]), np.array([-1.0, 1.0]), 0.0, False),
+              (np.array([4]), np.array([-1.0]), -1.0, False)]
+    G = sparse.csr_matrix(np.array([[0.0, 0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0, 0.0]]))
+    gates = SimpleNamespace(A=G, b=[0.0, 0.0], sense='LL', binv=[0, 1], indicval=[0, 0])
+    oracle = clause_enumeration.GateOracle(c_rows, [], [0.0] * 5, [1.0, 1.0, np.inf, np.inf, np.inf], np.array([2, 3, 4]),
+                                           gates, SCIP_LP)
+    z = np.zeros(5, bool)
+    for avoid, rest in ((0, 1), (1, 0)):
+        pos, neg = oracle.query(z, avoid=[avoid])
+        assert list(pos) == [rest] and len(neg) == 0
+    assert oracle.n_targeted == 2
+    # the weights are reset after the query: a design is still a design
+    assert oracle.query(np.array([True, True, False, False, False])) is None

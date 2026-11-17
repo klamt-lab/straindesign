@@ -2900,6 +2900,15 @@ cost level with LPs:
   a violated clause, and asks the oracle only for sets that satisfy every clause so far. Clauses persist
   across cost levels. The level ends when the walk ends, so `backend.level_enumerated` lets the k-sweep
   skip its confirmatory populate.
+- **Targeted query at the last level.** When one more intervention fits, the candidates are the
+  interventions that hit every violated clause on their own. Before testing them one LP each, the walk
+  asks the oracle once for the set itself, with the gate multipliers of the candidates weighted 1000
+  instead of 1 (`GateOracle.query(..., avoid=...)`). The proof then leaves out as many candidates as it
+  can, and its clause rules out every candidate it leaves out, often all of them. Only objective
+  coefficients change, so the warm start stays, and a proof is valid under any positive weights. On
+  iML1515 (gene MCS, max_cost 3) this cuts the LPs of level 3 from about 9,800 to about 900, with
+  identical designs. `SD_CLAUSE_TARGET=0` switches it off. Worker processes do the same for the sets
+  they receive.
 - With `milp_threads > 1` the sets that differ only in their last intervention go to worker processes
   (`SDPool`), each with its own oracle LP. A clause that arrives late costs LPs, never a design.
 - `populate` falls back to the constraint-handler tree (`_ScipRejectRecorder`) when the structure does not

@@ -42,6 +42,7 @@ Requirements, checked by :func:`split_rows` and :meth:`ClauseEnumerator.load_z_r
 """
 
 import logging
+import os
 import queue
 import time
 import numpy as np
@@ -65,6 +66,9 @@ FEASIBLE = 'feasible'
 _FEAS_TOL = 1e-9
 # proofs supported by at most this many rows are re-derived and checked in rational arithmetic
 _EXACT_MAX_ROWS = 500
+# objective weight on the gate multipliers of the binaries a targeted query should keep out of its proof
+# (the others weigh 1); any weight > 0 leaves every proof valid, a large one makes the proof avoid them
+_AVOID_WEIGHT = 1000.0
 
 
 class NotApplicable(Exception):
@@ -272,6 +276,12 @@ class GateOracle:
             obj[mult] = 1.0
             self.col_gate[mult] = g
         self.is_gate_col = self.col_gate >= 0
+        # MILP column of a binary -> multiplier columns of its gates that are on at z = 0, i.e. the
+        # columns that put the literal z_b into a clause
+        self.literal_cols = {}
+        for g, mult in enumerate(self.gate_cols):
+            if self.gate_val[g] == 0:
+                self.literal_cols.setdefault(int(self.gate_z[g]), []).extend(mult)
         A_eq = sparse.vstack((self.R, sparse.csr_matrix(self.rhs)), format='csr')
         b_eq = [0.0] * len(cols) + [-1.0]
         self.new_proof_lp = lambda: lp_class(list(obj), sparse.csr_matrix((0, m)), [], A_eq, b_eq, lo, [np.inf] * m)
@@ -279,6 +289,7 @@ class GateOracle:
         self.active = np.ones(len(self.gate_cols), bool)
         self.n_rebuilt = 0  # LPs set up afresh after the solver failed on the object in use
         self.n_calls = 0
+        self.n_targeted = 0  # queries with an avoid set
         self.n_undecided = 0
         self.n_by_violation = 0  # proofs taken from the minimal-violation LP ...
         self.n_exact = 0  # ... of which confirmed in rational arithmetic
@@ -387,11 +398,15 @@ class GateOracle:
         self.n_exact += bool(exact)
         return np.unique(self.sys_gate[rows][self.sys_gate[rows] >= 0])
 
-    def query(self, z_one):
+    def query(self, z_one, avoid=()):
         """Ask whether the assignment admits a feasible continuous system.
 
         Args:
             z_one (numpy bool array over all MILP columns): True where a binary is 1
+            avoid (iterable of MILP columns): binaries the proof should leave out of its clause where
+                it can. Their gate multipliers weigh _AVOID_WEIGHT instead of 1 in this query only, so
+                the clause, which is valid either way, excludes as many sets that add one of them as
+                possible. Only the objective changes; the warm start stays.
 
         Returns:
             None if the system is feasible (the assignment is a design), the clause of the
@@ -407,8 +422,16 @@ class GateOracle:
             for col in self.gate_cols[g]:
                 lp.chgBound(col, 0.0, inf if active[g] else 0.0)
         self.active = active
-        y, status = lp.solve_verdict()
+        weighted = [c for j in avoid for c in self.literal_cols.get(int(j), ())]
+        for col in weighted:
+            lp.chgObj(col, _AVOID_WEIGHT)
+        try:
+            y, status = lp.solve_verdict()
+        finally:
+            for col in weighted:
+                lp.chgObj(col, 1.0)
         if status == ERROR:
+            # the fresh LP solves with unit weights: the proof is as valid, only less targeted
             lp = self.lp = self.new_proof_lp()
             self.n_rebuilt += 1
             for g in np.flatnonzero(~active):
@@ -416,6 +439,7 @@ class GateOracle:
                     lp.chgBound(col, 0.0, 0.0)
             y, status = lp.solve_verdict()
         self.n_calls += 1
+        self.n_targeted += bool(weighted)
         try:
             if status == OPTIMAL:
                 # a solution is a proof only if it holds up: a solve at relaxed tolerances can leave
@@ -445,6 +469,11 @@ class GateOracle:
             self.seconds += time.time() - t0
 
 
+def _targeted():
+    """Whether the last level starts with one targeted query (SD_CLAUSE_TARGET=0 switches it off)."""
+    return os.environ.get('SD_CLAUSE_TARGET', '1').lower() not in ('0', 'off', 'false')
+
+
 _worker = {}
 
 
@@ -468,6 +497,13 @@ def _worker_leaf(S_idx, candidates):
     o, z_cols, pos = _worker['oracle'], _worker['z_cols'], _worker['pos']
     in_S = set(int(i) for i in S_idx)
     designs, clauses, undecided, n0 = [], [], [], o.n_calls
+    if len(candidates) > 1 and _targeted():
+        # as in ClauseEnumerator._descend: one query on S, its proof steered away from the candidates
+        z_one = np.zeros(_worker['n_cols'], bool)
+        z_one[z_cols[S_idx]] = True
+        clause = o.query(z_one, z_cols[np.asarray(candidates, int)])
+        if clause is not None and clause is not UNDECIDED:
+            clauses.append((set(int(i) for i in pos[clause[0]]), set(int(i) for i in pos[clause[1]])))
     for e in candidates:
         e = int(e)
         if any(e not in pc and nc <= in_S | {e} for pc, nc in clauses):
@@ -609,12 +645,12 @@ class ClauseEnumerator:
         self.Mp.add(pos_cols)
         self.Mn.add(neg_cols)
 
-    def _ask(self, S):
+    def _ask(self, S, avoid=()):
         """Query the oracle for the set S (bit words); a clause it returns is stored. True if S
-        is a design."""
+        is a design. avoid: positions of binaries the proof should keep out of its clause."""
         z_one = np.zeros(self.n_cols, bool)
         z_one[self.z_cols[_unpack(S, self.m)]] = True
-        clause = self.oracle.query(z_one)
+        clause = self.oracle.query(z_one, self.z_cols[np.asarray(avoid, int)])
         if clause is None:
             return True
         if clause is UNDECIDED:
@@ -709,6 +745,7 @@ class ClauseEnumerator:
             was enumerated completely (False: time limit)
         """
         self.found = []
+        self.targeted = _targeted()
         self.deadline = time.time() + time_limit
         self.parallel_from = self.oracle.seconds + _PARALLEL_AFTER
         # per remaining budget: the interventions that still fit, and those that use it up
@@ -770,6 +807,10 @@ class ClauseEnumerator:
                 self._submit(S, [int(e) for e in last])
                 return
             n_mixed = self.Mp.n
+            if self.targeted and len(last) > 1:
+                # one query on S itself, its proof steered away from the candidates: the clause rules
+                # out every candidate it leaves out (often all of them) at the cost of one LP
+                self._ask(S, avoid=last)
             for e in last:
                 if P.n > n_seen and not _has_bit(P.a[n_seen:P.n], e).all():
                     continue
