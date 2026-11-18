@@ -898,8 +898,11 @@ class SCIP_LP(pso.LP):
         """Solve; after a simplex failure ("error in LP solver": a singular or badly scaled basis)
         try again from scratch, then under SoPlex's aggressive scaling, then with the feasibility
         tolerances relaxed tenfold and hundredfold for that one solve. The presolving parameter is
-        left alone: switching it through this interface returned solutions of the wrong length
-        (value 1) or called a bounded LP unbounded (value 0).
+        left alone here: this method takes the objective value SoPlex reports as it is, and on the
+        proof LPs of the enumeration a switched presolving gave a solution of the wrong length
+        (value 1) or reported an LP that is bounded below as unbounded (value 0).
+        :meth:`_solve_status` does switch presolving off for its retry, which is sound there
+        because it accepts UNBOUNDED only together with a primal ray.
 
         Args:
             settled (callable): given the objective value, says whether the solve ended with a
