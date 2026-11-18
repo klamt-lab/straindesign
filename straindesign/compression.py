@@ -284,6 +284,35 @@ class RationalMatrix:
             if row:
                 yield r, row
 
+    def _integer_rows(self) -> List[Dict[int, int]]:
+        """The non-empty rows as {col: int}, each scaled by a common multiple of its denominators."""
+        out = []
+        if self._dict_frac is not None:
+            for cd in self._dict_frac.values():
+                row = {int(c): v for c, v in cd.items() if v}
+                if row:
+                    row_lcm = lcm(*(f.denominator for f in row.values()))
+                    out.append({c: f.numerator * (row_lcm // f.denominator) for c, f in row.items()})
+            return out
+        num_csr = self._num_sparse.tocsr()
+        den_csr = self._den_sparse.tocsr()
+        indptr, indices = num_csr.indptr.tolist(), num_csr.indices.tolist()
+        nums, dens = num_csr.data.tolist(), den_csr.data.tolist()
+        integral = bool((den_csr.data == 1).all())
+        for r in range(self._rows):
+            start, end = indptr[r], indptr[r + 1]
+            if start == end:
+                continue
+            if integral:
+                row = {c: n for c, n in zip(indices[start:end], nums[start:end]) if n}
+            else:
+                row_dens = [d or 1 for d in dens[start:end]]
+                row_lcm = lcm(*row_dens)
+                row = {c: n * (row_lcm // d) for c, n, d in zip(indices[start:end], nums[start:end], row_dens) if n}
+            if row:
+                out.append(row)
+        return out
+
     def _nnz_per_column(self) -> np.ndarray:
         counts = np.zeros(self._cols, dtype=np.int64)
         if self._dict_frac is not None:
@@ -598,63 +627,40 @@ class RationalMatrix:
 # Sparse Integer RREF for Nullspace Computation
 
 
-def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]], int, List[int]]:
+def _rref_integer_sparse(rm: RationalMatrix, reduced: bool = True) -> Tuple[Dict[int, Dict[int, int]], int, List[int]]:
     """Compute integer RREF using dict-of-dicts for sparse row operations.
 
-    Columns are pre-sorted by nnz ascending so that sparse (likely pivot) columns
-    are processed first, reducing pivot-search time and fill-in during elimination.
-    Rows are pre-sorted by nnz ascending, and pivot rows are selected by Markowitz
-    criterion (sparsest row first, tie-break by smallest absolute value).
-    Results are translated back to the original column ordering before return.
+    Columns are visited in a fixed order, by nnz ascending, so that sparse columns become the
+    pivots and dense ones stay free. The pivot columns, and with them the reduced form up to row
+    scale and the kernel read off it, depend on that order alone. Which row serves a column only
+    affects the cost: among the rows holding the column the sparsest is taken, ties broken by the
+    smallest absolute value.
 
-    Uses GCD pre-scaling before row operations and post-reduction to control
-    coefficient growth. No denominator tracking needed — rows are arbitrarily
-    scalable for nullspace computation.
+    Rows are integer and arbitrarily scalable, so no denominators are tracked. An elimination
+    whose multiplier on the target row is +-1 (the common case) only touches the entries the
+    target shares with the pivot row; otherwise the target is rescaled and divided by its content.
+    Every pivot row is divided by its content before it is used.
 
     Args:
         rm: Input RationalMatrix
+        reduced: False stops after the forward elimination; the rank and the pivot columns are
+            final then, the returned rows are in echelon form only.
 
     Returns:
         (rref_data, rank, pivot_columns)
-        rref_data: {rref_row: {orig_col: value}} in original column space
-        pivot_columns: pivot column indices in original column space
+        rref_data: {pivot_index: {col: value}}
+        pivot_columns: pivot column indices, in pivot order
     """
     rows = rm.get_row_count()
     cols = rm.get_column_count()
 
-    # Column sorting: sparse columns first
-    # col_order[sorted_pos] = original_col
-    nnz_per_col = rm._nnz_per_column()
-    col_order = np.argsort(nnz_per_col, kind='stable').tolist()
-    col_inverse = [0] * cols
-    for sorted_pos, orig_col in enumerate(col_order):
-        col_inverse[orig_col] = sorted_pos
+    col_order = np.argsort(rm._nnz_per_column(), kind='stable').tolist()
 
-    # Convert to integer matrix (scale each row by LCM of denominators)
-    # Store column indices in sorted space
-    data: Dict[int, Dict[int, int]] = {}
-    for r, row_fracs in rm._iter_row_fractions():
-        row_lcm = reduce(lcm, (f.denominator for f in row_fracs.values()), 1)
-        row_data = {}
-        for orig_col, frac in row_fracs.items():
-            scaled = frac.numerator * (row_lcm // frac.denominator)
-            if scaled != 0:
-                row_data[col_inverse[orig_col]] = scaled
-        if row_data:
-            data[r] = row_data
+    # Sparse rows first (better initial pivot candidates)
+    data: Dict[int, Dict[int, int]] = dict(enumerate(sorted(rm._integer_rows(), key=len)))
 
-    # Row sorting: sparse rows first (better initial pivot candidates)
-    if data:
-        sorted_row_keys = sorted(data.keys(), key=lambda r: len(data[r]))
-        data = {new_r: data[old_r] for new_r, old_r in enumerate(sorted_row_keys)}
-
-    # Active (not-yet-pivoted) rows, and a column -> {rows containing it} index over the active rows.
-    # After the echelon change made elimination cheap, the Markowitz pivot search dominates (~89% on
-    # iML1515). The index turns the search from "scan every active row, test membership" (~99.9% of
-    # tests miss) into "visit only the rows that actually contain the pivot column". Its maintenance
-    # cost is proportional to the (now small) elimination fill, so it is a net win here — whereas
-    # pre-echelon, when elimination dominated, it was a wash.
-    active = set(data.keys())
+    # Column -> {rows containing it} index over the rows that are not yet pivot rows, so that the
+    # pivot search and the elimination visit only the rows that hold the column.
     col_rows: Dict[int, set] = {}
     for r, rd in data.items():
         for c in rd:
@@ -664,26 +670,65 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
             else:
                 s.add(r)
 
-    def _eliminate(prd, pivot_val, pivot_col, targets, index):
-        """Fraction-free elimination of ``pivot_col`` from each (row_key, entry) in ``targets`` using
-        pivot row ``prd``. Mutates ``data`` (updates/deletes each target row). If ``index`` is True,
-        keeps ``active``/``col_rows`` in sync (forward phase); back-substitution passes False since the
-        index is no longer needed once the forward phase is done.
+    def _normalize(row_data):
+        """Divide a row by its content, in place."""
+        g = gcd(*row_data.values())
+        if g > 1:
+            for c in row_data:
+                row_data[c] //= g
 
-        new[c] = elim[c]*pv_scaled - ev_scaled*pivot[c], with pv_scaled/ev_scaled pre-divided by
-        gcd(pivot_val, elim_val) to keep the products small, then the whole row reduced by its content
-        GCD. The content reduction keeps coefficient growth polynomial — without it, cross-
-        multiplication grows exponentially.
+    def _eliminate(prd, pivot_val, targets, index):
+        """Clear the pivot column from each (row_key, entry) in ``targets`` using pivot row ``prd``.
+
+        Mutates ``data``. ``index`` keeps ``col_rows`` in sync (forward phase); back-substitution
+        passes False because the index is not used after the forward phase.
+
+        The update is target*pv - ev*pivot with pv, ev the pivot and target entries divided by
+        their gcd. For pv = +-1 it is applied in place and the content is left alone: nothing was
+        multiplied, so there is no growth to undo. Otherwise the content is divided out, which
+        keeps coefficient growth polynomial.
         """
         for elim_row, elim_val in targets:
-            elim_row_data = data[elim_row]
-            old_cols = set(elim_row_data) if index else None
+            row = data[elim_row]
             g = gcd(pivot_val, elim_val)
             pv_scaled = pivot_val // g
             ev_scaled = elim_val // g
-            # Scale the whole elim row by pv_scaled in one comprehension (every product is nonzero),
-            # then correct the few columns it shares with the (sparse) pivot row.
-            new_row = {c: v * pv_scaled for c, v in elim_row_data.items()}
+            if pv_scaled == 1 or pv_scaled == -1:
+                if pv_scaled < 0:
+                    ev_scaled = -ev_scaled
+                if index:
+                    for c, p_val in prd.items():
+                        old = row.get(c)
+                        if old is None:
+                            row[c] = -ev_scaled * p_val
+                            s = col_rows.get(c)
+                            if s is None:
+                                col_rows[c] = {elim_row}
+                            else:
+                                s.add(elim_row)
+                        else:
+                            new_val = old - ev_scaled * p_val
+                            if new_val:
+                                row[c] = new_val
+                            else:
+                                del row[c]
+                                col_rows[c].discard(elim_row)
+                else:
+                    for c, p_val in prd.items():
+                        old = row.get(c)
+                        if old is None:
+                            row[c] = -ev_scaled * p_val
+                        else:
+                            new_val = old - ev_scaled * p_val
+                            if new_val:
+                                row[c] = new_val
+                            else:
+                                del row[c]
+                if not row:
+                    del data[elim_row]
+                continue
+            old_cols = set(row) if index else None
+            new_row = {c: v * pv_scaled for c, v in row.items()}
             for c, p_val in prd.items():
                 new_val = new_row.get(c, 0) - ev_scaled * p_val
                 if new_val != 0:
@@ -692,10 +737,7 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
                     del new_row[c]
             if new_row:
                 data[elim_row] = new_row
-                row_gcd = gcd(*new_row.values())
-                if row_gcd > 1:
-                    for c in new_row:
-                        new_row[c] //= row_gcd
+                _normalize(new_row)
                 if index:
                     new_cols = new_row.keys()
                     for c in new_cols - old_cols:
@@ -709,18 +751,16 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
             else:
                 del data[elim_row]
                 if index:
-                    active.discard(elim_row)
                     for c in old_cols:
                         col_rows[c].discard(elim_row)
 
     # Phase 1: forward elimination to row-echelon form
-    # Eliminate each pivot only from rows BELOW its pivot row, so already-processed pivot rows stay
-    # sparse. Full Gauss-Jordan (eliminating upward too) re-reduces those filled rows with every later
-    # pivot — ~99% of the total work on iML1515. The reduced form is recovered in phase 2. Rows are not
-    # renumbered/swapped to pivot positions; instead pivot_keys[i] records the data-key of pivot i.
-    pivot_cols_sorted = []
+    # Each pivot is cleared only from the rows that are not pivot rows yet, so finished pivot rows
+    # stay sparse; the reduced form is recovered in phase 2. Rows are not renumbered to pivot
+    # positions, pivot_keys[i] records the data key of pivot i.
+    pivot_cols = []
     pivot_keys = []
-    for pivot_col in range(cols):
+    for pivot_col in col_order:
         if len(pivot_keys) >= rows:
             break
 
@@ -728,7 +768,6 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
         if not holders:
             continue
 
-        # Markowitz among the rows that actually contain this column: sparsest, then smallest abs.
         best_row, best_val = -1, 0
         best_nnz, best_abs = float('inf'), float('inf')
         for r in holders:
@@ -740,122 +779,120 @@ def _rref_integer_sparse(rm: RationalMatrix) -> Tuple[Dict[int, Dict[int, int]],
                 best_nnz, best_abs = rnnz, abs(v)
 
         pivot_row_data = data[best_row]
-        pivot_cols_sorted.append(pivot_col)
+        _normalize(pivot_row_data)
+        pivot_cols.append(pivot_col)
         pivot_keys.append(best_row)
 
-        # Retire the pivot row from the active index (remove it from every column's holder set).
-        active.discard(best_row)
+        # The pivot row leaves the index; what remains in the column's holder set are the targets.
         for c in pivot_row_data:
             col_rows[c].discard(best_row)
+        targets = [(r, data[r][pivot_col]) for r in list(holders)]
+        if targets:
+            _eliminate(pivot_row_data, pivot_row_data[pivot_col], targets, True)
 
-        # Eliminate the pivot column from the remaining active rows that contain it (= col_rows now).
-        targets = [(r, data[r][pivot_col]) for r in list(col_rows.get(pivot_col, ()))]
-        _eliminate(pivot_row_data, best_val, pivot_col, targets, True)
+    rank = len(pivot_cols)
+    if not reduced:
+        return {i: data[key] for i, key in enumerate(pivot_keys)}, rank, pivot_cols
 
     # Phase 2: back-substitution to reduced row-echelon form
-    # Process pivots last-to-first, clearing each pivot column from the pivot rows ABOVE it. In this
-    # order each pivot row's later-pivot-column entries are already cleared, so back-substitution only
-    # introduces free-column fill — far less than Gauss-Jordan (iML1515: ~0.8M ops vs ~9.4M).
+    # Pivots are processed last to first, each cleared from the pivot rows above it. In this order
+    # the row being applied has its own later-pivot columns cleared already, so it adds only
+    # free-column fill and pivot-column entries are only ever removed.
     #
-    # `pivcol_holders[c]` = pivot indices j whose row contains pivot column c (built once over the
-    # still-sparse post-forward pivot rows). It replaces an O(rank^2) "which rows above contain pcol"
-    # scan. Crucially, back-substitution only ever *removes* pivot-column entries (it adds free-column
-    # fill, and the pivot row being applied has had its own later-pivot columns already cleared), so
-    # the index needs no additions during phase 2 — only the discards after each step.
-    rank = len(pivot_cols_sorted)
-    pivot_col_set = set(pivot_cols_sorted)
+    # pivcol_holders[c] = pivot indices whose row contains pivot column c, built once over the
+    # post-forward pivot rows; back-substitution only discards from it.
+    pivot_col_set = set(pivot_cols)
     pivcol_holders: Dict[int, set] = {}
     for j, key in enumerate(pivot_keys):
         for c in data[key]:
             if c in pivot_col_set:
                 pivcol_holders.setdefault(c, set()).add(j)
     for i in range(rank - 1, -1, -1):
-        pcol = pivot_cols_sorted[i]
+        pcol = pivot_cols[i]
         prd = data[pivot_keys[i]]
-        pval = prd[pcol]
-        above = [j for j in pivcol_holders.get(pcol, ()) if j < i]
-        targets = [(pivot_keys[j], data[pivot_keys[j]][pcol]) for j in above]
-        _eliminate(prd, pval, pcol, targets, False)
-        holders = pivcol_holders.get(pcol)
-        if holders:
-            holders.difference_update(above)  # pcol is now cleared from those rows
+        # Row i is final here: every later pivot has been cleared from it.
+        _normalize(prd)
+        holders = pivcol_holders[pcol]
+        above = [j for j in holders if j < i]
+        if above:
+            targets = [(pivot_keys[j], data[pivot_keys[j]][pcol]) for j in above]
+            _eliminate(prd, prd[pcol], targets, False)
+            holders.difference_update(above)
 
-    # Final GCD reduction of the pivot rows (insurance; rows are already reduced per step).
-    for key in pivot_keys:
-        row_data = data[key]
-        row_gcd = gcd(*row_data.values())
-        if row_gcd > 1:
-            for c in row_data:
-                row_data[c] //= row_gcd
+    return {i: data[key] for i, key in enumerate(pivot_keys)}, rank, pivot_cols
 
-    # Translate results back to original column space, keyed by pivot index (rref_data[i] = pivot i).
-    original_data = {i: {col_order[sc]: v for sc, v in data[key].items()} for i, key in enumerate(pivot_keys)}
-    pivot_cols_original = [col_order[p] for p in pivot_cols_sorted]
 
-    return original_data, rank, pivot_cols_original
+def _kernel_rows(matrix: RationalMatrix) -> Tuple[int, Dict[int, Dict[int, int]], Dict[int, int]]:
+    """Kernel basis read off the integer RREF, as integer rows with one denominator per row.
+
+    Returns (nullity, rows, denominators); kernel entry (r, k) equals rows[r][k] / denominators[r].
+    Kernel column k belongs to the k-th free column f (ascending) and has 1 at row f and
+    -rref[i, f] / rref[i, pivot_i] at the row of every pivot column. The entries come from the
+    nonzeros of the RREF, so the cost follows its fill and not (pivot rows) x (free columns).
+    Within a row the kernel columns ascend; rows without a nonzero are absent. A row and its
+    denominator have no common factor, single entries may share one with the denominator.
+    """
+    cols = matrix.get_column_count()
+    rref_data, rank, pivot_cols = _rref_integer_sparse(matrix)
+    if rank == cols:
+        return 0, {}, {}
+    pivot_set = set(pivot_cols)
+    kernel_col = {f: k for k, f in enumerate(c for c in range(cols) if c not in pivot_set)}
+    rows: Dict[int, Dict[int, int]] = {}
+    denominators: Dict[int, int] = {}
+    for i, pivot_col in enumerate(pivot_cols):
+        row_data = rref_data[i]
+        if len(row_data) > 1:
+            pivot_val = row_data.pop(pivot_col)
+            if pivot_val > 0:
+                rows[pivot_col] = {kernel_col[c]: -v for c, v in sorted(row_data.items())}
+                denominators[pivot_col] = pivot_val
+            else:
+                rows[pivot_col] = {kernel_col[c]: v for c, v in sorted(row_data.items())}
+                denominators[pivot_col] = -pivot_val
+    for f, k in kernel_col.items():
+        rows[f] = {k: 1}
+        denominators[f] = 1
+    return len(kernel_col), rows, denominators
+
+
+def _kernel_pattern(rows: Dict[int, Dict[int, int]], num_rows: int, nullity: int) -> csr_matrix:
+    """CSR with a 1 at every nonzero of a kernel given as rows (see _kernel_rows)."""
+    indptr = np.zeros(num_rows + 1, dtype=np.int64)
+    indices: List[int] = []
+    for r in range(num_rows):
+        row = rows.get(r)
+        if row:
+            indices.extend(row)
+        indptr[r + 1] = len(indices)
+    return csr_matrix((np.ones(len(indices), dtype=np.int8), np.array(indices, dtype=np.int64), indptr), shape=(num_rows, nullity))
 
 
 def _nullspace_sparse(matrix: RationalMatrix) -> RationalMatrix:
-    """Compute nullspace using integer RREF with row scaling.
-
-    No denominators needed - each row in RREF is scaled so pivot divides all elements.
-    The nullspace is extracted by reading off the relationships between pivot and free columns.
-    """
+    """Compute the nullspace from the integer RREF, one kernel column per free column."""
     cols = matrix.get_column_count()
-
-    # Compute integer RREF
-    rref_data, rank, pivot_cols = _rref_integer_sparse(matrix)
-
-    if rank == cols:
-        return RationalMatrix(cols, 0)
-
-    # Free columns
-    pivot_set = set(pivot_cols)
-    free_cols = [c for c in range(cols) if c not in pivot_set]
-    nullity = len(free_cols)
-
+    nullity, rows, denominators = _kernel_rows(matrix)
     if nullity == 0:
         return RationalMatrix(cols, 0)
-
-    # Build kernel matrix
-    # For each free column f, the nullspace vector has:
-    # - Entry 1 at position f (the free variable)
-    # - Entry -rref[i,f]/rref[i,pivot_i] at each pivot position
-    # The entries are collected from the nonzeros of the RREF, so the cost follows its fill and not
-    # (pivot rows) x (free columns), which reaches 10^8 dictionary lookups per nullspace on
-    # genome-scale networks.
-    entries_of_free = {free_col: [] for free_col in free_cols}
-    for i, pivot_col in enumerate(pivot_cols):
-        row_data = rref_data.get(i, {})
-        pivot_val = row_data.get(pivot_col, 1)  # Should always exist
-        for col, val_at_free in row_data.items():
-            if val_at_free != 0 and col in entries_of_free:
-                # Nullspace entry: -val_at_free / pivot_val
-                g = gcd(abs(val_at_free), abs(pivot_val))
-                num = -val_at_free // g
-                den = pivot_val // g
-                # Ensure positive denominator
-                if den < 0:
-                    num, den = -num, -den
-                entries_of_free[col].append((pivot_col, num, den))
-
+    # Column-major entry order: the unit entry of each kernel column, then its pivot rows in pivot order.
+    columns: List[List[Tuple[int, int, int]]] = [[] for _ in range(nullity)]
+    for r, row in rows.items():
+        den = denominators[r]
+        if den == 1:
+            for k, num in row.items():
+                columns[k].append((r, num, 1))
+        else:
+            for k, num in row.items():
+                g = gcd(num, den)
+                columns[k].append((r, num // g, den // g))
     row_indices, col_indices = [], []
     numerators, denominators = [], []
-
-    for k, free_col in enumerate(free_cols):
-        # Identity entry for free variable
-        row_indices.append(free_col)
-        col_indices.append(k)
-        numerators.append(1)
-        denominators.append(1)
-
-        # Entries from RREF for pivot variables
-        for pivot_col, num, den in entries_of_free[free_col]:
-            row_indices.append(pivot_col)
+    for k, column in enumerate(columns):
+        for r, num, den in column[-1:] + column[:-1]:
+            row_indices.append(r)
             col_indices.append(k)
             numerators.append(num)
             denominators.append(den)
-
     return RationalMatrix._build_from_sparse_data(row_indices, col_indices, numerators, denominators, cols, nullity)
 
 
@@ -879,7 +916,7 @@ def nullspace(matrix: RationalMatrix) -> RationalMatrix:
 
 def basic_columns(matrix: RationalMatrix) -> List[int]:
     """Find indices of basic (pivot) columns using integer RREF."""
-    _, _, pivot_cols = _rref_integer_sparse(matrix)
+    _, _, pivot_cols = _rref_integer_sparse(matrix, reduced=False)
     return pivot_cols
 
 
@@ -1257,16 +1294,14 @@ class StoichMatrixCompressor:
         """
         # Build active submatrix for nullspace computation
         active = work.cmp.submatrix(work.size.metas, work.size.reacs)
-        kernel = nullspace(active)
-        LOG.debug(
-            f"Nullspace: {active.get_row_count()}x{active.get_column_count()} -> kernel {kernel.get_row_count()}x{kernel.get_column_count()}"
-        )
+        nullity, kernel_values, kernel_denominators = _kernel_rows(active)
+        LOG.debug(f"Nullspace: {active.get_row_count()}x{active.get_column_count()} -> kernel {active.get_column_count()}x{nullity}")
 
-        # Get kernel pattern (CSR for structure) and values (Fractions for exact ratios)
-        kernel_pattern, kernel_values = kernel.to_sparse_pattern()
+        # Kernel pattern (CSR for structure) and values (Fractions for exact ratios)
+        kernel_pattern = _kernel_pattern(kernel_values, active.get_column_count(), nullity)
 
         # Find zero-flux reactions and merge coupled groups in one pass
-        return self._handle_compress(work, kernel_pattern, kernel_values)
+        return self._handle_compress(work, kernel_pattern, kernel_values, kernel_denominators)
 
     def _find_zero_flux(self, work: _WorkRecord, kernel_sparse) -> set:
         """Find reactions with all-zero kernel rows (indices in current work)."""
@@ -1277,12 +1312,14 @@ class StoichMatrixCompressor:
                 work.stats.inc_zero_flux_reactions()
         return zero_flux
 
-    def _find_coupled_groups(self, kernel_pattern, kernel_values, num_reacs, protected_indices=set()):
+    def _find_coupled_groups(self, kernel_pattern, kernel_values, kernel_denominators, num_reacs, protected_indices=set()):
         """Find groups of coupled reactions from kernel sparsity pattern.
 
         Args:
             kernel_pattern: CSR matrix with 1s at non-zero positions (for indptr/indices)
-            kernel_values: {row: {col: Fraction}} for actual values
+            kernel_values: {row: {col: int}}, the kernel rows scaled to integers
+            kernel_denominators: {row: int}; kernel entry (row, col) is
+                kernel_values[row][col] / kernel_denominators[row]
             protected_indices: optional set of reaction indices that must NOT be merged
                 into any coupled group (kept as their own reactions). The rest of a
                 coupled group is still merged. Used e.g. to keep gene-controlled
@@ -1319,39 +1356,30 @@ class StoichMatrixCompressor:
                     continue
                 group = None
 
-                # Get values for reaction a
-                a_row = kernel_values.get(reac_a, {})
+                # A row is proportional to row a if it is so in the integer rows; the denominators
+                # only enter the ratio.
+                a_row = kernel_values[reac_a]
+                first_col = nonzero_cols[0]
+                a_val = a_row[first_col]
+                a_den = kernel_denominators[reac_a]
 
                 for j in range(i + 1, len(potential)):
                     reac_b = potential[j]
                     if ratios[reac_b] is not None or reac_b in protected_indices:
                         continue
 
-                    # Get values for reaction b
-                    b_row = kernel_values.get(reac_b, {})
+                    b_row = kernel_values[reac_b]
+                    b_val = b_row[first_col]
 
-                    # Compute ratio from first non-zero column
-                    first_col = nonzero_cols[0]
-                    a_val = a_row.get(first_col, Fraction(0))
-                    b_val = b_row.get(first_col, Fraction(0))
-
-                    if b_val == 0:
-                        continue
-
-                    # ratio = a_val / b_val
-                    ratio = a_val / b_val
-
-                    # Check if ratio is consistent across all columns
+                    # Consistent if a_v / b_v equals a_val / b_val in every column
                     is_consistent = True
                     for col in nonzero_cols[1:]:
-                        a_v = a_row.get(col, Fraction(0))
-                        b_v = b_row.get(col, Fraction(0))
-                        if b_v == 0 or a_v / b_v != ratio:
+                        if a_row[col] * b_val != b_row[col] * a_val:
                             is_consistent = False
                             break
 
                     if is_consistent:
-                        ratios[reac_b] = ratio
+                        ratios[reac_b] = Fraction(a_val * kernel_denominators[reac_b], b_val * a_den)
                         if group is None:
                             group = [reac_a]
                         group.append(reac_b)
@@ -1361,7 +1389,7 @@ class StoichMatrixCompressor:
 
         return groups, ratios
 
-    def _handle_compress(self, work: _WorkRecord, kernel_pattern, kernel_values) -> bool:
+    def _handle_compress(self, work: _WorkRecord, kernel_pattern, kernel_values, kernel_denominators) -> bool:
         """Remove zero-flux and merge coupled reactions from a single kernel.
 
         From one nullspace computation:
@@ -1390,7 +1418,7 @@ class StoichMatrixCompressor:
         # stay intact through compression — mapped from names to current indices)
         prot_names = getattr(work, 'protected_names', set())
         protected_idx = {i for i, n in enumerate(work.reac_names) if n in prot_names} if prot_names else set()
-        groups, ratios = self._find_coupled_groups(kernel_pattern, kernel_values, work.size.reacs, protected_idx)
+        groups, ratios = self._find_coupled_groups(kernel_pattern, kernel_values, kernel_denominators, work.size.reacs, protected_idx)
 
         reactions_to_remove = set(zero_flux)
         contradicting_removed = False
