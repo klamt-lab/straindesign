@@ -58,7 +58,7 @@ from straindesign.lptools import (
 from straindesign.solver_interface import MILP_LP
 from straindesign.pool import SDPool
 from straindesign.parse_constr import parse_constraints, lineqlist2mat
-from straindesign.names import CONSTRAINTS, SOLVER, OPTIMAL, UNBOUNDED, INFEASIBLE, GLPK, CPLEX, LP_METHOD_PRIMAL
+from straindesign.names import CONSTRAINTS, SOLVER, OPTIMAL, UNBOUNDED, INFEASIBLE, GLPK, CPLEX, GUROBI, LP_METHOD_PRIMAL
 from straindesign.networktools import suppress_lp_context
 from straindesign.compression import (
     compress_cobra_model,
@@ -227,10 +227,14 @@ def _single_thread(lp):
 
     The objective loops re-solve one LP thousands of times from the previous basis. CPLEX with
     its default thread count takes several times longer per such re-solve on genome-scale LPs
-    (Recon3D: 27 ms against 11 ms, Human-GEM: 116 ms against 17 ms).
+    (Recon3D: 27 ms against 11 ms, Human-GEM: 116 ms against 17 ms). With Gurobi the difference
+    is small (Human-GEM: 111 s against 103 s for the whole analysis); the pool workers run both
+    solvers on one thread as well.
     """
     if lp.solver == CPLEX:
         lp.backend.parameters.threads.set(1)
+    elif lp.solver == GUROBI:
+        lp.backend.params.Threads = 1
     return lp
 
 
