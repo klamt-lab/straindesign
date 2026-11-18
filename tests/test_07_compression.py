@@ -413,3 +413,51 @@ def test_nullspace_of_float_sparse_matches_the_dense_route():
         K, sd.ExactCOO) else {(int(r), int(c), Fraction(int(v)))
                               for r, c, v in zip(*[K.tocoo().row, K.tocoo().col, K.tocoo().data])})
     assert to_set(viaseq) == to_set(viadense)
+
+
+def _random_rational_matrix(seed, shape=(30, 60), entries=150):
+    rng = np.random.default_rng(seed)
+    cells = {}
+    for _ in range(entries):
+        r, c = int(rng.integers(shape[0])), int(rng.integers(shape[1]))
+        cells[(r, c)] = Fraction(int(rng.integers(-5, 6)) or 1, int(rng.integers(1, 4)))
+    # a repeated row and a scaled row keep the rank below the row count
+    cells = {(r, c): v for (r, c), v in cells.items() if r < shape[0] - 2}
+    cells[(0, 0)] = Fraction(1)
+    for c, v in [(c, v) for (r, c), v in cells.items() if r == 0]:
+        cells[(shape[0] - 1, c)] = v
+        cells[(shape[0] - 2, c)] = v * Fraction(-7, 3)
+    return sd.RationalMatrix.from_fractions([(r, c, v) for (r, c), v in cells.items()], shape)
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_forward_phase_gives_the_pivot_columns(seed):
+    rm = _random_rational_matrix(seed)
+    _, rank, pivots = compression._rref_integer_sparse(rm)
+    _, rank_fwd, pivots_fwd = compression._rref_integer_sparse(rm, reduced=False)
+    assert (rank_fwd, pivots_fwd) == (rank, pivots)
+    assert rank < rm.get_row_count()
+    assert compression.basic_columns(rm) == pivots
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_integer_kernel_rows_match_the_kernel(seed):
+    rm = _random_rational_matrix(seed)
+    nullity, rows, denominators = compression._kernel_rows(rm)
+    as_fractions = {r: {k: Fraction(v, denominators[r]) for k, v in row.items()} for r, row in rows.items()}
+    assert as_fractions == _kernel_from_every_pair(rm)
+    pattern = compression._kernel_pattern(rows, rm.get_column_count(), nullity)
+    assert pattern.shape == (rm.get_column_count(), nullity)
+    for r in range(rm.get_column_count()):
+        assert list(pattern.indices[pattern.indptr[r]:pattern.indptr[r + 1]]) == sorted(rows.get(r, {}))
+
+
+def test_coupling_ratios_carry_the_row_denominators():
+    """2 v0 = 3 v1 and 3 v1 = 5 v2: one group, ratios[i] = v0 / vi."""
+    rm = sd.RationalMatrix.from_fractions([(0, 0, 2), (0, 1, -3), (1, 1, 3), (1, 2, -5)], (2, 3))
+    nullity, rows, denominators = compression._kernel_rows(rm)
+    assert any(d != 1 for d in denominators.values())
+    pattern = compression._kernel_pattern(rows, 3, nullity)
+    groups, ratios = compression.StoichMatrixCompressor()._find_coupled_groups(pattern, rows, denominators, 3)
+    assert groups == [[0, 1, 2]]
+    assert ratios == [None, Fraction(3, 2), Fraction(5, 2)]
