@@ -444,7 +444,7 @@ class MILP_LP(object):
             solution_vector, optimal_value, optimization_status
         """
         x, min_cx, status = self.backend.solve()
-        if status not in [INFEASIBLE, UNBOUNDED, TIME_LIMIT]:  # if solution exists (is not nan), round integers
+        if status not in [INFEASIBLE, UNBOUNDED, TIME_LIMIT, ERROR]:  # if solution exists (is not nan), round integers
             if 'B' in self.vtype or 'I' in self.vtype:
                 x = [x[i] if self.vtype[i] == 'C' else int(round(x[i])) for i in range(len(x)) if not isnan(x[i])]
             else:
@@ -497,8 +497,11 @@ class MILP_LP(object):
         self.backend.set_objective_idx(C)
 
     def set_ub(self, ub):
-        """Set the upper bounds to a given vector"""
-        self.ub = ub
+        """Set upper bounds with index-value pairs
+
+        e.g.: ub=[[1, 0.0], [4, inf]]. Variables not listed keep their bounds."""
+        for i, v in ub:
+            self.ub[i] = float(v)
         self.backend.set_ub(ub)
 
     def set_lb(self, lb):

@@ -454,7 +454,7 @@ class SDMILP(SDProblem, MILP_LP):
     def setMinIntvCostObjective(self):
         """Reset minimization of intervention costs as global objective"""
         self.clear_objective()
-        self.set_objective_idx([[i, self.cost[i]] for i in self.idx_z if i not in self.z_non_targetable])
+        self.set_objective_idx([[i, self.cost[i]] for i in self.idx_z if not self.z_non_targetable[i]])
 
     def resetTargetableZ(self):
         """Reset targetable/switchable intervention indicators / allow all intervention candidates"""
@@ -900,7 +900,10 @@ class SDMILP(SDProblem, MILP_LP):
                         self.add_exclusion_constraints(z[i])
             if (status != OPTIMAL):  # or (z[i]*self.cost == self.max_cost):
                 break
-        if sols.shape[0] > 1:
+        # Only minimal cut sets with positive costs form an antichain. In a bilevel problem a
+        # smaller design with a worse objective value is a result of its own, and an intervention
+        # of cost <= 0 may join a design without making it worse.
+        if self.is_mcs_computation and not self._free_z and sols.shape[0] > 1:
             sols, n_super = _drop_non_minimal(sols)
             if n_super:
                 logging.error('%d designs contain a smaller design: the enumeration missed one and '
