@@ -277,7 +277,6 @@ def rev_worker_compute(i) -> Tuple[int, float, int, bytes]:
     Returns:
         (i, optimal_value, status, flux vector as float64 bytes)
     """
-    global lp_glob
     if lp_glob.n_solved > 0 and lp_glob.n_solved % rev_glob['rebuild_every'] == 0:
         _rev_worker_build()
     j = i // 2

@@ -30,6 +30,58 @@ from psutil import virtual_memory
 from straindesign.names import *
 
 
+def _memory_limit_bytes():
+    """Memory this process may use: the machine's, capped by every enclosing cgroup limit."""
+    limit = virtual_memory().total
+    try:
+        with open('/proc/self/cgroup') as fh:
+            entries = [line.rstrip('\n').split(':', 2) for line in fh]
+        for hid, ctrl, path in entries:
+            if ctrl == 'memory':
+                root, fname = '/sys/fs/cgroup/memory', 'memory.limit_in_bytes'
+            elif hid == '0' and ctrl == '':
+                root, fname = '/sys/fs/cgroup', 'memory.max'
+            else:
+                continue
+            while True:
+                f = root + path.rstrip('/') + '/' + fname
+                if os.path.exists(f):
+                    with open(f) as fh:
+                        v = fh.read().strip()
+                    if v.isdigit():
+                        limit = min(limit, int(v))
+                if path in ('', '/'):
+                    break
+                path = os.path.dirname(path)
+    except (OSError, ValueError):
+        pass
+    return limit
+
+
+_size_limit = None
+
+
+def size_limit():
+    """Largest number of variables or constraints this CPLEX runtime accepts: 1000 for the
+    Community Edition (the pip package's default), unlimited otherwise. Probed once."""
+    global _size_limit
+    if _size_limit is None:
+        probe = Cplex()
+        probe.set_log_stream(None)
+        probe.set_error_stream(None)
+        probe.set_warning_stream(None)
+        probe.set_results_stream(None)
+        probe.variables.add(lb=[0.0] * 1001)
+        try:
+            probe.solve()
+            _size_limit = inf
+        except CplexError as exc:
+            _size_limit = 1000 if exc.args[2] == 1016 else inf
+        finally:
+            probe.end()
+    return _size_limit
+
+
 class Cplex_MILP_LP(Cplex):
     """CPLEX interface for MILP and LP
     
@@ -145,46 +197,28 @@ class Cplex_MILP_LP(Cplex):
         if not indic_constr == None:
             # cast variables and translate coefficient matrix A to right input format for CPLEX
             _A = sparse.csr_matrix(indic_constr.A)
-            A = [[_A.indices[_A.indptr[i]:_A.indptr[i + 1]].astype(int).tolist(),
-                  _A.data[_A.indptr[i]:_A.indptr[i + 1]].astype(float).tolist()] for i in range(_A.shape[0])]
+            A = [[
+                _A.indices[_A.indptr[i]:_A.indptr[i + 1]].astype(int).tolist(),
+                _A.data[_A.indptr[i]:_A.indptr[i + 1]].astype(float).tolist()
+            ] for i in range(_A.shape[0])]
             b = [float(i) for i in indic_constr.b]
             sense = [str(i) for i in indic_constr.sense]
             indvar = [int(i) for i in indic_constr.binv]
             complem = [1 - int(i) for i in indic_constr.indicval]
             # call CPLEX function to add indicators
-            # SD_GATE_IFF measures whether the reverse implication CellNetAnalyzer states
-            # (z = indicval <-> row) is what lets presolve decide its gates. It is not a
-            # relaxation of ours, so it has to be gated on a design-identity check.
-            if os.environ.get('SD_GATE_IFF'):
-                ind_t = [self.indicator_constraints.type_.iff] * len(A)
-                self.indicator_constraints.add_batch(lin_expr=A, sense=sense, rhs=b, indvar=indvar,
-                                                     complemented=complem, indtype=ind_t)
-            else:
-                self.indicator_constraints.add_batch(lin_expr=A, sense=sense, rhs=b, indvar=indvar, complemented=complem)
+            self.indicator_constraints.add_batch(lin_expr=A, sense=sense, rhs=b, indvar=indvar, complemented=complem)
         # set parameters
-        _logpath = os.environ.get('SD_CPLEX_LOG')
-        if _logpath:
-            # diagnostic tap: CPLEX's own node log carries per-call node and iteration counts
-            # without the callback that switches off dual presolve reductions
-            _fh = open(_logpath, 'a', buffering=1)
-            self.set_log_stream(_fh)
-            self.set_results_stream(_fh)
-            self.set_warning_stream(_fh)
-            self.parameters.mip.display.set(2)
-        else:
-            self.set_log_stream(io.StringIO())  # don't show output stream
-            self.set_warning_stream(io.StringIO())
-            self.set_results_stream(io.StringIO())
+        self.set_log_stream(io.StringIO())  # don't show output stream
         self.set_error_stream(io.StringIO())
+        self.set_warning_stream(io.StringIO())
+        self.set_results_stream(io.StringIO())
         self.parameters.simplex.tolerances.optimality.set(1e-9)
         self.parameters.simplex.tolerances.feasibility.set(1e-9)
 
         if 'B' in vtype or 'I' in vtype:
-            # set usable working memory to 3/4 of the total available memory
-            # virtual_memory().total is the machine, not the cgroup, so under SLURM or a container
-            # this overstates what is allowed; SD_CPLEX_WORKMEM (MB) pins it explicitly.
-            _wm = os.environ.get('SD_CPLEX_WORKMEM')
-            self.parameters.workmem.set(int(_wm) if _wm else round(virtual_memory().total / 1024 / 1024 * 0.75))
+            # usable working memory: 3/4 of what this process may use (CPLEX itself sizes it
+            # from the machine, ignoring a SLURM or container memory limit)
+            self.parameters.workmem.set(round(_memory_limit_bytes() / 1024 / 1024 * 0.75))
             #self.parameters.threads.set(16)
             # yield only optimal solutions in pool
             if seed is None:
@@ -193,20 +227,15 @@ class Cplex_MILP_LP(Cplex):
             self.parameters.randomseed.set(seed)
             if milp_threads is not None:
                 self.parameters.threads.set(milp_threads)
-            # a perturbed objective on the gate slacks (SD_SOS1_SLACK_EPS) needs the pool open,
-            # otherwise absgap 0 would keep only the designs with the smallest slack sum.
-            # SD_POOL_OPEN is deliberately NOT read here. An open gap is sound only while the
-            # enumeration has the design cost pinned by a constraint, which only the level loop in
-            # enumerate_ksweep does; that loop opens the gap through set_pool_gap once the level is
-            # in force and closes it again on the way out. Opening it at construction time also
-            # opened it for the plain enumerate() fallback, whose ascending-cost order is the only
-            # thing making its designs minimal.
-            _open = bool(os.environ.get('SD_SOS1_SLACK_EPS'))
-            self.parameters.mip.pool.absgap.set(1e75 if _open else 0.0)
-            self.parameters.mip.pool.relgap.set(1e75 if _open else 0.0)
+            # The pool gap stays closed here. An open gap is sound only while the design cost is
+            # pinned by a constraint, which only the level loop in enumerate_ksweep does; it opens
+            # the gap through set_pool_gap once the level is in force and closes it again on the
+            # way out. The plain enumerate() relies on the closed gap's ascending-cost order to
+            # make its designs minimal.
+            self.parameters.mip.pool.absgap.set(0.0)
+            self.parameters.mip.pool.relgap.set(0.0)
+            # lowered to 3 together with SOS1 gates (add_sos1)
             self.parameters.mip.pool.intensity.set(4)
-            # 3 is faster for MCS enumeration but breaks OPTCOUPLE (5 tests); left at 4 pending a
-            # per-module-type decision
             # no integrality tolerance
             self.parameters.mip.tolerances.integrality.set(0.0)
 
@@ -233,17 +262,17 @@ class Cplex_MILP_LP(Cplex):
             if status in [1, 101, 102, 115, 128, 129, 130]:  # solution integer optimal
                 min_cx = self.solution.get_objective_value()
                 status = OPTIMAL
-            elif status in [108, 114]:  # timeout/abort without solution
+            elif status in [108, 114, 132]:  # time or work limit, or abort, without solution
                 x = [nan] * self.variables.get_num()
                 min_cx = nan
                 status = TIME_LIMIT
                 return x, min_cx, status
-            elif status in [3, 103]:  # infeasible
+            elif status in [3, 22, 103]:  # infeasible (22: dual simplex passed the dual objective limit)
                 x = [nan] * self.variables.get_num()
                 min_cx = nan
                 status = INFEASIBLE
                 return x, min_cx, status
-            elif status in [11, 13, 107, 113]:  # timeout/abort with solution
+            elif status in [11, 13, 107, 113, 131]:  # time or work limit, or abort, with solution
                 min_cx = self.solution.get_objective_value()
                 status = TIME_LIMIT_W_SOL
             elif status in [2, 4, 118, 119]:  # solution unbounded
@@ -290,7 +319,7 @@ class Cplex_MILP_LP(Cplex):
                 opt = self.solution.get_objective_value()
             elif status in [2, 4, 118, 119]:  # unbounded (LP: 2/4, MIP: 118/119)
                 opt = -inf
-            elif status in [3, 13, 103, 108, 114]:  # infeasible or abort without solution
+            elif status in [3, 13, 22, 103, 108, 114, 132]:  # infeasible or abort without solution
                 opt = nan
             elif status in [5, 6]:  # optimal/best with unscaled infeasibilities (numerical)
                 opt = self.solution.get_objective_value()
@@ -324,11 +353,11 @@ class Cplex_MILP_LP(Cplex):
             status = self.solution.get_status()
             # 129/130 (CPXMIP_OPTIMAL_POPULATED[_TOL]) say the pool holds every solution at the
             # optimum, which is a level-exhaustion certificate wherever the level is pinned.
-            self.pool_exhausted = status in [129, 130]
+            self._pool_exhausted = status in [129, 130]
             if status in [101, 102, 115, 128, 129, 130]:  # solution integer optimal
                 min_cx = self.solution.get_objective_value()
                 status = OPTIMAL
-            elif status in [108, 114]:  # timeout/abort without solution
+            elif status in [108, 114, 132]:  # time or work limit, or abort, without solution
                 x = []
                 min_cx = nan
                 status = TIME_LIMIT
@@ -338,17 +367,15 @@ class Cplex_MILP_LP(Cplex):
                 min_cx = nan
                 status = INFEASIBLE
                 return x, min_cx, status
-            elif status in [13, 107, 113]:  # timeout/abort with solution
+            elif status in [13, 107, 113, 131]:  # time or work limit, or abort, with solution
                 min_cx = self.solution.get_objective_value()
                 status = TIME_LIMIT_W_SOL
             elif status in [118, 119]:  # unbounded, or infeasible-or-unbounded: never a result
-                # Reporting this as a solution silently truncates an enumeration (measured: 54 of 249
-                # designs with status 'optimal' once a free column carried an objective coefficient).
+                # An unbounded MILP is a formulation error; returning it as an empty pool would end
+                # an enumeration early with status 'optimal'.
                 raise RuntimeError('CPLEX populate returned status %d (%s); the MILP is unbounded, '
                                    'which is a formulation error, not an empty pool' %
                                    (status, self.solution.get_status_string()))
-                min_cx = -inf
-                status = UNBOUNDED
             else:
                 logging.exception(status)
                 logging.exception(self.solution.get_status_string())
@@ -357,37 +384,45 @@ class Cplex_MILP_LP(Cplex):
             return x, min_cx, status
 
         except CplexError as exc:
+            # 1217: no solution exists; 1016: problem size limit of the Community Edition
+            if exc.args[2] not in (1016, 1217) and not getattr(self, '_numeric_retry', False):
+                # A singular basis (1256) or a similar numerical failure depends on the path the
+                # search took; one fresh start at numerical emphasis usually gets through. The
+                # caller only ever sees the retry's pool, so nothing is counted twice.
+                logging.warning('CPLEX populate failed (%s); retrying once from scratch with '
+                                'numerical emphasis' % exc)
+                emph, adv = self.parameters.emphasis.numerical.get(), self.parameters.advance.get()
+                self.parameters.emphasis.numerical.set(1)
+                self.parameters.advance.set(0)
+                self._numeric_retry = True
+                try:
+                    return self.populate(n)
+                finally:
+                    self._numeric_retry = False
+                    self.parameters.emphasis.numerical.set(emph)
+                    self.parameters.advance.set(adv)
             if not exc.args[2] == 1217:
                 logging.error(exc)
             min_cx = nan
             x = []
             return x, min_cx, ERROR
 
-    def set_pool_intensity(self, level):
-        """Pool generation effort; only meaningful together with the SOS1 gates."""
-        self.parameters.mip.pool.intensity.set(int(level))
-
-    def relax_integrality_for_sos1(self):
-        """Lift the integrality tolerance off exactly zero, which SOS1 cannot work at.
-
-        CPLEX decides SOS1 membership by testing whether a member is nonzero, and that test uses
-        this tolerance. At 0.0 a continuous auxiliary sitting at round-off counts as nonzero, so
-        every set looks violated: measured on e_coli_core, one populate hits a 240 s limit and
-        returns 14 of 55 solutions, while 1e-11 through 1e-5 all return 55 in 0.5 s. The cliff is at
-        zero, so the smallest lift is enough; 1e-9 matches Gurobi's floor. Applied only alongside
-        the gates, so the exact pin still stands for every other model.
-        """
-        self.parameters.mip.tolerances.integrality.set(1e-9)
-
     def add_sos1(self, sets):
         """Add SOS1 sets: at most one member of each may be nonzero.
 
         Weights only order the members for branching; distinct values are what CPLEX requires.
+        SOS1 branching needs two settings that the indicator formulation does not: CPLEX decides
+        whether a member is nonzero against the integrality tolerance, so at 0.0 a continuous member
+        at round-off level counts as nonzero and every set looks violated (1e-9 is Gurobi's floor),
+        and the pool intensity is lowered to 3, which populates SOS1-gated MCS problems markedly
+        faster than the default 4.
         """
         for members in sets:
             self.SOS.add(type='1',
                          SOS=SparsePair(ind=[int(i) for i in members],
                                               val=[float(k + 1) for k in range(len(members))]))
+        self.parameters.mip.tolerances.integrality.set(1e-9)
+        self.parameters.mip.pool.intensity.set(3)
 
     def set_objective(self, c):
         """Set the objective function with a vector"""
@@ -402,6 +437,10 @@ class Cplex_MILP_LP(Cplex):
     def set_ub(self, ub):
         """Set the upper bounds to a given vector"""
         self.variables.set_upper_bounds(ub)
+
+    def set_lb(self, lb):
+        """Set the lower bounds with index-value pairs, e.g.: lb=[[1, 0.0], [4, -inf]]"""
+        self.variables.set_lower_bounds(lb)
 
     def set_lp_method(self, method):
         """Set the LP solving method.
@@ -451,6 +490,24 @@ class Cplex_MILP_LP(Cplex):
         """
         self.parameters.mip.pool.absgap.set(1e75 if open_gap else 0.0)
         self.parameters.mip.pool.relgap.set(1e75 if open_gap else 0.0)
+
+    def set_seed(self, seed):
+        """Set the random seed for subsequent solves, discarding any search tree left by the last one.
+
+        CPLEX resumes an interrupted search on an unchanged model and a parameter change does not
+        count as one, so a new seed alone would continue the old tree. Rewriting an objective
+        coefficient with its own value is a model change and frees the tree.
+        """
+        self.parameters.randomseed.set(int(seed))
+        self.objective.set_linear(0, self.objective.get_linear(0))
+
+    def set_work_limit(self, w):
+        """Cap the next solves at w ticks of deterministic time; None lifts the cap"""
+        self.parameters.dettimelimit.set(self.parameters.dettimelimit.max() if w is None else float(w))
+
+    def get_work(self):
+        """Deterministic time stamp in ticks"""
+        return float(self.get_dettime())
 
     def set_time_limit(self, t):
         """Set the computation time limit (in seconds)"""

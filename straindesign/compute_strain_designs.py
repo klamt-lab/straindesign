@@ -25,7 +25,6 @@ import ast
 import logging
 import json
 import time
-import os
 from copy import deepcopy
 from cobra import Model
 from cobra.manipulation import rename_genes
@@ -272,14 +271,12 @@ def reduce_model_gprs(model, essential_reacs, gkis, gkos):
 
 
 def _final_status(status, has_designs):
-    """The status a completed enumeration should report.
+    """The status a completed enumeration reports.
 
-    Only two rewrites are sound. INFEASIBLE means the search found no further solution, which
-    for an enumeration is exhaustion, so with designs in hand it is OPTIMAL. TIME_LIMIT with
-    designs is TIME_LIMIT_W_SOL. Everything else is reported as it happened -- in particular
-    ERROR, which is what a solver that failed mid-enumeration returns: promoting that to OPTIMAL
-    presents a truncated pool as a complete one, and a licence dropped mid-run did exactly that
-    (38 of 438 designs, reported optimal).
+    Only two rewrites are sound. INFEASIBLE means the search found no further solution, which for
+    an enumeration is exhaustion, so with designs in hand it is OPTIMAL. TIME_LIMIT with designs is
+    TIME_LIMIT_W_SOL. Everything else is reported as it happened, ERROR in particular: a solver that
+    failed mid-enumeration leaves a truncated set of designs that must not read as complete.
     """
     if not has_designs:
         return status
@@ -401,11 +398,10 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
 
         dual_tilt (optional (float)): (Default: 1e-6)
             Weight of a small objective on the sign-restricted dual columns during 'populate'
-            enumeration. With the cost level pinned the node LP has no objective of its own and the
-            simplex wanders a degenerate face; the tilt gives it a direction. It never cuts a
-            feasible design. Keep it small: 1e-6 is safe on every model measured, 1e-3 makes the
-            basis singular on some and a whole cost level is then lost. Pass None or 0 to
-            disable it.
+            enumeration of MCS. With the cost level pinned the node LP has no objective of its own
+            and the simplex wanders a degenerate face; the tilt gives it a direction. It never cuts
+            a feasible design. Keep it small: at 1e-3 the basis becomes singular on some models and
+            a whole cost level is lost. Pass None or 0 to disable it.
 
         advanced, use_scenario (optional (bool)):
             Dummy parameters used for the CNApy interface.
@@ -419,8 +415,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
-        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'dump_preprocessed',
-        'skip_preprocessing_fvas', 'dual_tilt'
+        SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'dump_preprocessed', 'skip_preprocessing_fvas',
+        'dual_tilt'
     }
     logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
@@ -549,9 +545,10 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     if skip_fvas:
         logging.info('  Skipping preprocessing FVAs (skip_preprocessing_fvas).')
 
-    _free = [k for k, v in list(uncmp_ko_cost.items()) + list(uncmp_ki_cost.items()) +
-             list(locals().get('uncmp_gko_cost', {}).items()) + list(locals().get('uncmp_gki_cost', {}).items())
-             if v == 0.0]
+    _free = [
+        k for k, v in list(uncmp_ko_cost.items()) + list(uncmp_ki_cost.items()) + list(locals().get('uncmp_gko_cost', {}).items()) +
+        list(locals().get('uncmp_gki_cost', {}).items()) if v == 0.0
+    ]
     if _free:
         logging.warning('%d intervention(s) entered at zero cost (%s%s). Adding one to a design '
                         'changes no cost, so designs that differ only in these are all reported and '
@@ -806,18 +803,11 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         # module and flows to SDMILP via sd_modules. Scoping to knockable reactions keeps
         # the LP count down (and only knockable reactions carry z-links to tighten anyway).
         for module in sd_modules:
-            fva_scope = knockable_ids
-            if module[MODULE_TYPE] == SUPPRESS and os.environ.get('SD_SUPPRESS_RELAX_BOUNDS'):
-                # the redundant-bound relaxation needs the range of every finitely bounded reaction
-                fva_scope = sorted(set(knockable_ids) | {
-                    r.id for r in cmp_model.reactions
-                    if (r.lower_bound != 0.0 and not np.isinf(r.lower_bound)) or
-                       (r.upper_bound != 0.0 and not np.isinf(r.upper_bound))})
             flux_limits = fva(cmp_model,
                               solver=kwargs[SOLVER],
                               constraints=module[CONSTRAINTS],
                               compress=False,
-                              reaction_list=fva_scope)
+                              reaction_list=knockable_ids)
             module['fva_bounds'] = flux_limits
             essentials_in_module = _essentials_from_limits(flux_limits)
             if module[MODULE_TYPE] == SUPPRESS:
@@ -901,12 +891,6 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     else:
         solution_approach = BEST
 
-    # enumerate_ksweep is the POPULATE loop: it pins one cost level at a time, which is what
-    # lets the pool gap open and the tilt act. It is complete only for positive, integer-valued
-    # intervention costs and a finite budget, and falls back to enumerate() on its own whenever
-    # those guards do not hold. SD_ENUM_KSWEEP=0 forces the plain populate for a run.
-    enum_ksweep = os.environ.get('SD_ENUM_KSWEEP', '1').lower() not in ('0', 'off', 'false')
-
     dump_preprocessed = kwargs.pop('dump_preprocessed', None)
 
     if dump_preprocessed:
@@ -976,10 +960,10 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     elif solution_approach == BEST:
         cmp_sd_solution = sd_milp.compute_optimal(**kwargs_computation)
     elif solution_approach == POPULATE:
-        if enum_ksweep:
-            cmp_sd_solution = sd_milp.enumerate_ksweep(**kwargs_computation)
-        else:
-            cmp_sd_solution = sd_milp.enumerate(**kwargs_computation)
+        # enumerate_ksweep pins one cost level at a time, which is what lets the pool gap open and
+        # the tilt act. It is complete only for positive, integer-valued intervention costs and a
+        # finite budget, and falls back to enumerate() on its own whenever those guards do not hold.
+        cmp_sd_solution = sd_milp.enumerate_ksweep(**kwargs_computation)
     logging.info('  MILP solved (%.1fs).' % (time.time() - t0))
 
     # Decompress solutions
@@ -1054,8 +1038,7 @@ def _drop_dominated(sd, group_map, cmp_size1_mcs, uncmp_ko_cost, uncmp_ki_cost):
     every intervention costs something, so this scan is only needed where that breaks down:
     free or rewarding interventions, and size-1 MCS, which are injected past the constraints.
     """
-    if not sd or not (cmp_size1_mcs or
-                      any(c <= 0.0 for c in list(uncmp_ko_cost.values()) + list(uncmp_ki_cost.values()))):
+    if not sd or not (cmp_size1_mcs or any(c <= 0.0 for c in list(uncmp_ko_cost.values()) + list(uncmp_ki_cost.values()))):
         return sd, group_map
     keep = nondominated_sd(sd, uncmp_ko_cost, uncmp_ki_cost)
     if len(keep) == len(sd):

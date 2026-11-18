@@ -18,6 +18,7 @@
 #
 """Unified solver interface for LPs and MILPs (MILP_LP)"""
 
+import math
 from numpy import inf, isinf, isnan, unique
 from scipy import sparse
 from typing import List, Tuple
@@ -25,7 +26,23 @@ from straindesign import avail_solvers, GLPK
 from straindesign.indicatorConstraints import IndicatorConstraints
 from straindesign.names import *
 import logging
-import os
+
+
+# Solvers that get CellNetAnalyzer's binary structure for the target-region gates (own gate
+# binaries, direction binaries for reversible reactions); see MILP_LP._cna_binaries.
+_CNA_GATE_BINARIES = {CPLEX}
+# Solvers whose equality gates take the slack in two sign-restricted parts, SOS1(g, s+, s-), instead
+# of one free slack: the set itself then chooses the direction, and the dual tilt reaches both parts.
+_EQUALITY_GATE_SPLIT = {GUROBI}
+
+
+def _size_limit(solver):
+    """Largest number of variables or constraints the solver's licence accepts (inf if unlimited)."""
+    if solver == CPLEX:
+        from straindesign.cplex_interface import size_limit
+    else:
+        from straindesign.gurobi_interface import size_limit
+    return size_limit()
 
 
 class MILP_LP(object):
@@ -105,7 +122,7 @@ class MILP_LP(object):
     def __init__(self, **kwargs):
         allowed_keys = {
             'c', 'A_ineq', 'b_ineq', 'A_eq', 'b_eq', 'lb', 'ub', 'vtype', 'indic_constr', 'M', SOLVER, 'skip_checks', 'tlim', SEED, 'sos1_gates',
-            MILP_THREADS
+            MILP_THREADS, 'gate_modules'
         }
         # set all keys passed in kwargs
         for key, value in kwargs.items():
@@ -187,45 +204,31 @@ class MILP_LP(object):
             logging.warning('Provided big M value is ignored unless glpk is used.')
         if self.solver == GLPK and self.milp_threads is not None:
             raise ValueError("milp_threads is not supported for GLPK, which is single-threaded.")
-        # Optional: realise the knockout gates as SOS1 sets instead of indicator constraints.
-        # A gate "z = indicval -> a*x sense b" becomes an always-present row that a slack can
-        # absorb, plus an SOS1 pairing that slack with a binary which is nonzero exactly when the
-        # gate is off. No big-M is introduced and z keeps its meaning, so everything upstream --
-        # costs, the budget row, exclusion rows, dominance, verify_sd, sd2dict -- is untouched.
-        # Optional: name each gated row activity so every gate is a single-variable condition.
-        # Applied before the SOS1 rewrite so the two compose.
-        if getattr(self, 'sos1_gates', None) and os.environ.get('SD_GATE_NAMED') \
-           and self.indic_constr is not None and self.indic_constr.A.shape[0] \
-           and self.solver in [CPLEX, GUROBI]:
-            self._gates_as_named_rows()
-
+        # On CPLEX and Gurobi the knockout gates of an MCS problem are realised as SOS1 sets instead
+        # of indicator constraints: a gate "z = indicval -> a*x sense b" becomes an always-present row
+        # that a slack can absorb, plus an SOS1 set pairing that slack with a variable which is
+        # nonzero exactly when the gate is on. No big-M is introduced and z keeps its meaning, so
+        # costs, the budget row, exclusion rows, verify_sd and sd2dict are untouched. Solvers in
+        # _CNA_GATE_BINARIES first get CellNetAnalyzer's binary structure for the target-region
+        # gates, and the SOS1 sets gate on its binaries.
         self.sos1 = []
-        if getattr(self, 'sos1_gates', None) and os.environ.get('SD_SOS1_GATES', '1').lower() not in ('0', 'off', 'false') \
-           and self.indic_constr is not None and self.indic_constr.A.shape[0] \
-           and (self.solver in [CPLEX, GUROBI] or (self.solver == SCIP and os.environ.get('SD_SCIP_SOS1'))):
-            self._gates_as_sos1()
-
-        # Optional: let CPLEX certify a pinned cost level. populate reports 129/130 ("all reachable
-        # solutions enumerated") only when the objective varies over the integer variables; with the
-        # level pinned the design cost is constant and it reports a bare 101, so the k-sweep has to
-        # pay a confirmatory populate per level. One unconstrained binary with a negligible cost
-        # restores the certificate (measured: same pool, status 130) and is invisible to every
-        # reader of the solution, which index the z block only. Appended last so it sits after
-        # any gate-transform columns.
-        # SD_POOL_CERT=skip trusts the certificate without adding the column (an open pool gap can
-        # produce it on its own); any other value adds the dummy binary as well.
-        if getattr(self, 'sos1_gates', None) and os.environ.get('SD_POOL_CERT') not in (None, '', 'skip') \
-           and self.solver == CPLEX:
-            self.c = list(self.c) + [1e-6]
-            self.lb = list(self.lb) + [0.0]
-            self.ub = list(self.ub) + [1.0]
-            self.vtype = self.vtype + 'B'
-            for attr in ('A_ineq', 'A_eq'):
-                A = getattr(self, attr)
-                setattr(self, attr, sparse.hstack((A, sparse.csr_matrix((A.shape[0], 1))), format='csr'))
-            if self.indic_constr is not None and self.indic_constr.A.shape[0]:
-                Ai = sparse.csr_matrix(self.indic_constr.A)
-                self.indic_constr.A = sparse.hstack((Ai, sparse.csr_matrix((Ai.shape[0], 1))), format='csr')
+        if getattr(self, 'sos1_gates', None) and self.solver in [CPLEX, GUROBI] \
+           and self.indic_constr is not None and self.indic_constr.A.shape[0]:
+            indicator_form = (self.c, self.lb, self.ub, self.vtype, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq,
+                              self.indic_constr)
+            direct_gates = set()
+            if self.solver in _CNA_GATE_BINARIES and getattr(self, 'gate_modules', None) is not None:
+                direct_gates = self._cna_binaries()
+            self._gates_as_sos1(direct_gates)
+            # The rewrite adds columns and rows. A size-limited licence (CPLEX Community Edition,
+            # Gurobi's pip licence) may accept the indicator form but not this one.
+            limit = _size_limit(self.solver)
+            if max(len(self.c), self.A_ineq.shape[0] + self.A_eq.shape[0]) > limit:
+                logging.info('  Keeping indicator constraints: with SOS1 gates the MILP exceeds the size '
+                             'limit of %d of this %s licence.' % (limit, self.solver))
+                (self.c, self.lb, self.ub, self.vtype, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq,
+                 self.indic_constr) = indicator_form
+                self.sos1 = []
 
         # Create backend
         if self.solver == CPLEX:
@@ -249,255 +252,185 @@ class MILP_LP(object):
             from straindesign.glpk_interface import GLPK_MILP_LP
             self.backend = GLPK_MILP_LP(self.c, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq, self.lb, self.ub, self.vtype,
                                         self.indic_constr, self.M)
-        _intensity = os.environ.get('SD_SOS1_INTENSITY')
-        if _intensity and not self.sos1 and hasattr(self.backend, 'set_pool_intensity'):
-            # the pool intensity governs how populate's second phase enumerates, which is worth
-            # measuring on the indicator formulation too, not only where the SOS1 sets are
-            self.backend.set_pool_intensity(int(_intensity))
         if self.sos1:
             self.backend.add_sos1(self.sos1)
-            # SOS1 gates and the pool intensity are not separable: at CPLEX's default 4 an
-            # SOS1-gated e_coli_core does not finish a problem indicators solve in 0.8 s, while at
-            # 3 it matches them. 3 is not safe on its own either -- it breaks OPTCOUPLE -- so it is
-            # applied here, where the gates are, and nowhere else.
-            # SD_SOS1_INTENSITY overrides the 3: the 129/130 exhaustion certificate needs 4, and
-            # the pathology that motivated 3 predates the integrality-tolerance fix.
-            if hasattr(self.backend, 'set_pool_intensity'):
-                self.backend.set_pool_intensity(int(os.environ.get('SD_SOS1_INTENSITY', 3)))
-            if hasattr(self.backend, 'relax_integrality_for_sos1'):
-                self.backend.relax_integrality_for_sos1()
         if self.tlim is None:
             self.set_time_limit(inf)
         else:
             self.set_time_limit(self.tlim)
 
 
-    def _gates_as_named_rows(self):
-        """Give every gated row activity a column of its own so each gate spans one variable.
+    def _cna_binaries(self):
+        """CellNetAnalyzer's binary structure for the target-region (SUPPRESS) gates.
 
-        `z = indicval -> a*x sense b` becomes
+        Both parts leave the set of feasible z unchanged, so the designs are the same; what changes
+        is what the solver can branch on.
 
-            a*x - d = 0                    an ordinary equality row
-            z = indicval -> d sense b      the same gate, now one term wide
+        Direction binaries: a reversible reaction's target-region gate is an equality on its dual
+        row (a*y = b while the reaction is present). With it knocked out, any one certificate leaves
+        that row on one side of b, so a direction suffices. The row becomes a*y - sp + sn = b with
+        sp, sn >= 0, two binaries zp + zn = [reaction knocked out] (CNA's ZP, ZN), and two gates on
+        one sign-constrained column each: zp = 0 -> sp <= 0, zn = 0 -> sn <= 0. Only binaries with
+        exactly one target-region gate are split, since one direction is chosen per reaction. Cost,
+        decoding and the desired-region gates stay on z.
 
-        The gate keeps its direction, its indicator variable and its meaning; only its width
-        changes. SD_GATE_NAMED=split additionally defines d as the difference of two non-negative
-        parts, which makes the gated quantity sign-constrained.
+        Own gate binaries: every target-region gate is keyed on its own binary i ("gate enforced")
+        with i >= [the intervention requires the gate], i.e. i = 1 whenever the reaction is present
+        and free once it is knocked out (CNA's x = 1 -> i = 1). Enforcing a knocked-out reaction's
+        gate only removes certificates, so for a fixed z the block is feasible exactly when it is
+        with i at its lower bound, which is the shared-z model. A split reaction gets one such
+        binary per direction.
+
+        Returns the gates that sit on a single sign-constrained column (the direction gates), which
+        the SOS1 rewrite pairs with that column directly.
         """
         ic = self.indic_constr
         A = sparse.csr_matrix(ic.A)
-        m, n0 = A.shape
-        split = os.environ.get('SD_GATE_NAMED') == 'split'
-        per = 3 if split else 1
-        eqrows, eqrhs = [], []
-        newcols_lb, newcols_ub = [], []
-        gate_col = []
-        for k in range(m):
+        n0 = A.shape[1]
+        new_cols, ineq_rows, eq_rows = [], [], []
+
+        def add_col(lb, ub, vtype):
+            new_cols.append((lb, ub, vtype))
+            return n0 + len(new_cols) - 1
+
+        n_supp = {}
+        for k in range(A.shape[0]):
+            if self.gate_modules[k] == SUPPRESS:
+                n_supp[int(ic.binv[k])] = n_supp.get(int(ic.binv[k]), 0) + 1
+        gates = []
+        n_split = 0
+        for k in range(A.shape[0]):
             row = A.getrow(k)
-            idx, dat = list(row.indices), list(row.data)
-            d = n0 + len(newcols_lb)
-            newcols_lb.append(-inf); newcols_ub.append(inf)
-            eqrows.append((idx + [d], dat + [-1.0])); eqrhs.append(0.0)
-            if split:
-                dp, dn = d + 1, d + 2
-                newcols_lb += [0.0, 0.0]; newcols_ub += [inf, inf]
-                eqrows.append(([d, dp, dn], [1.0, -1.0, 1.0])); eqrhs.append(0.0)
-            gate_col.append(d)
+            idx, dat = [int(j) for j in row.indices], [float(v) for v in row.data]
+            z, val, sense, b = int(ic.binv[k]), int(ic.indicval[k]), str(ic.sense[k]), float(ic.b[k])
+            module = self.gate_modules[k]
+            if module == SUPPRESS and sense == 'E' and n_supp.get(z) == 1:
+                sp, sn = add_col(0.0, inf, 'C'), add_col(0.0, inf, 'C')
+                zp, zn = add_col(0.0, 1.0, 'B'), add_col(0.0, 1.0, 'B')
+                eq_rows.append((idx + [sp, sn], dat + [-1.0, 1.0], b))
+                # the gate is off at z = 1 - val; exactly then one direction is chosen
+                if val == 0:
+                    eq_rows.append(([z, zp, zn], [1.0, -1.0, -1.0], 0.0))
+                else:
+                    eq_rows.append(([z, zp, zn], [1.0, 1.0, 1.0], 1.0))
+                for d, part in ((zp, sp), (zn, sn)):
+                    gates.append({'z': d, 'val': 0, 'sense': 'L', 'b': 0.0, 'cols': [part], 'vals': [1.0],
+                                  'module': SUPPRESS, 'direct': True})
+                n_split += 1
+            else:
+                gates.append({'z': z, 'val': val, 'sense': sense, 'b': b, 'cols': idx, 'vals': dat,
+                              'module': module, 'direct': False})
+        owner = {}
+        for g in gates:
+            if g['module'] != SUPPRESS:
+                continue
+            key = (g['z'], g['val'])
+            if key not in owner:
+                i = add_col(0.0, 1.0, 'B')
+                owner[key] = i
+                if key[1] == 0:  # gate required while the binary is 0:  i + z >= 1
+                    ineq_rows.append(([i, key[0]], [-1.0, -1.0], -1.0))
+                else:            # gate required while the binary is 1:  i >= z
+                    ineq_rows.append(([key[0], i], [1.0, -1.0], 0.0))
+            g['z'], g['val'] = owner[key], 1
 
-        k_new = len(newcols_lb)
-        assert k_new == m * per
-        self.c += [0.0] * k_new
-        self.lb += newcols_lb
-        self.ub += newcols_ub
-        self.vtype += 'C' * k_new
-        ncol = n0 + k_new
-        self.A_ineq = sparse.hstack((self.A_ineq, sparse.csr_matrix((self.A_ineq.shape[0], k_new))), format='csr')
-        self.A_eq = sparse.hstack((self.A_eq, sparse.csr_matrix((self.A_eq.shape[0], k_new))), format='csr')
-        eq = sparse.lil_matrix((len(eqrows), ncol))
-        for r, (cols, vals) in enumerate(eqrows):
-            for cc, vv in zip(cols, vals):
-                eq[r, cc] = vv
-        self.A_eq = sparse.vstack((self.A_eq, eq.tocsr()), format='csr')
-        self.b_eq = list(self.b_eq) + eqrhs
+        self._append_columns(new_cols, ineq_rows, eq_rows)
+        gate_A = sparse.lil_matrix((len(gates), len(self.c)))
+        for r, g in enumerate(gates):
+            for j, v in zip(g['cols'], g['vals']):
+                gate_A[r, j] = v
+        self.indic_constr = IndicatorConstraints([g['z'] for g in gates], gate_A.tocsr(), [g['b'] for g in gates],
+                                                 ''.join(g['sense'] for g in gates), [g['val'] for g in gates])
+        self.gate_modules = [g['module'] for g in gates]
+        logging.info('  CNA binaries: %d reversible target-region gates split by direction, %d own '
+                     'gate binaries; %d new columns (%d binary), %d gates.'
+                     % (n_split, len(owner), len(new_cols), sum(1 for c in new_cols if c[2] == 'B'), len(gates)))
+        return {r for r, g in enumerate(gates) if g['direct']}
 
-        gA = sparse.lil_matrix((m, ncol))
-        for k, d in enumerate(gate_col):
-            gA[k, d] = 1.0
-        self.indic_constr = IndicatorConstraints(list(ic.binv), gA.tocsr(), list(ic.b),
-                                                 list(ic.sense), list(ic.indicval))
-        logging.info('  Named gate rows: %d indicator constraints reduced to one term each, '
-                     '%d new columns.' % (m, k_new))
-
-    def _gates_as_sos1(self):
+    def _gates_as_sos1(self, direct_gates):
         """Rewrite indicator gates as slack rows plus SOS1 sets.
 
         For `z = indicval -> a*x sense b` add a slack the row can lean on and force that slack to
         zero exactly when the gate is active:
 
-            sense L :  a*x - s  <= b ,  s >= 0
-            sense G :  a*x + s  >= b ,  s >= 0
-            sense E :  a*x - sp + sn = b ,  sp, sn >= 0
+            sense L :  a*x + vp - vn = b ,  vp, vn >= 0 ,  SOS1(g, vn)
+            sense G :  a*x + vp - vn = b ,  vp, vn >= 0 ,  SOS1(g, vp)
+            sense E :  a*x - s       = b ,  s free     ,  SOS1(g, s)
+                       a*x - sp + sn = b ,  sp, sn >= 0 ,  SOS1(g, sp, sn)   (_EQUALITY_GATE_SPLIT)
 
-        `SOS1(g, s...)` then makes s vanish whenever g is nonzero, so g must be nonzero exactly when
-        the gate is on. For indicval = 1 that is z itself; for indicval = 0 it is a complement
-        binary w with z + w = 1, created once per binary rather than once per gate. Splitting the
-        equality slack into non-negative parts keeps every SOS1 member sign-constrained, which is
-        the setting the branching rule is meant for.
+        `SOS1(g, ...)` makes the slack vanish whenever g is nonzero, so g must be nonzero exactly
+        when the gate is on. For indicval = 1 that is z itself; for indicval = 0 it is a continuous
+        complement w with z + w = 1, created once per binary rather than once per gate. An
+        inequality's slack is defined by an equality in two non-negative parts: a slack that is
+        only bounded by its row has a continuum of values for every z pattern, which populate
+        would enumerate without end. A gate in ``direct_gates`` reads "x <= 0" on a single column
+        with lb = 0, so x already is the slack the gate kills.
         """
         ic = self.indic_constr
         A = sparse.csr_matrix(ic.A)
         n0 = A.shape[1]
-        # SD_GATE_SLACK_IND keeps the slack rewrite but gates the slack with an indicator on that
-        # single variable instead of an SOS1 set -- the shape CellNetAnalyzer's dual has. A gate on
-        # one sign-constrained variable is a bound change for the node LP, where a gate on a
-        # multi-variable row activates a row.
-        slack_ind = bool(os.environ.get('SD_GATE_SLACK_IND'))
-        split_dir = slack_ind and bool(os.environ.get('SD_GATE_SPLIT_DIR'))
-        ind_rows, ind_binv, ind_sense, ind_b, ind_val = [], [], [], [], []
-        newcols_lb, newcols_ub, newcols_vt = [], [], []
-        rows, rhs, senses = [], [], []
-        eqrows, eqrhs = [], []
-        comp = {}
+        new_cols, eq_rows = [], []
+        complement = {}
 
-        def add_col(lb, ub, vt):
-            newcols_lb.append(lb); newcols_ub.append(ub); newcols_vt.append(vt)
-            return n0 + len(newcols_lb) - 1
+        def add_col(lb, ub, vtype):
+            new_cols.append((lb, ub, vtype))
+            return n0 + len(new_cols) - 1
 
         for k in range(A.shape[0]):
             z, val, sense, b = int(ic.binv[k]), int(ic.indicval[k]), str(ic.sense[k]), float(ic.b[k])
-            if val == 1 or slack_ind:
-                # an indicator carries its own trigger value, so the complement column only exists
-                # for the SOS1 form, whose sets must vanish on the gate-on side
+            if val == 1:
                 g = z
             else:
-                if z not in comp:
-                    # w is pinned to 1 - z by the row below, so it is already binary-valued and
-                    # declaring it integer would only add a branching object the solver does not
-                    # need. SD_SOS1_BINCOMP exists to measure that claim rather than assume it.
-                    vt = 'B' if os.environ.get('SD_SOS1_BINCOMP') else 'C'
-                    w = add_col(0.0, 1.0, vt)
-                    eqrows.append(([z, w], [1.0, 1.0])); eqrhs.append(1.0)
-                    comp[z] = w
-                g = comp[z]
+                if z not in complement:
+                    # pinned to 1 - z by its row, so integral without being declared integer
+                    complement[z] = add_col(0.0, 1.0, 'C')
+                    eq_rows.append(([z, complement[z]], [1.0, 1.0], 1.0))
+                g = complement[z]
             row = A.getrow(k)
             idx, dat = list(row.indices), list(row.data)
-            if sense == 'E':
-                # An equality row defines its slack uniquely, so there is no continuum here to
-                # pin and the signed split the inequality gates need is pure overhead. One free
-                # slack in a two-member set is what gurobi's own presolve builds.
-                if os.environ.get('SD_SOS1_SPLIT_EQ'):
-                    sp, sn = add_col(0.0, inf, 'C'), add_col(0.0, inf, 'C')
-                    eqrows.append((idx + [sp, sn], dat + [-1.0, 1.0])); eqrhs.append(b)
-                    self.sos1.append([sp, sn])      # complementarity pins them to the two parts
-                    self.sos1.append([g, sp, sn])
-                elif slack_ind:
-                    # A free slack gated as an equality is the one gate a solver cannot settle by
-                    # bound propagation. Splitting it into non-negative parts makes both gated
-                    # variables sign-constrained, so the gate collapses to two fixings -- the
-                    # reversible-variable split that Klamt et al. 2020 measure at 2.9-5.6x.
-                    sp, sn = add_col(0.0, inf, 'C'), add_col(0.0, inf, 'C')
-                    eqrows.append((idx + [sp, sn], dat + [-1.0, 1.0])); eqrhs.append(b)
-                    if os.environ.get('SD_SOS1_NOPAIR', '1').lower() in ('0', 'off', 'false'):
-                        self.sos1.append([sp, sn])
-                    for part in (sp, sn):
-                        ind_rows.append([part]); ind_binv.append(z); ind_sense.append('L')
-                        ind_b.append(0.0); ind_val.append(val)
-                    if split_dir:
-                        # With the gate off the row is free in both directions, but any one
-                        # certificate uses only one of them. A cost-free direction binary lets the
-                        # solver fix the unused part by branching instead of by an LP re-solve;
-                        # the union over both settings is the same relaxation, so designs are
-                        # unchanged. This is CellNetAnalyzer's two-binary split without a second
-                        # intervention variable.
-                        d = add_col(0.0, 1.0, 'B')
-                        ind_rows.append([sn]); ind_binv.append(d); ind_sense.append('L')
-                        ind_b.append(0.0); ind_val.append(0)
-                        ind_rows.append([sp]); ind_binv.append(d); ind_sense.append('L')
-                        ind_b.append(0.0); ind_val.append(1)
-                        # Only a knocked-out reaction has a direction to choose. Left free on the
-                        # gate-on side, both settings satisfy the model and the pool enumerates
-                        # every combination of them.
-                        rows.append(([d, z], [1.0, -1.0] if val == 0 else [1.0, 1.0]))
-                        rhs.append(0.0 if val == 0 else 1.0); senses.append('L')
-                else:
-                    sf = add_col(-inf, inf, 'C')
-                    eqrows.append((idx + [sf], dat + [-1.0])); eqrhs.append(b)
-                    self.sos1.append([g, sf])
+            if k in direct_gates:
+                self.sos1.append([g, int(idx[0])])
+            elif sense == 'E' and self.solver in _EQUALITY_GATE_SPLIT:
+                sp, sn = add_col(0.0, inf, 'C'), add_col(0.0, inf, 'C')
+                eq_rows.append((idx + [sp, sn], dat + [-1.0, 1.0], b))
+                self.sos1.append([g, sp, sn])
+            elif sense == 'E':
+                slack = add_col(-inf, inf, 'C')
+                eq_rows.append((idx + [slack], dat + [-1.0], b))
+                self.sos1.append([g, slack])
             else:
-                # A one-sided gate needs slack, but a slack defined by an INEQUALITY is free above
-                # the row activity: it sits in one row with no objective, so every gate-off
-                # solution has a continuum of equally-optimal values and `populate` -- which is
-                # asked for up to 2.1e9 solutions at zero gap -- never terminates. Defining both
-                # parts by an EQUALITY and making them complementary pins them to the positive and
-                # negative parts of the activity, so each z pattern has exactly one representative.
                 vp, vn = add_col(0.0, inf, 'C'), add_col(0.0, inf, 'C')
                 sgn = -1.0 if sense == 'L' else 1.0
-                eqrows.append((idx + [vp, vn], dat + [-sgn, sgn])); eqrhs.append(b)
-                # SD_SOS1_NOPAIR drops this complementarity set. gurobi's presolve removes it
-                # anyway (1140 sets -> 597); cplex's keeps 1134, so it is measured separately.
-                if os.environ.get('SD_SOS1_NOPAIR', '1').lower() in ('0', 'off', 'false'):
-                    self.sos1.append([vp, vn])
-                # a*y = vn - vp after complementarity, so vn is the positive part: an 'L' gate
-                # (a*y <= 0 when on) kills vn, a 'G' gate kills vp
-                killed = vn if sense == 'L' else vp
-                if slack_ind:
-                    ind_rows.append([killed]); ind_binv.append(z); ind_sense.append('L')
-                    ind_b.append(0.0); ind_val.append(val)
-                else:
-                    self.sos1.append([g, killed])
+                eq_rows.append((idx + [vp, vn], dat + [-sgn, sgn], b))
+                # a*y = vn - vp, so vn is the positive part: an 'L' gate (a*y <= 0 when on) kills
+                # vn, a 'G' gate kills vp
+                self.sos1.append([g, vn if sense == 'L' else vp])
 
-        k_new = len(newcols_lb)
-        # SD_SOS1_SLACK_EPS puts a negligible cost on every gate slack so the LP prefers one
-        # representative among equally-feasible certificates. Only sound with the pool gap opened
-        # (the cplex backend does that when this is set): with a zero gap the perturbed objective
-        # would filter designs by their certificate's slack size, which is a silent truncation.
-        _eps = float(os.environ.get('SD_SOS1_SLACK_EPS', 0) or 0)
-        # Measured scope: a large win on SUPPRESS-only problems on cplex under the k-sweep (the
-        # open gap it needs is cheap there), a 3-6x loss with a PROTECT module, and on gurobi the
-        # open gap turns one populate into ~85 (10x slower). Refuse it where it can only hurt.
-        if _eps and self.solver != CPLEX:
-            logging.warning('SD_SOS1_SLACK_EPS is cplex-only (measured 10x slower on gurobi); ignored.')
-            _eps = 0.0
-        if _eps and not os.environ.get('SD_ENUM_KSWEEP'):
-            logging.warning('SD_SOS1_SLACK_EPS without SD_ENUM_KSWEEP opens the pool gap on an unpinned '
-                            'budget: measured 17k pool entries per populate. Use the k-sweep with it.')
-        # only sign-constrained slacks: a cost on the FREE equality slack makes the LP unbounded
-        # (measured: iJO1366 p1 returned 54 of 249 designs with populate status 118/119)
-        self.c += [_eps if (vt == 'C' and lb_ >= 0.0) else 0.0 for vt, lb_ in zip(newcols_vt, newcols_lb)]
-        self.lb += newcols_lb
-        self.ub += newcols_ub
-        self.vtype += ''.join(newcols_vt)
-        self.A_ineq = sparse.hstack((self.A_ineq, sparse.csr_matrix((self.A_ineq.shape[0], k_new))), format='csr')
-        self.A_eq = sparse.hstack((self.A_eq, sparse.csr_matrix((self.A_eq.shape[0], k_new))), format='csr')
-        ncol = n0 + k_new
+        self._append_columns(new_cols, [], eq_rows)
+        logging.info('  Gates as SOS1: %d indicator constraints -> %d SOS1 sets, %d new columns '
+                     '(%d complement columns).' % (A.shape[0], len(self.sos1), len(new_cols), len(complement)))
+        self.indic_constr = None
 
-        def stack(base, b_base, specs, b_specs, into_eq):
-            if not specs:
-                return base, b_base
-            m = sparse.lil_matrix((len(specs), ncol))
-            for r, (cols, vals) in enumerate(specs):
-                for cc, vv in zip(cols, vals):
-                    m[r, cc] = vv
-            return sparse.vstack((base, m.tocsr()), format='csr'), list(b_base) + list(b_specs)
+    def _append_columns(self, cols, ineq_rows, eq_rows):
+        """Append columns, given as (lb, ub, vtype) with no cost, and then rows over the widened
+        matrices, given as (columns, values, rhs)."""
+        self.c = list(self.c) + [0.0] * len(cols)
+        self.lb = list(self.lb) + [lb for lb, _, _ in cols]
+        self.ub = list(self.ub) + [ub for _, ub, _ in cols]
+        self.vtype = self.vtype + ''.join(vtype for _, _, vtype in cols)
 
-        # a 'G' gate row is stored as its negation so everything stays in A_ineq's <= form
-        le = [(c_, v_) for (c_, v_), sn in zip(rows, senses) if sn == 'L']
-        le_b = [x for x, sn in zip(rhs, senses) if sn == 'L']
-        ge = [(c_, [-v for v in v_]) for (c_, v_), sn in zip(rows, senses) if sn == 'G']
-        ge_b = [-x for x, sn in zip(rhs, senses) if sn == 'G']
-        self.A_ineq, self.b_ineq = stack(self.A_ineq, self.b_ineq, le + ge, le_b + ge_b, False)
-        self.A_eq, self.b_eq = stack(self.A_eq, self.b_eq, eqrows, eqrhs, True)
-        if slack_ind:
-            m = sparse.lil_matrix((len(ind_rows), ncol))
-            for r, cols in enumerate(ind_rows):
-                m[r, cols[0]] = 1.0
-            self.indic_constr = IndicatorConstraints(ind_binv, m.tocsr(), ind_b, ''.join(ind_sense), ind_val)
-            logging.info('  Gates as slack indicators: %d row gates -> %d single-variable gates, '
-                         '%d SOS1 sets kept, %d new columns.' % (A.shape[0], len(ind_rows), len(self.sos1), k_new))
-        else:
-            logging.info('  Gates as SOS1: %d indicator constraints -> %d SOS1 sets, %d new columns '
-                         '(%d complement binaries).' % (A.shape[0], len(self.sos1), k_new, len(comp)))
-            self.indic_constr = None
+        def widened(A, b, rows):
+            A = sparse.hstack((A, sparse.csr_matrix((A.shape[0], len(cols)))), format='csr')
+            if not rows:
+                return A, b
+            R = sparse.lil_matrix((len(rows), len(self.c)))
+            for r, (idx, vals, _) in enumerate(rows):
+                for j, v in zip(idx, vals):
+                    R[r, j] = v
+            return sparse.vstack((A, R.tocsr()), format='csr'), list(b) + [rhs for _, _, rhs in rows]
+
+        self.A_ineq, self.b_ineq = widened(self.A_ineq, self.b_ineq, ineq_rows)
+        self.A_eq, self.b_eq = widened(self.A_eq, self.b_eq, eq_rows)
 
     def solve(self) -> Tuple[List, float, float]:
         """Solve the MILP or LP
@@ -512,7 +445,11 @@ class MILP_LP(object):
         """
         x, min_cx, status = self.backend.solve()
         if status not in [INFEASIBLE, UNBOUNDED, TIME_LIMIT]:  # if solution exists (is not nan), round integers
-            x = [x[i] if self.vtype[i] == 'C' else int(round(x[i])) for i in range(len(x)) if not isnan(x[i])]
+            if 'B' in self.vtype or 'I' in self.vtype:
+                x = [x[i] if self.vtype[i] == 'C' else int(round(x[i])) for i in range(len(x)) if not isnan(x[i])]
+            else:
+                # math.isnan: numpy's scalar isnan is slow enough to dominate LPs solved in a loop
+                x = [v for v in x if not math.isnan(v)]
         return x, min_cx, status
 
     def slim_solve(self) -> float:
@@ -564,6 +501,25 @@ class MILP_LP(object):
         self.ub = ub
         self.backend.set_ub(ub)
 
+    def set_lb(self, lb):
+        """Set lower bounds with index-value pairs
+
+        e.g.: lb=[[1, 0.0], [4, -inf]]. Variables not listed keep their bounds."""
+        for i, v in lb:
+            self.lb[i] = float(v)
+        self.backend.set_lb(lb)
+
+    def set_time_limit(self, t):
+        """Set the computation time limit (in seconds)"""
+        # Floor at 1 ms before dispatching to any backend. The remaining-time passed by the
+        # strain-design loop is computed as endtime - time.time() right after a > 0 guard, so a
+        # tiny scheduling delay can make it zero or slightly negative; a 1 ms floor keeps the
+        # limit valid (Gurobi rejects negative TimeLimit) and, crucially, avoids GLPK treating
+        # tm_lim == 0 as "no limit". inf passes through unchanged for the backends' own clamps.
+        t = max(t, 1e-3)
+        self.tlim = t
+        self.backend.set_time_limit(t)
+
     def set_pool_gap(self, open_gap):
         """Open or close the solution pool's optimality gap, where the backend has one.
 
@@ -578,16 +534,23 @@ class MILP_LP(object):
         if setter is not None:
             setter(bool(open_gap))
 
-    def set_time_limit(self, t):
-        """Set the computation time limit (in seconds)"""
-        # Floor at 1 ms before dispatching to any backend. The remaining-time passed by the
-        # strain-design loop is computed as endtime - time.time() right after a > 0 guard, so a
-        # tiny scheduling delay can make it zero or slightly negative; a 1 ms floor keeps the
-        # limit valid (Gurobi rejects negative TimeLimit) and, crucially, avoids GLPK treating
-        # tm_lim == 0 as "no limit". inf passes through unchanged for the backends' own clamps.
-        t = max(t, 1e-3)
-        self.tlim = t
-        self.backend.set_time_limit(t)
+    def set_work_limit(self, w):
+        """Cap the next solves in deterministic work (CPLEX ticks, Gurobi work units); None lifts it.
+        Backends without a deterministic work measure ignore this."""
+        setter = getattr(self.backend, 'set_work_limit', None)
+        if setter is not None:
+            setter(w)
+
+    def get_work(self):
+        """Deterministic work counter of the backend, 0 where it has none"""
+        getter = getattr(self.backend, 'get_work', None)
+        return getter() if getter is not None else 0.0
+
+    def set_seed(self, seed):
+        """Set the random seed for subsequent solves, where the backend takes one."""
+        setter = getattr(self.backend, 'set_seed', None)
+        if setter is not None:
+            setter(seed)
 
     def add_ineq_constraints(self, A_ineq, b_ineq):
         """Add inequality constraints to the model

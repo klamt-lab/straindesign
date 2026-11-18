@@ -34,7 +34,7 @@ which drifts with every edit. Grep for the symbol.
 5. [**FVA in preprocessing**](#ch5) — pre-compression sign classification, desired-region essentiality, final bound/module FVA, the single-classical-module fold, and size-1 MCS extraction.
 6. [**Dualization (the mathematical core)**](#ch6) — LP duality, Farkas certificates, and the strong-duality encodings shared by the supported module types.
 7. [**MILP construction & the z-linking**](#ch7) — block assembly, per-module sign overrides, bound-derived single-row big-M values, native indicators or the intentional blanket M for multi-variable rows, and free-binary elimination.
-8. [**Solving & enumeration**](#ch8) — ANY/BEST/POPULATE objective setups; the iterative loop and superset-excluding integer cuts; solver parameters; the CPLEX-vs-Gurobi gap.
+8. [**Solving & enumeration**](#ch8) — ANY/BEST/POPULATE objective setups; the iterative loop and superset-excluding integer cuts; solver parameters; the CPLEX-vs-Gurobi gap; the MCS enumeration stack on CPLEX and Gurobi (SOS1 gates, cost-level sweep, tilt, anchor controller, restarts).
 9. [**Decompression & solution semantics**](#ch9) — reverse-map expansion of compressed interventions; size-1 MCS re-injection; `filter_sd_maxcost`; the KI value-0/`(nan,nan)` & `strip_non_ki` encoding; gene↔reaction translation.
 10. [**Known issues, gotchas & failure modes**](#ch10) — neutral-gene-KO paths and superset artifacts with mechanism; the in-place dict-mutation footgun; name truncation; numeric-status robustness.
 11. [**Performance, benchmarking & roadmap**](#ch11) — the bottleneck profile; the lever groups; benchmarking discipline (multi-seed, known-answer gates, MCS2/gMCSpy).
@@ -631,7 +631,7 @@ def fva(model, **kwargs):
     from straindesign.speedy_fva import speedy_fva
     return speedy_fva(model, **kwargs)
 ```
-`speedy_fva` does *not* solve `2n` independent LPs blindly; it uses a two-phase accelerated scheme (global scan LPs with dual-simplex warm-starts resolve ~half the bounds cheaply, then individual LPs for the rest, with optional coupled-reaction compression for large models). The mathematics of that acceleration is [Ch 5](#ch5)'s. The *reference* brute-force implementation — literally `2n` LPs — survives as `fva_legacy` (`lptools.py`) and makes the standard form explicit:
+`speedy_fva` does *not* solve `2n` independent LPs blindly; it uses a two-phase accelerated scheme (push LPs with randomly weighted sum objectives, warm-started by the primal simplex, resolve about half the bounds cheaply, then individual LPs for the rest, with optional coupled-reaction compression for large models). The mathematics of that acceleration is [Ch 5](#ch5)'s. The *reference* brute-force implementation — literally `2n` LPs — survives as `fva_legacy` (`lptools.py`) and makes the standard form explicit:
 
 - Build `A_eq = [S; V_eq]`, `b_eq = [0…0, v_eq]`, `A_ineq/b_ineq` from user constraints, `lb/ub` from the reactions (`lptools.py`) — identical assembly to FBA.
 - Instantiate one `MILP_LP` and iterate over `i ∈ {0, …, 2n−1}`. The helper `idx2c(i, prev)` (`lptools.py`) maps index `i` to an objective: `col = floor(i/2)` is the reaction, `sig = sign(mod(i,2) − 0.5)` is `−1` for even `i` (**maximize**, since the solver minimizes `−v_col`) and `+1` for odd `i` (**minimize** `v_col`). The warm-start trick is `prev`: consecutive LPs differ in one objective coefficient, so the simplex basis is reused.
@@ -853,70 +853,75 @@ this is the sense in which it is "fraction-free."
 target row with entry `ev` in column `c`, the update is
 
 ```
-new_row[k] = ev_scaled · pivot[k] − pv_scaled · target[k]      (conceptually)
+target[k] <- pv_scaled · target[k] − ev_scaled · pivot[k]
 ```
 
-where the code (`_eliminate`) first divides `pv, ev` by `g = gcd(pv, ev)` to get
-`pv_scaled = pv/g`, `ev_scaled = ev/g`, then computes, for the sparse pivot row `prd`,
-`new_row = {c: v·pv_scaled}` over the target row and subtracts `ev_scaled·prd[c]` on the shared
-columns. This is the classical **fraction-free (Bareiss-style) update**: it keeps
-everything integer and makes column `c` vanish in the target, because
-`ev_scaled·pv − pv_scaled·ev = 0` after the GCD split.
+where `_eliminate` first divides `pv, ev` by `g = gcd(pv, ev)` to get `pv_scaled = pv/g`,
+`ev_scaled = ev/g`. Column `c` vanishes in the target because `pv_scaled·ev − ev_scaled·pv = 0`.
+Everything stays integer.
+
+**Two cases, split on the multiplier of the target row.** On genome-scale stoichiometric matrices
+85–100 % of all eliminations have `pv_scaled = ±1` (the pivot value divides the target entry; most
+pivots are ±1). In that case the target row is not rescaled at all, so the update is applied *in
+place* and touches only the entries the target shares with the (sparse) pivot row. This matters most
+in back-substitution, where the targets are the long, filled pivot rows: rebuilding them for every
+elimination was 10.9 M copied entries against 117 k changed ones on Human-GEM. Only when
+`pv_scaled ≠ ±1` is the whole target row multiplied through, and then divided by the GCD of all its
+entries, its "content".
 
 **Content reduction (GCD) — why coefficients stay polynomial.** Cross-multiplying integer rows makes
-entries grow. Without control, the bit-length of coefficients grows *exponentially* down the
-elimination. The defence is to divide each freshly-computed row by the GCD of all its entries — its
-"content" — right after forming it : `row_gcd = gcd(*new_row.values)` then
-`row[c] //= row_gcd`. This is exactly the mechanism (Bareiss / fraction-free Gaussian elimination) that
-bounds intermediate integers to the size of subdeterminants of the original matrix, i.e. keeps the
-bit-length **polynomial** rather than exponential. A final content reduction of the pivot rows runs at
-– as insurance.
+entries grow; without control the bit-length grows *exponentially* down the elimination. Dividing a
+rescaled row by its content right after forming it bounds intermediate integers to the size of
+subdeterminants of the original matrix. A unit-multiplier elimination multiplies nothing, so it leaves
+the content alone; instead every pivot row is divided by its content once, when it is chosen in the
+forward phase and again when it is final in back-substitution (`_normalize`).
 
-**Markowitz pivoting — keep it sparse.** On a genome-scale `S` the elimination is dominated not by
-arithmetic but by *fill-in* and *pivot search*. Two heuristics keep both small:
+**Static column order, cheapest row.** Two choices keep fill-in small:
 
-- Columns are pre-sorted by ascending nnz (`col_order`,–) so that sparse columns — the
-  likely pivots — are visited first; rows are pre-sorted by ascending nnz. Results are
-  translated back to the original column order at the end.
-- At each step the pivot is chosen by the **Markowitz criterion** among the rows that actually contain
-  the current pivot column: sparsest row first, ties broken by smallest absolute pivot value
-  . A live `col_rows` index maps each column to the set of active rows
-  containing it, so pivot search visits only the handful of rows that hold the column instead of
-  scanning all active rows (on iML1515 that scan was ~99.9% misses; the index removes it).
+- Columns are visited in a fixed order, ascending nnz (`col_order`), so that sparse columns become
+  the pivots and dense ones stay free. **The pivot columns depend on this order alone** (a column is a
+  pivot iff it is independent of the columns before it), and with them the reduced form up to row
+  scale and the kernel read off it. Bit-length-aware orders were measured and rejected: they narrow
+  the coefficient range of the yeast-GEM kernel but quadruple the fill on Human-GEM.
+- Which row serves a pivot column only affects the cost, never the result. Among the rows that hold
+  the column the sparsest is taken, ties broken by the smallest absolute pivot value. A live
+  `col_rows` index maps each column to the set of not-yet-pivot rows containing it, so the pivot
+  search and the elimination visit only the rows that hold the column.
 
 **Two-phase echelon, not full Gauss–Jordan.** Phase 1 does forward elimination only —
-each pivot is cleared from rows *below* it, leaving already-processed pivot rows sparse. Phase 2
-does back-substitution, processing pivots last-to-first and clearing each pivot column
-from the pivot rows *above* it. Doing it in this order means that when a pivot row is applied during
-back-substitution, its own later-pivot columns are already cleared, so back-substitution only ever
-introduces *free-column* fill and only ever *removes* pivot-column entries — enabling the
-`pivcol_holders` index to be maintained with discards only. The commit comments record
-the payoff on iML1515: ~0.8M back-substitution ops versus ~9.4M for naive Gauss–Jordan, because full
-Gauss–Jordan re-reduces every filled row against every later pivot (~99% of the total work).
+each pivot is cleared from the rows that are not pivot rows yet, leaving finished pivot rows sparse.
+The rank and the pivot columns are final after phase 1; `reduced=False` stops there, which is all
+`basic_columns` needs. Phase 2 does back-substitution, processing pivots last-to-first and clearing
+each pivot column from the pivot rows *above* it. Doing it in this order means that when a pivot row
+is applied during back-substitution, its own later-pivot columns are already cleared, so
+back-substitution only ever introduces *free-column* fill and only ever *removes* pivot-column
+entries — enabling the `pivcol_holders` index to be maintained with discards only. Full Gauss–Jordan
+would re-reduce every filled row against every later pivot (~99% of the total work on iML1515).
 
 The routine returns `(rref_data, rank, pivot_columns)` where `rref_data[i]` is pivot row `i` as a
 `{orig_col: integer_value}` dict, all in the original column space.
 
-#### 3.2.4 Reading off the kernel: `_nullspace_sparse`
+#### 3.2.4 Reading off the kernel: `_kernel_rows` and `_nullspace_sparse`
 
-`_nullspace_sparse` (`compression.py`) turns the RREF into an explicit kernel basis. With `rank`
-pivots and `cols` columns, the free columns are `free_cols = {0..cols−1} \ pivots` and the nullity is
-`|free_cols|`. For each free column `f` the basis vector `k_f` is built by the standard RREF rule:
+With `rank` pivots and `cols` columns, the free columns are `free_cols = {0..cols−1} \ pivots` and the
+nullity is `|free_cols|`. Kernel column `k` belongs to the `k`-th free column `f` and is built by the
+standard RREF rule:
 
-- entry `+1` at row `f` (the free variable is set to 1),–;
-- at each pivot row `i` with pivot column `p_i`, entry `−rref[i,f] / rref[i,p_i]`, reduced by GCD to a
-  clean rational and given a positive denominator.
+- entry `+1` at row `f` (the free variable is set to 1);
+- at each pivot row `i` with pivot column `p_i`, entry `−rref[i,f] / rref[i,p_i]`.
 
-So `k_f` has value `1` in its own free coordinate and `−(free entry)/(pivot value)` in each pivot
-coordinate. By construction `S·k_f = 0` exactly. The set `{k_f}` is a sparse rational basis of the
-right nullspace — one column per free variable — assembled by `_build_from_sparse_data`. This
-sparsity is exactly what makes coupling detection cheap in §3.3–§3.4: a coupled reaction shows up as a
-kernel *row* with a distinctive zero pattern, and sparse kernel rows make that pattern comparison a
-dictionary lookup.
+By construction `S·k_f = 0` exactly. Read row-wise this says: **pivot row `i` of the RREF *is* kernel
+row `p_i`**, up to the sign and the division by the pivot value. `_kernel_rows` (`compression.py`)
+returns the kernel in exactly that form, `(nullity, rows, denominators)` with kernel entry
+`(r, k) = rows[r][k] / denominators[r]`: integer rows and one denominator per row, no `Fraction`
+objects. This is what the compressor consumes (§3.3–§3.4): a blocked reaction is an absent row,
+and two rows are proportional iff their integer rows are, so coupling is tested by integer
+cross-multiplication and the denominators enter only the coupling ratio.
 
-`nullspace` is the public wrapper; `basic_columns` returns just the pivot columns
-(used by conservation removal, §3.5); `sparse_nullspace` is the general-purpose exact-kernel
-helper that accepts scipy/numpy/`RationalMatrix` input.
+`_nullspace_sparse` turns the same rows into a `RationalMatrix` (each entry reduced to a clean
+rational with a positive denominator) for `nullspace`, the public wrapper; `basic_columns` returns
+just the pivot columns (used by conservation removal, §3.5); `sparse_nullspace` is the
+general-purpose exact-kernel helper that accepts scipy/numpy/`RationalMatrix` input.
 
 #### 3.2.5 The big-integer path — when subdeterminants exceed int64
 
@@ -939,9 +944,9 @@ raises `OverflowError` in big-integer mode (with a message pointing at the exact
 namedtuple `(rows, cols, data, shape, denom)` (defined) in which entry `(rows[k], cols[k])`
 equals `data[k]/denom` exactly, with `data` arbitrary-precision Python ints scaled to a common
 denominator. `to_sparse_pattern` returns a pure-structure `int8` CSR (1s where nonzero) plus a
-`{row: {col: Fraction}}` value map — this is the form coupling detection consumes, and it works
-identically in int64 and big-integer mode, so the whole compression pipeline runs unchanged on
-yeast-GEM. `sparse_nullspace` returns a scipy CSR in the common case and an `ExactCOO` when
+`{row: {col: Fraction}}` value map, in both storage modes. The compressor does not go through either
+store: it takes the integer kernel rows of `_kernel_rows` (§3.2.4), which are Python ints of any size,
+so the whole compression pipeline runs unchanged on yeast-GEM. `sparse_nullspace` returns a scipy CSR in the common case and an `ExactCOO` when
 `K.is_bigint`.
 
 ### 3.3 The compression working state and the single-kernel pass
@@ -965,9 +970,9 @@ The compress driver `StoichMatrixCompressor.compress` runs a loop : remove
 all-zero metabolite rows, then call `_nullspace_compress`, and re-iterate only while the previous pass
 reported a *contradicting* removal (which changes the flux space and can expose new couplings). Note the
 important design choice: **one nullspace computation drives both zero-flux detection and coupled-group
-merging in the same pass.** `_nullspace_compress` builds the active submatrix, computes
-`kernel = nullspace(active)` once, extracts `(kernel_pattern, kernel_values)` via
-`to_sparse_pattern`, and hands both to `_handle_compress`.
+merging in the same pass.** `_nullspace_compress` builds the active submatrix, reads the kernel off once as integer rows with
+`_kernel_rows`, derives the structure-only `kernel_pattern` CSR with `_kernel_pattern`, and hands
+pattern, rows and row denominators to `_handle_compress`.
 
 The single kernel yields three kinds of removals in one batch (`_handle_compress`,–):
 
@@ -1023,10 +1028,11 @@ Both tests are exact equalities on rationals — which is precisely why §3.2's 
 `_find_coupled_groups` (`compression.py`) implements exactly that two-stage test. First it buckets
 reactions by kernel-row zero pattern: `pattern = tuple(kernel_pattern.indices[start:end])` per reaction,
 grouped into a dict, keeping only buckets of size > 1. Then, within each candidate
-bucket, it verifies the constant ratio : pick reaction `a`, take the first nonzero
-column `first_col`, compute `ratio = a_val/b_val` there (exact `Fraction` division,–),
-and confirm `a_v/b_v == ratio` for every remaining nonzero column. Reactions that
-pass are collected into a group with `ratios[reac_b] = ratio` recorded per slave. The output is
+bucket, it verifies the constant ratio on the integer kernel rows: pick reaction `a`, take the first
+nonzero column `first_col` with entries `a_val`, `b_val` there, and confirm
+`a_v·b_val == b_v·a_val` for every remaining nonzero column (integer cross-multiplication; the row
+denominators cancel out of the test). Reactions that pass are collected into a group with
+`ratios[reac_b] = (a_val·den_b) / (b_val·den_a)` recorded per slave, the only `Fraction` built. The output is
 `(groups, ratios)`: each group is `[master, slave1, slave2, …]` (master is the first member), and
 `ratios[slave]` is the exact `Fraction` `v_master / v_slave`.
 
@@ -1766,8 +1772,11 @@ existing construction path.
 
 Public `fva` dispatches to `speedy_fva`. It avoids blindly solving `2n` independent LPs by combining
 bound-resolved directions, scan LPs, warm-started residual solves and optional internal compression.
-Only the objective changes between solves. Large residual sets may be distributed through `SDPool`;
-smaller ones remain sequential to avoid process overhead. `fva_legacy` remains the simple `2n`-LP
+Only the objective changes between solves, so every solve continues from the previous vertex with the
+primal simplex. A scan (push) LP maximizes a randomly weighted sum over all unresolved directions and
+resolves every reaction its vertex puts on a variable bound; the sequential residual solves take the
+direction next whose best known value the current vertex already attains. Large residual sets may be
+distributed through `SDPool`; smaller ones remain sequential to avoid process overhead. `fva_legacy` remains the simple `2n`-LP
 reference implementation.
 
 ### 5.7 Current preprocessing profile
@@ -2892,6 +2901,76 @@ proved unstable.
 
 
 (ch9)=
+### 8.9 The MCS enumeration stack on CPLEX and Gurobi
+
+For classical MCS problems (SUPPRESS / PROTECT modules only) solved with `solution_approach='populate'`
+on CPLEX or Gurobi, the MILP and the enumeration loop differ from the generic description above in
+four places. All of them leave the set of designs unchanged; they change how fast the solver finds
+and proves it. SCIP and GLPK keep the generic path ([8.8](#ch8)).
+
+**Gates as SOS1 sets** (`MILP_LP._gates_as_sos1`). Every indicator gate `z = v -> a·x (sense) b`
+becomes an always-present row with a slack and an SOS1 set that forbids the slack while the gate is on:
+
+| gate sense | row | SOS1 set |
+|---|---|---|
+| `L` | `a·x + vp - vn = b`, `vp, vn >= 0` | `(g, vn)` |
+| `G` | same row | `(g, vp)` |
+| `E` | `a·x - s = b`, `s` free | `(g, s)` |
+
+`g` is `z` when the gate is on at `z = 1`, otherwise a continuous complement `w = 1 - z` (one per
+binary). Solvers in `_EQUALITY_GATE_SPLIT` (Gurobi) give equality gates two sign-restricted parts
+instead, `a·x - sp + sn = b` with SOS1 `(g, sp, sn)`, so the set itself chooses the direction and the
+dual tilt reaches both parts. CPLEX
+additionally receives CellNetAnalyzer's binary structure for the target-region gates first
+(`_CNA_GATE_BINARIES`, `MILP_LP._cna_binaries`): a reversible reaction's equality gate is split by
+direction with two binaries `zp + zn = z`, and every target-region gate is keyed on a binary of its
+own, `i + z >= 1` (enforced while the reaction is present, free once it is knocked out). Both keep the
+feasible `z` unchanged; on CPLEX they are the largest single lever on PROTECT problems.
+
+**The cost-level sweep** (`SDMILP.enumerate_ksweep`). With positive, integer intervention costs and a
+finite budget, the design cost is pinned to `k = 1, 2, …` by the two budget rows and each level is
+enumerated on its own; any other cost structure falls back to `enumerate`. Only while a level is
+pinned is the pool's optimality gap opened: the objective no longer separates wanted from unwanted
+pool members there, so the gap's filtering role is gone. The solver's own certificate that the level is
+exhausted (CPLEX status 129/130; Gurobi an optimal pool search with room left in the pool) ends the
+level without a confirmatory populate. A level that ends without a proof either way (a time limit,
+or a numerical failure that the retry cannot resolve) is never read as exhausted: the run reports a
+time limit or `ERROR` instead.
+
+**Dual tilt** (`dual_tilt`, default `1e-6`). At a pinned level the objective is constant on `z` and
+zero on the certificate variables, so every node LP is a degenerate feasibility problem. A tiny cost
+on the sign-restricted SOS1 slack columns gives the simplex a direction without cutting any
+certificate. On Gurobi the tilt is divided by the Farkas anchor below, so its weight stays the one it
+has at an anchor of 1.
+
+**Farkas anchor controller.** The certificate's normalization row `bᵀy <= -c` ([6.3.3](#ch6)) is exact
+for any `c > 0`; `c` only sets the certificate's scale against the solver's absolute tolerances. The
+MILP is built at `c = 1` and the sweep starts at `c = 1e-5`, which is markedly faster. Validity is
+checked by a slack verification LP (`_verify_slack`) that keeps the design's gate rows with
+non-negative slacks: a design that fails means a certificate passed only within tolerance, so `c` is
+raised 100-fold and the level re-populated; a design with a zero-slack gate is not minimal, which means
+a lower level lost a design, so `c` is lowered and the lower levels redone (everything found stays
+excluded, so those passes only collect the losses). Between levels `c` is steered from the smallest
+gate slack and the largest certificate entry of the accepted designs. After more than three redos the
+solver's exhaustion certificate is no longer trusted for the rest of the run.
+
+**Restarts.** Search time at a level is heavy-tailed in the solver's seed: one seed can spend minutes
+on a level that other seeds finish in seconds, on the same MILP. Each populate is therefore capped in
+*deterministic* work (CPLEX ticks, Gurobi work units) at `max(_RESTART_MIN_WORK, 4 x previous level)`.
+A call that is still returning new designs at the cap is resumed with the cap doubled — the model is
+left untouched, so the solver continues the same tree with its pool. A call that returned nothing new
+has its designs recorded and is restarted from the next seed `seed + 7919·n`, the cap doubling on.
+Every level still ends with a populate that ran to completion, so completeness is unaffected, and
+because both the cap and the restart seeds are deterministic, restarts keep a seeded run repeatable
+on the same machine and thread count. Note that both solvers resume an interrupted search on an unchanged model
+even after a parameter change; `MILP_LP.set_seed` therefore also discards the search tree.
+
+**Populate parameters.** Gurobi runs the pool search with `PoolSearchMode = 2`, `NumericFocus = 0` and
+`Heuristics = 0` (an exhaustive pool search reaches every solution the heuristics would find). CPLEX
+uses pool intensity 3 with the SOS1 gates and an integrality tolerance of `1e-9` (0 disables SOS1
+branching). CPLEX's working memory is set from the memory the process may actually use, i.e. capped
+by any enclosing cgroup (SLURM, containers), which CPLEX itself does not observe.
+
 ## 9. Decompression & solution semantics
 
 The MILP does not run on the model the user handed to `compute_strain_designs`. By the time
