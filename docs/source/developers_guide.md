@@ -631,7 +631,7 @@ def fva(model, **kwargs):
     from straindesign.speedy_fva import speedy_fva
     return speedy_fva(model, **kwargs)
 ```
-`speedy_fva` does *not* solve `2n` independent LPs blindly; it uses a two-phase accelerated scheme (global scan LPs with dual-simplex warm-starts resolve ~half the bounds cheaply, then individual LPs for the rest, with optional coupled-reaction compression for large models). The mathematics of that acceleration is [Ch 5](#ch5)'s. The *reference* brute-force implementation — literally `2n` LPs — survives as `fva_legacy` (`lptools.py`) and makes the standard form explicit:
+`speedy_fva` does *not* solve `2n` independent LPs blindly; it uses a two-phase accelerated scheme (push LPs with randomly weighted sum objectives, warm-started by the primal simplex, resolve about half the bounds cheaply, then individual LPs for the rest, with optional coupled-reaction compression for large models). The mathematics of that acceleration is [Ch 5](#ch5)'s. The *reference* brute-force implementation — literally `2n` LPs — survives as `fva_legacy` (`lptools.py`) and makes the standard form explicit:
 
 - Build `A_eq = [S; V_eq]`, `b_eq = [0…0, v_eq]`, `A_ineq/b_ineq` from user constraints, `lb/ub` from the reactions (`lptools.py`) — identical assembly to FBA.
 - Instantiate one `MILP_LP` and iterate over `i ∈ {0, …, 2n−1}`. The helper `idx2c(i, prev)` (`lptools.py`) maps index `i` to an objective: `col = floor(i/2)` is the reaction, `sig = sign(mod(i,2) − 0.5)` is `−1` for even `i` (**maximize**, since the solver minimizes `−v_col`) and `+1` for odd `i` (**minimize** `v_col`). The warm-start trick is `prev`: consecutive LPs differ in one objective coefficient, so the simplex basis is reused.
@@ -1772,8 +1772,11 @@ existing construction path.
 
 Public `fva` dispatches to `speedy_fva`. It avoids blindly solving `2n` independent LPs by combining
 bound-resolved directions, scan LPs, warm-started residual solves and optional internal compression.
-Only the objective changes between solves. Large residual sets may be distributed through `SDPool`;
-smaller ones remain sequential to avoid process overhead. `fva_legacy` remains the simple `2n`-LP
+Only the objective changes between solves, so every solve continues from the previous vertex with the
+primal simplex. A scan (push) LP maximizes a randomly weighted sum over all unresolved directions and
+resolves every reaction its vertex puts on a variable bound; the sequential residual solves take the
+direction next whose best known value the current vertex already attains. Large residual sets may be
+distributed through `SDPool`; smaller ones remain sequential to avoid process overhead. `fva_legacy` remains the simple `2n`-LP
 reference implementation.
 
 ### 5.7 Current preprocessing profile
