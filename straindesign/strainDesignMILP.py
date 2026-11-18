@@ -1004,6 +1004,12 @@ class SDMILP(SDProblem, MILP_LP):
         errored = False
         sols = sparse.csr_matrix((0, self.num_z))
         logging.info('Enumerating strain designs (k-sweep) ...')
+        if self.solver == SCIP:
+            # SCIP has no solution pool: its populate enumerates a level in one tree through a
+            # constraint handler that records every integral point over the intervention columns
+            # and excludes it with its supersets. All costs are positive here, so that row is the
+            # one add_exclusion_constraints would add.
+            self.backend._sd_ko_cols = list(self.idx_z)
         native = self.solver in (CPLEX, GUROBI)
         # Farkas anchor controller (CPLEX, Gurobi). The certificates form a cone, so the anchor c in
         # b'y <= -c is exact at any positive value; it sets their scale against the solver's absolute
