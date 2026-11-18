@@ -147,6 +147,57 @@ def _lp_status(b):
         return None
 
 
+def _drop_non_minimal(sols):
+    """Remove every design that strictly contains another design in the same result.
+
+    An ascending enumeration emits designs of cost k only after excluding every superset of the
+    designs it found at lower cost, so a design containing a smaller one can appear only when
+    that smaller design was NOT found: the solver certified a level exhausted with a design
+    missing. The supersets are valid cut sets but not minimal ones, and their presence is the
+    proof that the result is incomplete. Returns the filtered rows and how many were dropped.
+    """
+    sets = [frozenset(sols[i].indices.tolist()) for i in range(sols.shape[0])]
+    keep = [i for i, a in enumerate(sets) if not any(b < a for b in sets)]
+    return sols[keep], sols.shape[0] - len(keep)
+
+
+def _solve_verification_lp(lp):
+    """Whether a verification LP is feasible.
+
+    The certificate systems are scale-free, and on compressed networks their feasible points have
+    entries of 1e5 and more, so at the 1e-9 tolerance the MILP runs at, round-off alone can make a
+    feasible system read infeasible. CPLEX and Gurobi therefore verify at the solver default of
+    1e-6 and confirm any other verdict with barrier before it counts. Only a definite status shows
+    feasibility: CPLEX 1/5/6 (optimal, also with unscaled infeasibilities), Gurobi 2/13 (optimal,
+    or suboptimal with a point); INF_OR_UNBD, NUMERIC or an aborted solve show nothing.
+    """
+    if lp.solver not in (CPLEX, GUROBI):
+        return not np.isnan(lp.slim_solve())
+    b = lp.backend
+    if lp.solver == GUROBI:
+        b.params.FeasibilityTol = 1e-6
+        b.params.OptimalityTol = 1e-6
+    else:
+        b.parameters.simplex.tolerances.feasibility.set(1e-6)
+        b.parameters.simplex.tolerances.optimality.set(1e-6)
+    for confirm in (False, True):
+        if confirm:
+            lp.set_lp_method(LP_METHOD_BARRIER)
+            lp.set_time_limit(120)  # a confirmation that does not finish confirms nothing
+            if lp.solver == GUROBI:
+                b.params.DualReductions = 0  # INFEASIBLE or OPTIMAL rather than INF_OR_UNBD
+        try:
+            lp.slim_solve()
+        except Exception:
+            pass  # a status the backend does not map (barrier, abort); the raw status decides
+        if lp.solver == GUROBI:
+            if b.Status in (2, 13) and b.SolCount > 0:
+                return True
+        elif b.solution.get_status() in (1, 5, 6):
+            return True
+    return False
+
+
 class SDMILP(SDProblem, MILP_LP):
     """Class that contains functions for the solution of the strain design MILP
      
@@ -610,10 +661,10 @@ class SDMILP(SDProblem, MILP_LP):
             self._anchor_row_set = set(getattr(self, '_farkas_anchor_rows', []))
         sols_orig = self._expand_z_to_orig(sols)
         valid = [False] * sols_orig.shape[0]
+
         def _split(z_map, sol_row):
             """Columns of z_map the solution switches off, and the complement."""
-            inactive = [col for z_i, col, sense in zip(z_map.row, z_map.col, z_map.data)
-                        if np.logical_xor(sol_row[z_i], sense == -1)]
+            inactive = [col for z_i, col, sense in zip(z_map.row, z_map.col, z_map.data) if np.logical_xor(sol_row[z_i], sense == -1)]
             keep = np.ones(z_map.shape[1], dtype=bool)
             keep[inactive] = False
             return inactive, np.nonzero(keep)[0].tolist()
@@ -647,18 +698,7 @@ class SDMILP(SDProblem, MILP_LP):
                          ub=[self.cont_MILP.ub[i] for i in active_vars],
                          solver=self.solver,
                          seed=self.seed)
-            # The certificate system is scale-free (t'u <= -1 on a cone) and, with compressed
-            # columns carrying coefficients up to ~1e4, its feasible points have entries of 1e5
-            # and beyond. At the 1e-9 feasibility tolerance the MILP is pinned to, round-off at
-            # those magnitudes alone exceeds the tolerance and a genuine design reads INFEASIBLE
-            # (HumanGEM media: the same deleted system is feasible at the solver default under
-            # every method of both solvers and infeasible at 1e-9 only). Verify at the solver
-            # default, and let a second method confirm an infeasible verdict before it discards
-            # a design.
-            _set_lp_tolerance(lp, 1e-6)
-            valid[i] = _lp_feasible(lp)
-            if not valid[i] and _set_lp_method(lp, 'barrier'):
-                valid[i] = _lp_feasible(lp)
+            valid[i] = _solve_verification_lp(lp)
         return valid
 
     def compute_optimal(self, **kwargs):

@@ -24,7 +24,6 @@ import os
 import sys
 import pickle
 from os.path import isfile
-from platform import system
 from tempfile import mkstemp
 from typing import Callable, Optional, Tuple
 
@@ -48,11 +47,10 @@ class SDPool(Pool):
     Initialize a process pool.
 
     Add a thin layer on top of the `multiprocessing.Pool` that passes initialization
-    code to workers via a pickle file rather than directly. Originally a Windows
-    workaround [1_]; with the 'spawn' context on any platform a large initargs payload
-    (an LP's matrices) written straight to the worker's pipe blocks the parent until
-    that worker has started up, which serializes the start of every worker. The file
-    keeps the pipe payload small so all workers start concurrently.
+    code to workers via a pickle file rather than directly [1_]. A large initargs payload
+    (an LP's matrices) written straight to a worker's pipe blocks the parent until that
+    worker has started, so the workers would start one after another; with the file the
+    pipe payload stays small and all workers start concurrently.
 
     References
     ----------

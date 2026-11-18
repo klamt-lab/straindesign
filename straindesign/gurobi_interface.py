@@ -386,8 +386,7 @@ class Gurobi_MILP_LP(gp.Model):
                     min_cx = self.ObjVal
                     status = TIME_LIMIT_W_SOL
                 else:
-                    # Neither a solution nor a proof that there is none. Reporting this as "no
-                    # solution" made the enumeration treat an unproven cost level as exhausted.
+                    # neither a solution nor a proof that there is none: not an empty pool
                     logging.error('Gurobi reported numerical difficulties during enumeration twice '
                                   'and proved nothing.')
                     x = [nan] * len(self.getVars())
