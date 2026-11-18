@@ -145,6 +145,7 @@ How to cite:
    examples/JN_06_strain_design_nested.ipynb
    examples/JN_08_compression.ipynb
    examples/JN_09_elementary_flux_vectors.ipynb
+   flux_coupling
    9_cnapy_integration
    api_reference
    developers_guide
