@@ -38,13 +38,13 @@ jobs:
     # is an environment secret of build_and_publish, so no other workflow can
     # read it -- unlike a bypass for github-actions[bot], which would apply to
     # every workflow in the repository.
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
     - name: Print version number
       run: echo ${{ github.event.inputs.version }}
     - name: set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: '3.x'
     - name: update version number
@@ -117,12 +117,12 @@ jobs:
         shell: bash -l {0}
     steps:
     # The tag, not the commit the workflow was dispatched on, which predates the version bump.
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         ref: v${{ github.event.inputs.version }}
     # Runner images no longer all ship conda (Ubuntu 26.04 does not), so set it up as CI-test.yml does.
     - name: Set up conda-build and anaconda-client with Micromamba
-      uses: mamba-org/setup-micromamba@v2
+      uses: mamba-org/setup-micromamba@v3
       with:
         environment-name: straindesign
         micromamba-version: latest
