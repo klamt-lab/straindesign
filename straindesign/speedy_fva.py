@@ -710,6 +710,7 @@ def speedy_fva(model, **kwargs):
             i_max = 2 * j
             if not res_max[j]:
                 if np.isnan(x_par[i_max]):
+                    incumbent_max[j] = nan
                     unresolved_bounds.append((reaction_ids[j], 1, 'nan'))
                 else:
                     res_max[j] = True
@@ -717,6 +718,7 @@ def speedy_fva(model, **kwargs):
             i_min = 2 * j + 1
             if not res_min[j]:
                 if np.isnan(x_par[i_min]):
+                    incumbent_min[j] = nan
                     unresolved_bounds.append((reaction_ids[j], -1, 'nan'))
                 else:
                     res_min[j] = True
