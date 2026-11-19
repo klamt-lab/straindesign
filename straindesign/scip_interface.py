@@ -20,11 +20,13 @@
 
 from scipy import sparse
 from numpy import isnan, nan, inf, isinf, sum, nonzero, random
+import numpy as np
 import pyscipopt as pso
 from straindesign.names import *
 from typing import Tuple, List
 import time as t
 import logging
+import os
 from builtins import sum as builtins_sum
 
 
@@ -223,6 +225,14 @@ class SCIP_MILP(pso.Model):
         self.trms = [list(x[i].terms.items())[0][0] for i in range(numvars)]
 
         self.constr = []
+        # what populate's clause enumeration reads: every row as data, in the order of self.constr
+        # (None for an indicator constraint), and the column bounds and types
+        self._sd_rows = []
+        self._sd_lb = [-inf if v is None else float(v) for v in lb]
+        self._sd_ub = [inf if v is None else float(v) for v in ub]
+        self._sd_vtype = vtype
+        self._sd_threads = milp_threads
+        self._sd_enum = None
         # Each row goes in as a single expression built from the terms cached above. Adding an
         # empty row and then one addConsCoeff per nonzero costs a PySCIPOpt call per matrix
         # entry, which at genome scale is hundreds of thousands of them. The rows stay
@@ -254,6 +264,7 @@ class SCIP_MILP(pso.Model):
                         e = pso.scip.Expr({self.trms[j]: d for j, d in zip(a.indices, a.data)})
                         f = pso.scip.ExprCons(e, lhs=None, rhs=b[k])
                         self.constr += [self.addConsIndicator(f, binvar=z, initial=False)]
+                        self._sd_rows.append(None)
 
         # set parameters
         self.max_tlim = self.getParam('limits/time')
@@ -318,6 +329,7 @@ class SCIP_MILP(pso.Model):
             rhs = float(b[i])
             f = pso.scip.ExprCons(e, lhs=rhs, rhs=rhs) if sense == '==' else pso.scip.ExprCons(e, lhs=None, rhs=rhs)
             rows.append(self.addCons(f, modifiable=True))
+            self._sd_rows.append((indices[start:end].copy(), data[start:end].astype(float), rhs, sense == '=='))
         return rows
 
     def solve(self) -> Tuple[List, float, float]:
@@ -421,7 +433,11 @@ class SCIP_MILP(pso.Model):
             solution_vectors, optimal_value, optimization_status
         """
         try:
+            self.level_enumerated = False
             if getattr(self, '_sd_ko_cols', None) is not None:
+                by_clauses = self._populate_by_clauses()
+                if by_clauses is not None:
+                    return by_clauses
                 # one tree per cost level: the constraint handler posts the exclusions inside it
                 self.freeTransform()
                 if not hasattr(self, '_sd_cb'):
@@ -482,12 +498,80 @@ class SCIP_MILP(pso.Model):
                 self.freeTransform()
                 for j in range(numrows, totrows):
                     self.chgRhs(self.constr[j], None)
+                    self._sd_rows[j] = None
                 return sols, min_cx, status
         except:
             logging.error('Error while running SCIP.')
             min_cx = nan
             x = []
             return x, min_cx, ERROR
+
+    def _populate_by_clauses(self):
+        """Enumerate the pinned cost level with LPs only (see clause_enumeration).
+
+        Sets `level_enumerated` when the level was enumerated to the end; the caller then needs no
+        second populate to confirm that nothing is left. SD_SCIP_CLAUSES=0 switches the method off.
+
+        Returns:
+            None if the MILP does not have the required structure, else what populate returns.
+        """
+        from straindesign.clause_enumeration import GateOracle, ClauseEnumerator, NotApplicable, NumericalTrouble, split_rows
+        if os.environ.get('SD_SCIP_CLAUSES', '1').lower() in ('0', 'off', 'false'):
+            return None
+        try:
+            ic = self._sd_indic
+            is_z = np.array([t != 'C' for t in self._sd_vtype])
+            z_cols = np.flatnonzero(is_z)
+            if any(t not in 'BC' for t in self._sd_vtype) \
+                    or set(z_cols) != set(int(j) for j in self._sd_ko_cols) \
+                    or any(self._sd_lb[j] != 0 for j in z_cols):
+                raise NotApplicable('integer columns other than free knockout binaries')
+            cost_rows = getattr(self, '_sd_cost_rows', None)
+            if cost_rows is None:
+                raise NotApplicable('the cost rows are not known')
+            z_rows, c_rows, m_rows = split_rows([r for i, r in enumerate(self._sd_rows) if i not in cost_rows], is_z)
+            if self._sd_enum is None or self._sd_enum_rows != len(c_rows) + len(m_rows):
+                oracle = GateOracle(c_rows, m_rows, self._sd_lb, self._sd_ub, np.flatnonzero(~is_z), ic, SCIP_LP)
+                self._sd_enum = ClauseEnumerator(oracle, z_cols, len(self._sd_vtype), workers=self._sd_threads or 0)
+                self._sd_enum_rows = len(c_rows) + len(m_rows)
+            enum = self._sd_enum
+            enum.load_z_rows(z_rows, np.array(self._sd_ub)[z_cols], self._sd_rows[cost_rows[0]], self._sd_rows[cost_rows[1]])
+        except NotApplicable as e:
+            logging.info('  clause enumeration not applicable (%s); enumerating in a SCIP tree' % e)
+            return None
+        calls, secs, nodes, t0 = enum.oracle.n_calls + enum.n_worker_lps, enum.oracle.seconds, enum.n_nodes, t.time()
+        try:
+            found, complete = enum.enumerate(self.getParam('limits/time'))
+        except NumericalTrouble as e:
+            logging.error('Clause enumeration failed: %s.' % e)
+            return [], nan, ERROR
+        logging.info('  clause enumeration, cost %g: %d designs, %d nodes, %d LPs, %.1f s (%.1f s in this process\'s LPs), %d clauses' %
+                     (enum.level, len(found), enum.n_nodes - nodes, enum.oracle.n_calls + enum.n_worker_lps - calls,
+                      t.time() - t0, enum.oracle.seconds - secs, enum.P.n + enum.n_static_mixed))
+        if enum.oracle.n_by_violation:
+            logging.info('  %d infeasibility proofs so far came from the minimal-violation LP, %d of them confirmed in '
+                         'rational arithmetic (this process only).' % (enum.oracle.n_by_violation, enum.oracle.n_exact))
+        if enum.oracle.n_within_tolerance:
+            logging.info('  %d sets so far are feasible only to within 1e-9 of row violation (no exact point, no proof '
+                         'against them); they are passed on as designs.' % enum.oracle.n_within_tolerance)
+        if enum.n_undecided:
+            logging.warning('  %d candidate sets so far have neither a feasible point nor an infeasibility proof that '
+                            'passes its checks; they are not reported as designs.' % enum.n_undecided)
+        self._pool_exhausted = self.level_enumerated = complete
+        sols = []
+        for S in found:
+            x = [0.0] * len(self._sd_vtype)
+            for j in z_cols[S]:
+                x[j] = 1.0
+            sols.append(x)
+        if sols:
+            return sols, 0.0, OPTIMAL if complete else TIME_LIMIT_W_SOL
+        return [], nan, INFEASIBLE if complete else TIME_LIMIT
+
+    def end_enumeration(self):
+        """Release what populate keeps between the cost levels of one enumeration (worker processes)."""
+        if self._sd_enum is not None:
+            self._sd_enum.close()
 
     def add_sos1(self, sets):
         """Add SOS1 sets: at most one member of each may be nonzero (weights only order members)."""
@@ -520,6 +604,9 @@ class SCIP_MILP(pso.Model):
         """Set the upper bounds to a given vector"""
         self.freeTransform()
         for i in range(len(ub)):
+            self._sd_ub[ub[i][0]] = float(ub[i][1])
+            if self._sd_vtype[ub[i][0]] == 'C':
+                self._sd_enum = None
             if not isinf(ub[i][1]):
                 self.chgVarUb(self.vars[ub[i][0]], float(ub[i][1]))
             else:
@@ -621,6 +708,11 @@ class SCIP_MILP(pso.Model):
         self.chgRhs(self.constr[idx], None)
         # add new constraint and replace constraint pointer in list
         self.constr[idx] = self.addCons(pso.Expr() <= 0, modifiable=True)
+        nz = [i for i, a in enumerate(a_ineq) if a != 0]
+        old = self._sd_rows[idx]
+        if any(self._sd_vtype[i] == 'C' for i in nz) or (old is not None and any(self._sd_vtype[i] == 'C' for i in old[0])):
+            self._sd_enum = None
+        self._sd_rows[idx] = (np.array(nz, int), np.array([a_ineq[i] for i in nz], float), float(b_ineq), False)
         for i, a in enumerate(a_ineq):
             self.addConsCoeff(self.constr[idx], self.vars[i], a)
         if isinf(b_ineq):
@@ -789,6 +881,83 @@ class SCIP_LP(pso.LP):
             return self.getPrimal(), self.getObjVal(), status
         min_cx = -inf if status == UNBOUNDED else nan
         return [nan] * self.ncols(), min_cx, status
+
+    def set_tolerance(self, tol):
+        """Set the primal and dual feasibility tolerance of the LP."""
+        self.setRealParam(pso.SCIP_LPPARAM.FEASTOL, tol)
+        self.setRealParam(pso.SCIP_LPPARAM.DUALFEASTOL, tol)
+
+    def _settled(self, opt):
+        """A solve ended usably: optimal with a finite solution, or reported infeasible or unbounded.
+        (SoPlex can return from a failed solve with a finite objective and NaN in the solution.)"""
+        if self.isInfinity(opt) or self.isInfinity(-opt):
+            return True
+        return bool(self.isOptimal()) and not isnan(opt) and not isnan(builtins_sum(self.getPrimal()))
+
+    def _optimize_with_retries(self, settled=None):
+        """Solve; after a simplex failure ("error in LP solver": a singular or badly scaled basis)
+        try again from scratch, then under SoPlex's aggressive scaling, then with the feasibility
+        tolerances relaxed tenfold and hundredfold for that one solve. The presolving parameter is
+        left alone here: this method takes the objective value SoPlex reports as it is, and with
+        presolving switched a solution of the wrong length came back (value 1, HumanGEM
+        reversibility scan) or an LP that is bounded below was reported unbounded (value 0,
+        minimal-violation LP of the enumeration).
+        :meth:`_solve_status` does switch presolving off for its retry, which is sound there
+        because it accepts UNBOUNDED only together with a primal ray.
+
+        Args:
+            settled (callable): given the objective value, says whether the solve ended with a
+                usable status; an attempt that does not is repeated like a failed one.
+
+        Returns:
+            the objective value pyscipopt reports, or None if `settled` rejected every attempt.
+            Raises the last exception if every attempt failed.
+        """
+        P = pso.SCIP_LPPARAM
+        scaling, tol = self.getIntParam(P.SCALING), self.getRealParam(P.FEASTOL)
+        error = None
+        for from_scratch, scale, relax in ((0, scaling, 1), (1, scaling, 1), (1, 2, 1), (1, 2, 10), (1, 2, 100)):
+            if from_scratch:
+                self.setIntParam(P.FROMSCRATCH, 1)
+                self.setIntParam(P.SCALING, scale)
+                self.setRealParam(P.FEASTOL, tol * relax)
+                self.setRealParam(P.DUALFEASTOL, tol * relax)
+            try:
+                opt = self.optimize()
+                if settled is None or settled(opt):
+                    return opt
+                error = None
+            except Exception as e:
+                error = e
+            finally:
+                if from_scratch:
+                    self.setIntParam(P.FROMSCRATCH, 0)
+                    self.setIntParam(P.SCALING, scaling)
+                    self.setRealParam(P.FEASTOL, tol)
+                    self.setRealParam(P.DUALFEASTOL, tol)
+        if error is not None:
+            raise error
+        return None
+
+    def solve_verdict(self) -> Tuple[List, float]:
+        """Solve the LP and report only what was proven: OPTIMAL with the solution, INFEASIBLE, or
+        ERROR (no attempt of :meth:`_optimize_with_retries` ended optimal or infeasible).
+
+        Returns:
+            (Tuple[List, float])
+
+            solution_vector (None unless OPTIMAL), optimization_status
+        """
+        infeasible = lambda opt: self.isInfinity(opt) and not self.isPrimalFeasible()
+        try:
+            opt = self._optimize_with_retries(lambda opt: infeasible(opt) or (not self.isInfinity(-opt) and self._settled(opt)))
+        except Exception:
+            return None, ERROR
+        if opt is None:
+            return None, ERROR
+        if self.isOptimal():
+            return self.getPrimal(), OPTIMAL
+        return None, INFEASIBLE
 
     def slim_solve(self) -> float:
         """Solve the LP, but return only the optimal value

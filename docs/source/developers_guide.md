@@ -2887,6 +2887,44 @@ the pool one solution at a time. It supports indicator constraints natively (so 
 its seed enters via `randomization/randomseedshift`. It is correct but slower than a native pool, hence
 the "consider `compute_optimal`" advice.
 
+Inside the k-sweep (`enumerate_ksweep`, the default for MCS problems with positive integer costs and no
+knock-ins) SCIP's `populate` does not solve a MILP at all. `clause_enumeration.py` enumerates the pinned
+cost level with LPs:
+
+- For a fixed `z` the continuous part of the MILP is an LP (gates switched on or off, right-hand sides of
+  the rows that mix `z` and continuous columns evaluated). `GateOracle` solves its alternative (Farkas)
+  system, minimising the multipliers of everything that depends on `z`, warm-started from the previous
+  query. A solution is an infeasibility proof and yields a **clause** over `z`: one of the gates in the
+  proof has to be switched off. No solution, together with a feasible point of the continuous system
+  itself, makes `z` a **design**.
+- When there is neither (the proof LP normalises to `multipliers . rhs = -1`, which a proof through a
+  biomass coefficient of 1e-7 cannot meet at simplex accuracy), the oracle minimises the uniform violation
+  `t` of the rows. That LP always has an optimum. For `t* > 1e-9` its dual, normalised to `sum(y) = 1`, is
+  the proof; it is checked against the bound box without a solver tolerance and re-derived in rational
+  arithmetic when it rests on at most 500 rows (`_exact_margin`). For `t* <= 1e-9` the set is feasible to
+  within tolerance and passed on as a design unless the rational check proves it infeasible. Only a set
+  with `t* > 1e-9` whose proof fails both checks is `UNDECIDED`: excluded alone, not reported, counted in a
+  warning.
+- `ClauseEnumerator` walks the sets of interventions depth-first, branching over the positive literals of
+  a violated clause, and asks the oracle only for sets that satisfy every clause so far. Clauses persist
+  across cost levels. The level ends when the walk ends, so `backend.level_enumerated` lets the k-sweep
+  skip its confirmatory populate.
+- **Targeted query at the last level.** When one more intervention fits, the candidates are the
+  interventions that hit every violated clause on their own. Before testing them one LP each, the walk
+  asks the oracle once for the set itself, with the gate multipliers of the candidates weighted 1000
+  instead of 1 (`GateOracle.query(..., avoid=...)`). The proof then leaves out as many candidates as it
+  can, and its clause rules out every candidate it leaves out, often all of them. Only objective
+  coefficients change, so the warm start stays, and a proof is valid under any positive weights. On
+  iML1515 (gene MCS, max_cost 3) this cuts the LPs of level 3 from about 9,800 to about 900, with
+  identical designs. `SD_CLAUSE_TARGET=0` switches it off. Worker processes do the same for the sets
+  they receive.
+- With `milp_threads > 1` the sets that differ only in their last intervention go to worker processes
+  (`SDPool`), each with its own oracle LP. A clause that arrives late costs LPs, never a design.
+- `populate` falls back to the constraint-handler tree (`_ScipRejectRecorder`) when the structure does not
+  fit (integer columns that are not knockout binaries, rows over `z` other than the cost pin and
+  exclusion clauses); with knock-in columns the k-sweep leaves SCIP on the solve-and-exclude loop.
+  `SD_SCIP_CLAUSES=0` switches the clause enumeration off.
+
 **GLPK** (`glpk_interface.py`) emulates `populate` the same solve-and-exclude way, but with two
 extra handicaps. First, GLPK has **no indicator constraints at all**, so z-linking is done entirely by
 **big-M**, defaulting to the COBRA bound `M = bound_thres` (typically 1000, `strainDesignProblem.py`).
