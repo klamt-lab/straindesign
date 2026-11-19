@@ -423,10 +423,15 @@ class SDMILP(SDProblem, MILP_LP):
 
     def populateZ(self, n) -> Tuple[List, int]:
         """Populate MILP, and return only binary variables rounded to 5 decimals (should return ints)"""
+        # the pool is read on the intervention columns only, one entry per design
+        z_only = self.solver == CPLEX
+        if z_only:
+            self.backend._pool_columns = [int(i) for i in self.idx_z]
         x, _, status = self.populate(n)
         self.pool_exhausted = getattr(self.backend, '_pool_exhausted', False)
         if status in [OPTIMAL, TIME_LIMIT_W_SOL]:
-            z = sparse.csr_matrix([[round(x[j][i], 5) for i in self.idx_z] for j in range(len(x))])
+            cols = range(len(self.idx_z)) if z_only else self.idx_z
+            z = sparse.csr_matrix([[round(x[j][i], 5) for i in cols] for j in range(len(x))])
             z.resize((len(x), self.num_z))
             # remove duplicates
             unique_row_indices, unique_columns = [], []
