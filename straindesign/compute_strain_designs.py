@@ -424,7 +424,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             with open(kwargs[SETUP], 'r') as fs:
                 kwargs = json.load(fs)
         else:
-            kwargs = kwargs[SETUP]
+            kwargs = dict(kwargs[SETUP])  # the caller's setup stays as it was passed
 
     if MODULES in kwargs:
         sd_modules = kwargs.pop(MODULES)
@@ -446,7 +446,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     if MODEL_ID in kwargs:
         model_id = kwargs.pop(MODEL_ID)
         if model_id != model.id:
-            logging.warning( "Model IDs of provided model and setup not matching. Apparently, ",\
+            logging.warning( "Model IDs of provided model and setup not matching. Apparently, "+\
                           "the strain design setup was specified for a different model. "+\
                           "Errors might occur due to non-matching reaction or gene-identifiers.")
 
@@ -465,16 +465,17 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     for key, value in dict(kwargs).items():
         if key not in allowed_keys:
             raise Exception("Key " + key + " is not supported.")
+        # copies: preprocessing removes and adds entries, and the caller's dicts must not change
         if key == KOCOST:
-            uncmp_ko_cost = value
+            uncmp_ko_cost = dict(value) if isinstance(value, dict) else value
         if key == KICOST:
-            uncmp_ki_cost = value
+            uncmp_ki_cost = dict(value) if isinstance(value, dict) else value
         if key == GKOCOST:
-            uncmp_gko_cost = value
+            uncmp_gko_cost = dict(value) if isinstance(value, dict) else value
         if key == GKICOST:
-            uncmp_gki_cost = value
+            uncmp_gki_cost = dict(value) if isinstance(value, dict) else value
         if key == REGCOST:
-            uncmp_reg_cost = value
+            uncmp_reg_cost = dict(value) if isinstance(value, dict) else value
     if (GKOCOST in kwargs or GKICOST in kwargs or
         ('gene_kos' in kwargs and kwargs['gene_kos'])) and hasattr(model, 'genes') and model.genes:
         kwargs['gene_kos'] = True
@@ -1235,7 +1236,7 @@ def compute_strain_designs_from_preprocessed(dump, seed=None, solver=None, solut
     elif sol_approach == BEST:
         cmp_sd_solution = sd_milp.compute_optimal(**kwargs_computation)
     elif sol_approach == POPULATE:
-        cmp_sd_solution = sd_milp.enumerate(**kwargs_computation)
+        cmp_sd_solution = sd_milp.enumerate_ksweep(**kwargs_computation)
     logging.info('  MILP solved (%.1fs).' % (time.time() - t0))
 
     setup = deepcopy(cmp_sd_solution.sd_setup)

@@ -280,7 +280,7 @@ class GLPK_MILP_LP():
         try:
             if pool_limit > 0:
                 sols = []
-                stoptime = glp_time() + self.milp_params.tm_lim * 1000
+                stoptime = glp_time() + self.milp_params.tm_lim  # both in milliseconds
                 # 1. find optimal solution
                 self.set_time_limit(glp_difftime(stoptime, glp_time()))
                 x, min_cx, status = self.solve()
