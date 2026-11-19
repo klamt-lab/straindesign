@@ -1236,7 +1236,7 @@ def compute_strain_designs_from_preprocessed(dump, seed=None, solver=None, solut
     elif sol_approach == BEST:
         cmp_sd_solution = sd_milp.compute_optimal(**kwargs_computation)
     elif sol_approach == POPULATE:
-        cmp_sd_solution = sd_milp.enumerate(**kwargs_computation)
+        cmp_sd_solution = sd_milp.enumerate_ksweep(**kwargs_computation)
     logging.info('  MILP solved (%.1fs).' % (time.time() - t0))
 
     setup = deepcopy(cmp_sd_solution.sd_setup)

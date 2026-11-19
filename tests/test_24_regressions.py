@@ -41,3 +41,12 @@ def test_cost_dicts_and_setup_of_the_caller_are_left_alone(model_gpr):
     before = (dict(ko_cost), dict(gko_cost), dict(gki_cost), set(setup))
     sd.compute_strain_designs(model_gpr, sd_setup=setup)
     assert (ko_cost, gko_cost, gki_cost, set(setup)) == before
+
+
+@pytest.mark.parametrize('approach', [ANY, BEST])
+def test_run_that_ends_on_the_clock_is_not_optimal(curr_solver, model_weak_coupling, approach):
+    """A time limit that leaves no time for a single solve must not report a finished computation."""
+    modules = [sd.SDModule(model_weak_coupling, SUPPRESS, constraints=['r_P <= 0.5', 'r_BM >= 0.1'])]
+    sol = sd.compute_strain_designs(model_weak_coupling, sd_modules=modules, max_cost=3, solution_approach=approach, solver=curr_solver,
+                                    time_limit=1e-9)
+    assert sol.status in (TIME_LIMIT, TIME_LIMIT_W_SOL)

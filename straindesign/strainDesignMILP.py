@@ -404,14 +404,16 @@ class SDMILP(SDProblem, MILP_LP):
         """Translate binary solution vector to dictionary for human-readable output"""
         output = {}
         reacID = self.model.reactions.list_attr("id")
+        row = (sol.toarray() if sparse.issparse(sol) else np.asarray(sol)).ravel()
         for i in self.idx_z:
             orig_i = self._z_orig_indices[i] if self._z_orig_indices is not None else i
-            if sol[0, i] != 0 and not np.isnan(sol[0, i]):
+            v = row[i]
+            if v != 0 and not np.isnan(v):
                 if self.z_inverted[i]:
-                    output[reacID[orig_i]] = sol[0, i]
+                    output[reacID[orig_i]] = v
                 else:
-                    output[reacID[orig_i]] = -sol[0, i]
-            elif args and args[0] and (sol[0, i] == 0) and self.z_inverted[i]:
+                    output[reacID[orig_i]] = -v
+            elif args and args[0] and (v == 0) and self.z_inverted[i]:
                 output[reacID[orig_i]] = 0.0
         return output
 
@@ -670,6 +672,8 @@ class SDMILP(SDProblem, MILP_LP):
                         self.add_exclusion_constraints_ineq(z1)
                     else:  # return to outside loop
                         break
+        if status == OPTIMAL and endtime - time.time() <= 0 and sols.shape[0] < self.max_solutions:
+            status = TIME_LIMIT  # the loop ended on the clock, not on a proof
         if status == INFEASIBLE and sols.shape[0] > 0:  # all solutions found
             status = OPTIMAL
         if status == TIME_LIMIT and sols.shape[0] > 0:  # some solutions found, timelimit reached
@@ -789,6 +793,8 @@ class SDMILP(SDProblem, MILP_LP):
                     self.add_exclusion_constraints_ineq(z1)
                 else:  # return to outside loop
                     break
+        if status == OPTIMAL and endtime - time.time() <= 0 and sols.shape[0] < self.max_solutions:
+            status = TIME_LIMIT  # the loop ended on the clock, not on a proof
         if status == INFEASIBLE and sols.shape[0] > 0:  # all solutions found
             status = OPTIMAL
         if status == TIME_LIMIT and sols.shape[0] > 0:  # some solutions found, timelimit reached
@@ -914,6 +920,8 @@ class SDMILP(SDProblem, MILP_LP):
                 logging.error('%d designs contain a smaller design: the enumeration missed one and '
                               'the result is INCOMPLETE.' % n_super)
                 status = ERROR
+        if status == OPTIMAL and endtime - time.time() <= 0 and sols.shape[0] < self.max_solutions:
+            status = TIME_LIMIT  # the loop ended on the clock, not on a proof
         if status == INFEASIBLE and sols.shape[0] > 0:  # all solutions found or solution limit reached
             status = OPTIMAL
         if status == TIME_LIMIT and sols.shape[0] > 0:  # some solutions found, timelimit reached
