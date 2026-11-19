@@ -37,6 +37,8 @@ _TILT_SCALES_WITH_ANCHOR = {GUROBI}
 # Smallest work cap per populate in the cost-level sweep, in the solver's deterministic work unit
 # (CPLEX ticks, Gurobi work units); both are about 10 s of an 8-thread solve.
 _RESTART_MIN_WORK = {CPLEX: 7000.0, GUROBI: 15.0}
+# Work cap per populate at a cost level whose tree returns the same designs again and again.
+_FLOOD_WORK = {CPLEX: 1000.0, GUROBI: 2.0}
 
 
 def _drop_non_minimal(sols):
@@ -1079,12 +1081,15 @@ class SDMILP(SDProblem, MILP_LP):
         # Restarts (CPLEX, Gurobi). Search time at a cost level is heavy-tailed in the solver's seed:
         # one seed can spend minutes on a level that others finish in seconds. Each populate is capped
         # in deterministic work (CPLEX ticks, Gurobi work units, so a run with a fixed seed repeats on
-        # the same machine) at max(_RESTART_MIN_WORK, 4 x the previous level's work). A call that is
-        # still finding new designs at the cap is resumed with the cap doubled: the model is left as
-        # it is, so the solver continues the same tree with its pool. A call that found nothing new
-        # by the cap has its designs recorded and is restarted from the next seed derived from the
-        # run's seed, the cap doubling on. Every level ends with a populate that ran to completion,
-        # so the result is the same as without restarts.
+        # the same machine) at max(_RESTART_MIN_WORK, 4 x the work of the call that completed the
+        # previous level). A call that is still finding new designs at the cap is resumed with the
+        # cap doubled: the model is left as it is, so the solver continues the same tree with its
+        # pool. A call that found nothing new by the cap has its designs recorded and is restarted
+        # from the next seed derived from the run's seed. Such a tree spends its work on points
+        # that repeat the designs it already holds on the intervention columns; only the exclusion
+        # rows remove them. For the rest of the level every capped call is therefore recorded at
+        # once, at the cap _FLOOD_WORK. Every level ends with a populate that ran to completion, so
+        # the result is the same as without restarts.
         prev_level_work, n_reseeds = 0.0, 0
         k, n_redos, redo_lower_levels = 0, 0, False
         while k < k_max:
@@ -1101,9 +1106,9 @@ class SDMILP(SDProblem, MILP_LP):
             self.set_ineq_constraint(self.idx_row_mincost, cost_full, float(k))
             self.set_ineq_constraint(self.idx_row_maxcost, neg_cost_full, -float(k))
             logging.info('  Enumerating minimal cut sets of cost ' + str(k))
-            work_level0 = self.get_work()
+            work_call0 = self.get_work()
             budget = max(_RESTART_MIN_WORK[self.solver], 4.0 * prev_level_work) if native else None
-            n_tree, reseed_after_batch = 0, False
+            n_tree, reseed_after_batch, flooding = 0, False, False
             while sols.shape[0] < self.max_solutions and \
                     endtime - time.time() > 0:
                 if reseed_after_batch:
@@ -1123,15 +1128,17 @@ class SDMILP(SDProblem, MILP_LP):
                     logging.info('  no design at cost %s within the work cap: restarting from another seed' % k)
                     budget *= 2
                     continue
-                if capped and status == TIME_LIMIT_W_SOL:
+                if capped and status == TIME_LIMIT_W_SOL and flooding:
+                    status = OPTIMAL
+                elif capped and status == TIME_LIMIT_W_SOL:
                     if z.shape[0] > n_tree:
                         n_tree = z.shape[0]
                         budget *= 2
                         continue
                     logging.info('  no new design at cost %s within the work cap: restarting from another seed' % k)
                     status = OPTIMAL
-                    budget *= 2
-                    reseed_after_batch = True
+                    budget = _FLOOD_WORK[self.solver]
+                    reseed_after_batch, flooding = True, True
                 n_tree = 0
                 if status in [OPTIMAL, TIME_LIMIT_W_SOL]:
                     if z.shape[0] == 0:  # level exhausted
@@ -1189,7 +1196,7 @@ class SDMILP(SDProblem, MILP_LP):
                     break
                 else:  # INFEASIBLE at this cardinality -> level exhausted, next k
                     break
-            prev_level_work = self.get_work() - work_level0
+            prev_level_work = self.get_work() - work_call0 if native else 0.0
             if redo_lower_levels:
                 redo_lower_levels = False
                 n_redos += 1
