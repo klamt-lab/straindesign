@@ -30,6 +30,10 @@ from psutil import virtual_memory
 from straindesign.names import *
 
 
+# largest number of solution-pool entries one populate call collects and returns
+_POOL_CHUNK = 50000
+
+
 def _memory_limit_bytes():
     """Memory this process may use: the machine's, capped by every enclosing cgroup limit."""
     limit = virtual_memory().total
@@ -343,9 +347,12 @@ class Cplex_MILP_LP(Cplex):
             solution_vectors, optimal_value, optimization_status
         """
         try:
-            if isinf(n):
-                self.parameters.mip.pool.capacity.set(self.parameters.mip.pool.capacity.max())
-                self.parameters.mip.limits.populate.set(self.parameters.mip.limits.populate.max())
+            if isinf(n) or n > _POOL_CHUNK:
+                # A pool without a limit can outgrow the memory: with auxiliary binaries one design
+                # can enter it in thousands of variants. The callers populate until the search is
+                # exhausted, so a full pool only means another call.
+                self.parameters.mip.pool.capacity.set(_POOL_CHUNK)
+                self.parameters.mip.limits.populate.set(_POOL_CHUNK)
             else:
                 self.parameters.mip.pool.capacity.set(int(n))
                 self.parameters.mip.limits.populate.set(int(n))
@@ -380,8 +387,7 @@ class Cplex_MILP_LP(Cplex):
                 logging.exception(status)
                 logging.exception(self.solution.get_status_string())
                 raise Exception("Case not yet handled")
-            x = [self.solution.pool.get_values(i) for i in range(self.solution.pool.get_num())]
-            return x, min_cx, status
+            return self._read_pool(), min_cx, status
 
         except CplexError as exc:
             # 1217: no solution exists; 1016: problem size limit of the Community Edition
@@ -406,6 +412,24 @@ class Cplex_MILP_LP(Cplex):
             min_cx = nan
             x = []
             return x, min_cx, ERROR
+
+    def _read_pool(self):
+        """The solution pool as a list of vectors.
+
+        If ``_pool_columns`` is set, each vector holds these columns only and entries that agree
+        on them (to five decimals) are returned once."""
+        pool = self.solution.pool
+        cols = getattr(self, '_pool_columns', None)
+        if cols is None:
+            return [pool.get_values(i) for i in range(pool.get_num())]
+        x, seen = [], set()
+        for i in range(pool.get_num()):
+            v = pool.get_values(i, cols)
+            key = tuple(round(a, 5) for a in v)
+            if key not in seen:
+                seen.add(key)
+                x.append(v)
+        return x
 
     def add_sos1(self, sets):
         """Add SOS1 sets: at most one member of each may be nonzero.
