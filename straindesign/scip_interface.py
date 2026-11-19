@@ -30,12 +30,14 @@ import os
 from builtins import sum as builtins_sum
 
 
-
 class _ScipRejectRecorder(pso.Conshdlr):
-    """Record every LP-feasible integral point over the knockout columns and reject it with its
-    superset-exclusion row, posted from the enforcement callbacks, so ONE tree enumerates a pinned
-    level and ends "infeasible" when nothing is left. Included with check/enforce priority below
-    the linear and indicator handlers, so only points feasible for the rows reach it."""
+    """Enumerate one cost level in a single tree.
+
+    Every LP-feasible point that is integral on the intervention columns is recorded and rejected
+    with the row that excludes it and its supersets, posted from the enforcement callbacks. The
+    tree ends "infeasible" when no design is left, which is the level's exhaustion certificate.
+    The handler is included with check and enforcement priority below the linear and indicator
+    handlers, so only points feasible for the rows reach it."""
 
     def __init__(self, owner, ko_cols):
         super().__init__()
@@ -79,7 +81,7 @@ class _ScipRejectRecorder(pso.Conshdlr):
 
     def _reject(self, sol):
         S = self._design(sol)
-        if S and S not in self.seen:
+        if S not in self.seen:
             x = [self.model.getSolVal(sol, v) for v in self.owner.vars]
             if not self._gates_hold(x):
                 return
@@ -91,7 +93,8 @@ class _ScipRejectRecorder(pso.Conshdlr):
         z = self.owner.vars
         while self.pending:
             S = self.pending.pop()
-            self.model.addCons(pso.quicksum(z[j] for j in S) <= len(S) - 1)
+            # without any intervention every other point is a superset: nothing is left
+            self.model.addCons(pso.quicksum(z[j] for j in (S or self.ko)) <= len(S) - 1)
 
     def conscheck(self, constraints, solution, checkintegrality, checklprows, printreason, completely):
         self._reject(solution)
@@ -290,18 +293,11 @@ class SCIP_MILP(pso.Model):
         self.setParam('display/verblevel', 0)
         if 'B' in vtype or 'I' in vtype:
             # SoPlex at its defaults stops with "unresolved numerical troubles" on the certificate
-            # system beyond small cut sets (e_coli_core, cost 4, in both populate modes); aggressive
-            # scaling with the primal simplex finishes the enumeration. SD_SCIP_PARAMS overrides.
+            # system beyond small cut sets (e_coli_core, cost 4); aggressive scaling with the
+            # primal simplex finishes the enumeration.
             self.setParam('lp/scaling', 2)
             self.setParam('lp/initalgorithm', 'p')
             self.setParam('lp/resolvealgorithm', 'p')
-        # SD_SCIP_PARAMS="name=value;name=value" for experiments (mirrors bench_params for the others)
-        for item in (os.environ.get('SD_SCIP_PARAMS') or '').replace(',', ';').split(';'):
-            if '=' in item:
-                name, _, val = item.partition('=')
-                v = val.strip()
-                v = True if v.lower() == 'true' else False if v.lower() == 'false' else (int(v) if v.lstrip('-').isdigit() else float(v) if v.replace('.', '', 1).replace('e-', '', 1).replace('e', '', 1).lstrip('-').isdigit() else v)
-                self.setParam(name.strip(), v)
         # SCIP_PARAMEMPHASIS_DEFAULT     = 0,        /**< use default values */
         # SCIP_PARAMEMPHASIS_CPSOLVER    = 1,        /**< get CP like search (e.g. no LP relaxation) */
         # SCIP_PARAMEMPHASIS_EASYCIP     = 2,        /**< solve easy problems fast */
@@ -442,7 +438,7 @@ class SCIP_MILP(pso.Model):
                 by_clauses = self._populate_by_clauses()
                 if by_clauses is not None:
                     return by_clauses
-                # one tree per level: exclusions posted inside it by the constraint handler
+                # one tree per cost level: the constraint handler posts the exclusions inside it
                 self.freeTransform()
                 if not hasattr(self, '_sd_cb'):
                     self._sd_cb = _ScipRejectRecorder(self, self._sd_ko_cols)
@@ -450,16 +446,20 @@ class SCIP_MILP(pso.Model):
                                          enfopriority=-3000000, chckpriority=-3000000, needscons=False)
                 self._sd_cb.reset()
                 # dual presolve reductions may drop integer points of equal objective; the level's
-                # certificate is the tree ending infeasible, so they must be off (same as the
-                # prototype, and the Gurobi/CPLEX lesson of 2026-09-21)
+                # certificate is the tree ending infeasible, so they must be off
                 self.setBoolParam('misc/allowstrongdualreds', False)
                 self.setBoolParam('misc/allowweakdualreds', False)
                 self.optimize()
                 status = self.getStatus()
-                self.pool_exhausted = status == 'infeasible'
-                logging.info('  cb-reject: %d candidates, status %s' % (len(self._sd_cb.sols), status))
+                self._pool_exhausted = status == 'infeasible'
+                logging.debug('  SCIP level tree: %d candidates, status %s' % (len(self._sd_cb.sols), status))
                 if self._sd_cb.sols:
-                    return [list(v) for v in self._sd_cb.sols], 0.0, OPTIMAL
+                    sols = [list(v) for v in self._sd_cb.sols]
+                    if not isinf(n) and len(sols) > n:
+                        # the tree's exclusion rows are gone with the transformed problem, so the
+                        # candidates that are not returned stay reachable for the next call
+                        sols, self._pool_exhausted = sols[:int(n)], False
+                    return sols, 0.0, OPTIMAL
                 if status == 'infeasible':
                     return [], nan, INFEASIBLE
                 if status in ['timelimit', 'userinterrupt']:
@@ -557,7 +557,7 @@ class SCIP_MILP(pso.Model):
         if enum.n_undecided:
             logging.warning('  %d candidate sets so far have neither a feasible point nor an infeasibility proof that '
                             'passes its checks; they are not reported as designs.' % enum.n_undecided)
-        self.pool_exhausted = self.level_enumerated = complete
+        self._pool_exhausted = self.level_enumerated = complete
         sols = []
         for S in found:
             x = [0.0] * len(self._sd_vtype)

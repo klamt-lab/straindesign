@@ -33,7 +33,7 @@ def _designs(model, modules, caplog, expect, **extra):
                 SOLVER: SCIP, KOCOST: KO_COST, 'compress': False, SEED: 1}
     sd_setup.update(extra)
     caplog.clear()
-    with caplog.at_level(logging.INFO):
+    with caplog.at_level(logging.DEBUG):
         solution = sd.compute_strain_designs(model, sd_setup=sd_setup)
     assert solution.status == OPTIMAL
     messages = [r.getMessage() for r in caplog.records]
@@ -48,7 +48,7 @@ def test_clause_enumeration_returns_the_designs_of_the_tree(model_weak_coupling,
     monkeypatch.delenv('SD_SCIP_CLAUSES', raising=False)
     by_clauses = _designs(model_weak_coupling, modules(model_weak_coupling), caplog, 'clause enumeration, cost', compress=compress)
     monkeypatch.setenv('SD_SCIP_CLAUSES', '0')
-    by_tree = _designs(model_weak_coupling, modules(model_weak_coupling), caplog, 'cb-reject', compress=compress)
+    by_tree = _designs(model_weak_coupling, modules(model_weak_coupling), caplog, 'SCIP level tree', compress=compress)
     assert len(by_clauses) > 0
     assert by_clauses == by_tree
 
@@ -64,9 +64,9 @@ def test_clause_enumeration_with_worker_processes(model_weak_coupling, caplog, m
     assert parallel == sequential
 
 
-def test_knock_ins_keep_the_solve_and_exclude_loop(model_weak_coupling, caplog, monkeypatch):
-    """With a knock-in column neither of populate's level methods applies; the enumeration has to
-    end all the same, without announcing one of them."""
+def test_knock_ins_are_enumerated_in_the_tree(model_weak_coupling, caplog, monkeypatch):
+    """With a knock-in column the clause enumeration does not apply; the level is enumerated in
+    SCIP's tree and the enumeration ends all the same."""
     monkeypatch.delenv('SD_SCIP_CLAUSES', raising=False)
     kos = {k: v for k, v in KO_COST.items()}
     with caplog.at_level(logging.INFO):
@@ -76,7 +76,7 @@ def test_knock_ins_keep_the_solve_and_exclude_loop(model_weak_coupling, caplog, 
     # no design fits the budget, which a proven enumeration reports as INFEASIBLE
     assert solution.status == INFEASIBLE and not solution.reaction_sd
     messages = [r.getMessage() for r in caplog.records]
-    assert not any('clause enumeration, cost' in m or 'cb-reject' in m for m in messages)
+    assert not any('clause enumeration, cost' in m for m in messages)
 
 
 def _tiny_coefficient_system(threshold):

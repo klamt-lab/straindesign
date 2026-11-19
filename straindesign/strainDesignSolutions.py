@@ -328,7 +328,7 @@ class SDSolutions(object):
         else:
             if type(i) == int:
                 i = [i]
-            return [self.itv_bounds for j, s in enumerate(self.itv_bounds) if j in i]
+            return [s for j, s in enumerate(self.itv_bounds) if j in i]
 
     def get_gene_sd(self, i=None):
         """Get gene-based strain design solutions"""
