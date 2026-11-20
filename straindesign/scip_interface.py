@@ -406,20 +406,28 @@ class SCIP_MILP(pso.Model):
             return nan
 
     def populate(self, n) -> Tuple[List, float, float]:
-        numrows = len(self.constr)
         """Generate a solution pool for MILPs
         
         This is only a high-level implementation of the populate function.
-        There is no native support in SCIP.
+        There is no native support in SCIP. By default, the MILP is solved to optimality,
+        the solution is excluded and the MILP is solved again, until no solution with the
+        optimal objective value is left. If the cost-level sweep of the MCS enumeration has
+        announced the intervention variables, all solutions of the cost level are instead
+        collected in a single search tree by a constraint handler (_ScipRejectRecorder).
                 
         Example:
             sols_x, optim, status = scip.populate()
+        
+        Args:
+            n (int):
+                The maximum number of solutions that are returned.
         
         Returns:
             (Tuple[List of lists, float, float])
             
             solution_vectors, optimal_value, optimization_status
         """
+        numrows = len(self.constr)
         try:
             if getattr(self, '_sd_ko_cols', None) is not None:
                 # one tree per cost level: the constraint handler posts the exclusions inside it

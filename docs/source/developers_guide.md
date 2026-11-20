@@ -34,9 +34,9 @@ which drifts with every edit. Grep for the symbol.
 5. [**FVA in preprocessing**](#ch5) — pre-compression sign classification, desired-region essentiality, final bound/module FVA, the single-classical-module fold, and size-1 MCS extraction.
 6. [**Dualization (the mathematical core)**](#ch6) — LP duality, Farkas certificates, and the strong-duality encodings shared by the supported module types.
 7. [**MILP construction & the z-linking**](#ch7) — block assembly, per-module sign overrides, bound-derived single-row big-M values, native indicators or the intentional blanket M for multi-variable rows, and free-binary elimination.
-8. [**Solving & enumeration**](#ch8) — ANY/BEST/POPULATE objective setups; the iterative loop and superset-excluding integer cuts; solver parameters; the CPLEX-vs-Gurobi gap; the MCS enumeration stack on CPLEX and Gurobi (SOS1 gates, cost-level sweep, tilt, anchor controller, restarts).
+8. [**Solving & enumeration**](#ch8) — ANY/BEST/POPULATE objective setups; the iterative loop and superset-excluding integer cuts; solver parameters; SCIP's level tree and GLPK's emulated pool; the MCS enumeration stack on CPLEX and Gurobi (SOS1 gates, cost-level sweep, tilt, anchor controller, restarts).
 9. [**Decompression & solution semantics**](#ch9) — reverse-map expansion of compressed interventions; size-1 MCS re-injection; `filter_sd_maxcost`; the KI value-0/`(nan,nan)` & `strip_non_ki` encoding; gene↔reaction translation.
-10. [**Known issues, gotchas & failure modes**](#ch10) — neutral-gene-KO paths and superset artifacts with mechanism; the in-place dict-mutation footgun; name truncation; numeric-status robustness.
+10. [**Known issues, gotchas & failure modes**](#ch10) — neutral-gene-KO paths and superset artifacts with mechanism; the (resolved) in-place dict-mutation footgun; name truncation; numeric-status robustness.
 11. [**Performance, benchmarking & roadmap**](#ch11) — the bottleneck profile; the lever groups; benchmarking discipline (multi-seed, known-answer gates, MCS2/gMCSpy).
 12. [**Model surgery & constraint parsing**](#ch12) — the utility layer: `remove_ext_mets`, regulatory-intervention encoding, `gene_kos_to_constraints`, module/cost remapping through compression, and `parse_constr` (strings → matrix rows).
 13. [**The object model & result API**](#ch13) — `SDModule` (types, validation), `SDSolutions` (result access, KO/KI encoding, lazy expansion, save/load), the `sd_setup` bundle, and the preprocessed-dump workflow.
@@ -2663,6 +2663,12 @@ This is why POPULATE is the tool for the correctness gates: it is the only mode 
 *all* minimal designs at each cost, so a count like "393" is meaningful. It is also the most expensive
 mode, because filling a pool means the solver keeps searching after finding the optimum (see §8.7).
 
+**Which loop runs.** `compute_strain_designs` dispatches POPULATE to `SDMILP.enumerate_ksweep`, the
+cost-level sweep of [8.9](#ch8). The sweep needs an MCS computation with a finite `max_cost` and
+positive, integer intervention costs; whenever one of these does not hold (nested optimization,
+weighted or negative costs, no budget) it calls `enumerate` itself, so the loop described in this
+section is the fallback for exactly those problems. Both loops return the same designs.
+
 ### 8.4 The iterative loop and integer cuts (the minimal-and-distinct guarantee)
 
 All three modes are iterative: find a design, exclude it, repeat until infeasible. "Exclude it" is where
@@ -2817,8 +2823,10 @@ effect during pool generation (`populate_solution_pool` / `PoolSearchMode = 2`).
 They matter **only for POPULATE**, where `intensity = 4` (CPLEX's most aggressive pool search) and
 zero pool gaps mean "find *every* solution tied at the optimum". These are **verified inert for single
 solve**; they are not a performance bug and predate the current code (2022). Gurobi's `populate`
-additionally flips `PoolSearchMode = 2`, `NumericFocus = 2` on entry and resets them to `0` on exit
-(`gurobi_interface.py`), so single solves see the defaults.
+additionally sets `PoolSearchMode = 2` and `Heuristics = 0` on entry and restores both on exit
+(`gurobi_interface.py`), so single solves see the defaults. The cost-level sweep changes two of these
+values while a level is pinned: it opens the pool gaps (`set_pool_gap`), and on CPLEX with SOS1 gates
+it lowers the intensity to 3 ([8.9](#ch8)).
 
 #### 8.6.3 Seed → branch-and-bound tree shape → why speed needs a distribution
 
@@ -2871,21 +2879,42 @@ never spuriously bind, which loosens the relaxation and generally *hurts* branch
 of the hypothesis. Under the default `M = inf`, multi-continuous-variable rows become indicators,
 while zero- and single-variable rows can use a finite relaxation read directly from their bounds;
 there is no per-module type switch to "fix". The
-lever that actually moves genome-scale time is faster pool search (solver choice) and cheaper
-preprocessing FVA, not the linking encoding.
+levers that actually move genome-scale time are a faster pool search (the enumeration stack of
+[8.9](#ch8)) and cheaper preprocessing FVA, not a switch from indicators to big-M.
 
 ### 8.8 How SCIP and GLPK differ
 
-Neither SCIP nor GLPK exposes a native optimal-solution pool, so `enumerate`/POPULATE is **emulated** at
-the Python level, and both backends emit a warning steering the user toward `compute_optimal` instead
-(`strainDesignMILP.py`).
+Neither SCIP nor GLPK exposes a native optimal-solution pool, so POPULATE cannot hand the enumeration
+to the solver. Both backends emit a warning when it is requested (`strainDesignMILP.py`).
 
-**SCIP** (`scip_interface.py`) emulates `populate` by a solve-and-exclude loop: solve to the
-optimum, add a constraint pinning `c·x ≤ min_cx` (optimality), exclude the found solution with an
-exact-pattern inequality cut (`addExclusionConstraintIneq`), and repeat until infeasible — reconstructing
-the pool one solution at a time. It supports indicator constraints natively (so no big-M is forced), and
-its seed enters via `randomization/randomseedshift`. It is correct but slower than a native pool, hence
-the "consider `compute_optimal`" advice.
+**SCIP** (`scip_interface.py`) has two `populate` paths. Called from `enumerate` it runs a
+solve-and-exclude loop: solve to the optimum, add a constraint pinning `c·x ≤ min_cx` (optimality),
+exclude the found solution with an exact-pattern inequality cut (`addExclusionConstraintIneq`), and
+repeat until infeasible — reconstructing the pool one solution at a time, with a new search tree for
+every design. Called from the cost-level sweep ([8.9](#ch8)) it enumerates a whole level in a
+**single tree**. The sweep hands the backend the intervention columns (`_sd_ko_cols`), and `populate`
+installs a constraint handler, `_ScipRejectRecorder`, that runs after SCIP's linear, indicator and SOS1
+handlers. Every LP-feasible point that is integral on the intervention columns reaches it; the handler
+records the point as a candidate and rejects it with the row that excludes the design and its
+supersets, so the search continues in the same tree. Three details make this exact:
+
+- SCIP adds indicator rows to the LP lazily, so a point can reach the handler before its gated rows
+  were enforced. The handler checks the gated rows itself (`_gates_hold`) and only then records and
+  excludes the point; excluding a point that violates a gate could cut off one of its supersets.
+- Dual presolve reductions may remove integer points of equal objective value. They are switched off
+  for the level tree (`misc/allowstrongdualreds`, `misc/allowweakdualreds`).
+- The level ends with status `infeasible` once no design is left. This is the exhaustion certificate
+  the sweep reads (`_pool_exhausted`); a tree that ends on the time limit or with an error is never
+  read as exhausted.
+
+Every candidate still passes `verify_sd` in the sweep, as with the other solvers. For every SCIP MILP
+with integer variables the LP solver runs with `lp/scaling = 2` and the primal simplex: at its
+defaults SoPlex stops with "unresolved numerical troubles" on the certificate system beyond small cut
+sets. SCIP supports indicator constraints natively (so no big-M is forced), and its seed enters via
+`randomization/randomseedshift`. The level tree makes mid-sized enumerations practical — bounded
+iMLcore (gene MCS, `max_cost = 3`, 106 designs) completes in minutes where the solve-and-exclude loop
+ended with an error after 34 designs — but SCIP remains a single-thread fallback: iML1515 was not
+enumerated within three hours.
 
 **GLPK** (`glpk_interface.py`) emulates `populate` the same solve-and-exclude way, but with two
 extra handicaps. First, GLPK has **no indicator constraints at all**, so z-linking is done entirely by
@@ -2906,7 +2935,9 @@ proved unstable.
 For classical MCS problems (SUPPRESS / PROTECT modules only) solved with `solution_approach='populate'`
 on CPLEX or Gurobi, the MILP and the enumeration loop differ from the generic description above in
 four places. All of them leave the set of designs unchanged; they change how fast the solver finds
-and proves it. SCIP and GLPK keep the generic path ([8.8](#ch8)).
+and proves it. SCIP and GLPK also run the cost-level sweep, but only its level loop: SCIP with its
+level tree and GLPK with its emulated pool ([8.8](#ch8)), both without SOS1 gates, anchor controller
+and restarts.
 
 **Gates as SOS1 sets** (`MILP_LP._gates_as_sos1`). Every indicator gate `z = v -> a·x (sense) b`
 becomes an always-present row with a slack and an SOS1 set that forbids the slack while the gate is on:
@@ -2959,7 +2990,13 @@ on a level that other seeds finish in seconds, on the same MILP. Each populate i
 *deterministic* work (CPLEX ticks, Gurobi work units) at `max(_RESTART_MIN_WORK, 4 x previous level)`.
 A call that is still returning new designs at the cap is resumed with the cap doubled — the model is
 left untouched, so the solver continues the same tree with its pool. A call that returned nothing new
-has its designs recorded and is restarted from the next seed `seed + 7919·n`, the cap doubling on.
+has its designs recorded and is restarted from the next seed `seed + 7919·n`. Such a tree spends its
+work on points that repeat the designs it already holds on the intervention columns and differ only
+on continuous columns — observed with Gurobi, where a level of a bounded problem did not end within
+15 minutes — and only the exclusion rows remove these points. For the rest of the level every
+capped call is therefore recorded at once, at the small cap `_FLOOD_WORK`, so that the exclusion rows
+keep pace with the tree. The cap of the next level starts from the work of the call that completed
+this one, not from the level's total.
 Every level still ends with a populate that ran to completion, so completeness is unaffected, and
 because both the cap and the restart seeds are deterministic, restarts keep a seeded run repeatable
 on the same machine and thread count. Note that both solvers resume an interrupted search on an unchanged model
@@ -3227,7 +3264,8 @@ details:
   is what powers `get_group` / `get_representative_sd` on the result object — the user can collapse the
   fan‑out back to "one decision per group" for display.
 - **Status promotion.** If the MILP itself found nothing (INFEASIBLE) but size‑1 MCS exist, the status
-  is lifted to OPTIMAL so the result is not reported as "no solution" (`compute_strain_designs.py`).
+  is lifted to OPTIMAL so the result is not reported as "no solution" (`_final_status`,
+  `compute_strain_designs.py`). A time limit or a solver error is not lifted ([8.2](#ch8)).
   The `dump_preprocessed` early‑return path (`compute_strain_designs.py`) uses the same
   expand→filter→postprocess sequence to return size‑1 MCS even when the MILP solve is skipped entirely.
 
@@ -3675,30 +3713,29 @@ PROTECT-violating designs on the reporter's setup; current code produces 0 acros
    contradicting-group logic (its test additions were unrelated), and `tests/test_07_compression.py`
    still has none.
 
-### 10.4 Gotcha (a) — `compute_strain_designs` mutates the caller's `reg_cost`/module dicts in place
+### 10.4 Gotcha (a), resolved — `compute_strain_designs` used to mutate the caller's cost dicts in place
 
-`compute_strain_designs` is not free of side effects on its arguments. Two are worth internalizing.
+`compute_strain_designs` leaves its arguments as they were passed. This was not always so, and the
+mechanism is worth knowing because the internal dicts are still rewritten during preprocessing.
 
-**Modules are copied; cost dicts largely are not.** The `sd_modules` list is defensively copied
-(`compute_strain_designs.py`, `[m.copy for m in sd_modules]`), so the module objects the caller
-passed are safe. The cost dicts are **not** copied — they are aliased:
+**What is copied on entry.** The `sd_modules` list is copied module by module
+(`[m.copy() for m in sd_modules]`), the cost dicts are copied when they are read from the keyword
+arguments, and a setup passed as `sd_setup` is copied before its keys are popped:
 
 ```python
-# compute_strain_designs.py, cost-dict aliasing
-if key == KOCOST:  uncmp_ko_cost  = value
-if key == KICOST:  uncmp_ki_cost  = value
-if key == REGCOST: uncmp_reg_cost = value   # <-- the caller's dict, by reference
+# compute_strain_designs.py
+kwargs = dict(kwargs[SETUP])                    # the caller's setup stays as it was passed
+...
+if key == KOCOST:  uncmp_ko_cost  = dict(value) if isinstance(value, dict) else value
+if key == KICOST:  uncmp_ki_cost  = dict(value) if isinstance(value, dict) else value
+if key == REGCOST: uncmp_reg_cost = dict(value) if isinstance(value, dict) else value
 ```
 
-`uncmp_reg_cost` *is* the caller's `reg_cost` object. The orchestrator makes a `deepcopy` for its own
-bookkeeping (`orig_reg_cost = deepcopy(uncmp_reg_cost)`), but it keeps operating on the aliased
-original.
-
-**`extend_model_regulatory` rewrites its dict's keys, and the orchestrator writes that back onto the
-caller's object.** `extend_model_regulatory` (`networktools.py`) turns each human-readable constraint
-string (e.g. `'1 PDH + 1 PFL <= 5'`) into a generated pseudoreaction name (e.g. `p1_PDH_p1_PFK_le_5`) and
-mutates its argument dict in place to use those generated names. The orchestrator then does, for the
-immediate (reaction-based) regulatory constraints:
+**Why the copies are needed.** `extend_model_regulatory` (`networktools.py`) turns each human-readable
+constraint string (e.g. `'1 PDH + 1 PFL <= 5'`) into a generated pseudoreaction name (e.g.
+`p1_PDH_p1_PFK_le_5`) and rewrites its argument dict in place to use those generated names. The
+orchestrator then resets `uncmp_reg_cost` to the generated-name keys and adds the regulatory
+pseudoreactions to `uncmp_ko_cost`:
 
 ```python
 # compute_strain_designs.py, regulatory-cost reset
@@ -3706,18 +3743,15 @@ uncmp_reg_cost.clear()
 uncmp_reg_cost.update(_immediate_reg)
 ```
 
-Because `uncmp_reg_cost` aliases the caller's `reg_cost`, this **empties the caller's dict and refills it
-with the generated-name keys.** After one call, the caller's `reg_cost` no longer contains the original
-constraint strings — it contains parsed pseudoreaction names. Reusing that same dict object in a second
-`compute_strain_designs` call is corrupt input: the generated names are not parseable constraint strings,
-so they misroute (deferred as if gene-regulatory) or raise. The same aliasing means the caller's
-`ko_cost` is also *augmented* in place — the regulatory pseudoreactions are added to it via
-`uncmp_ko_cost.update(...)`.
+While `uncmp_reg_cost` was the caller's own `reg_cost` object, one call emptied that dict and
+refilled it with pseudoreaction names, and the caller's `ko_cost` grew by the regulatory
+pseudoreactions. A second call with the same objects then received corrupt input: generated names
+are not parseable constraint strings.
 
-**Consequence & workaround.** Never reuse a `reg_cost` (or `ko_cost`) dict across runs; pass a fresh
-`dict(...)`/`deepcopy` each time, or reconstruct the setup per call. This is entirely internal to the API
-surface — there is a code comment acknowledging the in-place mutation, but the fix (copy
-the caller's dict on entry, as is already done for modules) has not been applied.
+**Consequence for developers.** Reusing cost dicts and setups across calls is safe
+(`tests/test_24_regressions.py` holds the regression test). Inside `compute_strain_designs` the
+`uncmp_*` dicts remain working copies that change during preprocessing; the caller-facing values
+that go into the returned setup are the `orig_*` copies taken before the first rewrite.
 
 ### 10.5 Gotcha (b) — deterministic truncation of long GPR gadget names
 
@@ -3783,10 +3817,10 @@ fix trades a crash for occasionally accepting a marginally non-minimal design.
   a node-locked license may validate only on specific hosts, and WLS/web licenses carry overage risk under
   heavy parallelism (mitigated here by the shared module-level `gp.Env`, PR #52). A benchmark or CI job that
   assumes Gurobi is available everywhere, or that spins up many parallel Gurobi environments, can fail or
-  silently fall back to another solver for reasons that have nothing to do with the algorithm. Because Gurobi
-  is ≈4× faster than CPLEX on the canonical iML1515 run, "the algorithm got slow" and "it silently fell back
-  to CPLEX because Gurobi wasn't licensed here" look identical from the outside — check which solver was
-  actually selected before trusting a timing.
+  silently fall back to another solver for reasons that have nothing to do with the algorithm. Because the
+  solvers differ in speed, "the algorithm got slow" and "it silently fell back to another solver because
+  Gurobi wasn't licensed here" look identical from the outside — check which solver was actually selected
+  before trusting a timing.
 
 - **Comparing designs by the raw attribute vs. the accessor.** Reiterating the #38 lesson as a general
   rule: `sols.reaction_sd`/`sols.gene_sd` are *unstripped* (carry value-0 KI markers); `get_reaction_sd`/
@@ -5274,18 +5308,28 @@ and stays empty (verified; CONTEXT). They matter only inside `populate`. This is
 bug — it is simply that pool configuration only takes effect on the pool-generating call.
 
 **Gurobi** (`gurobi_interface.py`). `populate` sets `PoolSolutions = n` (or `MAXINT`),
-`PoolSearchMode = 2` ("find the n best solutions, systematically"), and raises `NumericFocus = 2`
-for the pool sweep, solves, then **restores** `PoolSearchMode = 0` and `NumericFocus = 0` so an
+`PoolSearchMode = 2` ("find the n best solutions, systematically") and `Heuristics = 0` (an
+exhaustive pool search reaches every solution the heuristics would find), runs at
+`NumericFocus = 0`, solves, then **restores** `PoolSearchMode = 0` and the heuristics setting so an
 ensuing single `solve` is not slowed by pool search. The equivalent of CPLEX's absgap/relgap `= 0`
 is set in the *constructor*: `PoolGap = 1e-9` and `PoolGapAbs = 1e-9` (`gurobi_interface.py`),
 i.e. keep essentially only optimal-objective solutions. Harvesting (`getSolutions`,
-`gurobi_interface.py`) iterates the pool via `SolutionNumber` and — this is the important
-filter — **keeps a pool member only if its `PoolObjVal == ObjVal`**, dropping any non-optimal-cost
-solution Gurobi may have parked in the pool. Without this filter the pool could return designs above
-the minimum cost.
+`gurobi_interface.py`) iterates the pool via `SolutionNumber`. With the pool gap closed it **keeps a
+pool member only if its `PoolObjVal` equals `ObjVal` within a relative tolerance of `1e-9`**,
+dropping any non-optimal-cost solution Gurobi may have parked in the pool; without this filter the
+pool could return designs above the minimum cost. The comparison is not an exact equality: with a
+tie-breaking objective such as the dual tilt the pool values of equally expensive designs differ in
+the last digits, and an exact comparison kept a single design per call. With the pool gap open
+(`set_pool_gap(True)`, the pinned levels of the cost-level sweep) every pool member is kept, because
+the cost is fixed by the budget rows and the objective no longer separates wanted from unwanted
+members. A pool search that ends optimal with room left in the pool has found every solution; the
+backend records this as `_pool_exhausted`, the exhaustion certificate the sweep reads.
 
 **SCIP** (`scip_interface.py`) and **GLPK** (`glpk_interface.py`) have **no native
-pool**, so `populate` is *emulated* by a high-level loop that reproduces the pool semantics:
+pool**. For the pinned levels of the cost-level sweep, SCIP's `populate` enumerates the level in a
+single search tree through the constraint handler `_ScipRejectRecorder` ([8.8](#ch8)). In all other
+cases, and always with GLPK, `populate` is *emulated* by a high-level loop that reproduces the pool
+semantics:
 
 1. solve to optimality; keep `x`, record `min_cx`;
 2. **pin the objective to optimality** by adding the row `cᵀx ≤ min_cx` — so every further solution
@@ -5307,10 +5351,12 @@ otherwise be missed by the exclusion. If the loop exits by infeasibility it is r
 (`scip_interface.py`), the classic `Σ_{j∈S} z_j − Σ_{j∉S}(…) ≤ |S| − 1` cut restricted to
 the binary variables.
 
-The performance consequence: on SCIP/GLPK, POPULATE pays *one full MILP solve per design found*,
-whereas CPLEX/Gurobi amortize many designs into a single branch-and-cut tree. For the 393-design
-iML1515 gene-MCS benchmark this is the difference between a viable and an impractical run — another
-reason the open-source backends are validation tools, not production engines, for large problems.
+The performance consequence: in the emulated loop, POPULATE pays *one full MILP solve per design
+found*, whereas CPLEX/Gurobi amortize many designs into a single branch-and-cut tree. SCIP's level
+tree removes the per-design solve for MCS problems, but runs on a single thread and without the
+enumeration stack of [8.9](#ch8). For the 393-design iML1515 gene-MCS benchmark this is the
+difference between a viable and an impractical run — another reason the open-source backends are
+tools for small and mid-sized problems, not production engines for genome-scale enumeration.
 
 ### 14.8 Numeric-status robustness
 
@@ -5333,8 +5379,12 @@ raising.
   `OPTIMAL`; else if any incumbent exists (`SolCount > 0`), accept it as `TIME_LIMIT_W_SOL` with a
   warning; else report `TIME_LIMIT` with no solution — never a crash
   (`gurobi_interface.py`). `slim_solve` mirrors this by returning the incumbent objective if
-  one exists, else `nan` (`gurobi_interface.py`), and `populate` pre-emptively runs the pool
-  sweep at `NumericFocus = 2`.
+  one exists, else `nan` (`gurobi_interface.py`). `populate` runs the pool search at
+  `NumericFocus = 0` and, on `NUMERIC`, discards the search (`reset`) and repeats it once at
+  `NumericFocus = 3`; without the reset Gurobi resumes the failed search on the unchanged model and
+  returns the same state at once. If the repeated search proves nothing and holds no solution, the
+  status is `ERROR`, never an empty pool: the cost-level sweep must not read an unproven level as
+  exhausted.
 
 - **Gurobi 13 indicator-presolve bug (error 10005).** A separate robustness layer,
   `_safe_optimize` (`gurobi_interface.py`), wraps every `optimize` call: Gurobi 13 can
