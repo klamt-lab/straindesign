@@ -14,7 +14,7 @@
 
 ## A COBRApy<a href="#ref1"><sup>[1]</sup></a>-based package for computational design of metabolic networks
 
-The comprehensive StrainDesign package for MILP-based strain design computation with the COBRApy toolbox supports MCS, MCS with nested optimization, OptKnock<a href="#ref2"><sup>[2]</sup></a>, RobustKnock<a href="#ref3"><sup>[3]</sup></a> and OptCouple<a href="#ref4"><sup>[4]</sup></a>, GPR-rule integration, gene and reaction knockouts and additions as well as regulatory interventions. The automatic lossless network and GPR compression allows strain design computations from genome-scale metabolic networks. Supported solvers are GLPK (available from COBRApy), CPLEX, Gurobi and SCIP<a href="#ref5"><sup>[5]</sup></a>.
+The comprehensive StrainDesign package for MILP-based strain design computation with the COBRApy toolbox supports MCS, MCS with nested optimization, OptKnock<a href="#ref2"><sup>[2]</sup></a>, RobustKnock<a href="#ref3"><sup>[3]</sup></a> and OptCouple<a href="#ref4"><sup>[4]</sup></a>, GPR-rule integration, gene and reaction knockouts and additions as well as regulatory interventions. Flux coupling analysis and the MILP-based computation of elementary flux modes and vectors complement the analysis functions. The automatic lossless network and GPR compression allows strain design computations from genome-scale metabolic networks. Supported solvers are GLPK (available from COBRApy), CPLEX, Gurobi and SCIP<a href="#ref5"><sup>[5]</sup></a>.
 
 To get started, check out the [StrainDesign documentation](https://straindesign.readthedocs.io/en/latest/). Guides and examples are provided as [Jupyter notebooks at docs/source/examples](https://github.com/klamt-lab/straindesign/tree/main/docs/source/examples).
 

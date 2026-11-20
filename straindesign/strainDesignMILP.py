@@ -1000,9 +1000,8 @@ class SDMILP(SDProblem, MILP_LP):
         # otherwise continue
         if self.solver == 'scip':
             logging.warning("SCIP does not natively support solution pool generation. "+ \
-                "An high-level implementation of populate is used. " + \
-                "Consider using compute_optimal instead of enumerate, as " + \
-                "it returns the same results but faster.")
+                "Each cost level is enumerated in a single search tree instead. " + \
+                "Consider using CPLEX or Gurobi for genome-scale problems.")
         if self.solver == 'glpk':
             logging.warning("GLPK does not natively support solution pool generation. "+ \
                 "An instable high-level implementation of populate is used. "

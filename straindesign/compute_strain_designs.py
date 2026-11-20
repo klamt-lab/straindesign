@@ -384,9 +384,12 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             fastest option, since optimality is not enforced. Hereby computed MCS are still irreducible intervention sets,
             however, not MCS with the fewest possible number of interventions. 'best' computes globally optimal strain designs,
             that is, MCS with the fewest number of interventions, OptKnock strain designs with the highest possible production
-            rate, OptCouple strain designs with the hightest growth coupling potential etc.. 'populate' does the same as 'best',
-            but makes use of CPLEX' and Gurobi's populate function to generate multiple strain designs. It is identical to 'best'
-            when used with SCIP or GLPK.
+            rate, OptCouple strain designs with the hightest growth coupling potential etc.. 'populate' enumerates strain
+            designs exhaustively, starting with the globally optimal ones: MCS are returned in the order of ascending
+            intervention costs, up to max_cost or max_solutions. CPLEX and Gurobi use their solution pools for the enumeration.
+            SCIP has no solution pool and searches each cost level of an MCS problem in a single tree instead, GLPK finds
+            the strain designs one by one. Both return the same strain designs, but are only suited for small and mid-sized
+            problems.
             Attention:
             If 'any' used with OptKnock, for instance, the MILP may return the wild type as a possible immediately. Technically,
             the wiltype fulfills the criterion of maximal growth (inner objective) and maximality of the global objective is
@@ -411,7 +414,11 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
 
             An object that contains all computed strain designs. If strain designs were computed
             as gene-interventions, the solution object contains a set of corresponding reaction-interventions
-            that facilitate the analysis of the computed strain designs with COBRA methods.
+            that facilitate the analysis of the computed strain designs with COBRA methods. The status of the
+            solution object tells whether the computation was completed: 'optimal' stands for a completed
+            computation or enumeration, 'time_limit_w_sols' for strain designs that were found before the time limit
+            was hit, and 'error' for a solver failure. In the last two cases, the returned set of strain designs
+            may be incomplete.
     """
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,

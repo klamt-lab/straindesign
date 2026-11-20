@@ -329,7 +329,7 @@ class Gurobi_MILP_LP(gp.Model):
         """Generate a solution pool for MILPs
                 
         Example:
-            sols_x, optim, status = cplex.populate()
+            sols_x, optim, status = gurobi.populate()
         
         Returns:
             (Tuple[List of lists, float, float])
