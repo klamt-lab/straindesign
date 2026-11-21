@@ -26,7 +26,7 @@ def test_supersets_are_dropped_and_counted():
     rows = [[1, 1, 0, 0], [1, 0, 1, 0], [1, 1, 1, 0], [0, 0, 0, 1], [1, 1, 0, 1]]
     z = sparse.csr_matrix(np.array(rows))
     kept, dropped = _drop_non_minimal(z)
-    assert dropped == 2                                     # {0,1,2} > {0,1}; {0,1,3} > {0,1} and > {3}
+    assert dropped == 2  # {0,1,2} > {0,1}; {0,1,3} > {0,1} and > {3}
     assert sorted(frozenset(kept[i].indices.tolist()) for i in range(kept.shape[0])) == \
         sorted([frozenset({0, 1}), frozenset({0, 2}), frozenset({3})])
 
@@ -53,7 +53,6 @@ def test_time_limit_at_a_level_is_not_exhaustion(solver, monkeypatch):
 
     monkeypatch.setattr(sdm.SDMILP, 'populateZ', populate_then_stall)
     modules = [sd.SDModule(model, SUPPRESS, constraints=["BIOMASS_Ecoli_core_w_GAM >= 0.1"])]
-    sol = sd.compute_strain_designs(model, sd_modules=modules, max_cost=3, solver=solver,
-                                    solution_approach=POPULATE)
+    sol = sd.compute_strain_designs(model, sd_modules=modules, max_cost=3, solver=solver, solution_approach=POPULATE)
     assert calls['n'] >= 2
     assert sol.status != OPTIMAL

@@ -434,8 +434,12 @@ class SCIP_MILP(pso.Model):
                 self.freeTransform()
                 if not hasattr(self, '_sd_cb'):
                     self._sd_cb = _ScipRejectRecorder(self, self._sd_ko_cols)
-                    self.includeConshdlr(self._sd_cb, 'sdreject', 'record and exclude every integral point',
-                                         enfopriority=-3000000, chckpriority=-3000000, needscons=False)
+                    self.includeConshdlr(self._sd_cb,
+                                         'sdreject',
+                                         'record and exclude every integral point',
+                                         enfopriority=-3000000,
+                                         chckpriority=-3000000,
+                                         needscons=False)
                 self._sd_cb.reset()
                 # dual presolve reductions may drop integer points of equal objective; the level's
                 # certificate is the tree ending infeasible, so they must be off

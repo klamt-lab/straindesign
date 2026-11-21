@@ -199,8 +199,8 @@ def _cone(model, compress):
         # merges reactions with proportional fluxes, which are fully coupled.
         names = [str(k) for k in range(nr)]
         bounds = [(0.0 if s > 0 else -inf, 0.0 if s < 0 else inf) for s in sgn]
-        record = StoichMatrixCompressor(*CompressionMethod.standard()).compress(
-            stoich, [str(i) for i in range(stoich.get_row_count())], names, {names[k] for k in fixed}, bounds)
+        record = StoichMatrixCompressor(*CompressionMethod.standard()).compress(stoich, [str(i) for i in range(stoich.get_row_count())],
+                                                                                names, {names[k] for k in fixed}, bounds)
         S, post = _exact(record.cmp), _exact(record.post)
     else:
         keep = [k for k in range(nr) if k not in fixed]
@@ -294,9 +294,8 @@ class _CappedLP:
         A = sparse.csr_matrix(([float(v) for v in S.vals], (S.rows, S.cols)), shape=(m, n))
         self.A_eq = sparse.hstack((A, sparse.csr_matrix((m, nt)))).tocsr()
         # t_l - r_l <= 0
-        self.A_ineq = sparse.csr_matrix((np.r_[np.ones(nt), -np.ones(nt)], (np.r_[np.arange(nt), np.arange(nt)],
-                                                                             np.r_[n + np.arange(nt), self.I])),
-                                        shape=(nt, n + nt))
+        self.A_ineq = sparse.csr_matrix(
+            (np.r_[np.ones(nt), -np.ones(nt)], (np.r_[np.arange(nt), np.arange(nt)], np.r_[n + np.arange(nt), self.I])), shape=(nt, n + nt))
         self.c = [0.0] * n + [-1.0] * nt
         self.lb = [0.0 if irr[k] else -inf for k in range(n)] + [0.0] * nt
         self.ub = [inf] * n + [1.0] * nt
@@ -305,8 +304,14 @@ class _CappedLP:
         self.num_lp = 0
 
     def _build(self, ub, method):
-        lp = MILP_LP(c=self.c, A_ineq=self.A_ineq, b_ineq=[0.0] * self.A_ineq.shape[0], A_eq=self.A_eq,
-                     b_eq=[0.0] * self.A_eq.shape[0], lb=list(self.lb), ub=list(ub), solver=self.solver)
+        lp = MILP_LP(c=self.c,
+                     A_ineq=self.A_ineq,
+                     b_ineq=[0.0] * self.A_ineq.shape[0],
+                     A_eq=self.A_eq,
+                     b_eq=[0.0] * self.A_eq.shape[0],
+                     lb=list(self.lb),
+                     ub=list(ub),
+                     solver=self.solver)
         lp.set_lp_method(method)
         return lp
 

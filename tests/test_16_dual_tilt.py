@@ -9,8 +9,16 @@ from straindesign.names import *
 def _designs(model, solver, **extra):
     biomass = next(r.id for r in model.reactions if r.objective_coefficient)
     modules = [sd.SDModule(model, SUPPRESS, constraints=[f"{biomass} >= 0.1"])]
-    sd_setup = {MODULES: modules, MAX_COST: 2, MAX_SOLUTIONS: inf, SOLUTION_APPROACH: POPULATE,
-                SOLVER: solver, 'compress': True, SEED: 1, MILP_THREADS: 2}
+    sd_setup = {
+        MODULES: modules,
+        MAX_COST: 2,
+        MAX_SOLUTIONS: inf,
+        SOLUTION_APPROACH: POPULATE,
+        SOLVER: solver,
+        'compress': True,
+        SEED: 1,
+        MILP_THREADS: 2
+    }
     sd_setup.update(extra)
     solution = sd.compute_strain_designs(model, sd_setup=sd_setup)
     assert solution.status == OPTIMAL
@@ -24,7 +32,7 @@ def test_dual_tilt_is_design_neutral_and_engages(curr_solver, model_core, monkey
     if curr_solver not in (CPLEX, GUROBI):
         pytest.skip("the tilt acts inside the pinned-level populate loop, which needs a pool solver")
 
-    reference = _designs(model_core, curr_solver, dual_tilt=None)   # explicit: the default is on
+    reference = _designs(model_core, curr_solver, dual_tilt=None)  # explicit: the default is on
     assert len(reference) > 0
 
     assert _designs(model_core, curr_solver, dual_tilt=0) == reference

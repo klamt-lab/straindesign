@@ -20,8 +20,18 @@ def _pool_gap_open(milp):
 
 
 @pytest.mark.parametrize('ko_cost,pinned', [
-    ({'R1': 1.0, 'R2': 1.0, 'R3': 1.0, 'R4': 1.0}, True),
-    ({'R1': 1.0, 'R2': 1.1, 'R3': 1.0, 'R4': 1.0}, False),
+    ({
+        'R1': 1.0,
+        'R2': 1.0,
+        'R3': 1.0,
+        'R4': 1.0
+    }, True),
+    ({
+        'R1': 1.0,
+        'R2': 1.1,
+        'R3': 1.0,
+        'R4': 1.0
+    }, False),
 ])
 @pytest.mark.timeout(60)
 def test_pool_gap_is_open_only_while_a_cost_level_is_pinned(monkeypatch, ko_cost, pinned):
@@ -85,7 +95,10 @@ def test_designs_stay_minimal_when_the_k_sweep_falls_back_under_an_open_pool(mon
                                          max_solutions=inf,
                                          solution_approach='populate',
                                          ko_cost=kocost,
-                                         ki_cost={'r3': 0.6, 'r6': 1.0},
+                                         ki_cost={
+                                             'r3': 0.6,
+                                             'r6': 1.0
+                                         },
                                          reg_cost={'r6 >= 4.5': 1.2},
                                          solver=solver,
                                          milp_threads=1,
@@ -117,7 +130,9 @@ def test_sos1_gate_rewrite_keeps_the_objective_row_full_width(monkeypatch, model
                                      max_cost=inf,
                                      max_solutions=inf,
                                      solution_approach=approach,
-                                     ki_cost={'R2': 1},
+                                     ki_cost={
+                                         'R2': 1
+                                     },
                                      solver=solver,
                                      milp_threads=1,
                                      compress=False).get_reaction_sd()
@@ -129,12 +144,21 @@ def test_sos1_gate_rewrite_keeps_the_objective_row_full_width(monkeypatch, model
 
 
 @pytest.mark.parametrize('ki_cost,max_cost,expected', [
-    ({'R1': 1.0, 'R2': -5.0, 'R3': 1.0, 'R4': 1.0}, 3, ['R1', 'R2', 'R4']),
-    ({'R1': 1.0, 'R2': -100.0, 'R3': 1.0, 'R4': 1.0}, -97, ['R1', 'R2', 'R4']),
+    ({
+        'R1': 1.0,
+        'R2': -5.0,
+        'R3': 1.0,
+        'R4': 1.0
+    }, 3, ['R1', 'R2', 'R4']),
+    ({
+        'R1': 1.0,
+        'R2': -100.0,
+        'R3': 1.0,
+        'R4': 1.0
+    }, -97, ['R1', 'R2', 'R4']),
 ])
 @pytest.mark.timeout(60)
-def test_ksweep_falls_back_when_an_intervention_is_not_positively_priced(monkeypatch, curr_solver, ki_cost, max_cost,
-                                                                        expected):
+def test_ksweep_falls_back_when_an_intervention_is_not_positively_priced(monkeypatch, curr_solver, ki_cost, max_cost, expected):
     """The k-sweep walks cost levels 1, 2, ... upward and asks for each level in turn. A design
     whose total cost is zero or negative -- which one rewarding intervention is enough to produce
     -- lies below every level the sweep visits, so the sweep returns none of them and the
@@ -169,8 +193,7 @@ def test_size_limited_licence_keeps_indicator_gates(monkeypatch, caplog):
 
     def designs():
         modules = [sd.SDModule(model, SUPPRESS, constraints=['BIOMASS_Ecoli_core_w_GAM >= 0.1'])]
-        sol = sd.compute_strain_designs(model, sd_modules=modules, max_cost=2, solution_approach=POPULATE,
-                                        solver=solver, seed=1)
+        sol = sd.compute_strain_designs(model, sd_modules=modules, max_cost=2, solution_approach=POPULATE, solver=solver, seed=1)
         assert sol.status == OPTIMAL
         return {frozenset(d.items()) for d in sol.get_reaction_sd()}
 

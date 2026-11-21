@@ -269,9 +269,14 @@ def _small_lp(A_ineq, b_ineq, solver, vtype=None, lp_method=None):
     """min -x1 - x2 s.t. A_ineq x <= b_ineq, x >= 0"""
     from scipy import sparse
     lp = sd.MILP_LP(c=[-1.0, -1.0],
-                    A_ineq=sparse.csr_matrix(A_ineq), b_ineq=b_ineq,
-                    A_eq=sparse.csr_matrix((0, 2)), b_eq=[],
-                    lb=[0.0, 0.0], ub=[inf, inf], vtype=vtype, solver=solver)
+                    A_ineq=sparse.csr_matrix(A_ineq),
+                    b_ineq=b_ineq,
+                    A_eq=sparse.csr_matrix((0, 2)),
+                    b_eq=[],
+                    lb=[0.0, 0.0],
+                    ub=[inf, inf],
+                    vtype=vtype,
+                    solver=solver)
     if lp_method is not None:
         lp.set_lp_method(lp_method)
     return lp
@@ -307,8 +312,14 @@ def test_warm_bound_changes_match_fresh_solve(curr_solver, lp_method):
     lb0, ub0 = [-10.0] * n, [10.0] * n
 
     def build(lb, ub):
-        lp = sd.MILP_LP(c=c, A_ineq=sparse.csr_matrix((0, n)), b_ineq=[], A_eq=A, b_eq=[0.0] * m,
-                        lb=list(lb), ub=list(ub), solver=curr_solver)
+        lp = sd.MILP_LP(c=c,
+                        A_ineq=sparse.csr_matrix((0, n)),
+                        b_ineq=[],
+                        A_eq=A,
+                        b_eq=[0.0] * m,
+                        lb=list(lb),
+                        ub=list(ub),
+                        solver=curr_solver)
         if lp_method is not None:
             lp.set_lp_method(lp_method)
         return lp
@@ -380,8 +391,14 @@ def test_scip_lp_stopped_early_is_not_optimal():
     """A SoPlex solve stopped by its iteration limit has a finite objective but is not optimal."""
     from pyscipopt import SCIP_LPPARAM
     from scipy import sparse
-    lp = sd.MILP_LP(c=[1.0, 1.0, 1.0], A_ineq=sparse.csr_matrix(-np.eye(3)), b_ineq=[-1.0] * 3,
-                    A_eq=sparse.csr_matrix((0, 3)), b_eq=[], lb=[0.0] * 3, ub=[10.0] * 3, solver=sd.names.SCIP)
+    lp = sd.MILP_LP(c=[1.0, 1.0, 1.0],
+                    A_ineq=sparse.csr_matrix(-np.eye(3)),
+                    b_ineq=[-1.0] * 3,
+                    A_eq=sparse.csr_matrix((0, 3)),
+                    b_eq=[],
+                    lb=[0.0] * 3,
+                    ub=[10.0] * 3,
+                    solver=sd.names.SCIP)
     lp.backend.setIntParam(SCIP_LPPARAM.LPITLIM, 1)
     _, opt, status = lp.solve()
     assert status == sd.names.ERROR
@@ -405,8 +422,13 @@ def test_glpk_unproven_infeasibility_is_resolved(monkeypatch):
     get_status = glpk_interface.glp_get_status
 
     def build():
-        return sd.MILP_LP(c=[1.0, 1.0, 1.0], A_ineq=sparse.csr_matrix(-np.eye(3)), b_ineq=[-1.0] * 3,
-                          A_eq=sparse.csr_matrix((0, 3)), b_eq=[], lb=[0.0] * 3, ub=[10.0] * 3,
+        return sd.MILP_LP(c=[1.0, 1.0, 1.0],
+                          A_ineq=sparse.csr_matrix(-np.eye(3)),
+                          b_ineq=[-1.0] * 3,
+                          A_eq=sparse.csr_matrix((0, 3)),
+                          b_eq=[],
+                          lb=[0.0] * 3,
+                          ub=[10.0] * 3,
                           solver=sd.names.GLPK)
 
     calls = []

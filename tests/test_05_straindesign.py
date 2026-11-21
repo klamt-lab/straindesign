@@ -694,6 +694,7 @@ def test_objective_survives_a_suppressed_build(curr_solver, model_gpr):
     assert model_objective(bare) == ({'r_bm': 1.0}, 'max')
     assert sd.fba(bare, solver=curr_solver).objective_value == pytest.approx(reference.objective_value)
 
+
 @pytest.fixture
 def model_ki_protect():
     """Smallest network where a knock-in is the only way to keep PROTECT feasible.
@@ -715,8 +716,7 @@ def model_ki_protect():
         r.add_metabolites(stoich)
         return r
 
-    m.add_reactions([rxn(1, {A: 1}), rxn(2, {A: -1, B: 1}), rxn(3, {B: -1, C: 1}),
-                     rxn(4, {B: -1}), rxn(5, {A: -1, C: 1}), rxn(6, {C: -1})])
+    m.add_reactions([rxn(1, {A: 1}), rxn(2, {A: -1, B: 1}), rxn(3, {B: -1, C: 1}), rxn(4, {B: -1}), rxn(5, {A: -1, C: 1}), rxn(6, {C: -1})])
     return m
 
 
@@ -727,12 +727,24 @@ def test_knockin_keeps_protect_feasible(model_ki_protect, skip_fvas):
     be reported. Both directions matter: reporting {R2} alone is wrong because R6 cannot carry
     flux without R5, and it also hides the real design {R2, R5} from the enumeration."""
     solver = next(s for s in [CPLEX, GUROBI, SCIP, GLPK] if s in sd.avail_solvers)
-    modules = [sd.SDModule(model_ki_protect, PROTECT, constraints=['R6 >= 1']),
-               sd.SDModule(model_ki_protect, SUPPRESS, constraints=['R4 >= 1'])]
+    modules = [
+        sd.SDModule(model_ki_protect, PROTECT, constraints=['R6 >= 1']),
+        sd.SDModule(model_ki_protect, SUPPRESS, constraints=['R4 >= 1'])
+    ]
     kwargs = dict(sd_modules=modules,
-                  ko_cost={'R1': 1.0, 'R2': 1.0, 'R3': 1.0, 'R4': 1.0, 'R6': 1.0},
-                  ki_cost={'R5': 1.0}, max_cost=3, max_solutions=inf,
-                  solution_approach='populate', solver=solver, compress=False)
+                  ko_cost={
+                      'R1': 1.0,
+                      'R2': 1.0,
+                      'R3': 1.0,
+                      'R4': 1.0,
+                      'R6': 1.0
+                  },
+                  ki_cost={'R5': 1.0},
+                  max_cost=3,
+                  max_solutions=inf,
+                  solution_approach='populate',
+                  solver=solver,
+                  compress=False)
     if skip_fvas:
         kwargs['skip_preprocessing_fvas'] = True
     sols = sd.compute_strain_designs(model_ki_protect, **kwargs).get_reaction_sd()

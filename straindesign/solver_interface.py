@@ -27,7 +27,6 @@ from straindesign.indicatorConstraints import IndicatorConstraints
 from straindesign.names import *
 import logging
 
-
 # Solvers that get CellNetAnalyzer's binary structure for the target-region gates (own gate
 # binaries, direction binaries for reversible reactions); see MILP_LP._cna_binaries.
 _CNA_GATE_BINARIES = {CPLEX}
@@ -121,8 +120,8 @@ class MILP_LP(object):
 
     def __init__(self, **kwargs):
         allowed_keys = {
-            'c', 'A_ineq', 'b_ineq', 'A_eq', 'b_eq', 'lb', 'ub', 'vtype', 'indic_constr', 'M', SOLVER, 'skip_checks', 'tlim', SEED, 'sos1_gates',
-            MILP_THREADS, 'gate_modules'
+            'c', 'A_ineq', 'b_ineq', 'A_eq', 'b_eq', 'lb', 'ub', 'vtype', 'indic_constr', 'M', SOLVER, 'skip_checks', 'tlim', SEED,
+            'sos1_gates', MILP_THREADS, 'gate_modules'
         }
         # set all keys passed in kwargs
         for key, value in kwargs.items():
@@ -214,8 +213,7 @@ class MILP_LP(object):
         self.sos1 = []
         if getattr(self, 'sos1_gates', None) and self.solver in [CPLEX, GUROBI] \
            and self.indic_constr is not None and self.indic_constr.A.shape[0]:
-            indicator_form = (self.c, self.lb, self.ub, self.vtype, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq,
-                              self.indic_constr)
+            indicator_form = (self.c, self.lb, self.ub, self.vtype, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq, self.indic_constr)
             direct_gates = set()
             if self.solver in _CNA_GATE_BINARIES and getattr(self, 'gate_modules', None) is not None:
                 direct_gates = self._cna_binaries()
@@ -226,8 +224,7 @@ class MILP_LP(object):
             if max(len(self.c), self.A_ineq.shape[0] + self.A_eq.shape[0]) > limit:
                 logging.info('  Keeping indicator constraints: with SOS1 gates the MILP exceeds the size '
                              'limit of %d of this %s licence.' % (limit, self.solver))
-                (self.c, self.lb, self.ub, self.vtype, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq,
-                 self.indic_constr) = indicator_form
+                (self.c, self.lb, self.ub, self.vtype, self.A_ineq, self.b_ineq, self.A_eq, self.b_eq, self.indic_constr) = indicator_form
                 self.sos1 = []
 
         # Create backend
@@ -258,7 +255,6 @@ class MILP_LP(object):
             self.set_time_limit(inf)
         else:
             self.set_time_limit(self.tlim)
-
 
     def _cna_binaries(self):
         """CellNetAnalyzer's binary structure for the target-region (SUPPRESS) gates.
@@ -314,12 +310,19 @@ class MILP_LP(object):
                 else:
                     eq_rows.append(([z, zp, zn], [1.0, 1.0, 1.0], 1.0))
                 for d, part in ((zp, sp), (zn, sn)):
-                    gates.append({'z': d, 'val': 0, 'sense': 'L', 'b': 0.0, 'cols': [part], 'vals': [1.0],
-                                  'module': SUPPRESS, 'direct': True})
+                    gates.append({
+                        'z': d,
+                        'val': 0,
+                        'sense': 'L',
+                        'b': 0.0,
+                        'cols': [part],
+                        'vals': [1.0],
+                        'module': SUPPRESS,
+                        'direct': True
+                    })
                 n_split += 1
             else:
-                gates.append({'z': z, 'val': val, 'sense': sense, 'b': b, 'cols': idx, 'vals': dat,
-                              'module': module, 'direct': False})
+                gates.append({'z': z, 'val': val, 'sense': sense, 'b': b, 'cols': idx, 'vals': dat, 'module': module, 'direct': False})
         owner = {}
         for g in gates:
             if g['module'] != SUPPRESS:
@@ -330,7 +333,7 @@ class MILP_LP(object):
                 owner[key] = i
                 if key[1] == 0:  # gate required while the binary is 0:  i + z >= 1
                     ineq_rows.append(([i, key[0]], [-1.0, -1.0], -1.0))
-                else:            # gate required while the binary is 1:  i >= z
+                else:  # gate required while the binary is 1:  i >= z
                     ineq_rows.append(([key[0], i], [1.0, -1.0], 0.0))
             g['z'], g['val'] = owner[key], 1
 
@@ -343,8 +346,8 @@ class MILP_LP(object):
                                                  ''.join(g['sense'] for g in gates), [g['val'] for g in gates])
         self.gate_modules = [g['module'] for g in gates]
         logging.info('  CNA binaries: %d reversible target-region gates split by direction, %d own '
-                     'gate binaries; %d new columns (%d binary), %d gates.'
-                     % (n_split, len(owner), len(new_cols), sum(1 for c in new_cols if c[2] == 'B'), len(gates)))
+                     'gate binaries; %d new columns (%d binary), %d gates.' %
+                     (n_split, len(owner), len(new_cols), sum(1 for c in new_cols if c[2] == 'B'), len(gates)))
         return {r for r, g in enumerate(gates) if g['direct']}
 
     def _gates_as_sos1(self, direct_gates):

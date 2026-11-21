@@ -63,10 +63,36 @@ def toy_model():
     reaction (blocked)."""
     model = Model('fca_toy')
     A, A2, B, C, D, E = (Metabolite(x) for x in 'A A2 B C D E'.split())
-    reactions = [('EX_A', {A: 1}, 0, 1000), ('R_split', {A: -1, A2: 1}, 0, 1000), ('R_1', {A2: -1, B: 1}, 0, 1000),
-                 ('R_2', {A2: -1, B: 2}, 0, 1000), ('EX_B', {B: -1}, 0, 1000), ('R_rev', {A: -1, C: 1}, -1000, 1000),
-                 ('EX_C', {C: -1}, 0, 1000), ('R_back', {E: -1, A: 1}, -1000, 0), ('EX_E', {E: -1}, 0, 1000),
-                 ('R_dead', {B: -1, D: 1}, 0, 1000), ('R_off', {A: -1, B: 1}, 0, 0)]
+    reactions = [('EX_A', {
+        A: 1
+    }, 0, 1000), ('R_split', {
+        A: -1,
+        A2: 1
+    }, 0, 1000), ('R_1', {
+        A2: -1,
+        B: 1
+    }, 0, 1000), ('R_2', {
+        A2: -1,
+        B: 2
+    }, 0, 1000), ('EX_B', {
+        B: -1
+    }, 0, 1000), ('R_rev', {
+        A: -1,
+        C: 1
+    }, -1000, 1000), ('EX_C', {
+        C: -1
+    }, 0, 1000), ('R_back', {
+        E: -1,
+        A: 1
+    }, -1000, 0), ('EX_E', {
+        E: -1
+    }, 0, 1000), ('R_dead', {
+        B: -1,
+        D: 1
+    }, 0, 1000), ('R_off', {
+        A: -1,
+        B: 1
+    }, 0, 0)]
     for rid, stoich, lb, ub in reactions:
         r = Reaction(rid, lower_bound=lb, upper_bound=ub)
         model.add_reactions([r])

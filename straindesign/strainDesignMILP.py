@@ -379,7 +379,9 @@ class SDMILP(SDProblem, MILP_LP):
             t = inv.get(j, None) if inv is not None else j
             if t is None or cur[0, t] == 0:
                 return cur
-            nxt = cur.tolil(copy=True); nxt[0, t] = 0; nxt = nxt.tocsr()
+            nxt = cur.tolil(copy=True)
+            nxt[0, t] = 0
+            nxt = nxt.tocsr()
             if not all(self.verify_sd(nxt)):
                 return cur
             cur = nxt
@@ -485,8 +487,7 @@ class SDMILP(SDProblem, MILP_LP):
             return -float(np.max(np.abs(row.data))) if row.nnz else b
         return b
 
-    def _verify_slack(self, sol_row, inactive_vars, active_vars, inactive_ineqs, active_ineqs,
-                      inactive_eqs, active_eqs) -> bool:
+    def _verify_slack(self, sol_row, inactive_vars, active_vars, inactive_ineqs, active_ineqs, inactive_eqs, active_eqs) -> bool:
         """Verification that keeps the design's gate rows, each with a non-negative slack, and
         minimises the sum of slacks (equalities carry a slack in each direction).
 
@@ -499,8 +500,11 @@ class SDMILP(SDProblem, MILP_LP):
         """
         cm = self.cont_MILP
         if not hasattr(self, '_gate_of_row'):
-            self._gate_of_row = ({int(c): int(z) for z, c in zip(cm.z_map_constr_ineq.row, cm.z_map_constr_ineq.col)},
-                                 {int(c): int(z) for z, c in zip(cm.z_map_constr_eq.row, cm.z_map_constr_eq.col)})
+            self._gate_of_row = ({
+                int(c): int(z) for z, c in zip(cm.z_map_constr_ineq.row, cm.z_map_constr_ineq.col)
+            }, {
+                int(c): int(z) for z, c in zip(cm.z_map_constr_eq.row, cm.z_map_constr_eq.col)
+            })
         gi, ge = self._gate_of_row
         nv = len(active_vars)
         ni, ne = len(inactive_ineqs), len(inactive_eqs)
@@ -523,9 +527,15 @@ class SDMILP(SDProblem, MILP_LP):
             blocks_e.append(sparse.hstack((E_rel, sp.tocsr())))
         A_eq = sparse.vstack(blocks_e, format='csr')
         b_eq = [cm.b_eq[r] for r in active_eqs] + [cm.b_eq[r] for r in inactive_eqs]
-        lp = MILP_LP(c=[0.0] * nv + [1.0] * ns, A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq,
+        lp = MILP_LP(c=[0.0] * nv + [1.0] * ns,
+                     A_ineq=A_ineq,
+                     b_ineq=b_ineq,
+                     A_eq=A_eq,
+                     b_eq=b_eq,
                      lb=[cm.lb[r] for r in active_vars] + [0.0] * ns,
-                     ub=[cm.ub[r] for r in active_vars] + [np.inf] * ns, solver=self.solver, seed=self.seed)
+                     ub=[cm.ub[r] for r in active_vars] + [np.inf] * ns,
+                     solver=self.solver,
+                     seed=self.seed)
         x = _solve_verification_lp(lp, values=True)
         diag = {'valid': x is not None, 'margin': None, 'umax': None, 'zero_gates': []}
         if x is not None:
@@ -573,8 +583,7 @@ class SDMILP(SDProblem, MILP_LP):
                 valid[i] = False
                 continue
             if getattr(self, '_slack_verification', False):
-                valid[i] = self._verify_slack(sol_row, inactive_vars, active_vars, inactive_ineqs,
-                                              active_ineqs, inactive_eqs, active_eqs)
+                valid[i] = self._verify_slack(sol_row, inactive_vars, active_vars, inactive_ineqs, active_ineqs, inactive_eqs, active_eqs)
                 continue
             # Otherwise drop the columns outright. Absence is a stronger statement than an
             # interval of [0, 0], since it owes nothing to feasibility tolerances.

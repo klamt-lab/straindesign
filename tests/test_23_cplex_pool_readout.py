@@ -10,7 +10,13 @@ pytestmark = pytest.mark.skipif(CPLEX not in sd.avail_solvers, reason='needs CPL
 
 
 def _three_free_binaries():
-    return MILP_LP(c=[0.0, 0.0, 0.0], A_ineq=sparse.csr_matrix([[1.0, 1.0, 1.0]]), b_ineq=[3.0], lb=[0.0] * 3, ub=[1.0] * 3, vtype='BBB', solver=CPLEX)
+    return MILP_LP(c=[0.0, 0.0, 0.0],
+                   A_ineq=sparse.csr_matrix([[1.0, 1.0, 1.0]]),
+                   b_ineq=[3.0],
+                   lb=[0.0] * 3,
+                   ub=[1.0] * 3,
+                   vtype='BBB',
+                   solver=CPLEX)
 
 
 def test_pool_is_read_in_full_by_default():

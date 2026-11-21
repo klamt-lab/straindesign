@@ -29,7 +29,6 @@ import os
 from psutil import virtual_memory
 from straindesign.names import *
 
-
 # largest number of solution-pool entries one populate call collects and returns
 _POOL_CHUNK = 50000
 
@@ -381,8 +380,7 @@ class Cplex_MILP_LP(Cplex):
                 # An unbounded MILP is a formulation error; returning it as an empty pool would end
                 # an enumeration early with status 'optimal'.
                 raise RuntimeError('CPLEX populate returned status %d (%s); the MILP is unbounded, '
-                                   'which is a formulation error, not an empty pool' %
-                                   (status, self.solution.get_status_string()))
+                                   'which is a formulation error, not an empty pool' % (status, self.solution.get_status_string()))
             else:
                 logging.exception(status)
                 logging.exception(self.solution.get_status_string())
@@ -442,9 +440,7 @@ class Cplex_MILP_LP(Cplex):
         faster than the default 4.
         """
         for members in sets:
-            self.SOS.add(type='1',
-                         SOS=SparsePair(ind=[int(i) for i in members],
-                                              val=[float(k + 1) for k in range(len(members))]))
+            self.SOS.add(type='1', SOS=SparsePair(ind=[int(i) for i in members], val=[float(k + 1) for k in range(len(members))]))
         self.parameters.mip.tolerances.integrality.set(1e-9)
         self.parameters.mip.pool.intensity.set(3)
 
