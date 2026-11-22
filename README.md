@@ -6,7 +6,7 @@
 [![Current PyPI Version](https://img.shields.io/pypi/v/straindesign.svg)](https://pypi.org/project/straindesign/)
 [![Current conda-forge Version](https://img.shields.io/conda/vn/conda-forge/straindesign-cobra.svg)](https://anaconda.org/channels/conda-forge/packages/straindesign-cobra/overview)
 [![Current Anaconda Version](https://img.shields.io/conda/vn/cnapy/straindesign.svg)](https://anaconda.org/channels/cnapy/packages/straindesign/overview)
-[![Documentation Status](https://readthedocs.org/projects/straindesign/badge/?version=latest)](https://readthedocs.org/projects/straindesign/builds/)
+[![Documentation Status](https://img.shields.io/readthedocs/straindesign/latest)](https://readthedocs.org/projects/straindesign/builds/)
 [![Supported Python Versions](https://img.shields.io/pypi/pyversions/straindesign.svg)](https://pypi.org/project/straindesign/)
 [![CI-test Status](https://github.com/klamt-lab/straindesign/workflows/CI-test/badge.svg)](https://github.com/klamt-lab/straindesign/actions/workflows/CI-test.yml)
 [![License](https://img.shields.io/pypi/l/straindesign.svg)](https://github.com/klamt-lab/straindesign/blob/main/LICENSE)
