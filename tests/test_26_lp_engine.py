@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import straindesign as sd
 from straindesign.names import *
-from straindesign.lp_enumeration import BoolLayer, _blocking_sets, gpr_blocked_formula, bits, mask
+from straindesign.lp_enumeration import BoolLayer, BoundFacts, _blocking_sets, build_problem, gpr_blocked_formula, bits, mask
 
 
 def _sets(sol, genes=False):
@@ -44,6 +44,43 @@ def test_layer_extends_blocked_atoms():
     assert layer.extend(mask([0]), mask([0]), mask([1])) == mask([0, 1, 2])
     assert layer.singles(1, mask([0])) == mask([1])
     assert layer.completions(1, 0, 3) == [mask([0, 1])]
+
+
+def test_bound_facts_keep_the_best_per_set():
+    facts = BoundFacts(8)
+    facts.add_lower(mask([0, 1]), 2.0)
+    facts.add_lower(mask([0, 1]), 3.0)
+    facts.add_lower(mask([2]), 5.0)
+    facts.add_upper(mask([4]), 4.0)
+    facts.add_upper(0, 9.0)
+    assert facts.bounds(0) == (5.0, mask([2]), 9.0, 0)
+    assert facts.bounds(mask([2, 4])) == (3.0, mask([0, 1]), 4.0, mask([4]))
+    assert facts.bounds(mask([0, 2]))[0] == -np.inf
+    facts.clear_lower()
+    assert facts.bounds(mask([4]))[::2] == (-np.inf, 4.0)
+
+
+@pytest.mark.parametrize('exact', [False, True])
+def test_an_optimum_carries_over_to_other_blocked_sets(curr_solver, model_weak_coupling, exact):
+    """The flux of an optimum is a lower bound wherever its atoms are spared, and the blocked atoms
+    with a reduced cost of the right sign carry the upper bound on their own."""
+    if exact and curr_solver != GLPK:
+        pytest.skip('the exact backend is one')
+    modules = [sd.SDModule(model_weak_coupling, SUPPRESS, inner_objective="r_BM", constraints=["r_P - 0.4 r_S <= 0", "r_S >= 0.1"])]
+    ko_cost = {r.id: 1.0 for r in model_weak_coupling.reactions}
+    _, layer, mods, _, _ = build_problem(model_weak_coupling, modules, ko_cost, None, 4, curr_solver, exact=exact)
+    R, everything = mods[0].inner, (1 << layer.nA) - 1
+    rng, n_cores = np.random.default_rng(1), 0
+    for _ in range(40):
+        X = mask(a for a in range(layer.nA) if rng.random() < 0.3)
+        val, W, C = R.maximize(0, X)
+        if val is None:
+            continue
+        assert not W & X and C & X == C
+        assert R.maximize(0, C)[0] <= val + 1e-7  # the core alone holds the optimum down
+        assert R.maximize(0, everything & ~W)[0] >= val - 1e-7  # the flux survives whatever else is blocked
+        n_cores += C != X
+    assert n_cores  # the cores are smaller than the blocked sets they come from
 
 
 def test_mcs_suppress(curr_solver, model_small_example):
