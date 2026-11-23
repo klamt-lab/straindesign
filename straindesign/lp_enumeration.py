@@ -300,9 +300,10 @@ class _WrappedLP(_LPBase):
 class _GlpkExactLP(_WrappedLP):
     """GLPK, each solve finished in rational arithmetic: the floating-point simplex finds a basis,
     and glp_exact carries on from it without tolerances. A status is then a proven one, and a
-    solution entry is zero exactly when the true vertex has a zero there. (The numbers handed
-    over are taken as the rationals the doubles stand for, so rows that depend on non-dyadic
-    ratios have to arrive scaled to integers.)"""
+    solution entry is zero exactly when the true vertex has a zero there. (GLPK takes an integer
+    as it is and replaces any other double by a nearby fraction with a small denominator, so
+    rows have to arrive scaled to integers; a threshold that is no integer is met to about ten
+    digits.)"""
     exact_seconds = 0.0
     n_changed = 0  # solves in which the exact verdict differed from the floating-point one
     n_restarted = 0  # solves in which the exact simplex could not use the floating-point basis
@@ -751,9 +752,13 @@ class Region:
             ok = cols >= 0
             mu[ok] += np.abs(y[cols[ok]])
         top = max(mu.max(initial=0.0), np.abs(y[self.col_beta]).max(initial=0.0))
-        # the proof has to hold up as it is: combination of the rows zero, rhs combination -1
+        # the proof has to hold up as it is: the rows combine to zero and the right-hand sides to
+        # a negative number. The LP asks for -1, which a floating-point solution has to meet. The
+        # exact backend meets it for the fractions GLPK reads from the doubles (a double that is
+        # no integer becomes a nearby fraction with a small denominator), so for the doubles
+        # themselves the sum is off by about 1e-10 times the multipliers; there the sign decides.
         res = np.abs(self.proof_R @ y).max(initial=0.0)
-        if res > 1e-6 * max(1.0, np.abs(y).max()) or abs(self.proof_rhs @ y + 1.0) > 1e-6:
+        if res > 1e-6 * max(1.0, np.abs(y).max()) or abs(self.proof_rhs @ y + 1.0) > (0.5 if self.exact else 1e-6):
             raise LPError('proof LP solution does not hold up (residual %.2g)' % res)
         cut = self.core_tol * max(top, 1e-300)
         self.rows_used = tuple(bool(v > cut) for v in np.abs(y[self.col_beta]))
