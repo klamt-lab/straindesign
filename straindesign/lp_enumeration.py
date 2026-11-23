@@ -18,27 +18,35 @@
 #
 """Enumerate strain designs with linear programs over the metabolic model (PROTOTYPE).
 
+``compute_strain_designs(..., engine='lp')`` (``'lp_exact'``: every LP in rational arithmetic).
 Three layers, each kept out of the others:
 
-- **Interventions** z (gene or reaction knockouts) with costs. They are the search variables.
-- **Boolean layer**: every knockable reaction of the (compressed) model, an *atom*, is blocked when
-  a monotone Boolean formula over the interventions holds (its GPR rule, dualised). A set of
-  interventions z thereby blocks a set of atoms X(z). No linear program sees a gene.
-- **LP oracle** in flux space: for a set X of blocked atoms it decides, per module, whether the
-  module's flux region is empty. Every answer comes with a witness that carries it over to many
-  other sets without a further LP:
+- **Interventions** z with costs: gene or reaction knockouts and reaction knock-ins. They are the
+  search variables.
+- **Boolean layer** (`BoolLayer`): every reaction of the (compressed) model that an intervention
+  can switch, an *atom*, is blocked when a monotone Boolean formula over the knockouts holds (its
+  GPR rule, dualised), or as long as the knock-in it needs is not made. A set of interventions z
+  thereby blocks a set of atoms X(z). No linear program sees a gene.
+- **LP oracle** in flux space (`Region`): for a set X of blocked atoms it decides, per module,
+  whether the module's flux region is empty. Every answer carries over to many other sets
+  without a further LP:
 
   - a flux vector v of the region with ``supp(v) & X' == 0`` shows the region non-empty for X'
     (a *witness*, valid for every set that spares its support),
-  - an infeasibility proof that uses the zero bounds of the atoms ``C <= X`` only shows the
-    region empty for every ``X' >= C`` (a *core*).
+  - an infeasibility proof that rests on the zero bounds of the atoms ``C <= X`` only shows the
+    region empty for every ``X' >= C`` (a *core*). The proof comes with the infeasible flux LP
+    where the backend hands it out, from a separate proof LP otherwise.
 
-  For a SUPPRESS module the witnesses are clauses ("block one of these atoms"), for a PROTECT
-  module the cores are ("do not block all of these").
+  A *clause* is a pair (P, N) of atom sets: an acceptable blocked set blocks an atom of P or
+  leaves an atom of N unblocked. A SUPPRESS module gives (witness, 0), a PROTECT module (0, core).
+  A module with an inner objective compares two LP optima and combines their bounds
+  (`NestedModule`); OptKnock, RobustKnock and OptCouple are such modules under a threshold on the
+  objective that rises until no design is left (`lp_engine`).
 
-The search walks the intervention sets of one cost depth-first over the clauses, as
-``clause_enumeration`` does over the MILP's binaries, and asks an LP only for a set that neither a
-stored witness nor a stored core decides.
+The search (`LPEnumerator`) walks the intervention sets cost level by cost level, depth-first
+over the violated clauses, once per affordable set of knock-ins, and asks an LP only for a set
+that no stored clause excludes and no stored bound decides. solution_approach='any' is served by
+`lp_dive`.
 """
 
 import logging
