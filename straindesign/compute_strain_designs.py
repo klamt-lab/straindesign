@@ -875,10 +875,16 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             uncmp_ki_cost = {**uncmp_ki_cost, **uncmp_gki_cost}
         logging.info('  Solving with the LP engine ...')
         t0 = time.time()
-        cmp_sd_solution, _enum = lp_engine(cmp_model, sd_modules, _reac_ko, _reac_ki,
-                                           uncmp_gko_cost if kwargs['gene_kos'] else {}, uncmp_gki_cost if kwargs['gene_kos'] else {},
-                                           has_gene_names, kwargs[MAX_COST], kwargs[SOLVER],
-                                           time_limit=float(kwargs.get(T_LIMIT, np.inf)), exact=_engine == 'lp_exact')
+        _lp_args = (cmp_model, sd_modules, _reac_ko, _reac_ki, uncmp_gko_cost if kwargs['gene_kos'] else {},
+                    uncmp_gki_cost if kwargs['gene_kos'] else {}, has_gene_names, kwargs[MAX_COST], kwargs[SOLVER])
+        if kwargs.get(SOLUTION_APPROACH) == ANY:
+            # single designs found by dives and polished to a local optimum, no enumeration
+            from straindesign.lp_dive import lp_dive_engine
+            cmp_sd_solution, _enum = lp_dive_engine(*_lp_args, time_limit=float(kwargs.get(T_LIMIT, np.inf)),
+                                                    max_solutions=float(kwargs.get(MAX_SOLUTIONS, np.inf)), seed=kwargs.get(SEED),
+                                                    exact=_engine == 'lp_exact')
+        else:
+            cmp_sd_solution, _enum = lp_engine(*_lp_args, time_limit=float(kwargs.get(T_LIMIT, np.inf)), exact=_engine == 'lp_exact')
         logging.info('  LP engine done (%.1fs).' % (time.time() - t0))
         setup = deepcopy(cmp_sd_solution.sd_setup)
         setup.update({MODULES: orig_sd_modules, KOCOST: orig_ko_cost, KICOST: orig_ki_cost, REGCOST: orig_reg_cost})
