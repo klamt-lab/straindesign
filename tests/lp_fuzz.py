@@ -883,8 +883,9 @@ def _well_posed(problem):
     return True
 
 
-def random_problem(seed, kind=None, max_sets=500, trivial=0.1):
-    """A random problem, a function of its arguments alone.
+def random_problem(seed, kind=None, max_sets=500, trivial=0.1, deep=False, lp='highs'):
+    """A random problem, a function of its arguments alone (as far as the LP solver's answers on
+    the candidate networks do not depend on the solver).
 
     Args:
         seed (int)
@@ -892,6 +893,8 @@ def random_problem(seed, kind=None, max_sets=500, trivial=0.1):
         max_sets (int): the budget is chosen so that at most this many intervention sets lie within it
         trivial (float): probability of keeping a problem whose wild type is acceptable already,
             or that has no design at all
+        deep (bool): prefer large budgets (up to 5)
+        lp (str): LP solver of the brute force that looks at the candidates
     """
     rng = np.random.default_rng(seed)
     kind = kind or str(rng.choice(KINDS))
@@ -942,11 +945,12 @@ def random_problem(seed, kind=None, max_sets=500, trivial=0.1):
             if not _well_posed(problem):
                 continue
             n_sets = {}
-            for budget in (1, 2, 3, 4):
+            for budget in (1, 2, 3, 4, 5) if deep else (1, 2, 3, 4):
                 n_sets[budget] = len(BruteForce(dict(problem, max_cost=budget)).sets())
             budgets = [b for b in n_sets if n_sets[b] <= max_sets]
-            problem['max_cost'] = int(rng.choice(budgets, p=np.array([1, 3, 4, 2][:len(budgets)]) / sum([1, 3, 4, 2][:len(budgets)])))
-            bf = BruteForce(problem)
+            weights = np.array(([1, 2, 6, 8, 6] if deep else [1, 3, 4, 2])[:len(budgets)], float)
+            problem['max_cost'] = int(rng.choice(budgets, p=weights / weights.sum()))
+            bf = BruteForce(problem, lp)
             if bf.opt_module is None:
                 designs = bf.enumerate()
                 dull = not designs or designs == [frozenset()]
@@ -956,7 +960,7 @@ def random_problem(seed, kind=None, max_sets=500, trivial=0.1):
             continue
         if dull and rng.random() >= trivial:
             continue
-        _LAST_BRUTE_FORCE['last'] = (problem, 'highs', bf)
+        _LAST_BRUTE_FORCE['last'] = (problem, lp, bf)
         return problem
     raise ProblemError('no well-posed problem of kind %s for seed %d' % (kind, seed))
 
@@ -1198,7 +1202,8 @@ def main(argv=None):
     ap.add_argument('--seed', type=int, default=0, help='first seed')
     ap.add_argument('--n', type=int, default=100, help='number of problems')
     ap.add_argument('--step', type=int, default=1, help='seed increment (workers: --seed offset by the worker number, --step = number of workers)')
-    ap.add_argument('--kinds', default=','.join(KINDS), help='module types, comma separated; seed s gets the type number s modulo their count')
+    ap.add_argument('--kinds', default=','.join(KINDS), help='module types, comma separated; a worker goes through them in turn')
+    ap.add_argument('--deep', action='store_true', help='prefer large budgets (up to 5)')
     ap.add_argument('--backends', default=None, help='comma separated; default: all installed (%s)' % ', '.join(BACKENDS))
     ap.add_argument('--bf', default='highs', choices=sorted(_LP_CLASSES), help='LP solver of the brute force')
     ap.add_argument('--cross', type=float, default=0.0, help='fraction of problems on which the brute force is repeated with the other LP solver')
@@ -1230,10 +1235,10 @@ def main(argv=None):
             if time.time() > t_end:
                 break
             seed = args.seed + k * args.step
-            kind = kinds[seed % len(kinds)]
+            kind = kinds[(seed // args.step) % len(kinds)]
             t0 = time.time()
             try:
-                problem = random_problem(seed, kind, max_sets=args.max_sets)
+                problem = random_problem(seed, kind, max_sets=args.max_sets, deep=args.deep, lp=args.bf)
             except ProblemError as e:
                 write(dict(seed=seed, kind=kind, skipped=str(e)))
                 continue
