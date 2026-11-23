@@ -495,8 +495,8 @@ def package_arguments(problem, solver, engine=None):
 def run_engine_alone(problem, solver, exact=False):
     """The LP engine on the problem's network as it is: no compression, no FVA that takes
     essential or blocked reactions out of the search first."""
-    from straindesign.lp_enumeration import lp_engine
     try:
+        from straindesign.lp_enumeration import lp_engine
         model = build_model(problem)
         modules = build_modules(problem, model)
         itv = interventions(problem)
