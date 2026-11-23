@@ -390,67 +390,98 @@ def mask(indices):
 
 
 class BitRows:
-    """A growing list of bit sets held as rows of 64-bit words, for tests against one set X that
-    run over all rows at once."""
+    """A growing list of bit sets held as 64-bit words, one array per word position, for tests
+    against one set X that run over all sets at once."""
 
     def __init__(self, n_bits):
         self.nw = max(1, -(-n_bits // 64))
-        self.a = np.zeros((64, self.nw), np.uint64)
+        self.a = np.zeros((self.nw, 64), np.uint64)
         self.n = 0
 
     def words(self, x):
         return np.frombuffer(int(x).to_bytes(self.nw * 8, 'little'), np.uint64)
 
     def add(self, x):
-        if self.n == self.a.shape[0]:
-            self.a = np.vstack((self.a, np.zeros_like(self.a)))
-        self.a[self.n] = self.words(x)
+        if self.n == self.a.shape[1]:
+            self.a = np.hstack((self.a, np.zeros_like(self.a)))
+        self.a[:, self.n] = self.words(x)
         self.n += 1
 
+    def _hits(self, xw):
+        n = self.n
+        acc = self.a[0, :n] & xw[0]
+        for k in range(1, self.nw):
+            acc |= self.a[k, :n] & xw[k]
+        return acc
+
     def disjoint(self, xw):
-        """Per row: no bit in common with X."""
-        return ~(self.a[:self.n] & xw).any(1)
+        """Per set: no bit in common with X."""
+        return self._hits(xw) == 0
 
     def within(self, xw):
-        """Per row: a subset of X."""
-        return ~(self.a[:self.n] & ~xw).any(1)
+        """Per set: a subset of X."""
+        return self._hits(~xw) == 0
 
 
 class BoundFacts:
     """What LPs have shown about an optimum max c over P(X): a flux of value f through the atoms
     W shows max >= f for every X that spares W, and a proof of max <= f that uses the zero bounds
-    of C holds for every X that contains C."""
+    of C holds for every X that contains C. Per set only the best value is kept."""
 
     def __init__(self, n_atoms):
-        self.W, self.C = BitRows(n_atoms), BitRows(n_atoms)
-        self.lo, self.up = [], []  # values, in the order of the rows
-        self.Wi, self.Ci = [], []  # the same sets as integers
+        self.n_atoms = n_atoms
+        self.version = 0  # changes with every change of the facts
+        self.clear_lower()
+        self.clear_upper()
+
+    def clear_lower(self):
+        self.W, self.Wi, self.lo, self.row_lo = BitRows(self.n_atoms), [], np.empty(64), {}
+        self.version += 1
+
+    def clear_upper(self):
+        self.C, self.Ci, self.up, self.row_up = BitRows(self.n_atoms), [], np.empty(64), {}
+        self.version += 1
 
     def add_lower(self, W, val):
+        self.version += 1
+        i = self.row_lo.get(W)
+        if i is not None:
+            self.lo[i] = max(self.lo[i], val)
+            return
+        i = self.row_lo[W] = len(self.Wi)
+        if i == len(self.lo):
+            self.lo = np.concatenate((self.lo, np.empty_like(self.lo)))
+        self.lo[i] = val
         self.W.add(W)
         self.Wi.append(W)
-        self.lo.append(val)
 
     def add_upper(self, C, val):
+        self.version += 1
+        i = self.row_up.get(C)
+        if i is not None:
+            self.up[i] = min(self.up[i], val)
+            return
+        i = self.row_up[C] = len(self.Ci)
+        if i == len(self.up):
+            self.up = np.concatenate((self.up, np.empty_like(self.up)))
+        self.up[i] = val
         self.C.add(C)
         self.Ci.append(C)
-        self.up.append(val)
 
     def bounds(self, X):
         """(best lower bound, its W, best upper bound, its C) for the blocked set X."""
         lo, W, up, C = -np.inf, 0, np.inf, 0
-        if self.lo:
-            xw = self.W.words(X)
-            ok = np.flatnonzero(self.W.disjoint(xw))
-            if len(ok):
-                i = ok[np.argmax(np.array(self.lo)[ok])]
-                lo, W = self.lo[i], self.Wi[i]
-        if self.up:
-            xw = self.C.words(X)
-            ok = np.flatnonzero(self.C.within(xw))
-            if len(ok):
-                i = ok[np.argmin(np.array(self.up)[ok])]
-                up, C = self.up[i], self.Ci[i]
+        xw = self.W.words(X)
+        if self.Wi:
+            vals = np.where(self.W.disjoint(xw), self.lo[:len(self.Wi)], -np.inf)
+            i = int(vals.argmax())
+            if vals[i] > -np.inf:
+                lo, W = float(vals[i]), self.Wi[i]
+        if self.Ci:
+            vals = np.where(self.C.within(xw), self.up[:len(self.Ci)], np.inf)
+            i = int(vals.argmin())
+            if vals[i] < np.inf:
+                up, C = float(vals[i]), self.Ci[i]
         return lo, W, up, C
 
 
@@ -643,17 +674,23 @@ class Region:
             self._arbiter = self.arbiter_factory()
         return self._arbiter
 
-    def decide(self, X, avoid=0, thetas=None):
+    def decide(self, X, avoid=0, thetas=None, expect=FEASIBLE):
         """(FEASIBLE, atoms a point of the region uses) or (INFEAS, atoms an infeasibility proof
-        uses). Where the floating-point LPs fail or contradict each other (a region with neither a
-        point nor a proof), the exact twin of the region decides."""
+        uses). `expect` says which of the two LPs to try first. Where the floating-point LPs fail
+        or contradict each other (a region with neither a point nor a proof), the exact twin of
+        the region decides."""
         try:
+            if expect == INFEAS:
+                C = self.core(X, thetas)
+                if C is not None:
+                    return INFEAS, C
             W = self.witness(X, avoid, thetas)
             if W is not None:
                 return FEASIBLE, W
-            C = self.core(X, thetas)
-            if C is not None:
-                return INFEAS, C
+            if expect != INFEAS:
+                C = self.core(X, thetas)
+                if C is not None:
+                    return INFEAS, C
         except LPError:
             pass
         twin = self._twin()
@@ -706,10 +743,13 @@ class Region:
         if status != OPTIMAL:
             raise LPError('value LP ended with status %s (an unbounded inner objective?)' % status)
         x = f.lp.primal()
-        rc = np.abs(f.lp.redcost())
-        used = rc[self.col_fwd]
+        # the zero bound of a blocked atom carries the dual bound only if flux through the atom
+        # would raise the value: a negative reduced cost of a column that can only grow (the LP
+        # minimises minus the row)
+        rc = f.lp.redcost()
+        used = np.maximum(-self.sign * rc[self.col_fwd], 0.0)
         has_b = self.col_bwd >= 0
-        used[has_b] += rc[self.col_bwd[has_b]]
+        used[has_b] += np.maximum(-rc[self.col_bwd[has_b]], 0.0)
         return x[self.col_s[k]] / self.scale, self._support(x), mask(np.flatnonzero(used > (0.0 if self.exact else _CORE_ABS_TOL))) & X
 
     # -- proof LP --------------------------------------------------------------------------------
@@ -798,16 +838,26 @@ class ClassicModule:
 class NestedModule:
     """SUPPRESS or PROTECT of the part of a region that is optimal for an inner objective:
 
-        { v in P(X) :  constraints,  c.v >= bound(max c over P(X)) }
+        { v in P(X) :  constraints,  c.v >= bound(g(X)) },      g(X) = max c over P(X)
 
-    with bound(opt) = tol * opt - offset. P(X) is the model with X blocked, without the module's
-    constraints, as in the MILP formulation.
+    with bound(g) = tol * g - offset, less a tolerance. P(X) is the model with X blocked, without
+    the module's constraints, as in the MILP formulation.
 
-    What an LP says about one X carries over to others: a flux with value f that uses the atoms W
-    shows max c >= f for every X' that spares W, and a proof of max c <= f that uses the zero
-    bounds of C <= X holds for every X' >= C. Emptiness of the region at X therefore holds
-    wherever the optimum is at least as large and the proof's atoms stay blocked, and a point of
-    it stays one wherever its atoms are spared and the optimum does not grow.
+    The region has a point exactly if  b(X) >= bound(g(X)),  where b(X) is the largest c.v over
+    P(X) *with* the constraints (and with the thresholds of the outer region's further rows). The
+    module therefore compares two LP optima, and each of them can only fall when more is blocked.
+    What an LP says about one optimum at one X carries over to other sets: a flux of value f
+    through the atoms W shows optimum >= f for every X' that spares W, and a dual bound f that
+    rests on the zero bounds of C <= X shows optimum <= f for every X' >= C. The facts on g and
+    those on b are kept apart, and any lower bound of one combines with any upper bound of the
+    other, whichever sets the LPs were solved for:
+
+        b(X) <= u < bound(l) <= bound(g(X))    no point:  X >= C_b and X spares W_g
+        b(X) >= l >= bound(u) >= bound(g(X))   a point:   X spares W_b and X >= C_g
+
+    A set that the facts decide costs no LP. Otherwise the inner optimum is solved first, then b;
+    for SUPPRESS a flux LP comes between the two: its point, kept away from the atoms the search
+    wants to block, uses few atoms and makes the stronger clause.
 
     Args:
         kind: SUPPRESS or PROTECT
@@ -815,78 +865,127 @@ class NestedModule:
         outer (Region): P with the module's constraints, inner objective as row 0, further rows after
         tol, offset (float): see above
         extra (tuple): thresholds of the outer region's further rows
-        sparse_facts (bool): spend two more LPs per optimum on a flux and a proof that use few atoms
     """
 
-    def __init__(self, kind, inner, outer, tol=1.0, offset=0.0, extra=(), sparse_facts=True):
+    def __init__(self, kind, inner, outer, tol=1.0, offset=0.0, extra=()):
         self.kind, self.inner, self.outer = kind, inner, outer
-        self.tol, self.offset, self.extra, self.sparse_facts = tol, offset, tuple(extra), sparse_facts
-        self.memo = Memo(len(inner.atom_rxn))
-        self.facts = BoundFacts(len(inner.atom_rxn))
-        self.n_opt_memo = 0
+        self.tol, self.offset, self.extra = tol, offset, tuple(extra)
+        self.facts = BoundFacts(len(inner.atom_rxn))  # on g
+        self.bfacts = BoundFacts(len(inner.atom_rxn))  # on b, for the thresholds in force
+        self.n_opt_memo = self.n_from_facts = 0
+        self._seen = (None, None)
         self.enabled = True  # False: the module asks for nothing at the moment
 
-    def decided(self, X):
-        return not self.enabled or self.memo.covers(X)
+    def bound(self, g):
+        theta = self.tol * g - self.offset
+        return theta - _OPT_TOL * max(1.0, abs(theta))
 
-    def optimum(self, X):
-        """(value, W, C) of the inner problem at X, from stored facts where they pin it down.
-        value None: P(X) is empty, and C its core."""
-        lo, W, up, C = self.facts.bounds(X)
-        if up == -np.inf:
-            return None, None, C
-        if np.isfinite(lo) and np.isfinite(up) and up - lo <= 2 * _OPT_TOL * max(1.0, abs(lo)):
-            self.n_opt_memo += 1
-            return lo, W, C
-        R = self.inner
+    def verdict(self, X):
+        """What the stored facts say about the region at X: (FEASIBLE | INFEAS | None, P, N). The
+        verdict holds for every X' that spares P and contains N."""
+        key = (X, self.facts.version, self.bfacts.version, self.offset)
+        if key != self._seen[0]:
+            self._seen = (key, self._verdict(X))
+        return self._seen[1]
+
+    def _verdict(self, X):
+        lo_g, W_g, up_g, C_g = self.facts.bounds(X)
+        if up_g == -np.inf:  # no flux at all
+            return INFEAS, 0, C_g
+        lo_b, W_b, up_b, C_b = self.bfacts.bounds(X)
+        if up_b == -np.inf:
+            return INFEAS, 0, C_b
+        if lo_g > -np.inf and up_b < self.bound(lo_g):
+            return INFEAS, W_g, C_b
+        if up_g < np.inf and lo_b > -np.inf and lo_b >= self.bound(up_g):
+            return FEASIBLE, W_b, C_g
+        return None, 0, 0
+
+    def decided(self, X):
+        if not self.enabled:
+            return True
+        v = self.verdict(X)[0]
+        return v == (INFEAS if self.kind == SUPPRESS else FEASIBLE)
+
+    @staticmethod
+    def _value(R, X, thetas=None):
         try:
-            val, W, C = R.maximize(0, X)
+            return R.maximize(0, X, thetas)
         except LPError:
             twin = R._twin()
             if twin is None:
                 raise
             Region.n_arbitrated += 1
-            val, W, C = twin.maximize(0, X)
+            return twin.maximize(0, X, thetas)
+
+    def _optimum(self, R, facts, X, thetas=None, sharp=False):
+        """(value, W, C) of max c over the region R at X, from the facts where they pin it down
+        (within the optimality tolerance; sharp: only where lower and upper bound meet);
+        value None: the region is empty at X, and C a core of that."""
+        lo, W, up, C = facts.bounds(X)
+        if up == -np.inf:
+            return None, None, C
+        if np.isfinite(lo) and np.isfinite(up) and up - lo <= (0.0 if sharp else 2 * _OPT_TOL * max(1.0, abs(lo))):
+            self.n_opt_memo += 1
+            return lo, W, C
+        val, W, C = self._value(R, X, thetas)
         if val is None:
-            verdict, C = R.decide(X)
+            verdict, C = R.decide(X, 0, thetas, expect=INFEAS)
             if verdict == FEASIBLE:
                 raise LPError('a region is infeasible for the value LP and has a point')
-            self.facts.add_upper(C, -np.inf)
+            facts.add_upper(C, -np.inf)
             return None, None, C
-        d = _OPT_TOL * max(1.0, abs(val))
-        if self.sparse_facts:
-            try:
-                W2 = R.witness(X, 0, (val - d,))
-                C2 = R.core(X, (val + d,))
-                if W2 is not None and C2 is not None:
-                    W, C = W2, C2
-            except LPError:
-                pass  # the facts of the value LP stand
-        self.facts.add_lower(W, val)
-        self.facts.add_upper(C, val)
+        facts.add_lower(W, val)
+        facts.add_upper(C, val)
         return val, W, C
 
+    def optimum(self, X, sharp=False):
+        """(value, W, C) of the inner problem at X. value None: P(X) is empty, C its core."""
+        return self._optimum(self.inner, self.facts, X, None, sharp)
+
+    def constrained_optimum(self, X, sharp=False):
+        """(value, W, C) of b at X."""
+        return self._optimum(self.outer, self.bfacts, X, (None,) + self.extra, sharp)
+
+    def _point(self, X, avoid):
+        """A point of the region at X for the threshold bound(g(X)), g(X) known: recorded as a
+        lower bound on b."""
+        val = self.optimum(X)[0]
+        if val is None:
+            return
+        theta = self.bound(val)
+        R = self.outer
+        try:
+            W = R.witness(X, avoid, (theta,) + self.extra)
+        except LPError:
+            return  # the value LP of b decides
+        if W is not None:
+            # the LP holds c.v >= theta within its tolerance
+            self.bfacts.add_lower(W, max(theta, R.last_flux[R.col_s[0]] / R.scale))
+
     def check(self, X, avoid=0):
-        val, W1, C1 = self.optimum(X)
-        if val is None:  # no flux at all
-            if self.kind == SUPPRESS:
-                self.memo.add(0, C1)
-                return True, None, None
-            return False, 0, C1
-        theta = self.tol * val - self.offset
-        thetas = (theta - _OPT_TOL * max(1.0, abs(theta)),) + self.extra
-        verdict, A = self.outer.decide(X, avoid if self.kind == SUPPRESS else 0, thetas)
-        if verdict == FEASIBLE:  # stays a point of the region while it is spared and the optimum does not grow
-            if self.kind == SUPPRESS:
-                return False, A, C1
-            self.memo.add(A, C1)
+        """(True, None, None), or (False, P, N) with a clause: every X' that fulfils the module
+        blocks an atom of P or leaves one of N unblocked."""
+        v, P, N = self.verdict(X)
+        if v is not None:
+            self.n_from_facts += 1
+        elif self.kind == SUPPRESS:
+            steps = (lambda: self.optimum(X), lambda: self._point(X, avoid), lambda: self.constrained_optimum(X))
+        else:
+            steps = (lambda: self.optimum(X), lambda: self.constrained_optimum(X))
+        if v is None:
+            # bounds that agree only within the tolerance can leave the comparison open: then
+            # both optima are solved for X itself, which always decides it
+            for step in steps + (lambda: self.optimum(X, True), lambda: self.constrained_optimum(X, True)):
+                step()
+                v, P, N = self.verdict(X)
+                if v is not None:
+                    break
+            else:
+                raise LPError('both optima of a nested module are known and do not decide it')
+        if (v == INFEAS) == (self.kind == SUPPRESS):
             return True, None, None
-        C2 = A
-        P = W1 if self.outer.rows_used[0] else 0  # the proof holds while the optimum does not shrink
-        if self.kind == SUPPRESS:
-            self.memo.add(P, C2)
-            return True, None, None
-        return False, P, C2
+        return False, P, N
 
 
 def _minimal(sets):
@@ -1390,7 +1489,7 @@ def _with_twin(ctx, region, V, rows=()):
         region.arbiter_factory = ctx['twin'](V, rows)
 
 
-def build_problem(model, sd_modules, ko_cost, gko_cost, max_cost, solver, gene_key='id', sparse_facts=False, exact=False):
+def build_problem(model, sd_modules, ko_cost, gko_cost, max_cost, solver, gene_key='id', exact=False):
     """Set up the three layers for a model: interventions and their Boolean map onto the knockable
     reactions, and one module oracle per SUPPRESS / PROTECT module.
 
@@ -1422,8 +1521,7 @@ def build_problem(model, sd_modules, ko_cost, gko_cost, max_cost, solver, gene_k
     none = sparse.csr_matrix((0, n))
     if exact:
         lineqlist2mat = lambda constr, ids, _f=lineqlist2mat: _integer_rows(*_f(constr, ids))
-    sparse_facts = sparse_facts or os.environ.get('SD_LP_SPARSE', '0') == '1'
-    ctx = dict(S=S, lb=lb, ub=ub, rxn_ids=rxn_ids, atom_rxn=atom_rxn, solver=solver, none=none, sparse_facts=sparse_facts, exact=exact)
+    ctx = dict(S=S, lb=lb, ub=ub, rxn_ids=rxn_ids, atom_rxn=atom_rxn, solver=solver, none=none, exact=exact)
     if not exact:
         # every region can be rebuilt for the exact backend, on integer rows, should its LPs fail
         try:
@@ -1450,7 +1548,7 @@ def build_problem(model, sd_modules, ko_cost, gko_cost, max_cost, solver, gene_k
         _with_twin(ctx, inner, (none, [], none, []), [c])
         _with_twin(ctx, outer, V, [c])
         tol = mod[INNER_OPT_TOL] if mod[INNER_OPT_TOL] is not None else 1.0
-        modules.append(NestedModule(mod[MODULE_TYPE], inner, outer, tol=tol, sparse_facts=sparse_facts))
+        modules.append(NestedModule(mod[MODULE_TYPE], inner, outer, tol=tol))
     return names, layer, modules, atom_rxn, ctx
 
 
@@ -1463,13 +1561,9 @@ _IMPROVE = 1e-6
 
 class _Objective:
     """An objective over blocked sets, expressed through modules that ask for "value above a
-    threshold". `modules` are appended to the problem's own; set_threshold moves the threshold."""
-
-    def _forget(self):
-        # what fulfilled the modules at the old threshold need not fulfil them at the new one;
-        # their clauses, found at a lower threshold, hold at every higher one
-        for mod in self.modules:
-            mod.memo.clear()
+    threshold". `modules` are appended to the problem's own; set_threshold moves the threshold
+    and drops the facts that do not hold at the new one. The threshold only rises, and a clause
+    found at a lower threshold holds at every higher one."""
 
 
 class OptKnockObjective(_Objective):
@@ -1482,12 +1576,13 @@ class OptKnockObjective(_Objective):
         self.inner = Region(S, lb, ub, none, [], none, [], at, sv, rows=[c])
         self.outer = Region(S, lb, ub, *V, at, sv, rows=[c, o])
         tol = mod[INNER_OPT_TOL] if mod[INNER_OPT_TOL] is not None else 1.0
-        self.mod = NestedModule(PROTECT, self.inner, self.outer, tol=tol, extra=(None,), sparse_facts=ctx['sparse_facts'])
+        self.mod = NestedModule(PROTECT, self.inner, self.outer, tol=tol, extra=(None,))
         self.modules = [self.mod]
 
     def set_threshold(self, t):
         self.mod.extra = (t,)
-        self._forget()
+        # a higher threshold on the outer objective can only lower b: its upper bounds stand
+        self.mod.bfacts.clear_lower()
 
     def value(self, X):
         val, _, _ = self.mod.optimum(X)
@@ -1508,7 +1603,7 @@ class RobustKnockObjective(_Objective):
         S, lb, ub, at, sv, none = (ctx[k] for k in ('S', 'lb', 'ub', 'atom_rxn', 'solver', 'none'))
         self.inner = Region(S, lb, ub, none, [], none, [], at, sv, rows=[c])
         self.outer = Region(S, lb, ub, none, [], none, [], at, sv, rows=[c, -o])
-        self.mod = NestedModule(SUPPRESS, self.inner, self.outer, extra=(None,), sparse_facts=ctx['sparse_facts'])
+        self.mod = NestedModule(SUPPRESS, self.inner, self.outer, extra=(None,))
         self.feasible = ClassicModule(PROTECT, Region(S, lb, ub, *V, at, sv))
         self.modules = [self.mod, self.feasible]
         self.t = None
@@ -1518,7 +1613,8 @@ class RobustKnockObjective(_Objective):
         # the worst growth-optimal flux has to lie above t: no optimal flux with o.v <= t
         self.mod.enabled = t is not None
         self.mod.extra = (None if t is None else -t,)
-        self._forget()
+        # a higher t admits more optimal fluxes and can only raise b: its lower bounds stand
+        self.mod.bfacts.clear_upper()
 
     def value(self, X):
         val, _, _ = self.mod.optimum(X)
@@ -1539,8 +1635,8 @@ class OptCoupleObjective(_Objective):
         S, lb, ub, at, sv, none = (ctx[k] for k in ('S', 'lb', 'ub', 'atom_rxn', 'solver', 'none'))
         self.inner = Region(S, lb, ub, none, [], none, [], at, sv, rows=[c])
         self.noprod = Region(S, lb, ub, none, [], prod, [0.0], at, sv, rows=[c])
-        self.mod = NestedModule(SUPPRESS, self.inner, self.noprod, sparse_facts=ctx['sparse_facts'])
-        self.with_c = NestedModule(PROTECT, self.inner, Region(S, lb, ub, *V, at, sv, rows=[c]), sparse_facts=ctx['sparse_facts'])
+        self.mod = NestedModule(SUPPRESS, self.inner, self.noprod)
+        self.with_c = NestedModule(PROTECT, self.inner, Region(S, lb, ub, *V, at, sv, rows=[c]))
         self.with_c.facts = self.mod.facts  # one inner problem, one set of facts
         self.has_noprod = ClassicModule(PROTECT, self.noprod_plain(ctx, prod))
         self.modules = [self.mod, self.with_c, self.has_noprod]
@@ -1555,7 +1651,6 @@ class OptCoupleObjective(_Objective):
         # growth without production has to stay below (optimum - t): no such flux at or above it
         self.mod.enabled = t is not None
         self.mod.offset = 0.0 if t is None else t
-        self._forget()
 
     def value(self, X):
         val, _, _ = self.mod.optimum(X)
