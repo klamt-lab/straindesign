@@ -310,6 +310,17 @@ def _map_identifiers(constraint, mapping):
     return re.sub(r'\S+', mapped, parts[0]) + parts[1] + parts[2]
 
 
+def _follow_renaming(model, renamed, gko_cost, gki_cost, reg_cost):
+    """The caller's gene costs and regulatory interventions after genes were renamed.
+
+    ``renamed`` maps the old identifiers to the new ones. A key of a cost dictionary, or a term of
+    a regulatory constraint that is no reaction ID, follows its gene; without that the caller's
+    entries would name no gene any more and nothing would be an intervention candidate."""
+    follow = lambda term: term if model.reactions.has_id(term) else renamed.get(term, term)
+    return ({renamed.get(k, k): v for k, v in gko_cost.items()}, {renamed.get(k, k): v for k, v in gki_cost.items()},
+            {_map_identifiers(k, follow): v for k, v in reg_cost.items()})
+
+
 def _gene_references(model, gene_keys, reg_constraints, all_genes):
     """Decide whether genes are called by name or by ID, and translate the caller's references.
 
@@ -595,13 +606,17 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         # genes must not begin with number, put a 'g' in front of genes that start with a number
         if any([True for g in model.genes if g.id[0].isdigit()]):
             logging.warning("Gene IDs must not start with a digit. Inserting prefix 'g' where necessary.")
-            rename_genes(model, {g.id: 'g' + g.id for g in model.genes if g.id[0].isdigit()})
+            prefixed = {g.id: 'g' + g.id for g in model.genes if g.id[0].isdigit()}
+            rename_genes(model, prefixed)
+            uncmp_gko_cost, uncmp_gki_cost, uncmp_reg_cost = _follow_renaming(model, prefixed, uncmp_gko_cost, uncmp_gki_cost, uncmp_reg_cost)
         has_gene_names, gene_rename = _gene_references(model,
                                                        list(uncmp_gko_cost) + list(uncmp_gki_cost),
                                                        list(uncmp_reg_cost),
                                                        all_genes=not gko_given)
+        prefixed = {}
         if has_gene_names and any([True for g in model.genes if g.name[:1].isdigit()]):
             logging.warning("Gene names must not start with a digit. Inserting prefix 'g' where necessary.")
+            prefixed = {g.name: 'g' + g.name for g in model.genes if g.name[:1].isdigit()}
             for g, v in {g.id: 'g' + g.name for g in model.genes if g.name[:1].isdigit()}.items():
                 model.genes.get_by_id(g).name = v
         if gene_rename:
@@ -616,6 +631,8 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                 _map_identifiers(k, lambda term: term if model.reactions.has_id(term) else gene_rename.get(term, term)): v
                 for k, v in uncmp_reg_cost.items()
             }
+        if prefixed:
+            uncmp_gko_cost, uncmp_gki_cost, uncmp_reg_cost = _follow_renaming(model, prefixed, uncmp_gko_cost, uncmp_gki_cost, uncmp_reg_cost)
         if not gko_given:
             if has_gene_names:  # a gene without a name keeps its ID
                 uncmp_gko_cost = {g.name or g.id: 1.0 for g in model.genes}

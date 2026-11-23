@@ -226,3 +226,20 @@ def test_gpr_extension_refuses_names_shared_between_genes():
     from straindesign.networktools import extend_model_gpr
     with pytest.raises(Exception, match="stand for several genes"):
         extend_model_gpr(_model_two_routes(names=('N1', 'N', 'N')), use_names=True)
+
+
+@pytest.mark.parametrize('by_name', [False, True])
+def test_costs_keyed_by_genes_that_start_with_a_digit(curr_solver, by_name):
+    """Gene IDs and names that start with a digit get the prefix 'g'; the caller's cost keys and
+    regulatory constraints follow, so the genes stay intervention candidates."""
+    kw = dict(genes=('1x', '2x', '3x')) if not by_name else dict(names=('1n', '2n', '3n'))
+    keys = ('1n', '2n', '3n') if by_name else ('1x', '2x', '3x')
+    default = _gene_mcs(_model_two_routes(**kw), gene_kos=True, solver=curr_solver)
+    keyed = _gene_mcs(_model_two_routes(**kw), gko_cost={k: 1.0 for k in keys}, solver=curr_solver)
+    expected = [['g' + keys[0], 'g' + keys[1]], ['g' + keys[0], 'g' + keys[2]]]
+    assert _gene_sets(default) == expected and _gene_sets(keyed) == expected
+    # limiting the first gene does what knocking it out does
+    limited = _gene_mcs(_model_two_routes(**kw), gko_cost={k: 1.0 for k in keys}, reg_cost={keys[0] + ' <= 0.5': 1.0}, solver=curr_solver)
+    limit = 'g' + keys[0] + ' <= 0.5'
+    assert sorted(sorted(k for k, v in d.items() if v) for d in limited.gene_sd) == sorted(expected + [sorted([limit, 'g' + keys[1]]),
+                                                                                              sorted([limit, 'g' + keys[2]])])
