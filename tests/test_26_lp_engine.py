@@ -173,8 +173,34 @@ def test_exact_engine_proves_that_nothing_beats_the_best(model_weak_coupling):
     assert abs(lp.objective_value - 5.0) < 1e-5
 
 
-def test_unsupported_setups_say_so(model_small_example):
-    modules = [sd.SDModule(model_small_example, SUPPRESS, constraints=["R4 >= 1"])]
+def _signed(sol):
+    return sorted(sorted((k, v) for k, v in d.items() if v != 0) for d in sol.reaction_sd)
+
+
+def test_knock_ins(curr_solver, model_small_example):
+    """A reaction with a knock-in cost is absent unless it is knocked in; designs mix both kinds."""
+    modules = [
+        sd.SDModule(model_small_example, SUPPRESS, constraints=["1.0 R3 - 0.5 R1 - 0.5 R2 <= 0.0 ", "1.0 R2 >= 0.0 ", "1.0 R1 >= 0.1 "]),
+        sd.SDModule(model_small_example, PROTECT, constraints=["1.0 R3 >= 1.0 "])
+    ]
+    ko_cost = {r.id: 1.0 for r in model_small_example.reactions if r.id != 'R9'}
+    for compress in (True, False):
+        ref, lp = _both(model_small_example, modules, curr_solver, max_cost=4, ko_cost=ko_cost, ki_cost={'R9': 1.0}, compress=compress)
+        assert _signed(lp) == _signed(ref)
+        assert any(d.get('R9') == 1 for d in lp.reaction_sd) and len(lp.reaction_sd) > 1
+
+
+def test_knock_in_sets_of_the_layer():
+    layer = BoolLayer([1.0, 2.0, 1.0], [0, False, False], 3, needs=[-1, 1, 2])
+    assert layer.ki == mask([1, 2])
+    assert layer.X(0) == mask([1, 2]) and layer.X(mask([0, 2])) == mask([0, 1])
+    assert layer.knock_in_sets(3) == [(0.0, 0), (1.0, mask([2])), (2.0, mask([1])), (3.0, mask([1, 2]))]
+    assert layer.knock_in_sets(1) == [(0.0, 0), (1.0, mask([2]))]
+
+
+def test_unsupported_setups_say_so(model_gpr):
+    modules = [sd.SDModule(model_gpr, SUPPRESS, constraints=["1.0 rd_ex >= 1.0 "])]
+    genes = [g.name or g.id for g in model_gpr.genes]
     with pytest.raises(NotImplementedError):
-        sd.compute_strain_designs(model_small_example, sd_modules=modules, solution_approach=POPULATE, max_cost=3, solver=GLPK, engine='lp',
-                                  ko_cost={'R1': 1.0, 'R2': 1.0}, ki_cost={'R3': 1.0})
+        sd.compute_strain_designs(model_gpr, sd_modules=modules, solution_approach=POPULATE, max_cost=3, solver=GLPK, engine='lp', gene_kos=True,
+                                  gko_cost={g: 1.0 for g in genes[1:]}, gki_cost={genes[0]: 1.0})

@@ -1053,17 +1053,27 @@ def _blocking_sets(node, cost, budget):
 class BoolLayer:
     """Interventions with costs, and for every atom the sets of interventions that block it.
 
+    A knockout blocks atoms. A knock-in is the opposite kind of intervention: an atom that needs
+    one is blocked as long as the knock-in is not made.
+
     Args:
         costs (list of float): cost of each intervention
-        formulas (list): per atom its blocked-formula over intervention indices, as
+        formulas (list): per atom its blocked-formula over (knockout) intervention indices, as
             int | ('or', [..]) | ('and', [..]) | False
         budget (float): the largest total cost a set of interventions may have
+        needs (list of int): per atom the knock-in intervention it is absent without, -1 for none
     """
 
-    def __init__(self, costs, formulas, budget):
+    def __init__(self, costs, formulas, budget, needs=None):
         self.cost = [float(c) for c in costs]
         self.nI, self.nA = len(costs), len(formulas)
         self.block = [_blocking_sets(f, self.cost, budget) for f in formulas]
+        self.needs = [-1] * self.nA if needs is None else [int(i) for i in needs]
+        self.ki = mask(i for i in self.needs if i >= 0)  # the knock-in interventions
+        self.absent = {}  # knock-in intervention -> atoms that are blocked without it
+        for a, i in enumerate(self.needs):
+            if i >= 0:
+                self.absent[i] = self.absent.get(i, 0) | (1 << a)
         self.atoms_of = [0] * self.nI  # atoms that the intervention helps to block
         self.sets_with = [[] for _ in range(self.nI)]  # intervention -> (atom, blocking set) pairs
         self.single0 = [0] * self.nA  # interventions that block the atom alone
@@ -1082,7 +1092,22 @@ class BoolLayer:
         return sum(self.cost[i] for i in bits(J))
 
     def X(self, z):
-        return mask(a for a in range(self.nA) if any(B & z == B for B in self.block[a]))
+        """The atoms that the set of interventions z leaves blocked."""
+        X = mask(a for a in range(self.nA) if any(B & z == B for B in self.block[a]))
+        for i, atoms in self.absent.items():
+            if not (z >> i) & 1:
+                X |= atoms
+        return X
+
+    def knock_in_sets(self, budget, limit=200000):
+        """Every set of knock-ins of cost <= budget as (cost, bit set), cheapest first."""
+        out = [(0.0, 0)]
+        for i in bits(self.ki):
+            c = self.cost[i]
+            out += [(c0 + c, A | (1 << i)) for c0, A in out if c0 + c <= budget]
+            if len(out) > limit:
+                raise NotImplementedError('too many combinations of knock-ins within the budget for the LP engine')
+        return sorted(out)
 
     def extend(self, z, X, J):
         """Blocked atoms of z | J, given those of z."""
@@ -1151,6 +1176,7 @@ class LPEnumerator:
         self.min_cost = min(layer.cost) if layer.cost else np.inf
         self._affordable = {}
         self.stat = dict(nodes=0, queries=0, memo=0, targeted=0, levels=[])
+        self.roots = layer.knock_in_sets(max_cost)  # the knock-in sets, each the start of a walk over knockouts
 
     # -- oracle with memory ----------------------------------------------------------------------
     def _add_clause(self, P, N):
@@ -1362,6 +1388,23 @@ class LPEnumerator:
             if self._is_design(X2, avoid):
                 self._record(z | (1 << g))
 
+    def _root(self, A, cost0, n_lower):
+        """Walk the sets of the level in work that add knockouts to the knock-ins A. Above A only
+        knockouts follow, so the blocked set grows along every path of the walk, whatever A is;
+        the clauses are statements about blocked sets and serve every A."""
+        X = self.layer.X(A)
+        banned = self.banned0
+        if A:
+            for d in self.designs[:n_lower]:  # designs of the levels below
+                rest = d & ~A
+                if not rest:
+                    return  # A contains a design
+                if not rest & (rest - 1):
+                    banned |= rest
+        if any(C & X == C for C in self.N):
+            return
+        self._descend(A, X, cost0, [i for i in range(len(self.P)) if not self.P[i] & X], len(self.P), 0, [], 0, banned)
+
     def run(self):
         """Returns (designs as bit sets over the interventions, complete). A further call starts
         over with the clauses kept: what a module's violation taught stays true, the designs
@@ -1370,7 +1413,7 @@ class LPEnumerator:
         complete = True
         self.designs, self.with_member, self.banned0 = [], {}, 0
         try:
-            if self._is_design(0):
+            if self._is_design(self.layer.X(0)):
                 return [0], True
             n_d0 = 0
             for level in range(1, int(np.floor(self.max_cost)) + 1):
@@ -1378,7 +1421,10 @@ class LPEnumerator:
                 n_d, n_q, t1 = len(self.designs), self.stat['queries'], time.time()
                 self._index_designs(n_d0)
                 n_d0 = len(self.designs)
-                self._descend(0, 0, 0.0, [i for i in range(len(self.P))], len(self.P), 0, [], 0, self.banned0)
+                for cost0, A in self.roots:
+                    if cost0 > level:
+                        break
+                    self._root(A, cost0, n_d0)
                 self.stat['levels'].append((level, len(self.designs) - n_d, self.stat['queries'] - n_q, time.time() - t1))
                 logging.info('  LP enumeration, cost %g: %d designs, %d queries, %.1f s, %d + %d clauses' %
                              (level, len(self.designs) - n_d, self.stat['queries'] - n_q, time.time() - t1, len(self.P), len(self.N)))
@@ -1420,15 +1466,16 @@ def gpr_blocked_formula(rule, index):
     return conv(_gpr_parse(rule))
 
 
-def _atoms_and_layer(model, ko_cost, gko_cost, max_cost, gene_key):
-    ko_cost, gko_cost = dict(ko_cost or {}), dict(gko_cost or {})
-    names = list(gko_cost) + list(ko_cost)
-    costs = [gko_cost[g] for g in gko_cost] + [ko_cost[r] for r in ko_cost]
+def _atoms_and_layer(model, ko_cost, gko_cost, max_cost, gene_key, ki_cost=None):
+    ko_cost, gko_cost, ki_cost = dict(ko_cost or {}), dict(gko_cost or {}), dict(ki_cost or {})
+    names = list(gko_cost) + list(ko_cost) + list(ki_cost)
+    costs = [gko_cost[g] for g in gko_cost] + [ko_cost[r] for r in ko_cost] + [ki_cost[r] for r in ki_cost]
     index = {g: i for i, g in enumerate(gko_cost)}
     r_index = {r: len(gko_cost) + i for i, r in enumerate(ko_cost)}
+    k_index = {r: len(gko_cost) + len(ko_cost) + i for i, r in enumerate(ki_cost)}
     if gene_key != 'id':
         index = {g.id: index[getattr(g, gene_key)] for g in model.genes if getattr(g, gene_key) in index}
-    formulas, atom_rxn = [], []
+    formulas, atom_rxn, needs = [], [], []
     for j, r in enumerate(model.reactions):
         # a reaction is blocked by its own knockout or by the genes of its rule, whichever applies
         # (both for a reaction that is a target itself and carries a rule, as a target without
@@ -1440,15 +1487,16 @@ def _atoms_and_layer(model, ko_cost, gko_cost, max_cost, gene_key):
                 f = by_genes
             elif by_genes is not False:
                 f = ('or', [f, by_genes])
-        if f is not False:
+        if f is not False or r.id in k_index:
             formulas.append(f)
             atom_rxn.append(j)
-    layer = BoolLayer(costs, formulas, max_cost)
-    # a reaction that no affordable set of interventions blocks is no atom
-    ok = [a for a in range(layer.nA) if layer.block[a]]
+            needs.append(k_index.get(r.id, -1))
+    layer = BoolLayer(costs, formulas, max_cost, needs)
+    # a reaction that no affordable set of interventions blocks and that needs no knock-in is no atom
+    ok = [a for a in range(layer.nA) if layer.block[a] or needs[a] >= 0]
     if len(ok) < layer.nA:
-        formulas, atom_rxn = [formulas[a] for a in ok], [atom_rxn[a] for a in ok]
-        layer = BoolLayer(costs, formulas, max_cost)
+        formulas, atom_rxn, needs = [formulas[a] for a in ok], [atom_rxn[a] for a in ok], [needs[a] for a in ok]
+        layer = BoolLayer(costs, formulas, max_cost, needs)
     return names, layer, atom_rxn
 
 
@@ -1515,7 +1563,7 @@ def _with_twin(ctx, region, V, rows=()):
         region.arbiter_factory = ctx['twin'](V, rows)
 
 
-def build_problem(model, sd_modules, ko_cost, gko_cost, max_cost, solver, gene_key='id', exact=False):
+def build_problem(model, sd_modules, ko_cost, gko_cost, max_cost, solver, gene_key='id', exact=False, ki_cost=None):
     """Set up the three layers for a model: interventions and their Boolean map onto the knockable
     reactions, and one module oracle per SUPPRESS / PROTECT module.
 
@@ -1528,6 +1576,7 @@ def build_problem(model, sd_modules, ko_cost, gko_cost, max_cost, solver, gene_k
         max_cost (float)
         solver (str)
         gene_key (str): 'id' or 'name', what gko_cost calls a gene
+        ki_cost (dict): reaction id -> knock-in cost; such a reaction is absent unless knocked in
 
     Returns:
         (names of the interventions, BoolLayer, module oracles, atom_rxn, context for further regions)
@@ -1543,7 +1592,7 @@ def build_problem(model, sd_modules, ko_cost, gko_cost, max_cost, solver, gene_k
         S = sparse.csr_matrix(np.array(create_stoichiometric_matrix(model), dtype=float))
     lb = np.array([float(r.lower_bound) for r in model.reactions])
     ub = np.array([float(r.upper_bound) for r in model.reactions])
-    names, layer, atom_rxn = _atoms_and_layer(model, ko_cost, gko_cost, max_cost, gene_key)
+    names, layer, atom_rxn = _atoms_and_layer(model, ko_cost, gko_cost, max_cost, gene_key, ki_cost)
     none = sparse.csr_matrix((0, n))
     if exact:
         lineqlist2mat = lambda constr, ids, _f=lineqlist2mat: _integer_rows(*_f(constr, ids))
@@ -1734,9 +1783,9 @@ def lp_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, has_g
     Returns:
         (CompressedDesigns, LPEnumerator)
     """
-    if ki_cost or gki_cost:
-        raise NotImplementedError('the LP engine does not handle knock-ins yet')
-    costs = list(ko_cost.values()) + list((gko_cost or {}).values())
+    if gki_cost:
+        raise NotImplementedError('the LP engine does not handle gene knock-ins yet')
+    costs = list(ko_cost.values()) + list((gko_cost or {}).values()) + list((ki_cost or {}).values())
     if not np.isfinite(max_cost) or any(c <= 0 or abs(c - round(c)) > 1e-9 for c in costs):
         raise NotImplementedError('the LP engine needs a finite budget and positive integer intervention costs')
     opt_mods = [mod for mod in sd_modules if mod[MODULE_TYPE] in _OBJECTIVES]
@@ -1745,7 +1794,7 @@ def lp_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, has_g
     from straindesign.parse_constr import lineqlist2mat
     t0 = time.time()
     names, layer, modules, atom_rxn, ctx = build_problem(cmp_model, sd_modules, ko_cost, gko_cost, max_cost, solver,
-                                                         'name' if has_gene_names else 'id', exact=exact)
+                                                         'name' if has_gene_names else 'id', exact=exact, ki_cost=ki_cost)
     objective = None
     if opt_mods:
         mod = opt_mods[0]
@@ -1779,12 +1828,13 @@ def lp_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, has_g
         found = [best[0]] if best is not None else []
         enum.objective_value, enum.trace = (best[1] if best else None), trace
     enum.names, enum.atom_rxn = names, atom_rxn
-    sd = [{names[i]: -1.0 for i in bits(z)} for z in found]
+    # a knockout made: -1, a knock-in made: 1, a knock-in not made: 0
+    sd = [{**{names[i]: 0.0 for i in bits(layer.ki & ~z)}, **{names[i]: (1.0 if (layer.ki >> i) & 1 else -1.0) for i in bits(z)}} for z in found]
     if complete:
         status = OPTIMAL if sd else INFEASIBLE
     else:
         status = TIME_LIMIT_W_SOL if sd else TIME_LIMIT
-    setup = {MODEL_ID: cmp_model.id, MAX_COST: max_cost, SOLVER: solver, SOLUTION_APPROACH: POPULATE, KOCOST: dict(ko_cost), KICOST: {},
+    setup = {MODEL_ID: cmp_model.id, MAX_COST: max_cost, SOLVER: solver, SOLUTION_APPROACH: POPULATE, KOCOST: dict(ko_cost), KICOST: dict(ki_cost or {}),
              MODULES: sd_modules, TIME_LIMIT: time_limit, MAX_SOLUTIONS: np.inf}
     enum.stat['lp_flux'], enum.stat['lp_proof'], enum.stat['lp_value'] = lp_counts(modules)
     logging.info('  LP engine: %d designs; LPs: %d flux, %d proof, %d value; %d module checks answered from memory; %.1f s (%.1f s in LPs).' %
