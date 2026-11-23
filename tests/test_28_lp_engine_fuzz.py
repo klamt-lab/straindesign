@@ -56,6 +56,32 @@ def test_engines_return_the_brute_force_result(kind, seed, backends):
                                                                         'the open defect did not show: %s' % known)
 
 
+INF = float('inf')
+# Problems on which an LP engine backend failed in a campaign, shrunk: (what has to work, backends, problem)
+FOUND = [
+    ('a target without rule that is lumped with a reaction that has one is blocked through the genes too', ('lp-glpk', 'lp_exact', 'raw-glpk'),
+     dict(rxns=['R2', 'BM'], mets=['M3'], S=[[1.0, -1.0]], lb=[0.0, 0.0], ub=[INF, 1000.0], gpr=['', 'g2'], genes=['g2'], gene_kos=True,
+          modules=[dict(module_type='suppress', constraints=[[{'BM': 1.0}, '>=', 0.5]], inner_objective={'BM': 1.0})], ko_cost={'R2': 2}, compress=True,
+          max_cost=1)),
+    ('exact mode proves that nothing beats the best OptKnock design', ('lp_exact', 'raw-exact'),
+     dict(rxns=['R4', 'EX_P', 'BM'], mets=['M3', 'M4'], S=[[0.0, 0.0, -1.0], [1.0, -1.0, 0.0]], lb=[0.0] * 3, ub=[INF, 1000.0, INF], gpr=[''] * 3,
+          genes=[], modules=[dict(module_type='optknock', inner_objective={'BM': 1.0}, outer_objective={'EX_P': 1.0}, constraints=[])],
+          compress=False, max_cost=1)),
+    ('where floating-point LPs find neither a flux nor a proof, the exact twin of an objective region decides (RobustKnock)',
+     ('lp-cplex', 'lp-gurobi', 'lp-glpk', 'lp-scip'),
+     dict(rxns=['UP0', 'EX_P', 'BM'], mets=['M0', 'M4'], S=[[1.0, 0.0, -1.0], [0.0, -1.0, 0.0]], lb=[0.0] * 3, ub=[INF, INF, 1000.0], gpr=[''] * 3,
+          genes=[], modules=[dict(module_type='robustknock', inner_objective={'BM': 1.0, 'UP0': -0.1}, outer_objective={'EX_P': 1.0}, constraints=[])],
+          compress=False, max_cost=1)),
+]
+
+
+@pytest.mark.parametrize('what, names, problem', FOUND, ids=['target-with-rule', 'exact-optknock-proof', 'objective-region-twin'])
+def test_problems_a_campaign_found(what, names, problem, backends):
+    out = F.compare(problem, [b for b in names if b in backends])
+    missed = {b: v for b, v in out['verdict'].items() if v not in ('ok', 'tie')}
+    assert not missed, '%s: %s' % (what, missed)
+
+
 def test_brute_force_on_a_problem_done_by_hand():
     """Two routes from substrate to product: the cut sets of the product are the pairs across."""
     problem = dict(rxns=['up', 'a1', 'a2', 'b', 'ex'], mets=['S', 'X', 'P'],

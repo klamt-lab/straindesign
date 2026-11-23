@@ -529,7 +529,8 @@ def run_package(problem, solver, engine=None):
             sol.expand_all()
     except Exception as e:  # reported, not raised: a failing backend is a finding
         return dict(error='%s: %s' % (type(e).__name__, e))
-    sds = sol.gene_sd if problem.get('gene_kos') else sol.reaction_sd
+    # (a problem without genes is solved as one over reactions, whatever was asked for)
+    sds = sol.gene_sd if problem.get('gene_kos') and getattr(sol, 'is_gene_sd', True) else sol.reaction_sd
     designs = [frozenset(k for k, v in d.items() if v != 0) for d in sds]
     out = dict(designs=designs, status=sol.status)
     if any(m['module_type'] in OPTIMISATION for m in problem['modules']):
