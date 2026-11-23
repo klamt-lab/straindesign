@@ -22,6 +22,10 @@ This is solution_approach='any' of the LP engine (see lp_enumeration). It uses t
 layers (interventions, Boolean layer, LP oracle per module) and the same kind of clauses, but
 instead of visiting the intervention sets cost level by cost level it
 
+0. looks for **cheap designs first**: the complete search of lp_enumeration walks the lowest cost
+   levels for a short while (`first_levels`, `first_seconds` of `lp_dive_engine`). Where designs
+   of one to three interventions exist it returns them within seconds, and they are the cheapest
+   there are. Dives follow for what is still asked for.
 1. **dives**. With classic SUPPRESS / PROTECT modules a *guided dive* asks for a whole cut set at
    once: a flux witness of each PROTECT module that also violates every SUPPRESS module is kept
    alive, and one proof LP per SUPPRESS region, with every other affordable atom blocked, names
@@ -46,8 +50,8 @@ import random
 import time
 import numpy as np
 from straindesign.names import *
-from straindesign.lp_enumeration import (BitRows, ClassicModule, FEASIBLE, LPError, Region, _IMPROVE, _OBJECTIVES, _LPBase, _integer_rows, _minimal,
-                                         bits, build_problem, lp_counts, CompressedDesigns)
+from straindesign.lp_enumeration import (BitRows, ClassicModule, FEASIBLE, LPEnumerator, LPError, Region, _IMPROVE, _OBJECTIVES, _LPBase,
+                                         _integer_rows, _minimal, bits, build_problem, lp_counts, CompressedDesigns)
 
 
 def _row_int(br, i):
@@ -276,6 +280,21 @@ class DiveSearch:
         self.log = []  # per design: (seconds since start, cost after the dive, cost after polishing, LP checks so far)
 
     # -- helpers ---------------------------------------------------------------------------------
+    def take_over(self, enum, designs, seconds):
+        """Start from what a complete search of the lowest cost levels found (designs, to be
+        returned first and never again) and learned (its clauses)."""
+        for P, N in zip(enum.P, enum.Nn):
+            self.clauses.add(P, N)
+        for N in enum.N:
+            self.clauses.add(0, N)
+        self.stat['level_queries'] = enum.stat['queries']
+        for z in designs:
+            self.found.append(z)
+            c = self.layer.set_cost(z)
+            self.log.append((seconds, c, c, self.stat['queries']))
+        if designs == [0] or (designs and designs[0] == 0):
+            self.trivial = True
+
     def _time_up(self):
         return time.time() > self.deadline
 
@@ -681,7 +700,9 @@ class DiveSearch:
         t0 = time.time()
         fails = 0
         try:
-            if self._is_design(0):
+            if getattr(self, 'trivial', False):
+                return self.found, False
+            if not self.found and self._is_design(0):
                 self.found, self.trivial = [0], True
                 return self.found, False
             while len(self.found) < max_solutions and fails < self.stall:
@@ -847,31 +868,40 @@ class OptSearch:
 
 
 def lp_dive_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, has_gene_names, max_cost, solver, time_limit=np.inf,
-                   max_solutions=np.inf, seed=None, exact=False, **kwargs):
+                   max_solutions=np.inf, seed=None, exact=False, first_levels=3, first_seconds=20.0, **kwargs):
     """Entry point for compute_strain_designs with solution_approach='any'.
 
-    Status: OPTIMAL if max_solutions designs were found (for an optimisation module: when the
-    local search ended at a local optimum before the time limit), TIME_LIMIT_W_SOL if the search
-    stopped earlier (time limit, or several dives in a row without a new design) with designs,
-    TIME_LIMIT without, and INFEASIBLE only when a module was shown to be unfulfillable by any set
-    of interventions.
+    For SUPPRESS / PROTECT modules the complete search first walks the cost levels up to
+    `first_levels` for at most `first_seconds` (and at most a third of the time limit); what it
+    finds are the cheapest designs. Dives deliver the rest. With reaction knock-ins only the
+    complete search runs, over the whole (finite) budget.
+
+    Status: OPTIMAL if max_solutions designs were found, or every design within the budget (for an
+    optimisation module: when the local search ended at a local optimum before the time limit),
+    TIME_LIMIT_W_SOL if the search stopped earlier (time limit, or several dives in a row without
+    a new design) with designs, TIME_LIMIT without, and INFEASIBLE only when it was shown that no
+    set of interventions within the budget fulfils the modules.
 
     Returns:
         (CompressedDesigns, search object)
     """
-    if ki_cost or gki_cost:
-        raise NotImplementedError("solution_approach 'any' of the LP engine does not handle knock-ins yet")
-    costs = list(ko_cost.values()) + list((gko_cost or {}).values())
+    if gki_cost:
+        raise NotImplementedError('the LP engine does not handle gene knock-ins yet')
+    costs = list(ko_cost.values()) + list((gko_cost or {}).values()) + list((ki_cost or {}).values())
     if any(c <= 0 for c in costs):
         raise NotImplementedError('the LP engine needs positive intervention costs')
     opt_mods = [mod for mod in sd_modules if mod[MODULE_TYPE] in _OBJECTIVES]
     if any(mod[MODULE_TYPE] not in (SUPPRESS, PROTECT) and mod[MODULE_TYPE] not in _OBJECTIVES for mod in sd_modules) or len(opt_mods) > 1:
         raise NotImplementedError('the LP engine handles SUPPRESS, PROTECT, OptKnock, RobustKnock and OptCouple modules')
+    integer_costs = all(abs(c - round(c)) <= 1e-9 for c in costs)
+    if ki_cost and (opt_mods or not np.isfinite(max_cost) or not integer_costs):
+        raise NotImplementedError("solution_approach 'any' of the LP engine handles knock-ins for SUPPRESS / PROTECT modules with a finite "
+                                  "budget and integer costs")
     from straindesign.parse_constr import lineqlist2mat
     t0 = time.time()
     n_lp0 = _LPBase.n_solves
     names, layer, modules, atom_rxn, ctx = build_problem(cmp_model, sd_modules, ko_cost, gko_cost, max_cost, solver,
-                                                         'name' if has_gene_names else 'id', exact=exact)
+                                                         'name' if has_gene_names else 'id', exact=exact, ki_cost=ki_cost)
     objective = None
     if opt_mods:
         mod = opt_mods[0]
@@ -882,9 +912,21 @@ def lp_dive_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, 
     if objective is None:
         kwargs.setdefault('targets', target_regions(ctx, sd_modules, modules))
         search = DiveSearch(layer, modules, max_cost, seed=seed, time_limit=time_limit, **kwargs)
-        found, proven = search.run(max_solutions)
+        proven = exhaustive = False
+        levels = max_cost if ki_cost else min(max_cost, first_levels)
+        if levels >= 1 and integer_costs:
+            # the cheapest designs, where the lowest cost levels hold any
+            enum = LPEnumerator(layer, modules, levels, max_solutions=max_solutions,
+                                time_limit=time_limit if ki_cost else min(first_seconds, time_limit / 3))
+            cheap, complete = enum.run()
+            exhaustive = complete and levels >= max_cost and len(cheap) < max_solutions
+            proven = exhaustive and not cheap
+            search.take_over(enum, cheap, time.time() - t0)
+        if not (proven or exhaustive or ki_cost or len(search.found) >= max_solutions):
+            found, proven = search.run(max_solutions)
+        found = search.found
         values = None
-        done = len(found) >= max_solutions or getattr(search, 'trivial', False)
+        done = len(found) >= max_solutions or exhaustive or getattr(search, 'trivial', False)
         all_modules = modules
     else:
         search = OptSearch(layer, modules, objective, max_cost, seed=seed, time_limit=time_limit, **kwargs)
@@ -898,14 +940,15 @@ def lp_dive_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, 
     stat['lp_flux'], stat['lp_proof'], stat['lp_value'] = lp_counts(all_modules)
     stat['lp_solves'] = _LPBase.n_solves - n_lp0
     search.names, search.atom_rxn, search.values = names, atom_rxn, values
-    sd = [{names[i]: -1.0 for i in bits(z)} for z in found]
+    # a knockout made: -1, a knock-in made: 1, a knock-in not made: 0
+    sd = [{**{names[i]: 0.0 for i in bits(layer.ki & ~z)}, **{names[i]: (1.0 if (layer.ki >> i) & 1 else -1.0) for i in bits(z)}} for z in found]
     if proven:
         status = INFEASIBLE
     elif sd:
         status = OPTIMAL if done else TIME_LIMIT_W_SOL
     else:
         status = TIME_LIMIT
-    setup = {MODEL_ID: cmp_model.id, MAX_COST: max_cost, SOLVER: solver, SOLUTION_APPROACH: ANY, KOCOST: dict(ko_cost), KICOST: {}, MODULES: sd_modules,
+    setup = {MODEL_ID: cmp_model.id, MAX_COST: max_cost, SOLVER: solver, SOLUTION_APPROACH: ANY, KOCOST: dict(ko_cost), KICOST: dict(ki_cost or {}), MODULES: sd_modules,
              TIME_LIMIT: time_limit, MAX_SOLUTIONS: max_solutions}
     logging.info('  LP dive: %d designs, status %s; %d LPs; %.1f s.' % (len(sd), status, stat['lp_solves'], stat['seconds']))
     return CompressedDesigns(sd, status, setup), search
