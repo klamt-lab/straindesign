@@ -147,3 +147,82 @@ def test_glpk_keeps_the_optimum_when_its_confirmation_stalls(monkeypatch):
     assert status == OPTIMAL
     assert value == pytest.approx(3.0)
     assert x == pytest.approx([1.0, 1.0, 1.0])
+
+
+def _model_two_routes(genes=('x1', 'x2', 'x3'), names=('', '', '')):
+    """A is made into B by r1 (first gene) or by r2 (second and third gene); r_bm drains B.
+
+    r_bm stops without the first gene and one of the other two."""
+    model = Model('two_routes')
+    A, B = Metabolite('A', compartment='c'), Metabolite('B', compartment='c')
+    for rid, stoich, ub, gpr in [('r_s', {A: 1}, 10, ''), ('r1', {A: -1, B: 1}, 1000, genes[0]),
+                                 ('r2', {A: -1, B: 1}, 1000, genes[1] + ' and ' + genes[2]), ('r_bm', {B: -1}, 1000, '')]:
+        reaction = Reaction(rid, lower_bound=0, upper_bound=ub)
+        model.add_reactions([reaction])
+        reaction.add_metabolites(stoich)
+        reaction.gene_reaction_rule = gpr
+    for gene, name in zip(genes, names):
+        model.genes.get_by_id(gene).name = name
+    return model
+
+
+def _gene_mcs(model, **kwargs):
+    modules = [sd.SDModule(model, SUPPRESS, constraints='r_bm >= 1')]
+    sol = sd.compute_strain_designs(model, sd_modules=modules, max_cost=3, solution_approach=POPULATE, solver=kwargs.pop('solver', None), **kwargs)
+    assert sol.status == OPTIMAL
+    return sol
+
+
+def _gene_sets(solution):
+    return sorted(sorted(d) for d in solution.gene_sd)
+
+
+def test_usable_gene_names_identify_the_genes():
+    sol = _gene_mcs(_model_two_routes(names=('N1', 'N2', 'N3')), gene_kos=True)
+    assert _gene_sets(sol) == [['N1', 'N2'], ['N1', 'N3']]
+
+
+@pytest.mark.parametrize('names, reason', [(('N1', 'N', 'N'), 'shared by several genes'), (('r_bm', 'N2', 'N3'), 'also reaction IDs'),
+                                           (('x2', 'N2', 'N3'), 'also IDs of other genes')])
+def test_gene_names_that_cannot_be_identifiers_give_way_to_ids(curr_solver, caplog, names, reason):
+    """Without a reference of the caller to a gene name, the genes are called by their IDs when the
+    names are shared between genes or taken by a reaction or another gene."""
+    with caplog.at_level('WARNING'):
+        sol = _gene_mcs(_model_two_routes(names=names), gene_kos=True, solver=curr_solver)
+    assert reason in caplog.text
+    assert _gene_sets(sol) == [['x1', 'x2'], ['x1', 'x3']]
+    assert sol.reaction_sd == [{'r1': -1.0, 'r2': -1.0}] * 2
+    assert sol.sd_cost == [2.0, 2.0]
+
+
+@pytest.mark.parametrize('names, reason', [(('N1', 'N', 'N'), 'shared by several genes'), (('r_bm', 'N', 'N3'), 'also reaction IDs')])
+def test_reference_to_a_gene_name_that_cannot_be_an_identifier_fails_early(names, reason):
+    model = _model_two_routes(names=names)
+    with pytest.raises(Exception, match=reason):
+        _gene_mcs(model, gko_cost={names[0]: 1.0, 'N': 1.0})
+    # the same genes by ID
+    assert _gene_sets(_gene_mcs(model, gko_cost={'x1': 1.0, 'x2': 1.0})) == [['x1', 'x2']]
+
+
+def test_genes_referred_to_by_id_and_by_name_are_all_candidates():
+    """With one gene named by its ID and the others by name, each of them is an intervention
+    candidate. The pseudoreactions carry the names, also for the gene given by ID."""
+    sol = _gene_mcs(_model_two_routes(names=('N1', 'N2', 'N3')), gko_cost={'x1': 1.0, 'N2': 2.0, 'N3': 1.0})
+    assert _gene_sets(sol) == [['N1', 'N2'], ['N1', 'N3']]
+    assert sorted(sol.sd_cost) == [2.0, 3.0]
+    # a gene without a name is called by its ID next to named ones
+    sol = _gene_mcs(_model_two_routes(names=('N1', 'N2', '')), gko_cost={'N1': 1.0, 'N2': 1.0, 'x3': 1.0})
+    assert _gene_sets(sol) == [['N1', 'N2'], ['N1', 'x3']]
+
+
+def test_regulatory_intervention_on_a_gene_referred_to_by_name():
+    """A gene name in reg_cost selects the names as identifiers, like one in gko_cost."""
+    sol = _gene_mcs(_model_two_routes(names=('N1', 'N2', 'N3')), gene_kos=True, reg_cost={'N1 <= 0.5': 1.0})
+    assert sorted(sorted(k for k, v in d.items() if v) for d in sol.gene_sd) == [['N1', 'N2'], ['N1', 'N3'], ['N1 <= 0.5', 'N2'],
+                                                                              ['N1 <= 0.5', 'N3']]
+
+
+def test_gpr_extension_refuses_names_shared_between_genes():
+    from straindesign.networktools import extend_model_gpr
+    with pytest.raises(Exception, match="stand for several genes"):
+        extend_model_gpr(_model_two_routes(names=('N1', 'N', 'N')), use_names=True)

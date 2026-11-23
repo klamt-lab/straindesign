@@ -24,6 +24,7 @@ import numpy as np
 import ast
 import logging
 import json
+import re
 import time
 from copy import deepcopy
 from cobra import Model
@@ -287,6 +288,103 @@ def _final_status(status, has_designs):
     return status
 
 
+def _map_identifiers(constraint, mapping):
+    """Pass every identifier on the left-hand side of a constraint string through ``mapping``.
+
+    The left-hand side is read the way parse_constraints reads it: whitespace separates the
+    terms, and signs and parentheses around a term are not part of it. A term that reads as a
+    number is a coefficient, unless it is the only term.
+    """
+    parts = re.split('(<=|>=|=)', constraint, maxsplit=1) if isinstance(constraint, str) else []
+    if len(parts) != 3:
+        return constraint
+    only_term = len(parts[0].split()) == 1
+
+    def mapped(match):
+        term = match.group(0)
+        core = re.sub(r"^[-+(]*|[-+)]*$", "", term)
+        if not core or (re.fullmatch(r"\d*\.?\d*", core) and not only_term):
+            return term
+        return term.replace(core, mapping(core), 1)
+
+    return re.sub(r'\S+', mapped, parts[0]) + parts[1] + parts[2]
+
+
+def _gene_references(model, gene_keys, reg_constraints, all_genes):
+    """Decide whether genes are called by name or by ID, and translate the caller's references.
+
+    ``gene_keys`` are the keys of gko_cost and gki_cost, ``reg_constraints`` those of reg_cost. A
+    key, or a term of a constraint, that is a gene ID refers to that gene; otherwise one that is a
+    gene name refers to the gene of that name.
+
+    The gene pseudoreactions carry the gene names if the caller refers to a gene by name. A name
+    in use must then belong to a single gene and be neither a reaction ID nor the ID of another
+    gene. In use are the names of the genes referred to, or those of all genes if every gene is an
+    intervention candidate (``all_genes``). Without any reference of the caller, names are used
+    if every gene has one and all of them qualify, and IDs otherwise.
+
+    Returns (use_names, rename). ``rename`` maps each reference that differs from the identifier
+    its gene has in the computation to that identifier.
+    """
+    reac_ids = set(model.reactions.list_attr('id'))
+    gene_ids = set(model.genes.list_attr('id'))
+    name_of = {g.id: g.name for g in model.genes if g.name}
+    carriers = {}
+    for gene_id, name in name_of.items():
+        carriers.setdefault(name, []).append(gene_id)
+
+    def unusable(names):
+        """Why these names cannot serve as identifiers, as text. Empty if all of them can."""
+        reasons = []
+        for why, bad in (('shared by several genes', [n for n in names if len(carriers[n]) > 1]),
+                         ('also reaction IDs', [n for n in names if n in reac_ids]),
+                         ('also IDs of other genes', [n for n in names if n in gene_ids and carriers[n] != [n]])):
+            if bad:
+                reasons.append('%d %s (%s%s)' % (len(bad), why, ', '.join(sorted(bad)[:5]), ', ...' if len(bad) > 5 else ''))
+        return '; '.join(reasons)
+
+    def resolve(ref):
+        """(gene ID, None), (None, gene name) or (None, None)"""
+        if ref in gene_ids:
+            return ref, None
+        if ref in carriers:
+            return None, ref
+        return None, None
+
+    refs = {key: resolve(key) for key in gene_keys}
+
+    def collect(term):
+        if term not in reac_ids:
+            refs.setdefault(term, resolve(term))
+        return term
+
+    for constraint in reg_constraints:
+        _map_identifiers(constraint, collect)
+
+    by_name = {name for _, name in refs.values() if name}
+    if by_name:
+        in_use = set(carriers) if all_genes else by_name | {name_of[i] for i, _ in refs.values() if i in name_of}
+        reasons = unusable(in_use)
+        if reasons:
+            raise Exception('The strain design setup refers to genes by name (e.g. ' + sorted(by_name)[0] + '), but the gene names '
+                            'cannot serve as identifiers: ' + reasons + '. Refer to genes by their IDs in gko_cost, gki_cost '
+                            'and reg_cost, or give the genes distinct names.')
+        use_names = True
+    elif gene_keys or reg_constraints or len(name_of) < len(model.genes):
+        use_names = False
+    else:
+        reasons = unusable(carriers)
+        use_names = not reasons
+        if reasons:
+            logging.warning('The gene names cannot serve as identifiers: ' + reasons + '. Genes are called by their IDs instead.')
+    rename = {}
+    for ref, (gene_id, name) in refs.items():
+        ident = name if name else (name_of.get(gene_id, gene_id) if use_names else gene_id)
+        if ident and ident != ref:
+            rename[ref] = ident
+    return use_names, rename
+
+
 @with_suppressed_lp
 def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     """Computes strain designs for a user-defined strain design problem
@@ -486,28 +584,43 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     if (GKOCOST in kwargs or GKICOST in kwargs or
         ('gene_kos' in kwargs and kwargs['gene_kos'])) and hasattr(model, 'genes') and model.genes:
         kwargs['gene_kos'] = True
-        used_g_ids = set(kwargs[GKOCOST] if GKOCOST in kwargs and kwargs[GKOCOST] else set())
-        used_g_ids.update(set(kwargs[GKICOST] if GKICOST in kwargs and kwargs[GKICOST] else set()))
-        used_g_ids.update(set(kwargs[REGCOST] if REGCOST in kwargs and kwargs[REGCOST] else set()))
+        # the caller's gene costs and regulatory interventions (copies, made above)
+        gko_given = GKOCOST in kwargs and bool(kwargs[GKOCOST])
+        if not gko_given:
+            uncmp_gko_cost = {}
+        if GKICOST not in kwargs or not kwargs[GKICOST]:
+            uncmp_gki_cost = {}
+        if REGCOST not in kwargs or not kwargs[REGCOST]:
+            uncmp_reg_cost = {}
         # genes must not begin with number, put a 'g' in front of genes that start with a number
         if any([True for g in model.genes if g.id[0].isdigit()]):
             logging.warning("Gene IDs must not start with a digit. Inserting prefix 'g' where necessary.")
             rename_genes(model, {g.id: 'g' + g.id for g in model.genes if g.id[0].isdigit()})
-        if np.all([len(g.name) for g in model.genes]) and (np.any([g.name in used_g_ids for g in model.genes]) or not used_g_ids):
-            has_gene_names = True
-        else:
-            has_gene_names = False
-        if has_gene_names and any([True for g in model.genes if g.name[0].isdigit()]):
+        has_gene_names, gene_rename = _gene_references(model,
+                                                       list(uncmp_gko_cost) + list(uncmp_gki_cost),
+                                                       list(uncmp_reg_cost),
+                                                       all_genes=not gko_given)
+        if has_gene_names and any([True for g in model.genes if g.name[:1].isdigit()]):
             logging.warning("Gene names must not start with a digit. Inserting prefix 'g' where necessary.")
-            for g, v in {g.id: 'g' + g.name for g in model.genes if g.name[0].isdigit()}.items():
+            for g, v in {g.id: 'g' + g.name for g in model.genes if g.name[:1].isdigit()}.items():
                 model.genes.get_by_id(g).name = v
-        if GKOCOST not in kwargs or not kwargs[GKOCOST]:
-            if has_gene_names:  # if gene names are defined, use them instead of ids
-                uncmp_gko_cost = {k: 1.0 for k in model.genes.list_attr('name')}
+        if gene_rename:
+            # every gene goes by one identifier: the one of its pseudoreaction
+            for key, costs in ((GKOCOST, uncmp_gko_cost), (GKICOST, uncmp_gki_cost)):
+                renamed = {gene_rename.get(k, k): v for k, v in costs.items()}
+                if len(renamed) < len(costs):
+                    raise Exception(key + ' refers to a gene more than once, by its ID and by its name.')
+                costs.clear()
+                costs.update(renamed)
+            uncmp_reg_cost = {
+                _map_identifiers(k, lambda term: term if model.reactions.has_id(term) else gene_rename.get(term, term)): v
+                for k, v in uncmp_reg_cost.items()
+            }
+        if not gko_given:
+            if has_gene_names:  # a gene without a name keeps its ID
+                uncmp_gko_cost = {g.name or g.id: 1.0 for g in model.genes}
             else:
                 uncmp_gko_cost = {k: 1.0 for k in model.genes.list_attr('id')}
-        if GKICOST not in kwargs or not kwargs[GKICOST]:
-            uncmp_gki_cost = {}
     else:
         kwargs['gene_kos'] = False
         has_gene_names = False

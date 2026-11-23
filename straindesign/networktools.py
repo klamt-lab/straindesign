@@ -855,6 +855,17 @@ def extend_model_gpr(model, use_names=False):
                         "option or refer \nto gene IDs instead of names in your strain design "+\
                         "computation. You may also rename\nthe conflicting genes, e.g., with "+\
                         "model.genes.get_by_id('ADK1').name = 'adk1'")
+    if use_names:
+        # a gene without a name is referenced by its ID
+        gene_reac_ids = [g.name or g.id for g in model.genes]
+        if len(set(gene_reac_ids)) < len(gene_reac_ids):
+            seen = set()
+            shared = sorted({i for i in gene_reac_ids if i in seen or seen.add(i)})
+            raise Exception("GPR rule integration requires a distinct identifier for every gene.\nWith "+\
+                            "use_names=True, the following identifiers stand for several genes:\n"+str(shared)+\
+                            "\nTo prevent this problem, call extend_model_gpr with the use_names=False "+\
+                            "option or refer\nto gene IDs instead of names in your strain design "+\
+                            "computation. You may also give the genes distinct names.")
 
     MAX_NAME_LEN = 230
 
