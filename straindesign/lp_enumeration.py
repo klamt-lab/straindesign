@@ -1724,6 +1724,8 @@ class OptCoupleObjective(_Objective):
         self.has_noprod = ClassicModule(PROTECT, self.noprod_plain(ctx, prod))
         self.modules = [self.mod, self.with_c, self.has_noprod]
         self.min_gcp = mod[MIN_GCP] if MIN_GCP in mod and mod[MIN_GCP] is not None else None
+        # a potential equal to min_gcp counts, as in the MILP formulation
+        self.start = None if self.min_gcp is None else self.min_gcp - _IMPROVE * max(1.0, abs(self.min_gcp))
 
     @staticmethod
     def noprod_plain(ctx, prod):
@@ -1812,7 +1814,7 @@ def lp_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, has_g
         # found is also the cheapest of the best.
         enum = LPEnumerator(layer, modules, max_cost, time_limit=time_limit, max_solutions=1, **kwargs)
         best, trace = None, []
-        objective.set_threshold(getattr(objective, 'min_gcp', None))
+        objective.set_threshold(getattr(objective, 'start', None))
         while True:
             found, complete = enum.run()
             if not found:
