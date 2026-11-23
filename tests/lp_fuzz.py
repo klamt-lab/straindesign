@@ -815,8 +815,10 @@ def _nice(rng, top):
     return float(rng.choice(grid)) if grid else round(top / 2, 3)
 
 
-def _random_modules(rng, net, kind, cone):
-    """Modules of one kind over the roles of the network; None if the network does not allow them."""
+def _random_modules(rng, net, kind, cone, exotic=0.0):
+    """Modules of one kind over the roles of the network; None if the network does not allow them.
+    exotic: probability, per place, of an equality among the constraints, an objective over two
+    reactions, a SUPPRESS module next to an optimisation module."""
     bm, prod = {'BM': 1.0}, {'EX_P': 1.0}
     ups = [r for r in net['rxns'] if r.startswith('UP')]
     others = [r for r in net['rxns'] if r.startswith('EX') and r != 'EX_P']
@@ -837,13 +839,27 @@ def _random_modules(rng, net, kind, cone):
         c.append(growth(0.5) if rng.random() < 0.6 else [{ups[0]: 1.0}, '>=', _nice(rng, 1.0)])
         return c
 
+    def odd(mod):  # an equality: a fixed uptake, or a by-product that is not excreted
+        if exotic and rng.random() < exotic:
+            if others and rng.random() < 0.5:
+                mod['constraints'] = mod['constraints'] + [[{str(rng.choice(others)): 1.0}, '=', 0.0]]
+            else:
+                mod['constraints'] = mod['constraints'] + [[{ups[0]: 1.0}, '=', _nice(rng, 5.0)]]
+        return mod
+
+    def objective(expr, other):  # at times a second reaction with a small weight
+        expr = dict(expr)
+        if exotic and other and rng.random() < exotic:
+            expr[other] = float(rng.choice([-0.5, -0.1, 0.1, 0.5]))
+        return expr
+
     def suppress():
         r = rng.random()
         if r < 0.3:
-            return dict(module_type=SUPPRESS, constraints=[growth()])
+            return odd(dict(module_type=SUPPRESS, constraints=[growth()]))
         if r < 0.75 or not others:
-            return dict(module_type=SUPPRESS, constraints=low_product())
-        return dict(module_type=SUPPRESS, constraints=[[{str(rng.choice(others)): 1.0}, '>=', _nice(rng, 2.0)]])
+            return odd(dict(module_type=SUPPRESS, constraints=low_product()))
+        return odd(dict(module_type=SUPPRESS, constraints=[[{str(rng.choice(others)): 1.0}, '>=', _nice(rng, 2.0)]]))
 
     def protect():
         r = rng.random()
@@ -852,13 +868,13 @@ def _random_modules(rng, net, kind, cone):
             c = [[dict(prod), '>=', _nice(rng, top_p * 0.5)]]
         elif r < 0.5:
             c.append([dict(prod), '>=', _nice(rng, top_p * 0.3)])
-        return dict(module_type=PROTECT, constraints=c)
+        return odd(dict(module_type=PROTECT, constraints=c))
 
     def inner(mod):
-        mod['inner_objective'] = dict(bm)
+        mod['inner_objective'] = objective(bm, ups[0])
         if rng.random() < 0.3:
             mod['inner_opt_tol'] = float(rng.choice([0.5, 0.8, 0.9, 0.99]))
-        return mod
+        return odd(mod)
 
     if kind == 'S':
         return [suppress()]
@@ -877,15 +893,19 @@ def _random_modules(rng, net, kind, cone):
         return [inner(dict(module_type=SUPPRESS, constraints=low_product())), inner(dict(module_type=PROTECT, constraints=[growth(0.5)]))]
     constraints = [growth(0.5)] if rng.random() < 0.6 else []
     extra = [protect()] if rng.random() < 0.15 else []
+    if exotic and rng.random() < exotic:
+        extra.append(suppress())
     if kind == 'optknock':
-        mod = dict(module_type=OPTKNOCK, inner_objective=dict(bm), outer_objective=dict(prod), constraints=constraints)
+        mod = dict(module_type=OPTKNOCK, inner_objective=objective(bm, ups[0]), outer_objective=objective(prod, others[0] if others else None),
+                   constraints=constraints)
         if rng.random() < 0.2:
             mod['inner_opt_tol'] = float(rng.choice([0.5, 0.9]))
         return [mod] + extra
     if kind == 'robustknock':
-        return [dict(module_type=ROBUSTKNOCK, inner_objective=dict(bm), outer_objective=dict(prod), constraints=constraints)] + extra
+        return [dict(module_type=ROBUSTKNOCK, inner_objective=objective(bm, ups[0]), outer_objective=objective(prod, others[0] if others else None),
+                     constraints=constraints)] + extra
     if kind == 'optcouple':
-        mod = dict(module_type=OPTCOUPLE, inner_objective=dict(bm), prod_id=dict(prod), constraints=constraints)
+        mod = dict(module_type=OPTCOUPLE, inner_objective=objective(bm, ups[0]), prod_id=dict(prod), constraints=constraints)
         if rng.random() < 0.5:
             mod['min_gcp'] = _nice(rng, top_bm * 0.5)
         return [mod] + extra
@@ -911,7 +931,7 @@ def _well_posed(problem):
     return True
 
 
-def random_problem(seed, kind=None, max_sets=500, trivial=0.1, deep=False, lp='highs', rich=0.0):
+def random_problem(seed, kind=None, max_sets=500, trivial=0.1, deep=False, lp='highs', rich=0.0, exotic=0.0):
     """A random problem, a function of its arguments alone (as far as the LP solver's answers on
     the candidate networks do not depend on the solver).
 
@@ -924,6 +944,9 @@ def random_problem(seed, kind=None, max_sets=500, trivial=0.1, deep=False, lp='h
         deep (bool): prefer large budgets (up to 5)
         rich (float): probability of passing over a problem with little to find (fewer than two
             designs or none that costs more than 1; an optimum that the wild type reaches)
+        exotic (float): probability, per place, of the less usual: an equality among a module's
+            constraints, an objective over two reactions, a SUPPRESS module next to an
+            optimisation module, a reaction written backwards (upper bound 0)
         lp (str): LP solver of the brute force that looks at the candidates
     """
     rng = np.random.default_rng(seed)
@@ -932,10 +955,17 @@ def random_problem(seed, kind=None, max_sets=500, trivial=0.1, deep=False, lp='h
         bounds = str(rng.choice(['bounded', 'forced'] if kind in _NEEDS_BOUNDS else ['cone', 'bounded', 'forced']))
         net = _random_network(rng, bounds)
         net['gpr'], net['genes'] = [''] * len(net['rxns']), []
-        modules = _random_modules(rng, net, kind, bounds == 'cone')
+        modules = _random_modules(rng, net, kind, bounds == 'cone', exotic)
         if modules is None:
             continue
         problem = dict(name='fuzz_%s_%d' % (kind, seed), kind=kind, bounds=bounds, seed=seed, **net, modules=modules)
+        if exotic:  # internal reactions written backwards: the same network, fluxes of the other sign
+            named = module_reactions(problem)
+            for j, rid in enumerate(problem['rxns']):
+                if rid.startswith('R') and rid not in named and rng.random() < exotic:
+                    for row in problem['S']:
+                        row[j] = -row[j]
+                    problem['lb'][j], problem['ub'][j] = -problem['ub'][j], -problem['lb'][j]
         if bounds == 'forced':  # a reaction that has to run, at a rate the wild type can afford
             cand = [r for r in problem['rxns'] if r != 'BM' and not r.startswith('UP')]
             r = str(rng.choice(cand))
@@ -1202,6 +1232,12 @@ def _flags(problem):
         out.append('tol')
     if problem.get('retry'):
         out.append('retry')
+    if any(op == '=' for m in problem['modules'] for _, op, _ in m.get('constraints') or []):
+        out.append('equality')
+    if any(len(m.get(k) or {}) > 1 for m in problem['modules'] for k in ('inner_objective', 'outer_objective')):
+        out.append('objective2')
+    if any(u <= 0 for u in problem['ub']):
+        out.append('backwards')
     return out
 
 
@@ -1239,6 +1275,8 @@ def main(argv=None):
     ap.add_argument('--kinds', default=','.join(KINDS), help='module types, comma separated; a worker goes through them in turn')
     ap.add_argument('--deep', action='store_true', help='prefer large budgets (up to 5)')
     ap.add_argument('--rich', type=float, default=0.0, help='probability of passing over a problem with little to find')
+    ap.add_argument('--exotic', type=float, default=0.0, help='probability, per place, of equalities, objectives over two reactions, '
+                    'a SUPPRESS module next to an optimisation module, reactions written backwards')
     ap.add_argument('--backends', default=None, help='comma separated; default: all installed (%s)' % ', '.join(BACKENDS))
     ap.add_argument('--bf', default='highs', choices=sorted(_LP_CLASSES), help='LP solver of the brute force')
     ap.add_argument('--cross', type=float, default=0.0, help='fraction of problems on which the brute force is repeated with the other LP solver')
@@ -1273,7 +1311,7 @@ def main(argv=None):
             kind = kinds[(seed // args.step) % len(kinds)]
             t0 = time.time()
             try:
-                problem = random_problem(seed, kind, max_sets=args.max_sets, deep=args.deep, lp=args.bf, rich=args.rich)
+                problem = random_problem(seed, kind, max_sets=args.max_sets, deep=args.deep, lp=args.bf, rich=args.rich, exotic=args.exotic)
             except ProblemError as e:
                 write(dict(seed=seed, kind=kind, skipped=str(e)))
                 continue
