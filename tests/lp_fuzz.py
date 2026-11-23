@@ -36,6 +36,10 @@ What the brute force takes as the definition of a result:
 Command line (long campaigns)::
 
     python tests/lp_fuzz.py --seed 1 --n 2000 --out DIR [--kinds S,SP,...] [--backends ...]
+                            [--bf gurobi] [--cross 0.1] [--deep] [--rich 0.8] [--exotic 0.3]
+
+writes one line per problem to DIR/results_*.jsonl and the problem itself, as json, wherever a
+backend's verdict is not 'ok'.
 """
 import itertools
 import json
@@ -218,7 +222,8 @@ class BruteForce:
         lp (str): 'highs' or 'gurobi'
         shift (float): moves the threshold of every inequality a module states (and min_gcp):
             positive values enlarge the modules' regions, negative ones shrink them. With a
-            positive shift an inner optimum also counts as reached within DELTA.
+            positive shift an inner optimum also counts as reached within DELTA; with a negative
+            one a fraction of the inner optimum (inner_opt_tol < 1) has to be exceeded by DELTA.
     """
 
     def __init__(self, problem, lp='highs', shift=0.0):
