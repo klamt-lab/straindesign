@@ -22,7 +22,11 @@ This is solution_approach='any' of the LP engine (see lp_enumeration). It uses t
 layers (interventions, Boolean layer, LP oracle per module) and the same kind of clauses, but
 instead of visiting the intervention sets cost level by cost level it
 
-1. **dives**: starting from no intervention, it asks the modules about the blocked set X; a module
+1. **dives**. With classic SUPPRESS / PROTECT modules a *guided dive* asks for a whole cut set at
+   once: a flux witness of each PROTECT module that also violates every SUPPRESS module is kept
+   alive, and one proof LP per SUPPRESS region, with every other affordable atom blocked, names
+   cheap atoms whose blocking empties the region (see `DiveSearch.guided_dive`). Otherwise, and
+   when guided dives fail, a *clause dive* asks the modules about the blocked set X; a module
    that is not fulfilled returns a clause (P, N), and the dive adds the interventions that block
    one atom of P, chosen by a score (clauses repaired per cost, whether the stored flux witness of
    every PROTECT-type module survives), with random tie-breaking. A dead end (empty P, budget
@@ -42,7 +46,7 @@ import random
 import time
 import numpy as np
 from straindesign.names import *
-from straindesign.lp_enumeration import (BitRows, ClassicModule, FEASIBLE, LPError, _IMPROVE, _OBJECTIVES, _LPBase, _integer_rows, _minimal,
+from straindesign.lp_enumeration import (BitRows, ClassicModule, FEASIBLE, LPError, Region, _IMPROVE, _OBJECTIVES, _LPBase, _integer_rows, _minimal,
                                          bits, build_problem, lp_counts, CompressedDesigns)
 
 
@@ -100,7 +104,7 @@ class _Oracle:
         without losing those witnesses."""
         out = 0
         for mod in self.modules:
-            if mod.kind == SUPPRESS or not mod.memo.P.n:
+            if mod.kind == SUPPRESS or mod.__class__ is not ClassicModule or not mod.memo.P.n:
                 continue
             xw = mod.memo.P.words(X)
             ok = np.flatnonzero(mod.memo.P.disjoint(xw) & mod.memo.N.within(xw))
@@ -108,10 +112,11 @@ class _Oracle:
                 out |= _row_int(mod.memo.P, ok[-1])
         return out & ~X
 
-    def check(self, X, avoid_s=0, avoid_p=0):
+    def check(self, X, avoid_s=0, avoid_p=0, clean=False):
         """(True, None, None) if X fulfils every module, else (False, P, N) with a clause X
-        violates. avoid_s steers SUPPRESS witnesses, avoid_p those of classic PROTECT modules."""
-        v = self.clauses.violated(X)
+        violates. avoid_s steers SUPPRESS witnesses, avoid_p those of classic PROTECT modules.
+        clean: the caller has just seen that X violates no stored clause."""
+        v = [] if clean else self.clauses.violated(X)
         if len(v):
             self.stat['from_clauses'] += 1
             size = [self.clauses.size[i] for i in v]
@@ -148,9 +153,86 @@ class _Oracle:
         return True, None, None
 
 
+class Target:
+    """Where a flux that keeps a PROTECT module fulfilled has to lie once every SUPPRESS module is
+    fulfilled: in the PROTECT region and outside each SUPPRESS region, so it violates one row of
+    every SUPPRESS module. The region holds the PROTECT module's rows plus every row of the
+    SUPPRESS modules turned around (a.v >= rhs for a.v <= rhs; both directions for an equality),
+    each with a threshold that is set per query.
+
+    Args:
+        region (Region): PROTECT rows fixed, the turned-around rows as threshold rows
+        rows (list): per threshold row (index of the SUPPRESS module, right-hand side)
+        n_sup (int): number of SUPPRESS modules
+    """
+
+    def __init__(self, region, rows, n_sup):
+        self.region, self.rows, self.n_sup = region, rows, n_sup
+
+    def thetas(self, rng, stat):
+        """Thresholds that ask for one violated row per SUPPRESS module, each violated by a random
+        fraction (between a quarter and three quarters) of the largest violation the region allows
+        together with the rows chosen before; None if some SUPPRESS module has no row the region
+        can violate."""
+        R = self.region
+        th = [None] * len(self.rows)
+        for j in range(self.n_sup):
+            ks = [k for k, (jj, _) in enumerate(self.rows) if jj == j]
+            rng.shuffle(ks)
+            for k in ks:
+                rhs = self.rows[k][1]
+                stat['guide_lps'] += 1
+                try:
+                    val, _, _ = R.maximize(k, 0, th)
+                except LPError:
+                    continue
+                if val is None:
+                    return None  # the PROTECT region is empty with the rows chosen so far
+                gap = min(val, rhs + 1e3 * max(1.0, abs(rhs))) - rhs  # an unbounded violation counts as a large one
+                if gap > 1e-6 * max(1.0, abs(rhs)):
+                    th[k] = rhs + (0.25 + 0.5 * rng.random()) * gap
+                    break
+            else:
+                return None
+        return th
+
+
+def target_regions(ctx, sd_modules, modules):
+    """A Target per classic PROTECT module, when every SUPPRESS module is classic; else None."""
+    from straindesign.parse_constr import lineqlist2mat
+    pairs = [(sm, m) for sm, m in zip([sm for sm in sd_modules if sm[MODULE_TYPE] in (SUPPRESS, PROTECT)], modules)]
+    sup = [sm for sm, m in pairs if m.kind == SUPPRESS]
+    if not sup or any(m.__class__ is not ClassicModule for _, m in pairs):
+        return None
+    if ctx.get('exact'):
+        from straindesign.lp_enumeration import _integer_rows
+        mat = lambda c: _integer_rows(*lineqlist2mat(c, ctx['rxn_ids']))
+    else:
+        mat = lambda c: lineqlist2mat(c, ctx['rxn_ids'])
+    rows, info = [], []
+    for j, sm in enumerate(sup):
+        A, b, Ae, be = mat(sm[CONSTRAINTS])
+        A, Ae = A.toarray(), Ae.toarray()
+        for i in range(A.shape[0]):
+            rows.append(A[i])
+            info.append((j, float(b[i])))
+        for i in range(Ae.shape[0]):
+            rows += [Ae[i], -Ae[i]]
+            info += [(j, float(be[i])), (j, -float(be[i]))]
+    out = {}
+    for sm, m in pairs:
+        if m.kind == SUPPRESS:
+            continue
+        R = Region(ctx['S'], ctx['lb'], ctx['ub'], *mat(sm[CONSTRAINTS]), ctx['atom_rxn'], ctx['solver'], rows=rows)
+        out[id(m)] = Target(R, info, len(sup))
+    return out
+
+
 class DiveSearch:
     """Designs for SUPPRESS / PROTECT modules (with or without inner objective) by randomised
-    dives over the clauses, each design polished to a local optimum.
+    dives, each design polished to a local optimum. Guided dives (see `guided_dive`) need classic
+    modules; clause dives (see `dive`) work for every module and take over when guided dives
+    give nothing.
 
     Args:
         layer (BoolLayer)
@@ -164,17 +246,29 @@ class DiveSearch:
         break_penalty (float): score factor for a choice that blocks an atom of a PROTECT witness
         stall (int): consecutive dives without a new design after which the search ends
         swap_trials (float): LP checks the polishing may spend on the swap neighbourhood per design
+        guided (bool): try guided dives (classic SUPPRESS / PROTECT modules only) before clause dives
+        guide_rounds (int): rounds of one guided dive
+        keep_price (float): factor on the blocking cost of an atom a PROTECT witness uses, in the
+            proof LP that tells which kept atoms are expensive to keep
+        probes (int): guided dives whose designs are pooled; the cheapest is polished first
+        redives (int): re-dives from a random half of the design that the polishing tries
+        targets (dict): id of a PROTECT module -> Target (see `target_regions`)
     """
 
     def __init__(self, layer, modules, max_cost, seed=None, time_limit=np.inf, dive_nodes=400, width=3, noise=0.3, break_penalty=0.2, stall=8,
-                 swap_trials=np.inf):
+                 swap_trials=500, guided=True, guide_rounds=30, keep_price=4.0, probes=8, redives=20, targets=None):
         self.layer, self.max_cost = layer, max_cost
         self.rng = random.Random(seed)
         self.deadline = time.time() + time_limit
         self.dive_nodes, self.width, self.noise, self.break_penalty = dive_nodes, width, noise, break_penalty
         self.stall, self.swap_trials = stall, swap_trials
+        self.guided, self.guide_rounds, self.targets = guided, guide_rounds, targets or {}
+        self.probes, self.pool, self.keep_price, self.redives = probes, [], keep_price, redives
+        # guided dives may overshoot the budget (polishing often brings the design back into it)
+        self.guide_budget = np.inf
+        self._open0 = {}  # forbidden set -> per atom the (cost, blocked atoms) of its completions from the empty set
         self.stat = dict(queries=0, memo=0, from_clauses=0, dives=0, failed_dives=0, nodes=0, backtracks=0, swaps=0, swap_checks=0,
-                         swap_capped=0)
+                         swap_capped=0, guided=0, guide_lps=0, over_budget=0, redives=0, redive_wins=0)
         self.clauses = ClauseStore(layer.nA)
         self.oracle = _Oracle(modules, self.clauses, self.stat)
         self.protect_mods = [m for m in modules if m.kind != SUPPRESS]
@@ -228,6 +322,194 @@ class DiveSearch:
             out.append((score, z2, X2, cost + cJ))
         out.sort(key=lambda t: -t[0])
         return out
+
+    # -- proof-guided dive ------------------------------------------------------------------------
+    def _open_atoms(self, z, X, keep, forbid):
+        """Atoms that may still be blocked: not blocked, not kept, and with an affordable
+        completion that uses no forbidden intervention and blocks no kept atom. Returns the atoms
+        and the cost of each one's cheapest such completion."""
+        layer = self.layer
+        U, w = 0, {}
+        if not z and not X:
+            if forbid not in self._open0:
+                opts = {}
+                for a in range(layer.nA):
+                    o = sorted((layer.set_cost(J), layer.extend(0, 0, J)) for J in layer.completions(a, 0, self.guide_budget) if not J & forbid)
+                    if o:
+                        opts[a] = o
+                self._open0 = {forbid: opts}
+            for a, o in self._open0[forbid].items():
+                if keep >> a & 1:
+                    continue
+                c = next((c for c, XJ in o if not XJ & keep), None)
+                if c is not None:
+                    U |= 1 << a
+                    w[a] = c
+            return U, w
+        left = self.guide_budget - layer.set_cost(z)
+        for a in range(layer.nA):
+            if (X | keep) >> a & 1:
+                continue
+            best = np.inf
+            for J in layer.completions(a, z, left):
+                if J & forbid:
+                    continue
+                c = layer.set_cost(J)
+                if c < best and not layer.extend(z, X, J) & keep:
+                    best = c
+            if np.isfinite(best):
+                U |= 1 << a
+                w[a] = best
+        return U, w
+
+    def _weighted_core(self, region, X, weights):
+        """An infeasibility proof of the region with the atoms X blocked whose zero bounds cost
+        little: the proof LP's multipliers of the atoms weighted by what blocking them costs (with
+        random spread). None if the region has a point even then."""
+        lp = region.proof_lp
+        cols, vals = [], []
+        for a, c in weights.items():
+            f = c * (1.0 + self.noise * self.rng.random())
+            for col in (region.mu_f[a], region.mu_b[a]):
+                if col >= 0:
+                    cols.append(col)
+                    vals.append(f)
+        lp.set_obj(cols, vals)
+        try:
+            return region.core(X)
+        except LPError:
+            return None
+        finally:
+            lp.set_obj(cols, [1.0] * len(cols))
+
+    def _irreducible(self, region, X, C, w):
+        """The atoms of the core C beyond X, thinned out (the most expensive first) while the
+        region with them and X blocked stays empty: blocking fewer of them would leave a point."""
+        need = C & ~X
+        for a in sorted(bits(need), key=lambda a: (-w.get(a, 0.0), self.rng.random())):
+            if not need >> a & 1:
+                continue
+            self.stat['guide_lps'] += 1
+            try:
+                C2 = region.core(X | (need & ~(1 << a)))
+            except LPError:
+                continue
+            if C2 is not None:
+                need = C2 & ~X
+        return need
+
+    def _block_all(self, z, X, atoms, keep, forbid):
+        """z extended by interventions that block every atom of `atoms` without blocking a kept
+        atom, cheapest completion first (random spread); None if the budget does not suffice."""
+        layer = self.layer
+        todo = list(bits(atoms & ~X))
+        self.rng.shuffle(todo)
+        for a in todo:
+            if X >> a & 1:
+                continue
+            left = self.guide_budget - layer.set_cost(z)
+            opts = []
+            for J in layer.completions(a, z, left):
+                if J & forbid:
+                    continue
+                X2 = layer.extend(z, X, J)
+                if not X2 & keep:
+                    opts.append((layer.set_cost(J) * (1.0 + self.noise * self.rng.random()), J, X2))
+            if not opts:
+                return None, None
+            _, J, X = min(opts, key=lambda t: t[0])
+            z |= J
+        return z, X
+
+    def guided_dive(self, z0=0, rounds=None, forbid=0):
+        """A dive for classic SUPPRESS / PROTECT modules that asks for whole cut sets instead of
+        single clauses, alternating between the two kinds of module. One round:
+
+        1. every PROTECT module gives a flux witness that keeps away from the atoms H (from its
+           Target region when there is one: a point that also violates a row of every SUPPRESS
+           module, which a flux surviving a design has to do); the atoms the witnesses use are
+           *kept*, so the PROTECT modules stay fulfilled without any further LP;
+        2. per SUPPRESS module, a proof LP with every affordable atom blocked returns an
+           infeasibility proof whose multipliers are weighted by the cost of the cheapest
+           completion, kept atoms at `keep_price` times that cost. If the proof needs no kept
+           atom, it is thinned out to an irreducible set and blocked, and the round ends with a
+           design. Otherwise the kept atoms it uses join H (they are expensive to keep) and the
+           same proof without kept atoms gives the round's fallback design.
+        3. A SUPPRESS region that keeps a point even with every unkept atom blocked runs through
+           kept atoms only: those join H.
+
+        H only grows; the dive ends with the first design whose proofs need no kept atom, or after
+        `guide_rounds` rounds or a round that adds nothing to H, with the cheapest fallback design.
+
+        Args:
+            z0 (int): interventions the dive starts from (the polishing re-dives from part of a design)
+            rounds (int): rounds, default guide_rounds
+            forbid (int): interventions the dive must not use
+
+        Returns the design, or None (also when the modules are of another kind)."""
+        mods = self.oracle.modules
+        sup = [m for m in mods if m.kind == SUPPRESS]
+        pro = [m for m in mods if m.kind != SUPPRESS]
+        if not sup or any(m.__class__ is not ClassicModule for m in mods):
+            return None
+        self.stat['guided'] += 1
+        layer = self.layer
+        for d in self.found:  # one intervention of each design returned so far: the dive cannot contain one again
+            forbid |= 1 << self.rng.choice(list(bits(d & ~z0 or d)))
+        X0 = layer.X(z0)
+        thetas = {}
+        for p in pro:
+            T = self.targets.get(id(p))
+            thetas[id(p)] = T.thetas(self.rng, self.stat) if T is not None else None
+        H, best = 0, None
+        for _ in range(self.guide_rounds if rounds is None else rounds):
+            if self._time_up():
+                raise _Stop('time limit')
+            keep = 0
+            for p in pro:
+                T, th = self.targets.get(id(p)), thetas[id(p)]
+                W = T.region.witness(X0, avoid=H, thetas=th) if th is not None else p.region.witness(X0, avoid=H)
+                self.stat['guide_lps'] += 1
+                if W is None:
+                    return best
+                p.memo.add(W, 0)  # a point of the target region is one of the PROTECT region
+                keep |= W
+            H0 = H
+            z, X, clean = z0, X0, True
+            for s in sup:
+                U, w = self._open_atoms(z, X, keep, forbid)
+                if keep and clean:
+                    K, wk = self._open_atoms(z, X, 0, forbid)
+                    wk = {a: c * (self.keep_price if keep >> a & 1 else 1.0) for a, c in wk.items()}
+                    C = self._weighted_core(s.region, X | K, wk)
+                    self.stat['guide_lps'] += 1
+                    if C is not None and C & keep:
+                        H |= C & keep
+                        clean = False
+                C = self._weighted_core(s.region, X | U, w)
+                self.stat['guide_lps'] += 1
+                logging.debug('guided: |H| %d, |keep| %d, |U| %d, core %s' % (H.bit_count(), keep.bit_count(), U.bit_count(), None if C is None else C.bit_count()))
+                if C is None:
+                    S = s.region.witness(X | U)
+                    self.stat['guide_lps'] += 1
+                    if S is not None:
+                        self.clauses.add(S, 0)  # every design blocks an atom of this point
+                        H |= S & keep
+                    z = None
+                    break
+                C = self._irreducible(s.region, X, C, w) | (C & X)
+                s.memo.add(0, C)
+                s.cores.append(C)
+                z, X = self._block_all(z, X, C, keep, forbid)
+                if z is None:
+                    break
+            if z is not None and (best is None or layer.set_cost(z) < layer.set_cost(best)):
+                if self.oracle.check(X)[0]:
+                    best = z
+            logging.debug('guided: round cost %s, clean %s, best %s' % (None if z is None else layer.set_cost(z), clean, None if best is None else layer.set_cost(best)))
+            if (z is not None and clean) or H == H0:
+                break
+        return best
 
     # -- dive ------------------------------------------------------------------------------------
     def dive(self):
@@ -296,6 +578,8 @@ class DiveSearch:
         self.rng.shuffle(members)
         pairs = [(i,) for i in members] + [(i, j) for k, i in enumerate(members) for j in members[k + 1:]]
         for R in pairs:
+            if self._time_up():
+                return None
             cR = sum(cost[i] for i in R)
             if cR <= min(cost):
                 continue
@@ -313,7 +597,7 @@ class DiveSearch:
                 G |= layer.singles(a, z1)
             G &= ~z
             for g in sorted(bits(G), key=lambda g: (cost[g], self.rng.random())):
-                if cost[g] >= cR or layer.set_cost(z1) + cost[g] > self.max_cost:
+                if cost[g] >= cR:  # a swap lowers the cost, so it stays within the budget
                     continue
                 z2 = z1 | (1 << g)
                 if self.found and self._excluded(z2):
@@ -325,18 +609,46 @@ class DiveSearch:
                     self.stat['swap_capped'] += 1
                     return None
                 self.stat['swap_checks'] += 1
-                if self.oracle.check(X2)[0]:
+                if self.oracle.check(X2, clean=True)[0]:
                     return z2
         return None
+
+    def _redive(self, z):
+        """Large-neighbourhood moves before the swaps: keep a random part of the design, forbid
+        the interventions dropped, complete the rest with a short guided dive and keep the
+        result if its minimal form is cheaper. `redives` trials in all, guided modules only."""
+        layer = self.layer
+        mods = self.oracle.modules
+        if not any(m.kind == SUPPRESS for m in mods) or any(m.__class__ is not ClassicModule for m in mods):
+            return z
+        for _ in range(self.redives):
+            if self._time_up() or not z:
+                break
+            keep = 0
+            for i in bits(z):
+                if self.rng.random() < 0.5:
+                    keep |= 1 << i
+            self.stat['redives'] += 1
+            z2 = self.guided_dive(keep, rounds=3, forbid=z & ~keep)
+            if z2 is None:
+                continue
+            z2 = self.minimise(z2)
+            if layer.set_cost(z2) < layer.set_cost(z) and not (self.found and self._excluded(z2)):
+                self.stat['redive_wins'] += 1
+                z = z2
+        return z
 
     def polish(self, z):
         """Bring a design to a local optimum: no single intervention can be removed, and no one or
         two interventions can be replaced by a single intervention of lower total cost, without
-        losing the design (among the sets that contain no design returned earlier). Both
-        neighbourhoods are searched completely unless swap_trials runs out, which
-        `stat['swap_capped']` records."""
+        losing the design (among the sets that contain no design returned earlier). The first
+        neighbourhood is always searched completely, so the result is a minimal design. The swap
+        neighbourhood is searched completely unless swap_trials LP checks or the time limit run
+        out first; `stat['swap_capped']` counts the designs for which the budget ran out, and for
+        those the swap part of the local optimum is not guaranteed."""
         self._swap_budget = self.stat['swap_checks'] + self.swap_trials
         z = self.minimise(z)
+        z = self._redive(z)
         while not self._time_up():
             z2 = self._swap_round(z)
             if z2 is None:
@@ -344,6 +656,24 @@ class DiveSearch:
             self.stat['swaps'] += 1
             z = self.minimise(z2)
         return z
+
+    def _next_dive(self):
+        """A design to polish: the cheapest one in a pool that guided dives fill up to `probes`
+        members (a guided dive costs a few dozen LPs, polishing far more), else one clause dive."""
+        if self.guided:
+            misses = 0
+            while len(self.pool) < self.probes and misses < 2:
+                z = self.guided_dive()
+                if z is None or z in self.pool:
+                    misses += 1
+                    continue
+                self.pool.append(z)
+            self.pool = [z for z in self.pool if not self._excluded(z)]
+            if self.pool:
+                z = min(self.pool, key=lambda z: (self.layer.set_cost(z), self.rng.random()))
+                self.pool.remove(z)
+                return z
+        return self.dive()
 
     def run(self, max_solutions=1):
         """Returns (designs as bit sets, proven: True if a module was shown to be unfulfillable)."""
@@ -354,13 +684,17 @@ class DiveSearch:
                 self.found, self.trivial = [0], True
                 return self.found, False
             while len(self.found) < max_solutions and fails < self.stall:
-                z = self.dive()
+                z = self._next_dive()
                 if z is None:
                     fails += 1
                     self.stat['failed_dives'] += 1
                     continue
                 c0 = self.layer.set_cost(z)
                 z = self.polish(z)
+                if self.layer.set_cost(z) > self.max_cost:
+                    self.stat['over_budget'] += 1
+                    fails += 1
+                    continue
                 if z in self.found or self._excluded(z):
                     fails += 1
                     continue
@@ -425,7 +759,7 @@ class OptSearch:
                 X2 = layer.extend(z1, X1, 1 << g)
                 if len(cl.violated(X2)):
                     continue
-                if self.ds.oracle.check(X2)[0]:
+                if self.ds.oracle.check(X2, clean=True)[0]:
                     return z1 | (1 << g)
             return None
 
@@ -545,6 +879,7 @@ def lp_dive_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, 
     logging.info('  LP dive: %d interventions over %d knockable reactions of %d (set up in %.1f s).' %
                  (layer.nI, layer.nA, len(cmp_model.reactions), time.time() - t0))
     if objective is None:
+        kwargs.setdefault('targets', target_regions(ctx, sd_modules, modules))
         search = DiveSearch(layer, modules, max_cost, seed=seed, time_limit=time_limit, **kwargs)
         found, proven = search.run(max_solutions)
         values = None
