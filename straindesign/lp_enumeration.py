@@ -857,7 +857,8 @@ class NestedModule:
 
     A set that the facts decide costs no LP. Otherwise the inner optimum is solved first, then b;
     for SUPPRESS a flux LP comes between the two: its point, kept away from the atoms the search
-    wants to block, uses few atoms and makes the stronger clause.
+    wants to block, uses few atoms and makes the stronger clause. Modules marked `first` are asked
+    before the others.
 
     Args:
         kind: SUPPRESS or PROTECT
@@ -874,6 +875,7 @@ class NestedModule:
         self.bfacts = BoundFacts(len(inner.atom_rxn))  # on b, for the thresholds in force
         self.n_opt_memo = self.n_from_facts = 0
         self._seen = (None, None)
+        self.n_high_seen = self.n_high_hit = self.n_high_miss = 0
         self.enabled = True  # False: the module asks for nothing at the moment
 
     def bound(self, g):
@@ -947,21 +949,45 @@ class NestedModule:
         """(value, W, C) of b at X."""
         return self._optimum(self.outer, self.bfacts, X, (None,) + self.extra, sharp)
 
-    def _point(self, X, avoid):
-        """A point of the region at X for the threshold bound(g(X)), g(X) known: recorded as a
-        lower bound on b."""
-        val = self.optimum(X)[0]
-        if val is None:
-            return
-        theta = self.bound(val)
+    def _point_at(self, X, avoid, g):
+        """A point of the region at X for the threshold bound(g), recorded as a lower bound on b.
+        True if there is one."""
+        theta = self.bound(g)
         R = self.outer
         try:
             W = R.witness(X, avoid, (theta,) + self.extra)
         except LPError:
-            return  # the value LP of b decides
-        if W is not None:
-            # the LP holds c.v >= theta within its tolerance
-            self.bfacts.add_lower(W, max(theta, R.last_flux[R.col_s[0]] / R.scale))
+            return False  # the value LP of b decides
+        if W is None:
+            return False
+        # the LP holds c.v >= theta within its tolerance
+        self.bfacts.add_lower(W, max(theta, R.last_flux[R.col_s[0]] / R.scale))
+        return True
+
+    def _point(self, X, avoid):
+        """A point of the region at X for the threshold that g(X) sets."""
+        val = self.optimum(X)[0]
+        if val is not None:
+            self._point_at(X, avoid, val)
+
+    def _point_high(self, X, avoid):
+        """Before g(X) is solved: a point for the threshold that the best known upper bound on
+        g(X) sets. If there is one, the region is non-empty at X, and wherever that upper bound
+        holds, without the LP for the inner optimum. If there is none the LP was in vain, so this
+        is tried as long as it succeeds about half of the time, and now and then to see whether
+        that has changed."""
+        lo, _, up, _ = self.facts.bounds(X)
+        if not np.isfinite(up) or (np.isfinite(lo) and up - lo <= 2 * _OPT_TOL * max(1.0, abs(lo))):
+            return
+        self.n_high_seen += 1
+        if self.n_high_hit + 2 < self.n_high_miss and self.n_high_seen % 8:
+            return
+        if self._point_at(X, avoid, up):
+            self.n_high_hit += 1
+        else:
+            self.n_high_miss += 1
+            if self.n_high_miss > 64:  # the rate of the recent past counts
+                self.n_high_hit, self.n_high_miss = self.n_high_hit // 2, self.n_high_miss // 2
 
     def check(self, X, avoid=0):
         """(True, None, None), or (False, P, N) with a clause: every X' that fulfils the module
@@ -970,7 +996,7 @@ class NestedModule:
         if v is not None:
             self.n_from_facts += 1
         elif self.kind == SUPPRESS:
-            steps = (lambda: self.optimum(X), lambda: self._point(X, avoid), lambda: self.constrained_optimum(X))
+            steps = (lambda: self._point_high(X, avoid), lambda: self.optimum(X), lambda: self._point(X, avoid), lambda: self.constrained_optimum(X))
         else:
             steps = (lambda: self.optimum(X), lambda: self.constrained_optimum(X))
         if v is None:
@@ -1109,7 +1135,7 @@ class LPEnumerator:
     def __init__(self, layer, modules, max_cost, targeted=True, time_limit=np.inf, max_solutions=np.inf, probe_rounds=1):
         self.layer = layer
         # modules whose violation says what to block come first: their clauses steer the search
-        self.modules = sorted(modules, key=lambda mod: mod.kind != SUPPRESS)
+        self.modules = sorted(modules, key=lambda mod: (not getattr(mod, 'first', False), mod.kind != SUPPRESS))
         self.max_cost, self.targeted, self.max_solutions = max_cost, targeted, max_solutions
         self.probe_rounds = int(os.environ.get('SD_LP_PROBES', probe_rounds))
         self.steer = os.environ.get('SD_LP_STEER', 'later')
@@ -1605,7 +1631,12 @@ class RobustKnockObjective(_Objective):
         self.outer = Region(S, lb, ub, none, [], none, [], at, sv, rows=[c, -o])
         self.mod = NestedModule(SUPPRESS, self.inner, self.outer, extra=(None,))
         self.feasible = ClassicModule(PROTECT, Region(S, lb, ub, *V, at, sv))
-        self.modules = [self.mod, self.feasible]
+        # the worst optimal flux lies above t only if the best one does: a cheaper question,
+        # asked first, whose answer "no" holds for many sets at once
+        self.best_case = NestedModule(PROTECT, self.inner, Region(S, lb, ub, none, [], none, [], at, sv, rows=[c, o]), extra=(None,))
+        self.best_case.facts = self.mod.facts  # one inner problem, one set of facts
+        self.best_case.first = True
+        self.modules = [self.mod, self.feasible, self.best_case]
         self.t = None
 
     def set_threshold(self, t):
@@ -1615,6 +1646,9 @@ class RobustKnockObjective(_Objective):
         self.mod.extra = (None if t is None else -t,)
         # a higher t admits more optimal fluxes and can only raise b: its lower bounds stand
         self.mod.bfacts.clear_upper()
+        self.best_case.enabled = t is not None
+        self.best_case.extra = (t,)
+        self.best_case.bfacts.clear_lower()
 
     def value(self, X):
         val, _, _ = self.mod.optimum(X)

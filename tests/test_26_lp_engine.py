@@ -108,6 +108,31 @@ def test_an_optimum_carries_over_to_other_blocked_sets(curr_solver, model_weak_c
     assert n_cores  # the cores are smaller than the blocked sets they come from
 
 
+def test_reaction_target_with_rule_is_blocked_either_way():
+    """A reaction that can be knocked out itself and has a rule over knockable genes is blocked
+    by its own knockout and by the genes, as is a target without rule that the compression lumps
+    with a reaction that has one."""
+    import cobra
+    from straindesign.lp_enumeration import _atoms_and_layer
+    model = cobra.Model('either_way')
+    a, b = cobra.Metabolite('A', compartment='c'), cobra.Metabolite('B', compartment='c')
+    up, conv, ex = cobra.Reaction('up', upper_bound=10), cobra.Reaction('conv', lower_bound=2, upper_bound=10), cobra.Reaction('ex', upper_bound=10)
+    up.add_metabolites({a: 1})
+    conv.add_metabolites({a: -1, b: 1})
+    ex.add_metabolites({b: -1})
+    model.add_reactions([up, conv, ex])
+    conv.gene_reaction_rule = 'g1 and g2'
+    names, layer, atom_rxn = _atoms_and_layer(model, {'conv': 2.0, 'ex': 1.0}, {'g1': 1.0, 'g2': 1.0}, 3, 'id')
+    assert names == ['g1', 'g2', 'conv', 'ex'] and atom_rxn == [1, 2]
+    assert sorted(layer.block[0]) == [mask([0]), mask([1]), mask([2])] and layer.block[1] == [mask([3])]
+    # 'up' has no rule and is a target; the compression lumps it with 'conv', whose genes then block it too
+    modules = [sd.SDModule(model, SUPPRESS, constraints=['ex >= 1'])]
+    for compress in (True, False):
+        sol = sd.compute_strain_designs(model, sd_modules=modules, solution_approach=POPULATE, max_cost=2, solver=GLPK, engine='lp', gene_kos=True,
+                                        ko_cost={'up': 2.0}, compress=compress)
+        assert _sets(sol, True) == [['g1'], ['g2'], ['up']]
+
+
 def test_mcs_suppress(curr_solver, model_small_example):
     modules = [sd.SDModule(model_small_example, SUPPRESS, constraints=["R3 - 0.5 R1 <= 0.0", "R2 <= 0", "R1 >= 0.1"])]
     ref, lp = _both(model_small_example, modules, curr_solver, max_cost=4)
