@@ -251,7 +251,7 @@ class DiveSearch:
         keep_price (float): factor on the blocking cost of an atom a PROTECT witness uses, in the
             proof LP that tells which kept atoms are expensive to keep
         probes (int): guided dives whose designs are pooled; the cheapest is polished first
-        redives (int): re-dives from a random half of the design that the polishing tries
+        redives (int): re-dives from a design with a fifth of it dropped, tried by the polishing
         targets (dict): id of a PROTECT module -> Target (see `target_regions`)
     """
 
@@ -614,9 +614,9 @@ class DiveSearch:
         return None
 
     def _redive(self, z):
-        """Large-neighbourhood moves before the swaps: keep a random part of the design, forbid
-        the interventions dropped, complete the rest with a short guided dive and keep the
-        result if its minimal form is cheaper. `redives` trials in all, guided modules only."""
+        """Large-neighbourhood moves before the swaps: drop a random fifth of the design (at
+        least two interventions), forbid them, complete the rest with a short guided dive and keep
+        the result if its minimal form is cheaper. `redives` trials in all, guided modules only."""
         layer = self.layer
         mods = self.oracle.modules
         if not any(m.kind == SUPPRESS for m in mods) or any(m.__class__ is not ClassicModule for m in mods):
@@ -624,10 +624,11 @@ class DiveSearch:
         for _ in range(self.redives):
             if self._time_up() or not z:
                 break
-            keep = 0
-            for i in bits(z):
-                if self.rng.random() < 0.5:
-                    keep |= 1 << i
+            members = list(bits(z))
+            drop = self.rng.sample(members, min(len(members), max(2, len(members) // 5)))
+            keep = z
+            for i in drop:
+                keep &= ~(1 << i)
             self.stat['redives'] += 1
             z2 = self.guided_dive(keep, rounds=3, forbid=z & ~keep)
             if z2 is None:
