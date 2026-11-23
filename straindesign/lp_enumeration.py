@@ -1591,6 +1591,18 @@ class _Objective:
     and drops the facts that do not hold at the new one. The threshold only rises, and a clause
     found at a lower threshold holds at every higher one."""
 
+    @staticmethod
+    def _region(ctx, V=None, rows=()):
+        """A region over the model of ctx (V: its fixed rows, none if None) with its exact twin,
+        like the regions of the problem's own modules. The last pass of the search asks whether
+        anything beats the best design by a millionth; where the floating-point LPs neither find
+        a flux nor a proof for a question that close, the twin settles it."""
+        none = ctx['none']
+        V = (none, [], none, []) if V is None else V
+        R = Region(ctx['S'], ctx['lb'], ctx['ub'], *V, ctx['atom_rxn'], ctx['solver'], rows=rows)
+        _with_twin(ctx, R, V, rows)
+        return R
+
 
 class OptKnockObjective(_Objective):
     """max over X of  max { o.v : v in P(X), constraints, c.v >= tol * max c over P(X) }."""
@@ -1598,9 +1610,8 @@ class OptKnockObjective(_Objective):
     def __init__(self, ctx, mod, V):
         c = _objective(mod, INNER_OBJECTIVE, INNER_OPT_SENSE, ctx['rxn_ids'])
         o = _objective(mod, OUTER_OBJECTIVE, OUTER_OPT_SENSE, ctx['rxn_ids'])
-        S, lb, ub, at, sv, none = (ctx[k] for k in ('S', 'lb', 'ub', 'atom_rxn', 'solver', 'none'))
-        self.inner = Region(S, lb, ub, none, [], none, [], at, sv, rows=[c])
-        self.outer = Region(S, lb, ub, *V, at, sv, rows=[c, o])
+        self.inner = self._region(ctx, rows=[c])
+        self.outer = self._region(ctx, V, rows=[c, o])
         tol = mod[INNER_OPT_TOL] if mod[INNER_OPT_TOL] is not None else 1.0
         self.mod = NestedModule(PROTECT, self.inner, self.outer, tol=tol, extra=(None,))
         self.modules = [self.mod]
@@ -1626,14 +1637,13 @@ class RobustKnockObjective(_Objective):
     def __init__(self, ctx, mod, V):
         c = _objective(mod, INNER_OBJECTIVE, INNER_OPT_SENSE, ctx['rxn_ids'])
         o = _objective(mod, OUTER_OBJECTIVE, OUTER_OPT_SENSE, ctx['rxn_ids'])
-        S, lb, ub, at, sv, none = (ctx[k] for k in ('S', 'lb', 'ub', 'atom_rxn', 'solver', 'none'))
-        self.inner = Region(S, lb, ub, none, [], none, [], at, sv, rows=[c])
-        self.outer = Region(S, lb, ub, none, [], none, [], at, sv, rows=[c, -o])
+        self.inner = self._region(ctx, rows=[c])
+        self.outer = self._region(ctx, rows=[c, -o])
         self.mod = NestedModule(SUPPRESS, self.inner, self.outer, extra=(None,))
-        self.feasible = ClassicModule(PROTECT, Region(S, lb, ub, *V, at, sv))
+        self.feasible = ClassicModule(PROTECT, self._region(ctx, V))
         # the worst optimal flux lies above t only if the best one does: a cheaper question,
         # asked first, whose answer "no" holds for many sets at once
-        self.best_case = NestedModule(PROTECT, self.inner, Region(S, lb, ub, none, [], none, [], at, sv, rows=[c, o]), extra=(None,))
+        self.best_case = NestedModule(PROTECT, self.inner, self._region(ctx, rows=[c, o]), extra=(None,))
         self.best_case.facts = self.mod.facts  # one inner problem, one set of facts
         self.best_case.first = True
         self.modules = [self.mod, self.feasible, self.best_case]
@@ -1666,20 +1676,15 @@ class OptCoupleObjective(_Objective):
         from straindesign.parse_constr import linexprdict2mat
         c = _objective(mod, INNER_OBJECTIVE, INNER_OPT_SENSE, ctx['rxn_ids'])
         prod = sparse.csr_matrix(linexprdict2mat(mod[PROD_ID], ctx['rxn_ids']))
-        S, lb, ub, at, sv, none = (ctx[k] for k in ('S', 'lb', 'ub', 'atom_rxn', 'solver', 'none'))
-        self.inner = Region(S, lb, ub, none, [], none, [], at, sv, rows=[c])
-        self.noprod = Region(S, lb, ub, none, [], prod, [0.0], at, sv, rows=[c])
+        no_production = (ctx['none'], [], prod, [0.0])
+        self.inner = self._region(ctx, rows=[c])
+        self.noprod = self._region(ctx, no_production, rows=[c])
         self.mod = NestedModule(SUPPRESS, self.inner, self.noprod)
-        self.with_c = NestedModule(PROTECT, self.inner, Region(S, lb, ub, *V, at, sv, rows=[c]))
+        self.with_c = NestedModule(PROTECT, self.inner, self._region(ctx, V, rows=[c]))
         self.with_c.facts = self.mod.facts  # one inner problem, one set of facts
-        self.has_noprod = ClassicModule(PROTECT, self.noprod_plain(ctx, prod))
+        self.has_noprod = ClassicModule(PROTECT, self._region(ctx, no_production))
         self.modules = [self.mod, self.with_c, self.has_noprod]
         self.min_gcp = mod[MIN_GCP] if MIN_GCP in mod and mod[MIN_GCP] is not None else None
-
-    @staticmethod
-    def noprod_plain(ctx, prod):
-        S, lb, ub, at, sv, none = (ctx[k] for k in ('S', 'lb', 'ub', 'atom_rxn', 'solver', 'none'))
-        return Region(S, lb, ub, none, [], prod, [0.0], at, sv)
 
     def set_threshold(self, t):
         # growth without production has to stay below (optimum - t): no such flux at or above it
