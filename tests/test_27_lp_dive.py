@@ -181,3 +181,26 @@ def test_imlcore_growth_coupling(model_core):
     # one design of three knockouts, which the decompression spreads over the reactions lumped with them
     assert designs and all(len(d) >= 3 for d in designs)
     _check_valid_minimal(m, spec, designs, False)
+
+
+def test_the_cheapest_designs_come_first(curr_solver, model_small_example):
+    """Designs of the lowest cost levels are found by the complete search before any dive."""
+    modules = _modules(model_small_example, SPEC_SP)
+    every = sd.compute_strain_designs(model_small_example, sd_modules=modules, solution_approach=POPULATE, solver=curr_solver, engine='lp', max_cost=4)
+    cheapest = min(len(d) for d in _designs(every, False))
+    sol = _run(model_small_example, modules, curr_solver, max_solutions=2)
+    found = _designs(sol, False)
+    assert sol.status == OPTIMAL and len(found) >= 2  # a design of the compressed network can stand for several
+    assert min(len(d) for d in found) == cheapest and set(found) <= set(_designs(every, False))
+
+
+def test_knock_ins_are_served_by_the_complete_search(curr_solver, model_small_example):
+    modules = _modules(model_small_example, SPEC_SP)
+    kw = dict(ko_cost={r.id: 1.0 for r in model_small_example.reactions if r.id != 'R9'}, ki_cost={'R9': 1.0}, max_cost=4)
+    every = sd.compute_strain_designs(model_small_example, sd_modules=modules, solution_approach=POPULATE, solver=curr_solver, engine='lp', **kw)
+    signed = lambda s: {frozenset((k, v) for k, v in d.items() if v != 0) for d in s.reaction_sd}
+    sol = _run(model_small_example, modules, curr_solver, max_solutions=1, **kw)
+    assert sol.status == OPTIMAL and 1 <= len(sol.reaction_sd) < len(every.reaction_sd) and signed(sol) <= signed(every)
+    # asked for more than there are: all of them, and that is the whole answer
+    sol = _run(model_small_example, modules, curr_solver, max_solutions=100, **kw)
+    assert sol.status == OPTIMAL and signed(sol) == signed(every)
