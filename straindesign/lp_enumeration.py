@@ -118,6 +118,7 @@ class _GurobiLP(_LPBase):
         self.m.params.Presolve = 0
         self.m.params.Threads = 1
         self.m.params.DualReductions = 0
+        self.m.params.InfUnbdInfo = 1  # an infeasible LP comes with its proof
         self.m.update()
         self.v = self.m.getVars()
         self.n = len(self.v)
@@ -161,6 +162,13 @@ class _GurobiLP(_LPBase):
 
     def iterations(self):
         return self.m.IterCount
+
+    def farkas(self):
+        """Row multipliers of the infeasibility proof of the last solve, or None."""
+        try:
+            return np.array(self.m.getAttr('FarkasDual', self.m.getConstrs()))
+        except Exception:
+            return None
 
     def chg_coef(self, eq_row, col, val):
         if not hasattr(self, 'rows'):
@@ -237,6 +245,13 @@ class _CplexLP(_LPBase):
 
     def iterations(self):
         return self.m.solution.progress.get_num_iterations()
+
+    def farkas(self):
+        """Row multipliers of the infeasibility proof of the last solve, or None."""
+        try:
+            return np.array(self.m.solution.advanced.dual_farkas()[0])
+        except Exception:
+            return None
 
 
 class _WrappedLP(_LPBase):
@@ -688,7 +703,11 @@ class Region:
             if W is not None:
                 return FEASIBLE, W
             if expect != INFEAS:
-                C = self.core(X, thetas)
+                # the infeasible flux LP has a proof of its own; the proof LP is asked where the
+                # backend does not hand it out or it does not hold up
+                C = self.certificate_core(X, thetas)
+                if C is None:
+                    C = self.core(X, thetas)
                 if C is not None:
                     return INFEAS, C
         except LPError:
@@ -705,6 +724,59 @@ class Region:
             raise LPError('a region has neither a point nor an infeasibility proof in exact arithmetic')
         self.rows_used = twin.rows_used
         return INFEAS, C
+
+    n_certificates = 0  # cores read off the proof of an infeasible flux LP
+
+    def certificate_core(self, X, thetas=None):
+        """After the flux LP for X came out infeasible: the blocked atoms that its infeasibility
+        proof rests on, or None if the backend gives no proof that holds up. `self.rows_used`
+        then says which thresholds the proof relies on.
+
+        The proof combines the rows to g.x <= rhs, while the bounds allow no g.x that small. A
+        column enters with its lower bound where g is positive and with its upper bound where g is
+        negative. A blocked atom is part of the proof only where the bound in use is the one the
+        blocking moved to zero."""
+        if X & self.forced:
+            return None
+        lp = self.flux.lp
+        y = lp.farkas() if hasattr(lp, 'farkas') else None
+        if y is None or not len(y):
+            return None
+        A_ineq, b_ineq, A_eq, b_eq, lo0, hi0 = self._flux_args
+        lo, hi = lo0.copy(), hi0.copy()
+        cols = self._atom_cols(bits(X))
+        lo[cols] = hi[cols] = 0.0
+        if self.K:
+            th = thetas if thetas is not None else (None,) * self.K
+            lo[self.col_s] = [-np.inf if t is None else t * self.scale for t in th]
+        ni = A_ineq.shape[0]
+        for sgn in (1.0, -1.0):  # the backends differ in the sign of the multipliers
+            lam = sgn * y[:ni]
+            if ni and (lam < -1e-12 * max(1.0, np.abs(y).max())).any():
+                continue
+            lam = np.maximum(lam, 0.0)
+            mu = sgn * y[ni:]
+            g = A_ineq.T @ lam + A_eq.T @ mu
+            rhs = lam @ b_ineq + mu @ b_eq
+            top = np.abs(g).max(initial=0.0)
+            tol = 1e-9 * max(1.0, top)
+            gp, gn = g > tol, g < -tol
+            if np.isinf(lo[gp]).any() or np.isinf(hi[gn]).any():
+                continue
+            low = g[gp] @ lo[gp] + g[gn] @ hi[gn]
+            if low - rhs <= 1e-9 * max(1.0, abs(rhs), np.abs(lam).max(initial=0.0), np.abs(mu).max(initial=0.0)):
+                continue
+            # an atom joins the core at the proof LP's threshold, well below the one of the check
+            # above: a core with an atom too many is still a core, one with an atom too few is wrong
+            keep = self.core_tol * max(top, 1e-300)
+            moved = ((g > keep) & (lo0 < 0)) | ((g < -keep) & (hi0 > 0))
+            used = moved[self.col_fwd]
+            hb = self.col_bwd >= 0
+            used[hb] |= moved[self.col_bwd[hb]]
+            self.rows_used = tuple(bool(abs(g[c]) > keep) for c in self.col_s)
+            Region.n_certificates += 1
+            return mask(np.flatnonzero(used)) & X
+        return None
 
     def witness(self, X, avoid=0, thetas=None):
         """A point of the region with the atoms X blocked, as the set of atoms it uses; None if the
@@ -1152,19 +1224,16 @@ class LPEnumerator:
         layer (BoolLayer)
         modules (list): ClassicModule / NestedModule, all over the same atoms
         max_cost (float)
-        targeted (bool): at a node that takes one more intervention, first ask for a witness that
-            keeps away from the atoms the candidates would block
+        targeted (bool): at a node that takes one more intervention, the witness asked for one
+            candidate keeps away from the atoms the candidates after it would block
         max_solutions (float): stop after this many designs
     """
 
-    def __init__(self, layer, modules, max_cost, targeted=True, time_limit=np.inf, max_solutions=np.inf, probe_rounds=1):
+    def __init__(self, layer, modules, max_cost, targeted=True, time_limit=np.inf, max_solutions=np.inf):
         self.layer = layer
         # modules whose violation says what to block come first: their clauses steer the search
         self.modules = sorted(modules, key=lambda mod: (not getattr(mod, 'first', False), mod.kind != SUPPRESS))
         self.max_cost, self.targeted, self.max_solutions = max_cost, targeted, max_solutions
-        self.probe_rounds = int(os.environ.get('SD_LP_PROBES', probe_rounds))
-        self.steer = os.environ.get('SD_LP_STEER', 'later')
-        self.hot = 0
         self.deadline = time.time() + time_limit
         self.P, self.Nn = [], []  # clauses with a positive part (Nn: its negative part, 0 if none)
         self.G = []  # per clause: the interventions that block an atom of P on their own, from scratch
@@ -1175,7 +1244,7 @@ class LPEnumerator:
         self.banned0 = 0
         self.min_cost = min(layer.cost) if layer.cost else np.inf
         self._affordable = {}
-        self.stat = dict(nodes=0, queries=0, memo=0, targeted=0, levels=[])
+        self.stat = dict(nodes=0, queries=0, memo=0, levels=[])
         self.roots = layer.knock_in_sets(max_cost)  # the knock-in sets, each the start of a walk over knockouts
 
     # -- oracle with memory ----------------------------------------------------------------------
@@ -1339,52 +1408,13 @@ class LPEnumerator:
         if not kept:
             return
         n0, n1 = len(P), len(N)
-        rounds = self.probe_rounds if self.targeted else 0
-        steer = self.steer
-        first = kept
-        first_pos = {g: k for k, (g, _) in enumerate(first)}
-        delta_all = 0  # what any candidate of this node would block
-        for g, X2 in kept:
-            delta_all |= X2 & ~X
-        self.hot |= delta_all
-        while rounds and len(kept) > 1:
-            # a query on X itself, its witness steered away from what the candidates would block:
-            # the clause it returns rules out every candidate that does not repair it. Repeated
-            # while it rules candidates out, each time steered away from those that are left.
-            rounds -= 1
-            avoid = 0
-            for g, X2 in kept:
-                avoid |= X2 & ~X
-            if steer == 'hot':
-                avoid = self.hot & ~X
-            n_before, n_clauses = len(kept), len(P)
-            for mod in self.modules:
-                if mod.kind != SUPPRESS or mod.decided(X):
-                    continue
-                self.stat['queries'] += 1
-                self.stat['targeted'] += 1
-                ok, Pc, Nc = mod.check(X, avoid)
-                if not ok:
-                    self._add_clause(Pc, Nc)
-                    break
-            kept = [(g, X2) for g, X2 in kept if not any(not P[i] & X2 and Nn[i] & X2 == Nn[i] for i in range(n_clauses, len(P)))]
-            if len(kept) == n_before:
-                break
         for k, (g, X2) in enumerate(kept):
             if any(not P[i] & X2 and Nn[i] & X2 == Nn[i] for i in range(n0, len(P))) or any(C & X2 == C for C in N[n1:]):
-                continue
+                continue  # a clause found for an earlier candidate rules this one out
             avoid = 0
-            if self.targeted:
-                if steer == 'later':  # the candidates that follow in the list, ruled out or not
-                    for g3, X3 in first[first_pos[g] + 1:]:
-                        avoid |= X3 & ~X2
-                elif steer == 'rest':  # the candidates still to come
-                    for g3, X3 in kept[k + 1:]:
-                        avoid |= X3 & ~X2
-                elif steer == 'node':  # every candidate of this node, ruled out or not
-                    avoid = delta_all & ~X2
-                elif steer == 'hot':  # every atom a candidate of any node so far would have blocked
-                    avoid = self.hot & ~X2
+            if self.targeted:  # a witness against this candidate should rule out those that follow as well
+                for g3, X3 in kept[k + 1:]:
+                    avoid |= X3 & ~X2
             if self._is_design(X2, avoid):
                 self._record(z | (1 << g))
 
