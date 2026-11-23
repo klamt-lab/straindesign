@@ -9,7 +9,8 @@ budget. Three things can be done with it:
   package: the rules are evaluated with Python's ``and`` / ``or``, the LPs go to HiGHS (through
   scipy) or to gurobipy directly.
 - :func:`run_package` hands the same problem to ``compute_strain_designs`` (MILP path or an LP
-  engine) and brings the result into the same form.
+  engine) and brings the result into the same form; :func:`run_engine_alone` gives it to the LP
+  engine directly, on the network as it is (the backends ``raw-...``).
 - :func:`compare` runs both and names every backend whose result is not the reference, telling
   *ties* (the verdict of an intervention set changes when a threshold moves by ``DELTA``) from
   mismatches.
@@ -491,10 +492,30 @@ def package_arguments(problem, solver, engine=None):
     return kw
 
 
+def run_engine_alone(problem, solver, exact=False):
+    """The LP engine on the problem's network as it is: no compression, no FVA that takes
+    essential or blocked reactions out of the search first."""
+    from straindesign.lp_enumeration import lp_engine
+    try:
+        model = build_model(problem)
+        modules = build_modules(problem, model)
+        itv = interventions(problem)
+        res, enum = lp_engine(model, modules, {r: float(c) for r, c, gene in itv if not gene}, {}, {g: float(c) for g, c, gene in itv if gene}, {},
+                              False, problem['max_cost'], solver, time_limit=TIME_LIMIT, exact=exact)
+    except Exception as e:
+        return dict(error='%s: %s' % (type(e).__name__, e))
+    out = dict(designs=[frozenset(d) for d in res.sd], status=res.status)
+    if any(m['module_type'] in OPTIMISATION for m in problem['modules']):
+        out['claimed'] = getattr(enum, 'objective_value', None)
+    return out
+
+
 def run_package(problem, solver, engine=None):
     """Result of compute_strain_designs in the form of :func:`reference`, plus status; an
     exception comes back as dict(error=...)."""
     import straindesign as sd
+    if engine in ('raw', 'raw_exact'):
+        return run_engine_alone(problem, solver, engine == 'raw_exact')
     try:
         model = build_model(problem)
         modules = build_modules(problem, model)
@@ -521,6 +542,9 @@ BACKENDS = {
     'lp-gurobi': ('gurobi', 'lp'),
     'lp-scip': ('scip', 'lp'),
     'lp_exact': ('glpk', 'lp_exact'),
+    # the engine without compute_strain_designs around it
+    'raw-glpk': ('glpk', 'raw'),
+    'raw-exact': ('glpk', 'raw_exact'),
 }
 
 
@@ -1151,7 +1175,7 @@ def write_reproducer(problem, path, backends, title, note=''):
     import inspect
     import pprint
     parts = [ProblemError, _HighsLP, interventions, expr_str, constraint_str, BruteForce, build_model, build_modules, package_arguments,
-             run_package, _Verdicts, _judge_enumeration, _close, _within, _judge_optimisation, compare]
+             run_engine_alone, run_package, _Verdicts, _judge_enumeration, _close, _within, _judge_optimisation, compare]
     source = '\n\n'.join(inspect.getsource(obj) for obj in parts)
     source = '_LP_CLASSES, _LAST_BRUTE_FORCE = {}, {}\n\n\n' + source + "\n\n_LP_CLASSES['highs'] = _HighsLP\n"
     text = _REPRODUCER.format(title=title, note=note, file=os.path.basename(path), DELTA=DELTA, OPT_SLACK=OPT_SLACK, VALUE_TOL=VALUE_TOL,
