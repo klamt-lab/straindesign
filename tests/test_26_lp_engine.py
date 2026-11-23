@@ -163,6 +163,16 @@ def test_optimisation_modules(curr_solver, model_weak_coupling, module, value):
     assert abs(lp.objective_value - value) < 1e-5
 
 
+def test_exact_engine_proves_that_nothing_beats_the_best(model_weak_coupling):
+    """The last pass of an optimisation problem ends with proofs that no design beats the best one
+    by more than a millionth: proofs with large multipliers, on thresholds that are no integers
+    and that GLPK's exact simplex therefore rounds. They have to be accepted as the proofs they are."""
+    modules = [sd.SDModule(model_weak_coupling, OPTKNOCK, outer_objective='r_P', inner_objective='r_BM', constraints='r_BM >= 1')]
+    lp = sd.compute_strain_designs(model_weak_coupling, sd_modules=modules, solution_approach=BEST, max_cost=4, solver=GLPK, engine='lp_exact')
+    assert lp.status == OPTIMAL and len(lp.reaction_sd) == 1
+    assert abs(lp.objective_value - 5.0) < 1e-5
+
+
 def test_unsupported_setups_say_so(model_small_example):
     modules = [sd.SDModule(model_small_example, SUPPRESS, constraints=["R4 >= 1"])]
     with pytest.raises(NotImplementedError):
