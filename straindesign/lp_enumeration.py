@@ -1300,11 +1300,16 @@ def _atoms_and_layer(model, ko_cost, gko_cost, max_cost, gene_key):
         index = {g.id: index[getattr(g, gene_key)] for g in model.genes if getattr(g, gene_key) in index}
     formulas, atom_rxn = [], []
     for j, r in enumerate(model.reactions):
-        f = False
-        if r.id in r_index:
-            f = r_index[r.id]
-        elif gko_cost and r.gene_reaction_rule:
-            f = gpr_blocked_formula(r.gene_reaction_rule, index)
+        # a reaction is blocked by its own knockout or by the genes of its rule, whichever applies
+        # (both for a reaction that is a target itself and carries a rule, as a target without
+        # rule does once the compression has lumped it with a reaction that has one)
+        f = r_index.get(r.id, False)
+        if gko_cost and r.gene_reaction_rule:
+            by_genes = gpr_blocked_formula(r.gene_reaction_rule, index)
+            if f is False:
+                f = by_genes
+            elif by_genes is not False:
+                f = ('or', [f, by_genes])
         if f is not False:
             formulas.append(f)
             atom_rxn.append(j)
