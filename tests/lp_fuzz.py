@@ -551,6 +551,8 @@ BACKENDS = {
     'raw-glpk': ('glpk', 'raw'),
     'raw-exact': ('glpk', 'raw_exact'),
 }
+# the same for the other floating-point solvers; not part of the default set
+MORE_BACKENDS = {'raw-cplex': ('cplex', 'raw'), 'raw-gurobi': ('gurobi', 'raw'), 'raw-scip': ('scip', 'raw')}
 
 
 def installed_backends():
@@ -699,7 +701,7 @@ def compare(problem, backends=None, lp='highs'):
         ref = dict(designs=bf.enumerate())
     results, verdict = {}, {}
     for name in backends:
-        solver, engine = BACKENDS[name]
+        solver, engine = BACKENDS.get(name) or MORE_BACKENDS[name]
         res = results[name] = run_package(problem, solver, engine)
         if 'error' in res:
             verdict[name] = 'error: ' + res['error']
@@ -1215,7 +1217,8 @@ def write_reproducer(problem, path, backends, title, note=''):
     source = '_LP_CLASSES, _LAST_BRUTE_FORCE = {}, {}\n\n\n' + source + "\n\n_LP_CLASSES['highs'] = _HighsLP\n"
     text = _REPRODUCER.format(title=title, note=note, file=os.path.basename(path), DELTA=DELTA, OPT_SLACK=OPT_SLACK, VALUE_TOL=VALUE_TOL,
                               TIME_LIMIT=TIME_LIMIT,
-                              problem=pprint.pformat(problem, width=150, sort_dicts=False), backends={b: BACKENDS[b] for b in backends},
+                              problem=pprint.pformat(problem, width=150, sort_dicts=False),
+                              backends={b: BACKENDS.get(b) or MORE_BACKENDS[b] for b in backends},
                               source=source)
     with open(path, 'w') as f:
         f.write(text)
