@@ -623,7 +623,11 @@ def _judge_optimisation(res, verdicts):
             return 'tie'
         return 'no design returned, the reference optimum is %.9g' % best
     if len(designs) > 1:
-        return '%d designs returned where one was asked for' % len(designs)
+        # one design of the compressed network can stand for several of the original one (lumped
+        # reactions, each of which may be the one knocked out): every one of them has to hold up
+        each = [_judge_optimisation(dict(res, designs=[z]), verdicts) for z in designs]
+        wrong = [v for v in each if v not in ('ok', 'tie')]
+        return wrong[0] if wrong else ('tie' if 'tie' in each else 'ok')
     z = designs[0]
     if not set(z) <= set(bf.names):
         return 'design with unknown interventions: %s' % sorted(z)
@@ -883,7 +887,7 @@ def _well_posed(problem):
     return True
 
 
-def random_problem(seed, kind=None, max_sets=500, trivial=0.1, deep=False, lp='highs'):
+def random_problem(seed, kind=None, max_sets=500, trivial=0.1, deep=False, lp='highs', rich=0.0):
     """A random problem, a function of its arguments alone (as far as the LP solver's answers on
     the candidate networks do not depend on the solver).
 
@@ -894,6 +898,8 @@ def random_problem(seed, kind=None, max_sets=500, trivial=0.1, deep=False, lp='h
         trivial (float): probability of keeping a problem whose wild type is acceptable already,
             or that has no design at all
         deep (bool): prefer large budgets (up to 5)
+        rich (float): probability of passing over a problem with little to find (fewer than two
+            designs or none that costs more than 1; an optimum that the wild type reaches)
         lp (str): LP solver of the brute force that looks at the candidates
     """
     rng = np.random.default_rng(seed)
@@ -954,11 +960,15 @@ def random_problem(seed, kind=None, max_sets=500, trivial=0.1, deep=False, lp='h
             if bf.opt_module is None:
                 designs = bf.enumerate()
                 dull = not designs or designs == [frozenset()]
+                little = len(designs) < 2 or max(bf.set_cost(z) for z in designs) < 2
             else:
                 dull = len(bf.scores()) <= 1
+                little = dull or bf.optimum()[1] == 0
         except ProblemError:
             continue
         if dull and rng.random() >= trivial:
+            continue
+        if rich and little and not dull and rng.random() < rich:
             continue
         _LAST_BRUTE_FORCE['last'] = (problem, lp, bf)
         return problem
@@ -1204,6 +1214,7 @@ def main(argv=None):
     ap.add_argument('--step', type=int, default=1, help='seed increment (workers: --seed offset by the worker number, --step = number of workers)')
     ap.add_argument('--kinds', default=','.join(KINDS), help='module types, comma separated; a worker goes through them in turn')
     ap.add_argument('--deep', action='store_true', help='prefer large budgets (up to 5)')
+    ap.add_argument('--rich', type=float, default=0.0, help='probability of passing over a problem with little to find')
     ap.add_argument('--backends', default=None, help='comma separated; default: all installed (%s)' % ', '.join(BACKENDS))
     ap.add_argument('--bf', default='highs', choices=sorted(_LP_CLASSES), help='LP solver of the brute force')
     ap.add_argument('--cross', type=float, default=0.0, help='fraction of problems on which the brute force is repeated with the other LP solver')
@@ -1238,7 +1249,7 @@ def main(argv=None):
             kind = kinds[(seed // args.step) % len(kinds)]
             t0 = time.time()
             try:
-                problem = random_problem(seed, kind, max_sets=args.max_sets, deep=args.deep, lp=args.bf)
+                problem = random_problem(seed, kind, max_sets=args.max_sets, deep=args.deep, lp=args.bf, rich=args.rich)
             except ProblemError as e:
                 write(dict(seed=seed, kind=kind, skipped=str(e)))
                 continue
