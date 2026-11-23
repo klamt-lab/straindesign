@@ -51,7 +51,7 @@ from straindesign.lp_enumeration import (BitRows, ClassicModule, FEASIBLE, LPErr
 
 
 def _row_int(br, i):
-    return int.from_bytes(br.a[i].tobytes(), 'little')
+    return int.from_bytes(br.a[:, i].tobytes(), 'little')
 
 
 class _Stop(Exception):
@@ -727,7 +727,7 @@ class OptSearch:
     def __init__(self, layer, modules, objective, max_cost, seed=None, time_limit=np.inf, restarts=4, **dive_kw):
         self.layer, self.objective, self.max_cost = layer, objective, max_cost
         self.rng = random.Random(seed)
-        self.base = getattr(objective, 'min_gcp', None)
+        self.base = getattr(objective, 'start', None)
         self.ds = DiveSearch(layer, list(modules) + objective.modules, max_cost, seed=seed, time_limit=time_limit, **dive_kw)
         self.restarts = restarts
         self.trace = []  # (seconds, value, cost) after each accepted move
@@ -860,7 +860,7 @@ def lp_dive_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, 
         (CompressedDesigns, search object)
     """
     if ki_cost or gki_cost:
-        raise NotImplementedError('the LP engine does not handle knock-ins yet')
+        raise NotImplementedError("solution_approach 'any' of the LP engine does not handle knock-ins yet")
     costs = list(ko_cost.values()) + list((gko_cost or {}).values())
     if any(c <= 0 for c in costs):
         raise NotImplementedError('the LP engine needs positive intervention costs')
