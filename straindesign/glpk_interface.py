@@ -578,6 +578,45 @@ class GLPK_MILP_LP():
     def _solve_lp(self):
         """Solve the LP (relaxation) and return a solver-neutral status.
 
+        The simplex runs at GLPK's default dual feasibility tolerance (_simplex_with_retry). The
+        optimum of a pure LP is then confirmed at the tolerance of the other solver interfaces
+        (_confirm_optimum). A MILP needs no confirmation: glp_intopt solves the relaxation itself."""
+        status = self._simplex_with_retry()
+        if status == OPTIMAL and not self.ismilp:
+            status = self._confirm_optimum()
+        return status
+
+    def _confirm_optimum(self):
+        """Re-solve an optimal LP from its basis at a dual feasibility tolerance of 1e-9.
+
+        The dual tolerance decides when a reduced cost counts as zero. At GLPK's default of 1e-7,
+        a basis with an improving reduced cost of 1e-8 passes as optimal, and an unbounded LP
+        whose ray moves the objective that little per unit of the entering variable is reported
+        with a finite optimum. A flux cone with stoichiometric coefficients of 1e-6 has such rays,
+        and a direction they carry would be taken for blocked. CPLEX, Gurobi and SoPlex run at 1e-9.
+
+        GLPK cannot run whole solves at 1e-9: on degenerate LPs its simplex stalls there (FVA of
+        iMLcore with its original bounds does not come to an end). From an optimal basis the tight
+        tolerance rarely needs an iteration, so only this last step uses it, under an iteration
+        limit. If it ends without an optimum or a proof of unboundedness, the LP is solved again
+        at the default tolerance, and that result stands."""
+        params = self.lp_params
+        tol_dj, it_lim, meth, presolve = params.tol_dj, params.it_lim, params.meth, params.presolve
+        try:
+            params.tol_dj = 1e-9
+            params.it_lim = max(1000, glp_get_num_rows(self.glpk) + glp_get_num_cols(self.glpk))
+            params.meth, params.presolve = GLP_PRIMAL, GLP_OFF
+            status = self._lp_status(glp_simplex(self.glpk, params))
+        finally:
+            params.tol_dj, params.it_lim, params.meth, params.presolve = tol_dj, it_lim, meth, presolve
+        if status in [OPTIMAL, UNBOUNDED]:
+            return status
+        logging.debug('GLPK LP: optimum not confirmed at the tight dual tolerance (' + status + '), re-solving at the default.')
+        return self._simplex_with_retry()
+
+    def _simplex_with_retry(self):
+        """Run the simplex and return a solver-neutral status.
+
         A solve starts from the basis of the previous one. When that ends without a proof (a
         singular or stalled basis, GLP_EFAIL, or a basis that is only known to be primal
         infeasible), the LP is solved again with the primal simplex from a fresh advanced basis,
