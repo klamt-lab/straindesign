@@ -1,5 +1,8 @@
 """Regression tests for defects found in the review before the release after 1.19.2."""
 from .test_01_load_models_and_solvers import model_weak_coupling, model_gpr
+import os
+import subprocess
+import sys
 from numpy import inf
 from scipy import sparse
 from cobra import Model, Metabolite, Reaction
@@ -702,3 +705,19 @@ def test_network_in_which_no_reaction_can_carry_flux(curr_solver, compress):
                                     compress=compress,
                                     solver=curr_solver)
     assert sol.status == INFEASIBLE and sol.reaction_sd == []
+
+
+def test_glpk_milp_whose_bounds_grow_without_limit_in_the_presolver():
+    """The first row forces z = 1, and then x >= 5 y + 1 and y >= x have no solution. GLPK's MIP
+    presolver raises the lower bounds of x and y in turns; neither has an upper bound, so nothing
+    stops it until a bound overflows and GLPK ends the process. The solve runs in a process of
+    its own for that reason."""
+    code = '\n'.join([
+        "from scipy import sparse", "from straindesign import MILP_LP", "from straindesign.names import *",
+        "A = sparse.csr_matrix([[-2, 0, 0], [0, -1, 5], [1000, 1, -1]])",
+        "milp = MILP_LP(c=[1, 0, 0], A_ineq=A, b_ineq=[-1, -1, 1000], lb=[0, 0, 0], ub=[1, float('inf'), float('inf')], vtype='BCC', solver=GLPK)",
+        "print('status', milp.solve()[2])"
+    ])
+    run = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=120, cwd=os.path.dirname(os.path.dirname(sd.__file__)))
+    assert run.returncode == 0, run.stderr[-300:]
+    assert run.stdout.split()[-1] == INFEASIBLE

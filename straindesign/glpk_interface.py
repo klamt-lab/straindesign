@@ -533,9 +533,14 @@ class GLPK_MILP_LP():
             return glp_get_obj_val(self.glpk), status
         if status in [INFEASIBLE, TIME_LIMIT, TIME_LIMIT_W_SOL]:
             # an infeasible relaxation proves the MILP infeasible; at the time limit, no integer
-            # solution exists yet. On any other outcome, glp_intopt presolves and solves the
-            # relaxation itself.
+            # solution exists yet. Without an optimal relaxation, glp_intopt presolves and solves
+            # the relaxation itself.
             return nan, INFEASIBLE if status == INFEASIBLE else TIME_LIMIT
+        # From an optimal relaxation the search starts at its basis, without the MIP presolver. On
+        # an integer-infeasible problem that presolver can tighten the bounds of columns that are
+        # bounded on one side only without end, until a bound overflows and GLPK ends the process
+        # with a failed assertion, which Python cannot catch.
+        self.milp_params.presolve = GLP_OFF if status == OPTIMAL else GLP_ON
         ret = glp_intopt(self.glpk, self.milp_params)
         mip_status = glp_mip_status(self.glpk)
         has_sol = mip_status in [GLP_OPT, GLP_FEAS]
