@@ -480,6 +480,11 @@ class MILP_LP(object):
             
             solution_vectors, optimal_value, optimization_status
         """
+        # A problem without integer variables has no pool to search, and the solvers' pool calls
+        # are made for MILPs (CPLEX refuses an LP with error 3003). Its pool is the one optimum.
+        if not any(v in 'BI' for v in self.vtype):
+            x, min_cx, status = self.solve()
+            return ([x] if status in [OPTIMAL, TIME_LIMIT_W_SOL] else []), min_cx, status
         return self.backend.populate(n)
 
     def set_objective(self, c):

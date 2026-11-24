@@ -317,3 +317,28 @@ def test_single_knockout_over_budget_is_no_design(curr_solver, compress):
                                     solver=curr_solver)
     assert _sets(sol) == [['r_s']]
     assert sol.sd_cost == [1.0]
+
+
+def test_pool_of_a_problem_without_integer_variables(curr_solver):
+    """The pool of an LP holds its optimum; the pool of an infeasible LP is empty."""
+    kw = dict(c=[1.0, 1.0], A_ineq=sparse.csr_matrix([[-1.0, -1.0]]), lb=[0.0, 0.0], ub=[10.0, 10.0], solver=curr_solver)
+    pool, value, status = sd.MILP_LP(b_ineq=[-1.0], **kw).populate(10)
+    assert status == OPTIMAL
+    assert value == pytest.approx(1.0)
+    assert len(pool) == 1 and sum(pool[0]) == pytest.approx(1.0)
+    pool, _, status = sd.MILP_LP(b_ineq=[-30.0], **kw).populate(10)
+    assert (pool, status) == ([], INFEASIBLE)
+
+
+@pytest.mark.parametrize('approach', [ANY, BEST, POPULATE])
+def test_single_knockouts_that_leave_no_candidate_for_the_milp(curr_solver, approach):
+    """r_s supplies A and r_a drains it. Each knockout alone stops r_a, both are found before the
+    MILP is built, and the MILP is left without an intervention variable."""
+    model = _model_supply_and_drains(drains=('r_a',))
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, SUPPRESS, constraints='r_a >= 0.1')],
+                                    max_cost=1,
+                                    solution_approach=approach,
+                                    solver=curr_solver)
+    assert sol.status == OPTIMAL
+    assert _sets(sol) == [['r_a'], ['r_s']]
