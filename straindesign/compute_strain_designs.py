@@ -953,9 +953,12 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             else:
                 essential_reacs.update(essentials_in_module)
 
-    # Size-1 MCS detection: only for classical MCS problems (one SUPPRESS + any PROTECT)
+    # Size-1 MCS detection: only for classical MCS problems (one SUPPRESS + any PROTECT).
+    # A PROTECT module with an inner objective protects the optimal fluxes of the knockout strain
+    # that meet its constraints. The FVA over the constraints alone does not tell whether a
+    # knockout leaves one of them, so with such a module every candidate goes to the MILP.
     is_classical_mcs = (len([m for m in sd_modules if m[MODULE_TYPE] == SUPPRESS]) == 1 and
-                        all(m[MODULE_TYPE] == PROTECT for m in [m for m in sd_modules if m[MODULE_TYPE] != SUPPRESS]))
+                        all(m[MODULE_TYPE] == PROTECT and m[INNER_OBJECTIVE] is None for m in sd_modules if m[MODULE_TYPE] != SUPPRESS))
     if is_classical_mcs and suppress_essential:
         # Essential for SUPPRESS but NOT for PROTECT → size-1 MCS
         size1_mcs = suppress_essential - essential_reacs

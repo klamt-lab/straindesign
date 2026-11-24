@@ -288,12 +288,12 @@ def test_cut_sets_of_a_network_with_a_blocked_reaction(curr_solver):
     assert _sets(sol) == [['r_a'], ['r_s']]
 
 
-def _model_supply_and_drains(drains=('r_a', 'r_b')):
-    """r_s supplies A, which the drains take out of the network."""
+def _model_supply_and_drains(drains=('r_a', 'r_b'), supply=inf):
+    """r_s supplies A (at most `supply`), which the drains take out of the network."""
     model = Model('supply_and_drains')
     A = Metabolite('A', compartment='c')
-    for rid, stoich in [('r_s', {A: 1})] + [(d, {A: -1}) for d in drains]:
-        reaction = Reaction(rid, lower_bound=0, upper_bound=inf)
+    for rid, stoich, ub in [('r_s', {A: 1}, supply)] + [(d, {A: -1}, inf) for d in drains]:
+        reaction = Reaction(rid, lower_bound=0, upper_bound=ub)
         model.add_reactions([reaction])
         reaction.add_metabolites(stoich)
     return model
@@ -342,3 +342,52 @@ def test_single_knockouts_that_leave_no_candidate_for_the_milp(curr_solver, appr
                                     solver=curr_solver)
     assert sol.status == OPTIMAL
     assert _sets(sol) == [['r_a'], ['r_s']]
+
+
+def _model_product_with_and_without_growth():
+    """r_s supplies A (at most 10). r1 turns A into B and the product P, r2 into B alone and r3
+    into P alone; r_bm drains B (growth) and r_px drains P."""
+    model = Model('product_with_and_without_growth')
+    A, B, P = (Metabolite(m, compartment='c') for m in 'ABP')
+    for rid, stoich, ub in [('r_s', {A: 1}, 10), ('r1', {A: -1, B: 1, P: 1}, inf), ('r2', {A: -1, B: 1}, inf), ('r3', {A: -1, P: 1}, inf),
+                            ('r_bm', {B: -1}, inf), ('r_px', {P: -1}, inf)]:
+        reaction = Reaction(rid, lower_bound=0, upper_bound=ub)
+        model.add_reactions([reaction])
+        reaction.add_metabolites(stoich)
+    return model
+
+
+@pytest.mark.parametrize('approach', [BEST, POPULATE])
+def test_single_knockout_has_to_leave_an_optimal_flux_in_the_protected_region(curr_solver, approach):
+    """PROTECT: r_px >= 1 is attainable at maximal growth. SUPPRESS: r1 >= 1.
+
+    Without r1 no flux meets r1 >= 1, and r_px >= 1 stays attainable through r3, but not at
+    maximal growth, which then runs through r2 alone: {r1} is no design. Without r1 and r2
+    nothing grows, every flux is growth-optimal and r3 makes the product."""
+    model = _model_product_with_and_without_growth()
+    modules = [sd.SDModule(model, PROTECT, inner_objective='r_bm', constraints='r_px >= 1'), sd.SDModule(model, SUPPRESS, constraints='r1 >= 1')]
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=modules,
+                                    ko_cost={
+                                        'r1': 1,
+                                        'r2': 1,
+                                        'r3': 1
+                                    },
+                                    max_cost=2,
+                                    solution_approach=approach,
+                                    solver=curr_solver)
+    assert sol.status == OPTIMAL
+    assert _sets(sol) == [['r1', 'r2']]
+
+
+def test_no_single_knockout_next_to_the_empty_design(curr_solver):
+    """SUPPRESS r_b >= 1 among the fluxes that maximise r_a: these have r_b = 0, so no intervention
+    is needed. Without r_s or r_b no flux at all meets r_b >= 1; these knockouts are not minimal."""
+    model = _model_supply_and_drains(supply=10)
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, SUPPRESS, inner_objective='r_a', constraints='r_b >= 1')],
+                                    max_cost=1,
+                                    solution_approach=POPULATE,
+                                    solver=curr_solver)
+    assert sol.status == OPTIMAL
+    assert _sets(sol) == [[]]
