@@ -403,13 +403,12 @@ class SDMILP(SDProblem, MILP_LP):
         """Exclude exact binary solution in z (but not its supersets) from MILP.
 
         For each solution row in z, adds: sum(z_active) - sum(z_inactive) <= |active| - 1
-        This excludes the exact pattern without blocking supersets or subsets.
+        This excludes the exact pattern without blocking supersets or subsets. For the design
+        without interventions the row reads -sum(z) <= -1: at least one intervention is made.
         """
         z_dense = z.toarray()
         for j in range(z.shape[0]):
             n_active = int(np.sum(z_dense[j] != 0))
-            if n_active == 0:
-                continue
             coeffs = [1.0 if z_dense[j, i] else -1.0 for i in range(z.shape[1])]
             A_row = sparse.csr_matrix([coeffs])
             A_row.resize((1, self.A_ineq.shape[1]))
@@ -758,6 +757,8 @@ class SDMILP(SDProblem, MILP_LP):
             logging.warning('The strain already meets the requirements defined in the strain design setup. ' \
                   'No interventions are needed.')
             return self.build_sd_solution([{}], OPTIMAL, ANY)
+        if self.num_z == 0:
+            return self._wild_type_alone(ANY)
         # otherwise continue
         endtime = time.time() + self.time_limit
         status = OPTIMAL

@@ -556,3 +556,59 @@ def test_optknock_module_that_names_a_blocked_reaction(curr_solver, model_weak_c
     assert plain.status == OPTIMAL and named.status == OPTIMAL
     assert len(plain.reaction_sd) > 0
     assert _sets(named) == _sets(plain)
+
+
+def _model_two_supplies():
+    """r_s1 (at most 10) and r_s2 (at most 5) supply A. Growth (r_bm) turns A into the product P,
+    which r_p exports; r_q drains A unused."""
+    return _network('two_supplies', [('r_s1', {'A': 1}, 0, 10), ('r_s2', {'A': 1}, 0, 5), ('r_bm', {'A': -1, 'P': 1}, 0, inf),
+                                     ('r_p', {'P': -1}, 0, inf), ('r_q', {'A': -1}, 0, inf)])
+
+
+@pytest.mark.parametrize('compress', [False, True])
+def test_populate_moves_on_from_a_wild_type_that_a_rewarded_knockout_dominates(curr_solver, compress):
+    """The wild type exports the most product (15). The knockout of r_s2 is rewarded and lowers
+    the export to 10, so the pool at 15 holds the wild type alone, and the enumeration sets it
+    aside for the cheaper design that contains it. The wild type then has to leave the MILP, or
+    the same pool comes back until the time limit."""
+    model = _model_two_supplies()
+    kw = dict(sd_modules=[sd.SDModule(model, OPTKNOCK, inner_objective='r_bm', outer_objective='r_p')],
+              ko_cost={'r_s2': -1, 'r_q': 1},
+              max_cost=1,
+              compress=compress,
+              solver=curr_solver,
+              time_limit=10)
+    best = sd.compute_strain_designs(model, solution_approach=BEST, **kw)
+    pop = sd.compute_strain_designs(model, solution_approach=POPULATE, **kw)
+    assert best.status == OPTIMAL and pop.status == OPTIMAL
+    assert len(pop.reaction_sd) > 0
+    assert _sets(pop) == _sets(best)
+
+
+@pytest.mark.parametrize('costs, designs', [(dict(ko_cost={'r_s2': 1, 'r_q': 1}), [{'r_q': -1}, {'r_s2': -1}]),
+                                            (dict(ko_cost={'r_q': 1}, ki_cost={'r_s2': 1}), [{'r_q': -1, 'r_s2': 0}, {'r_s2': 1}]),
+                                            (dict(ko_cost={}), [])],
+                         ids=['knockouts', 'knockout and addition', 'no candidate'])
+@pytest.mark.parametrize('approach', [ANY, BEST])
+def test_wild_type_that_fails_verification_is_left_behind(curr_solver, monkeypatch, approach, costs, designs):
+    """A design that the solver returns and the verification rejects is taken out of the MILP.
+    Here the verification rejects the strain without interventions, as it does for a point
+    that the solver accepts within its tolerances only. The search has to go on to the designs
+    with one intervention, or end where there is no candidate, instead of asking for the same
+    point until the time limit."""
+    if curr_solver == SCIP and designs:
+        pytest.skip('SCIP drops a row whose variables are all fixed, here the row that takes the wild type out')
+    from straindesign.strainDesignMILP import SDMILP
+    verify = SDMILP.verify_sd
+    monkeypatch.setattr(SDMILP, 'verify_sd', lambda self, sols: [ok and sols[i].nnz > 0 for i, ok in enumerate(verify(self, sols))])
+    model = _model_two_supplies()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, OPTKNOCK, inner_objective='r_bm', outer_objective='r_p')],
+                                    max_cost=1,
+                                    solution_approach=approach,
+                                    compress=False,
+                                    solver=curr_solver,
+                                    time_limit=10,
+                                    **costs)
+    assert sol.status == (OPTIMAL if designs else INFEASIBLE)
+    assert sorted(sol.reaction_sd, key=lambda design: sorted(design.items())) == designs
