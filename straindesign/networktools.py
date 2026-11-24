@@ -1279,7 +1279,10 @@ def compress_ki_ko_cost(kocost, kicost, cmp_mapReac):
                     elif parallel and not np.any([s in kocost_in for s in reac_map_exp[r]]):
                         ki_cost_new[r] = np.min([kicost[s] for s in reac_map_exp[r] if s in kicost])
             kicost = ki_cost_new
-    return kocost, kicost, cmp_mapReac
+    # Without a compression step, or for an empty vector, kocost and kicost are still the dicts
+    # passed in. The caller goes on to remove candidates from the compressed vectors, which must
+    # leave the uncompressed ones complete, so new dicts are returned in every case.
+    return dict(kocost), dict(kicost), cmp_mapReac
 
 
 def estimate_expansion_size(compressed_sds, cmp_mapReac):

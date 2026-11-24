@@ -286,3 +286,34 @@ def test_cut_sets_of_a_network_with_a_blocked_reaction(curr_solver):
                                     solver=curr_solver)
     assert sol.status == OPTIMAL
     assert _sets(sol) == [['r_a'], ['r_s']]
+
+
+def _model_supply_and_drains(drains=('r_a', 'r_b')):
+    """r_s supplies A, which the drains take out of the network."""
+    model = Model('supply_and_drains')
+    A = Metabolite('A', compartment='c')
+    for rid, stoich in [('r_s', {A: 1})] + [(d, {A: -1}) for d in drains]:
+        reaction = Reaction(rid, lower_bound=0, upper_bound=inf)
+        model.add_reactions([reaction])
+        reaction.add_metabolites(stoich)
+    return model
+
+
+@pytest.mark.parametrize('compress', [True, False])
+def test_single_knockout_over_budget_is_no_design(curr_solver, compress):
+    """Flux through r_a stops without r_s or without r_a. The knockout of r_a costs more than the
+    budget; no reactions are lumped in this network."""
+    model = _model_supply_and_drains()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, SUPPRESS, constraints='r_a >= 0.2')],
+                                    ko_cost={
+                                        'r_s': 1,
+                                        'r_a': 3,
+                                        'r_b': 1
+                                    },
+                                    max_cost=1,
+                                    solution_approach=POPULATE,
+                                    compress=compress,
+                                    solver=curr_solver)
+    assert _sets(sol) == [['r_s']]
+    assert sol.sd_cost == [1.0]
