@@ -391,3 +391,25 @@ def test_no_single_knockout_next_to_the_empty_design(curr_solver):
                                     solver=curr_solver)
     assert sol.status == OPTIMAL
     assert _sets(sol) == [[]]
+
+
+@pytest.mark.parametrize('forced', ['r_p', 'r_s'])
+@pytest.mark.parametrize('compress', [False, True])
+def test_optcouple_without_a_flux_that_makes_no_product(curr_solver, forced, compress):
+    """OptCouple compares growth with and without production. r_s supplies A and the product
+    reaction r_p is its only drain; r_t and r_bm (growth) are separate. A lower bound of 2 on r_p
+    or on r_s leaves no flux without production, so no design qualifies."""
+    model = Model('forced_product')
+    A, B = Metabolite('A', compartment='c'), Metabolite('B', compartment='c')
+    for rid, stoich in [('r_s', {A: 1}), ('r_p', {A: -1}), ('r_t', {B: 1}), ('r_bm', {B: -1})]:
+        reaction = Reaction(rid, lower_bound=2 if rid == forced else 0, upper_bound=10)
+        model.add_reactions([reaction])
+        reaction.add_metabolites(stoich)
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, OPTCOUPLE, inner_objective='r_bm', prod_id='r_p')],
+                                    max_cost=1,
+                                    solution_approach=BEST,
+                                    compress=compress,
+                                    solver=curr_solver)
+    assert sol.status == INFEASIBLE
+    assert sol.reaction_sd == []

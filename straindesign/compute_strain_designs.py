@@ -710,6 +710,19 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             raise Exception('Specified gene and reaction knock-out/-in costs contain overlap. '\
                             'Make sure that metabolic interventions are enabled either through reaction or '\
                             'through gene interventions and are defined either as knock-ins or as knock-outs.')
+    # OptCouple compares the growth optimum with the one in the absence of production. Interventions
+    # do not open flux states, so in a network without a flux at zero production (a product
+    # reaction with a positive lower bound, for instance) no design qualifies.
+    for m in sd_modules:
+        if m[MODULE_TYPE] == OPTCOUPLE and \
+                _fba(model, constraints=[[dict(m[PROD_ID]), '=', 0.0]], solver=kwargs[SOLVER]).status == INFEASIBLE:
+            logging.warning('The model has no flux without production (' + PROD_ID + ' = 0) that OptCouple could compare the '
+                            'growth optimum with. No strain design exists.')
+            setup = {MODEL_ID: orig_model.id, MAX_COST: kwargs[MAX_COST], SOLVER: kwargs[SOLVER]}
+            setup.update({MODULES: orig_sd_modules, KOCOST: orig_ko_cost, KICOST: orig_ki_cost, REGCOST: orig_reg_cost})
+            if kwargs['gene_kos']:
+                setup.update({GKOCOST: orig_gko_cost, GKICOST: orig_gki_cost})
+            return SDSolutions(orig_model, [], INFEASIBLE, setup)
     # 1) Preprocess Model
     # Copy model for compression/processing
     with _silent_io():
