@@ -21,12 +21,13 @@
 ``compute_strain_designs(..., engine='lp')`` (``'lp_exact'``: every LP in rational arithmetic).
 Three layers, each kept out of the others:
 
-- **Interventions** z with costs: gene or reaction knockouts and reaction knock-ins. They are the
+- **Interventions** z with costs: knockouts and knock-ins of genes or reactions. They are the
   search variables.
 - **Boolean layer** (`BoolLayer`): every reaction of the (compressed) model that an intervention
-  can switch, an *atom*, is blocked when a monotone Boolean formula over the knockouts holds (its
-  GPR rule, dualised), or as long as the knock-in it needs is not made. A set of interventions z
-  thereby blocks a set of atoms X(z). No linear program sees a gene.
+  can switch, an *atom*, is blocked when a monotone Boolean formula holds (its GPR rule,
+  dualised): over the knockouts made and, for a gene or reaction that has to be knocked in, over
+  the knock-ins not made. A set of interventions z thereby blocks a set of atoms X(z). No linear
+  program sees a gene.
 - **LP oracle** in flux space (`Region`): for a set X of blocked atoms it decides, per module,
   whether the module's flux region is empty. Every answer carries over to many other sets
   without a further LP:
@@ -1234,65 +1235,91 @@ def _minimal(sets):
 def _blocking_sets(node, cost, budget):
     """The minimal sets of interventions, of cost <= budget, that make a blocked-formula true.
 
-    node: int (an intervention) | ('or', children) | ('and', children) | False (never blocked).
-    Unlike a clause form or a full list of blocking sets, this stays small whatever the shape of
-    the rule, because the budget cuts every product short.
+    node: int (blocked by that knockout) | ('ki', i) (blocked while knock-in i is not made) |
+    ('or', children) | ('and', children) | False (never blocked). A set holds the knockouts to make
+    as the bits below len(cost) and the knock-ins that must not be made as the bits from len(cost)
+    on (leaving a knock-in out costs nothing). Unlike a clause form or a full list of blocking
+    sets, this stays small whatever the shape of the rule, because the budget cuts every product
+    short.
     """
-    if node is False:
-        return []
-    if isinstance(node, (int, np.integer)):
-        return [1 << int(node)] if cost[int(node)] <= budget else []
-    op, children = node
-    if op == 'or':  # blocked as soon as one part is
-        out = set()
-        for ch in children:
-            out.update(_blocking_sets(ch, cost, budget))
-        return _minimal(out)
-    out = {0}  # and: every part has to be blocked
-    for ch in children:
-        part = _blocking_sets(ch, cost, budget)
-        out = {a | b for a in out for b in part}
-        out = _minimal(J for J in out if sum(cost[i] for i in bits(J)) <= budget)
-        if not out:
+    n = len(cost)
+    low = (1 << n) - 1
+
+    def price(J):
+        return sum(cost[i] for i in bits(J & low))
+
+    def sets(node):
+        if node is False:
             return []
-    return out
+        if isinstance(node, (int, np.integer)):
+            return [1 << int(node)] if cost[int(node)] <= budget else []
+        op, children = node
+        if op == 'ki':
+            return [1 << (n + int(children))]
+        if op == 'or':  # blocked as soon as one part is
+            out = set()
+            for ch in children:
+                out.update(sets(ch))
+            return _minimal(out)
+        out = {0}  # and: every part has to be blocked
+        for ch in children:
+            part = sets(ch)
+            out = {a | b for a in out for b in part}
+            out = _minimal(J for J in out if price(J) <= budget)
+            if not out:
+                return []
+        return out
+
+    return sets(node)
 
 
 class BoolLayer:
     """Interventions with costs, and for every atom the sets of interventions that block it.
 
-    A knockout blocks atoms. A knock-in is the opposite kind of intervention: an atom that needs
-    one is blocked as long as the knock-in is not made.
+    A knockout blocks atoms. A knock-in is the opposite kind of intervention: what needs it is
+    blocked as long as the knock-in is not made. A blocking set of an atom therefore has two
+    parts, the knockouts to make (`block`) and the knock-ins that must not be made (`unless`).
+    With the knock-ins of a set of interventions fixed, the blocked atoms only grow with its
+    knockouts.
 
     Args:
         costs (list of float): cost of each intervention
-        formulas (list): per atom its blocked-formula over (knockout) intervention indices, as
-            int | ('or', [..]) | ('and', [..]) | False
+        formulas (list): per atom its blocked-formula: int (blocked by that knockout) |
+            ('ki', i) (blocked while knock-in i is not made) | ('or', [..]) | ('and', [..]) | False
         budget (float): the largest total cost a set of interventions may have
-        needs (list of int): per atom the knock-in intervention it is absent without, -1 for none
+        needs (list of int): per atom a knock-in it is absent without, -1 for none; short for
+            ('or', [formula, ('ki', i)])
+        ki (int): knock-in interventions (bit set) beyond those that occur in a formula
     """
 
-    def __init__(self, costs, formulas, budget, needs=None):
+    def __init__(self, costs, formulas, budget, needs=None, ki=0):
         self.cost = [float(c) for c in costs]
         self.nI, self.nA = len(costs), len(formulas)
-        self.formulas = list(formulas)
-        self.block = [_blocking_sets(f, self.cost, budget) for f in formulas]
-        self.needs = [-1] * self.nA if needs is None else [int(i) for i in needs]
-        self.ki = mask(i for i in self.needs if i >= 0)  # the knock-in interventions
-        self.absent = {}  # knock-in intervention -> atoms that are blocked without it
-        for a, i in enumerate(self.needs):
-            if i >= 0:
-                self.absent[i] = self.absent.get(i, 0) | (1 << a)
-        self.atoms_of = [0] * self.nI  # atoms that the intervention helps to block
-        self.sets_with = [[] for _ in range(self.nI)]  # intervention -> (atom, blocking set) pairs
-        self.single0 = [0] * self.nA  # interventions that block the atom alone
-        for a, sets in enumerate(self.block):
-            for B in sets:
+        formulas = list(formulas)
+        if needs is not None:
+            formulas = [f if i < 0 else (('ki', int(i)) if f is False else ('or', [f, ('ki', int(i))])) for f, i in zip(formulas, needs)]
+        self.formulas = formulas
+        low = (1 << self.nI) - 1
+        self.block, self.unless = [], []  # per atom: knockout part and knock-in part of each blocking set
+        for f in formulas:
+            sets = _blocking_sets(f, self.cost, budget)
+            self.block.append([J & low for J in sets])
+            self.unless.append([J >> self.nI for J in sets])
+            for U in self.unless[-1]:
+                ki |= U
+        self.ki = ki  # the knock-in interventions
+        self.cond = [any(U) for U in self.unless]  # atoms with a blocking set that depends on a knock-in
+        self.cond_atoms = [a for a in range(self.nA) if self.cond[a]]
+        self.atoms_of = [0] * self.nI  # atoms that the knockout helps to block
+        self.sets_with = [[] for _ in range(self.nI)]  # knockout -> (atom, knockout part, knock-in part) of the sets it is in
+        self.single0 = [0] * self.nA  # knockouts that block the atom alone (under some knock-ins at least)
+        for a in range(self.nA):
+            for B, U in zip(self.block[a], self.unless[a]):
                 if not B & (B - 1):
                     self.single0[a] |= B
                 for i in bits(B):
                     self.atoms_of[i] |= 1 << a
-                    self.sets_with[i].append((a, B))
+                    self.sets_with[i].append((a, B, U))
         self.cost_mask = {}  # cost -> interventions of that cost
         for i, c in enumerate(self.cost):
             self.cost_mask[c] = self.cost_mask.get(c, 0) | (1 << i)
@@ -1302,17 +1329,21 @@ class BoolLayer:
 
     def X(self, z):
         """The atoms that the set of interventions z leaves blocked."""
-        X = mask(a for a in range(self.nA) if any(B & z == B for B in self.block[a]))
-        for i, atoms in self.absent.items():
-            if not (z >> i) & 1:
-                X |= atoms
+        X = 0
+        for a in self.cond_atoms:
+            if any(B & z == B and not U & z for B, U in zip(self.block[a], self.unless[a])):
+                X |= 1 << a
+        for i in bits(z & ~self.ki):
+            for a, B, U in self.sets_with[i]:
+                if B & z == B and not U & z:
+                    X |= 1 << a
         return X
 
     def restricted(self, keep, budget):
         """The same atoms with only the interventions `keep` (bit set) affordable within `budget`.
         Clauses, being statements about atoms, hold for the restricted layer as they are."""
         costs = [c if (keep >> i) & 1 else budget + 1.0 for i, c in enumerate(self.cost)]
-        return BoolLayer(costs, self.formulas, budget, self.needs)
+        return BoolLayer(costs, self.formulas, budget, ki=self.ki)
 
     def knock_in_sets(self, budget, limit=200000):
         """Every set of knock-ins of cost <= budget as (cost, bit set), cheapest first."""
@@ -1324,28 +1355,34 @@ class BoolLayer:
                 raise NotImplementedError('too many combinations of knock-ins within the budget for the LP engine')
         return sorted(out)
 
+    def live(self, a, z):
+        """The knockout parts of the blocking sets of atom a that the knock-ins of z leave in force."""
+        if not self.cond[a]:
+            return self.block[a]
+        return [B for B, U in zip(self.block[a], self.unless[a]) if not U & z]
+
     def extend(self, z, X, J):
-        """Blocked atoms of z | J, given those of z."""
+        """Blocked atoms of z | J, given those of z, for knockouts J."""
         z2 = z | J
         for i in bits(J):
-            for a, B in self.sets_with[i]:
-                if B & z2 == B:
+            for a, B, U in self.sets_with[i]:
+                if B & z2 == B and not U & z2:
                     X |= 1 << a
         return X
 
     def singles(self, a, z):
-        """Interventions that block atom a on their own, given z (bit set)."""
+        """Knockouts that block atom a on their own, given z (bit set)."""
         out = 0
-        for B in self.block[a]:
+        for B in self.live(a, z):
             rest = B & ~z
             if rest and not rest & (rest - 1):
                 out |= rest
         return out
 
     def completions(self, a, z, budget):
-        """Minimal sets J (disjoint from z, cost <= budget) such that z | J blocks atom a."""
+        """Minimal sets J of knockouts (disjoint from z, cost <= budget) such that z | J blocks atom a."""
         cost = self.cost
-        return _minimal(J for J in (B & ~z for B in self.block[a]) if sum(cost[i] for i in bits(J)) <= budget)
+        return _minimal(J for J in (B & ~z for B in self.live(a, z)) if sum(cost[i] for i in bits(J)) <= budget)
 
 
 # ------------------------------------------------------------------------------------------------
@@ -1489,7 +1526,7 @@ class LPEnumerator:
         c = min((P[i] for i in violated), key=int.bit_count)
         singles, several = 0, set()
         for a in bits(c):
-            for B in layer.block[a]:
+            for B in layer.live(a, z):
                 J = B & ~z
                 if not J & (J - 1):
                     singles |= J
@@ -1616,10 +1653,11 @@ def gpr_blocked_formula(rule, index):
 
     Args:
         rule (str): gene-protein-reaction rule
-        index (dict): gene identifier -> intervention index, for the genes that can be knocked out
+        index (dict): gene identifier -> intervention index for a gene that can be knocked out,
+            ('ki', intervention index) for a gene that is absent unless knocked in
 
     Returns:
-        int | ('or', [..]) | ('and', [..]) | False (the reaction cannot be blocked)
+        int | ('ki', i) | ('or', [..]) | ('and', [..]) | False (the reaction cannot be blocked)
     """
     from straindesign.compression import _gpr_parse
 
@@ -1639,37 +1677,40 @@ def gpr_blocked_formula(rule, index):
     return conv(_gpr_parse(rule))
 
 
-def _atoms_and_layer(model, ko_cost, gko_cost, max_cost, gene_key, ki_cost=None):
-    ko_cost, gko_cost, ki_cost = dict(ko_cost or {}), dict(gko_cost or {}), dict(ki_cost or {})
-    names = list(gko_cost) + list(ko_cost) + list(ki_cost)
-    costs = [gko_cost[g] for g in gko_cost] + [ko_cost[r] for r in ko_cost] + [ki_cost[r] for r in ki_cost]
+def _atoms_and_layer(model, ko_cost, gko_cost, max_cost, gene_key, ki_cost=None, gki_cost=None):
+    ko_cost, gko_cost, ki_cost, gki_cost = dict(ko_cost or {}), dict(gko_cost or {}), dict(ki_cost or {}), dict(gki_cost or {})
+    names = list(gko_cost) + list(ko_cost) + list(ki_cost) + list(gki_cost)
+    costs = [gko_cost[g] for g in gko_cost] + [ko_cost[r] for r in ko_cost] + [ki_cost[r] for r in ki_cost] + [gki_cost[g] for g in gki_cost]
+    n_ko = len(gko_cost) + len(ko_cost)
     index = {g: i for i, g in enumerate(gko_cost)}
+    index.update({g: ('ki', n_ko + len(ki_cost) + i) for i, g in enumerate(gki_cost)})
     r_index = {r: len(gko_cost) + i for i, r in enumerate(ko_cost)}
-    k_index = {r: len(gko_cost) + len(ko_cost) + i for i, r in enumerate(ki_cost)}
+    k_index = {r: n_ko + i for i, r in enumerate(ki_cost)}
     if gene_key != 'id':
         index = {g.id: index[getattr(g, gene_key)] for g in model.genes if getattr(g, gene_key) in index}
-    formulas, atom_rxn, needs = [], [], []
+    formulas, atom_rxn = [], []
     for j, r in enumerate(model.reactions):
         # a reaction is blocked by its own knockout or by the genes of its rule, whichever applies
         # (both for a reaction that is a target itself and carries a rule, as a target without
-        # rule does once the compression has lumped it with a reaction that has one)
-        f = r_index.get(r.id, False)
-        if gko_cost and r.gene_reaction_rule:
+        # rule does once the compression has lumped it with a reaction that has one), and as long
+        # as its own knock-in is not made
+        parts = [r_index[r.id]] if r.id in r_index else []
+        if index and r.gene_reaction_rule:
             by_genes = gpr_blocked_formula(r.gene_reaction_rule, index)
-            if f is False:
-                f = by_genes
-            elif by_genes is not False:
-                f = ('or', [f, by_genes])
-        if f is not False or r.id in k_index:
-            formulas.append(f)
+            if by_genes is not False:
+                parts.append(by_genes)
+        if r.id in k_index:
+            parts.append(('ki', k_index[r.id]))
+        if parts:
+            formulas.append(parts[0] if len(parts) == 1 else ('or', parts))
             atom_rxn.append(j)
-            needs.append(k_index.get(r.id, -1))
-    layer = BoolLayer(costs, formulas, max_cost, needs)
-    # a reaction that no affordable set of interventions blocks and that needs no knock-in is no atom
-    ok = [a for a in range(layer.nA) if layer.block[a] or needs[a] >= 0]
+    ki = mask(range(n_ko, len(names)))
+    layer = BoolLayer(costs, formulas, max_cost, ki=ki)
+    # a reaction that no affordable set of interventions blocks is no atom
+    ok = [a for a in range(layer.nA) if layer.block[a]]
     if len(ok) < layer.nA:
-        formulas, atom_rxn, needs = [formulas[a] for a in ok], [atom_rxn[a] for a in ok], [needs[a] for a in ok]
-        layer = BoolLayer(costs, formulas, max_cost, needs)
+        formulas, atom_rxn = [formulas[a] for a in ok], [atom_rxn[a] for a in ok]
+        layer = BoolLayer(costs, formulas, max_cost, ki=ki)
     return names, layer, atom_rxn
 
 
@@ -1736,7 +1777,7 @@ def _with_twin(ctx, region, V, rows=()):
         region.arbiter_factory = ctx['twin'](V, rows)
 
 
-def build_problem(model, sd_modules, ko_cost, gko_cost, max_cost, solver, gene_key='id', exact=False, ki_cost=None):
+def build_problem(model, sd_modules, ko_cost, gko_cost, max_cost, solver, gene_key='id', exact=False, ki_cost=None, gki_cost=None):
     """Set up the three layers for a model: interventions and their Boolean map onto the knockable
     reactions, and one module oracle per SUPPRESS / PROTECT module.
 
@@ -1750,6 +1791,7 @@ def build_problem(model, sd_modules, ko_cost, gko_cost, max_cost, solver, gene_k
         solver (str)
         gene_key (str): 'id' or 'name', what gko_cost calls a gene
         ki_cost (dict): reaction id -> knock-in cost; such a reaction is absent unless knocked in
+        gki_cost (dict): gene identifier -> knock-in cost; such a gene is absent unless knocked in
 
     Returns:
         (names of the interventions, BoolLayer, module oracles, atom_rxn, context for further regions)
@@ -1765,7 +1807,7 @@ def build_problem(model, sd_modules, ko_cost, gko_cost, max_cost, solver, gene_k
         S = sparse.csr_matrix(np.array(create_stoichiometric_matrix(model), dtype=float))
     lb = np.array([float(r.lower_bound) for r in model.reactions])
     ub = np.array([float(r.upper_bound) for r in model.reactions])
-    names, layer, atom_rxn = _atoms_and_layer(model, ko_cost, gko_cost, max_cost, gene_key, ki_cost)
+    names, layer, atom_rxn = _atoms_and_layer(model, ko_cost, gko_cost, max_cost, gene_key, ki_cost, gki_cost)
     none = sparse.csr_matrix((0, n))
     if exact:
         lineqlist2mat = lambda constr, ids, _f=lineqlist2mat: _integer_rows(*_f(constr, ids))
@@ -1973,9 +2015,7 @@ def lp_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, has_g
     Returns:
         (CompressedDesigns, LPEnumerator)
     """
-    if gki_cost:
-        raise NotImplementedError('the LP engine does not handle gene knock-ins yet')
-    costs = list(ko_cost.values()) + list((gko_cost or {}).values()) + list((ki_cost or {}).values())
+    costs = list(ko_cost.values()) + list((gko_cost or {}).values()) + list((ki_cost or {}).values()) + list((gki_cost or {}).values())
     if not np.isfinite(max_cost) or any(c <= 0 or abs(c - round(c)) > 1e-9 for c in costs):
         raise NotImplementedError('the LP engine needs a finite budget and positive integer intervention costs')
     opt_mods = [mod for mod in sd_modules if mod[MODULE_TYPE] in _OBJECTIVES]
@@ -1984,7 +2024,7 @@ def lp_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, has_g
     from straindesign.parse_constr import lineqlist2mat
     t0 = time.time()
     names, layer, modules, atom_rxn, ctx = build_problem(cmp_model, sd_modules, ko_cost, gko_cost, max_cost, solver,
-                                                         'name' if has_gene_names else 'id', exact=exact, ki_cost=ki_cost)
+                                                         'name' if has_gene_names else 'id', exact=exact, ki_cost=ki_cost, gki_cost=gki_cost)
     objective = None
     if opt_mods:
         mod = opt_mods[0]

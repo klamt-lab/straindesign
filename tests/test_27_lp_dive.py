@@ -196,13 +196,50 @@ def test_the_cheapest_designs_come_first(curr_solver, model_small_example):
     assert min(len(d) for d in found) == cheapest and set(found) <= set(_designs(every, False))
 
 
-def test_knock_ins_are_served_by_the_complete_search(curr_solver, model_small_example):
+def _signed(sol, genes=False):
+    return {frozenset((k, v) for k, v in d.items() if v != 0) for d in (sol.gene_sd if genes else sol.reaction_sd)}
+
+
+def test_knock_ins_cheapest_first(curr_solver, model_small_example):
     modules = _modules(model_small_example, SPEC_SP)
-    kw = dict(ko_cost={r.id: 1.0 for r in model_small_example.reactions if r.id != 'R9'}, ki_cost={'R9': 1.0}, max_cost=4)
-    every = sd.compute_strain_designs(model_small_example, sd_modules=modules, solution_approach=POPULATE, solver=curr_solver, engine='lp', **kw)
-    signed = lambda s: {frozenset((k, v) for k, v in d.items() if v != 0) for d in s.reaction_sd}
-    sol = _run(model_small_example, modules, curr_solver, max_solutions=1, **kw)
-    assert sol.status == OPTIMAL and 1 <= len(sol.reaction_sd) < len(every.reaction_sd) and signed(sol) <= signed(every)
-    # asked for more than there are: all of them, and that is the whole answer
-    sol = _run(model_small_example, modules, curr_solver, max_solutions=100, **kw)
-    assert sol.status == OPTIMAL and signed(sol) == signed(every)
+    kw = dict(ko_cost={r.id: 1.0 for r in model_small_example.reactions if r.id != 'R9'}, ki_cost={'R9': 1.0})
+    every = sd.compute_strain_designs(model_small_example, sd_modules=modules, solution_approach=POPULATE, solver=curr_solver, engine='lp', max_cost=3, **kw)
+    sol = _run(model_small_example, modules, curr_solver, max_solutions=1, max_cost=3, **kw)
+    assert sol.status == OPTIMAL and 1 <= len(sol.reaction_sd) < len(every.reaction_sd) and _signed(sol) <= _signed(every)
+    # asked for more than there are within the levels that are searched completely: all of them
+    sol = _run(model_small_example, modules, curr_solver, max_solutions=100, max_cost=3, **kw)
+    assert sol.status == OPTIMAL and _signed(sol) == _signed(every)
+
+
+def test_dives_with_knock_ins(curr_solver, model_small_example):
+    """Dives start from sets of knock-ins; a design keeps only the knock-ins it needs."""
+    from straindesign.lp_dive import lp_dive_engine
+    model = model_small_example
+    modules = _modules(model, SPEC_SP)
+    ki = ['R9', 'R4']
+    ko_cost = {r.id: 1.0 for r in model.reactions if r.id not in ki}
+    absent = lambda d: [k for k in ki if d.get(k, 0) <= 0]
+    res, search = lp_dive_engine(model, modules, ko_cost, {k: 1.0 for k in ki}, {}, {}, False, np.inf, curr_solver, max_solutions=4, seed=3,
+                                 first_levels=0)
+    assert res.sd and search.stat['starts'] >= 1 and search.stat['guided'] + search.stat['dives'] >= 1
+    for d in res.sd:
+        made = {k: v for k, v in d.items() if v != 0}
+        assert _fulfils(model, SPEC_SP, [k for k, v in made.items() if v < 0] + absent(d), False)
+        for k in made:  # no single intervention can go
+            rest = {i: v for i, v in made.items() if i != k}
+            assert not _fulfils(model, SPEC_SP, [i for i, v in rest.items() if v < 0] + absent(rest), False)
+
+
+def test_gene_knock_ins(curr_solver, model_gpr):
+    spec = [(SUPPRESS, [({'rd_ex': 1.0}, '>=', 1.0)], None), (PROTECT, [({'r_bm': 1.0}, '>=', 1.0)], None)]
+    modules = _modules(model_gpr, spec)
+    genes = [g.name or g.id for g in model_gpr.genes]
+    n = 0
+    for k in range(len(genes)):
+        gki = {genes[k]: 1.0, genes[(k + 3) % len(genes)]: 2.0}
+        kw = dict(gko_cost={g: 1.0 for g in genes if g not in gki}, gki_cost=gki, max_cost=4)
+        every = sd.compute_strain_designs(model_gpr, sd_modules=modules, solution_approach=POPULATE, solver=curr_solver, engine='lp', gene_kos=True, **kw)
+        sol = _run(model_gpr, modules, curr_solver, genes=True, max_solutions=3, **kw)
+        assert _signed(sol, True) <= _signed(every, True) and (len(sol.gene_sd) > 0) == (len(every.gene_sd) > 0)
+        n += len(sol.gene_sd)
+    assert n

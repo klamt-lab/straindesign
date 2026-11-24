@@ -40,8 +40,11 @@ instead of visiting the intervention sets cost level by cost level it
 3. looks for **cheaper designs among the interventions the dives touched**: the complete search
    again, over that small set of interventions (`DiveSearch.cheaper_among_seen`).
 
+With knock-ins a dive starts from a set of them and adds knockouts; the polishing drops the
+knock-ins a design does not need.
+
 Optimisation modules (OptKnock, RobustKnock, OptCouple) are handled by local search on the
-objective value (see `OptSearch`).
+objective value (see `OptSearch`), without knock-ins.
 
 Neither part proves anything about the designs it does not return: the designs are valid and
 locally optimal, not the cheapest or the best.
@@ -175,11 +178,32 @@ class Target:
     def __init__(self, region, rows, n_sup):
         self.region, self.rows, self.n_sup = region, rows, n_sup
 
-    def thetas(self, rng, stat):
+    def possible(self, X, stat):
+        """False if, with the atoms X blocked, the region is empty or every one of its fluxes lies
+        in some SUPPRESS region: then no blocked set that contains X belongs to a design."""
+        R = self.region
+        for j in range(self.n_sup):
+            for k, (jj, rhs) in enumerate(self.rows):
+                if jj != j:
+                    continue
+                stat['guide_lps'] += 1
+                try:
+                    val, _, _ = R.maximize(k, X)
+                except LPError:
+                    break  # unbounded, or not solved: no statement
+                if val is None:
+                    return False
+                if val - rhs > 1e-6 * max(1.0, abs(rhs)):
+                    break
+            else:
+                return False
+        return True
+
+    def thetas(self, rng, stat, X=0):
         """Thresholds that ask for one violated row per SUPPRESS module, each violated by a random
         fraction (between a quarter and three quarters) of the largest violation the region allows
-        together with the rows chosen before; None if some SUPPRESS module has no row the region
-        can violate."""
+        with the atoms X blocked and together with the rows chosen before; None if some SUPPRESS
+        module has no row the region can violate."""
         R = self.region
         th = [None] * len(self.rows)
         for j in range(self.n_sup):
@@ -189,7 +213,7 @@ class Target:
                 rhs = self.rows[k][1]
                 stat['guide_lps'] += 1
                 try:
-                    val, _, _ = R.maximize(k, 0, th)
+                    val, _, _ = R.maximize(k, X, th)
                 except LPError:
                     continue
                 if val is None:
@@ -240,6 +264,11 @@ class DiveSearch:
     modules; clause dives (see `dive`) work for every module and take over when guided dives
     give nothing.
 
+    A dive adds knockouts only. With knock-ins it starts from a set of them (`starts`): every
+    affordable set while the knock-ins are few, else all of them at once; sets that cannot belong
+    to a design are left out where a Target region shows it. The polishing drops the knock-ins a
+    design does not need.
+
     Args:
         layer (BoolLayer)
         modules (list): module oracles over the atoms of the layer
@@ -272,7 +301,8 @@ class DiveSearch:
         self.probes, self.pool, self.keep_price, self.redives = probes, [], keep_price, redives
         # guided dives may overshoot the budget (polishing often brings the design back into it)
         self.guide_budget = np.inf
-        self._open0 = {}  # forbidden set -> per atom the (cost, blocked atoms) of its completions from the empty set
+        self._open0 = {}  # (forbidden set, knock-ins) -> per atom the (cost, blocked atoms) of its completions from there
+        self.starts, self._turn = None, 0  # the knock-in sets the dives start from, in turn
         self.stat = dict(queries=0, memo=0, from_clauses=0, dives=0, failed_dives=0, nodes=0, backtracks=0, swaps=0, swap_checks=0,
                          swap_capped=0, guided=0, guide_lps=0, over_budget=0, redives=0, redive_wins=0)
         self.clauses = ClauseStore(layer.nA)
@@ -326,6 +356,50 @@ class DiveSearch:
     def _time_up(self):
         return time.time() > self.deadline
 
+    def _find_starts(self, few=6):
+        """The knock-in sets a dive may start from, cheapest first. Up to `few` knock-ins: every
+        set within the budget; beyond that all knock-ins at once (the polishing drops what a
+        design does not need). A set is left out when a PROTECT module has no flux with what the
+        set leaves absent, or none that violates every SUPPRESS module: knockouts only take
+        fluxes away, so no design makes exactly these knock-ins. If nothing is left, there is no
+        design within the budget."""
+        layer = self.layer
+        if not layer.ki:
+            return [0]
+        if layer.ki.bit_count() <= few:
+            sets = [A for _, A in layer.knock_in_sets(self.max_cost)]
+        else:
+            sets = [layer.ki]
+        out = []
+        for A in sets:
+            X = layer.X(A)
+            ok = True
+            for p in self.protect_mods:
+                if p.__class__ is not ClassicModule:
+                    continue
+                T = self.targets.get(id(p))
+                if T is not None:
+                    ok = T.possible(X, self.stat)
+                else:
+                    self.stat['guide_lps'] += 1
+                    ok = p.region.witness(X) is not None
+                if not ok:
+                    break
+            if ok:
+                out.append(A)
+        self.stat['starts'] = len(out)
+        if not out:
+            stop = _Stop('no set of knock-ins leaves room for a design')
+            stop.proven = True
+            raise stop
+        return out
+
+    def _next_start(self):
+        if self.starts is None:
+            self.starts = self._find_starts()
+        self._turn += 1
+        return self.starts[(self._turn - 1) % len(self.starts)]
+
     def _excluded(self, z):
         """z contains a design returned before."""
         return any(d & z == d for d in self.found)
@@ -377,15 +451,19 @@ class DiveSearch:
         and the cost of each one's cheapest such completion."""
         layer = self.layer
         U, w = 0, {}
-        if not z and not X:
-            if forbid not in self._open0:
+        if not z & ~layer.ki and X == layer.X(z):  # a start: knock-ins only
+            if (forbid, z) not in self._open0:
                 opts = {}
                 for a in range(layer.nA):
-                    o = sorted((layer.set_cost(J), layer.extend(0, 0, J)) for J in layer.completions(a, 0, self.guide_budget) if not J & forbid)
+                    if X >> a & 1:
+                        continue
+                    o = sorted((layer.set_cost(J), layer.extend(z, X, J)) for J in layer.completions(a, z, self.guide_budget) if not J & forbid)
                     if o:
                         opts[a] = o
-                self._open0 = {forbid: opts}
-            for a, o in self._open0[forbid].items():
+                if len(self._open0) >= 8:
+                    self._open0 = {}
+                self._open0[(forbid, z)] = opts
+            for a, o in self._open0[(forbid, z)].items():
                 if keep >> a & 1:
                     continue
                 c = next((c for c, XJ in o if not XJ & keep), None)
@@ -490,7 +568,8 @@ class DiveSearch:
         `guide_rounds` rounds or a round that adds nothing to H, with the cheapest fallback design.
 
         Args:
-            z0 (int): interventions the dive starts from (the polishing re-dives from part of a design)
+            z0 (int): interventions the dive starts from (knock-ins; the polishing re-dives from
+                part of a design)
             rounds (int): rounds, default guide_rounds
             forbid (int): interventions the dive must not use
 
@@ -508,7 +587,7 @@ class DiveSearch:
         thetas = {}
         for p in pro:
             T = self.targets.get(id(p))
-            thetas[id(p)] = T.thetas(self.rng, self.stat) if T is not None else None
+            thetas[id(p)] = T.thetas(self.rng, self.stat, X0) if T is not None else None
         H, best = 0, None
         for _ in range(self.guide_rounds if rounds is None else rounds):
             if self._time_up():
@@ -560,11 +639,11 @@ class DiveSearch:
         return best
 
     # -- dive ------------------------------------------------------------------------------------
-    def dive(self):
-        """One dive from the empty set; the design it reaches, or None."""
+    def dive(self, z0=0):
+        """One dive from z0 (knock-ins, or nothing); the design it reaches, or None."""
         self.stat['dives'] += 1
         layer = self.layer
-        z, X, cost = 0, 0, 0.0
+        z, X, cost = z0, layer.X(z0), layer.set_cost(z0)
         frames = []  # [candidates, position]
         nodes = 0
         while True:
@@ -603,23 +682,32 @@ class DiveSearch:
     # -- polishing -------------------------------------------------------------------------------
     def minimise(self, z):
         """Drop interventions, the most expensive first, while z stays a design, until no single
-        one can go."""
-        cost = self.layer.cost
-        changed = True
-        while changed:
+        one can go. Dropping a knock-in blocks more, so knockouts may have become superfluous by
+        it and are tried again."""
+        cost, ki = self.layer.cost, self.layer.ki
+        classic = all(m.__class__ is ClassicModule for m in self.oracle.modules)
+        order = lambda i: (-cost[i], self.rng.random())
+        while True:
             changed = False
-            for i in sorted(bits(z), key=lambda i: (-cost[i], self.rng.random())):
+            for i in sorted(bits(z & ~ki), key=order):
                 z2 = z & ~(1 << i)
                 if self._is_design(z2):
                     z, changed = z2, True
-            if all(m.__class__ is ClassicModule for m in self.oracle.modules):
-                break  # one pass suffices: a set that fails SUPPRESS fails it below as well
-        return z
+            dropped = False
+            for i in sorted(bits(z & ki), key=order):
+                z2 = z & ~(1 << i)
+                if self._is_design(z2):
+                    z, dropped = z2, True
+            # classic modules: one pass over the knockouts suffices, a set that fails SUPPRESS
+            # fails it below as well
+            if not dropped and (classic or not changed):
+                return z
 
     def _swap_round(self, z):
         """A design obtained by replacing one or two interventions of z with one intervention of
         lower total cost, or None if there is none. Exhaustive unless swap_trials runs out: the
-        clause of z minus the removed ones names every intervention that could repair it."""
+        clause of z minus the removed ones names every intervention that could repair it (a
+        knockout that blocks one of its atoms, a knock-in that brings one back)."""
         layer = self.layer
         cost = layer.cost
         members = list(bits(z))
@@ -638,11 +726,13 @@ class DiveSearch:
             ok, P, N = self.oracle.check(X1)
             if ok:
                 return z1
-            if not P:
-                continue
             G = 0
-            for a in bits(P):
+            for a in bits(P or 0):
                 G |= layer.singles(a, z1)
+            if N:  # a knock-in that brings back an atom of N
+                for g in bits(layer.ki & ~z1):
+                    if N & ~layer.X(z1 | (1 << g)):
+                        G |= 1 << g
             G &= ~z
             for g in sorted(bits(G), key=lambda g: (cost[g], self.rng.random())):
                 if cost[g] >= cR:  # a swap lowers the cost, so it stays within the budget
@@ -650,7 +740,7 @@ class DiveSearch:
                 z2 = z1 | (1 << g)
                 if self.found and self._excluded(z2):
                     continue
-                X2 = layer.extend(z1, X1, 1 << g)
+                X2 = layer.X(z2) if (layer.ki >> g) & 1 else layer.extend(z1, X1, 1 << g)
                 if len(self.clauses.violated(X2)):
                     continue
                 if self.stat['swap_checks'] >= self._swap_budget:
@@ -712,7 +802,7 @@ class DiveSearch:
         if self.guided:
             misses = 0
             while len(self.pool) < self.probes and misses < 2:
-                z = self.guided_dive()
+                z = self.guided_dive(self._next_start())
                 if z is None or z in self.pool:
                     misses += 1
                     continue
@@ -723,7 +813,7 @@ class DiveSearch:
                 z = min(self.pool, key=lambda z: (self.layer.set_cost(z), self.rng.random()))
                 self.pool.remove(z)
                 return z
-        return self.dive()
+        return self.dive(self._next_start())
 
     def run(self, max_solutions=1):
         """Returns (designs as bit sets, proven: True if a module was shown to be unfulfillable)."""
@@ -908,8 +998,8 @@ def lp_dive_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, 
     finds are the cheapest designs. Dives deliver the rest. After the dives the complete search
     runs once more, for at most `union_seconds`, over the interventions that occur in the designs
     the dives reached: it returns the cheaper designs that these interventions hold, or shows that
-    they hold none (`stat['union_complete']`). With reaction knock-ins only the complete search
-    runs, over the whole (finite) budget.
+    they hold none (`stat['union_complete']`). Knock-ins (of reactions or genes) are handled for
+    SUPPRESS / PROTECT modules.
 
     Status: OPTIMAL if max_solutions designs were found, or every design within the budget (for an
     optimisation module: when the local search ended at a local optimum before the time limit),
@@ -920,23 +1010,20 @@ def lp_dive_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, 
     Returns:
         (CompressedDesigns, search object)
     """
-    if gki_cost:
-        raise NotImplementedError('the LP engine does not handle gene knock-ins yet')
-    costs = list(ko_cost.values()) + list((gko_cost or {}).values()) + list((ki_cost or {}).values())
+    costs = list(ko_cost.values()) + list((gko_cost or {}).values()) + list((ki_cost or {}).values()) + list((gki_cost or {}).values())
     if any(c <= 0 for c in costs):
         raise NotImplementedError('the LP engine needs positive intervention costs')
     opt_mods = [mod for mod in sd_modules if mod[MODULE_TYPE] in _OBJECTIVES]
     if any(mod[MODULE_TYPE] not in (SUPPRESS, PROTECT) and mod[MODULE_TYPE] not in _OBJECTIVES for mod in sd_modules) or len(opt_mods) > 1:
         raise NotImplementedError('the LP engine handles SUPPRESS, PROTECT, OptKnock, RobustKnock and OptCouple modules')
     integer_costs = all(abs(c - round(c)) <= 1e-9 for c in costs)
-    if ki_cost and (opt_mods or not np.isfinite(max_cost) or not integer_costs):
-        raise NotImplementedError("solution_approach 'any' of the LP engine handles knock-ins for SUPPRESS / PROTECT modules with a finite "
-                                  "budget and integer costs")
+    if (ki_cost or gki_cost) and opt_mods:
+        raise NotImplementedError("solution_approach 'any' of the LP engine handles knock-ins for SUPPRESS / PROTECT modules only")
     from straindesign.parse_constr import lineqlist2mat
     t0 = time.time()
     n_lp0 = _LPBase.n_solves
     names, layer, modules, atom_rxn, ctx = build_problem(cmp_model, sd_modules, ko_cost, gko_cost, max_cost, solver,
-                                                         'name' if has_gene_names else 'id', exact=exact, ki_cost=ki_cost)
+                                                         'name' if has_gene_names else 'id', exact=exact, ki_cost=ki_cost, gki_cost=gki_cost)
     objective = None
     if opt_mods:
         mod = opt_mods[0]
@@ -948,16 +1035,15 @@ def lp_dive_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, 
         kwargs.setdefault('targets', target_regions(ctx, sd_modules, modules))
         search = DiveSearch(layer, modules, max_cost, seed=seed, time_limit=time_limit, **kwargs)
         proven = exhaustive = False
-        levels = max_cost if ki_cost else min(max_cost, first_levels)
+        levels = min(max_cost, first_levels)
         if levels >= 1 and integer_costs:
             # the cheapest designs, where the lowest cost levels hold any
-            enum = LPEnumerator(layer, modules, levels, max_solutions=max_solutions,
-                                time_limit=time_limit if ki_cost else min(first_seconds, time_limit / 3))
+            enum = LPEnumerator(layer, modules, levels, max_solutions=max_solutions, time_limit=min(first_seconds, time_limit / 3))
             cheap, complete = enum.run()
             exhaustive = complete and levels >= max_cost and len(cheap) < max_solutions
             proven = exhaustive and not cheap
             search.take_over(enum, cheap, time.time() - t0)
-        if not (proven or exhaustive or ki_cost or len(search.found) >= max_solutions):
+        if not (proven or exhaustive or len(search.found) >= max_solutions):
             n_cheap = len(search.found)
             found, proven = search.run(max_solutions)
             if search.found and not n_cheap and not getattr(search, 'trivial', False) and union_seconds > 0:

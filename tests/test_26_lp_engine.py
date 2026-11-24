@@ -214,9 +214,64 @@ def test_knock_in_sets_of_the_layer():
     assert layer.knock_in_sets(1) == [(0.0, 0), (1.0, mask([2]))]
 
 
-def test_unsupported_setups_say_so(model_gpr):
-    modules = [sd.SDModule(model_gpr, SUPPRESS, constraints=["1.0 rd_ex >= 1.0 "])]
+def _gene_signed(sol):
+    return sorted(sorted((k, v) for k, v in d.items() if v != 0) for d in sol.gene_sd)
+
+
+def _gene_designs_by_definition(model, spec, gko, gki, max_cost):
+    """The minimal sets of gene knockouts (-1) and knock-ins (1) within the budget, by plain LPs
+    on the cobra model: a knock-in gene is switched off unless the set makes it."""
+    import itertools
+    genes = {g.name or g.id: g for g in model.genes}
+    items = [(g, c, -1.0) for g, c in gko.items()] + [(g, c, 1.0) for g, c in gki.items()]
+
+    def fulfils(chosen):
+        made = {g for g, _, s in chosen if s > 0}
+        with model:
+            for g in [g for g, _, s in chosen if s < 0] + [g for g in gki if g not in made]:
+                genes[g].knock_out()
+            for kind, expr, rhs in spec:
+                with model:
+                    e = sum(c * model.reactions.get_by_id(r).flux_expression for r, c in expr.items())
+                    model.add_cons_vars(model.problem.Constraint(e, lb=rhs))
+                    model.objective = model.problem.Objective(0, direction='max')
+                    if np.isnan(model.slim_optimize(error_value=np.nan)) != (kind == SUPPRESS):
+                        return False
+        return True
+
+    designs = []
+    for size in range(len(items) + 1):
+        for chosen in itertools.combinations(items, size):
+            z = frozenset((g, s) for g, _, s in chosen)
+            if sum(c for _, c, _ in chosen) <= max_cost and not any(d <= z for d in designs) and fulfils(chosen):
+                designs.append(z)
+    return sorted(sorted(d) for d in designs)
+
+
+def test_gene_knock_ins(curr_solver, model_gpr):
+    """A gene with a knock-in cost is absent unless knocked in: the reactions that need it are
+    blocked, the ones it is an alternative for lose it as an alternative."""
+    spec = [(SUPPRESS, {'rd_ex': 1.0}, 1.0), (PROTECT, {'r_bm': 1.0}, 1.0)]
+    modules = [sd.SDModule(model_gpr, kind, constraints=[[expr, '>=', rhs]]) for kind, expr, rhs in spec]
     genes = [g.name or g.id for g in model_gpr.genes]
-    with pytest.raises(NotImplementedError):
-        sd.compute_strain_designs(model_gpr, sd_modules=modules, solution_approach=POPULATE, max_cost=3, solver=GLPK, engine='lp', gene_kos=True,
-                                  gko_cost={g: 1.0 for g in genes[1:]}, gki_cost={genes[0]: 1.0})
+    with_ki = 0
+    for k in range(len(genes)):
+        gki = {genes[k]: 1.0, genes[(k + 3) % len(genes)]: 2.0}
+        gko = {g: 1.0 for g in genes if g not in gki}
+        ref = _gene_designs_by_definition(model_gpr, spec, gko, gki, 4)
+        for compress in (True, False):
+            lp = sd.compute_strain_designs(model_gpr, sd_modules=modules, solution_approach=POPULATE, solver=curr_solver, engine='lp', gene_kos=True,
+                                           max_cost=4, gko_cost=gko, gki_cost=gki, compress=compress)
+            assert _gene_signed(lp) == ref
+        with_ki += sum(1 for d in ref if any(v > 0 for _, v in d))
+    assert with_ki
+
+
+def test_blocking_sets_that_depend_on_a_knock_in():
+    # atom 0 needs gene 0 or the knocked-in gene 2, atom 1 needs the knocked-in gene 3 and gene 1
+    layer = BoolLayer([1.0, 1.0, 1.0, 1.0], [('and', [0, ('ki', 2)]), ('or', [1, ('ki', 3)])], 4)
+    assert layer.ki == mask([2, 3])
+    assert layer.X(0) == mask([1]) and layer.X(mask([0])) == mask([0, 1])
+    assert layer.X(mask([0, 2])) == mask([1]) and layer.X(mask([3])) == 0 and layer.X(mask([1, 3])) == mask([1])
+    assert layer.completions(0, 0, 4) == [mask([0])] and layer.completions(0, mask([2]), 4) == []
+    assert layer.extend(mask([3]), 0, mask([1])) == mask([1]) and layer.extend(mask([2]), mask([1]), mask([0])) == mask([1])
