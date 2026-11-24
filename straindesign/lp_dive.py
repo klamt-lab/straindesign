@@ -37,6 +37,8 @@ instead of visiting the intervention sets cost level by cost level it
    used up) undoes the last choice; a dive gives up after a bounded number of nodes, and the next
    one starts with every clause learned so far.
 2. **polishes** the design it reaches to a local optimum (see `DiveSearch.polish`).
+3. looks for **cheaper designs among the interventions the dives touched**: the complete search
+   again, over that small set of interventions (`DiveSearch.cheaper_among_seen`).
 
 Optimisation modules (OptKnock, RobustKnock, OptCouple) are handled by local search on the
 objective value (see `OptSearch`).
@@ -277,6 +279,7 @@ class DiveSearch:
         self.oracle = _Oracle(modules, self.clauses, self.stat)
         self.protect_mods = [m for m in modules if m.kind != SUPPRESS]
         self.found = []  # designs returned so far (intervention bit sets)
+        self.seen = 0  # every intervention of a design a dive reached or the polishing produced
         self.log = []  # per design: (seconds since start, cost after the dive, cost after polishing, LP checks so far)
 
     # -- helpers ---------------------------------------------------------------------------------
@@ -294,6 +297,31 @@ class DiveSearch:
             self.log.append((seconds, c, c, self.stat['queries']))
         if designs == [0] or (designs and designs[0] == 0):
             self.trivial = True
+
+    def cheaper_among_seen(self, seconds, max_solutions=1):
+        """Look for designs cheaper than the cheapest one found, among the interventions that
+        occur in any design the dives reached: the complete search of lp_enumeration over that
+        small set of interventions, with every clause learned so far.
+
+        Returns (designs, complete). complete without designs is a certificate: no set of these
+        interventions that costs less than the cheapest design found is a design. The designs it
+        does find are the cheapest there are among these interventions, cheapest first."""
+        dived = [z for z in self.found if z]
+        costs = self.layer.cost
+        if not dived or not self.seen or any(abs(c - round(c)) > 1e-9 for c in costs):
+            return [], False
+        below = min(self.layer.set_cost(z) for z in dived) - min(costs[i] for i in bits(self.seen))
+        if below < 1:
+            return [], True
+        sub = self.layer.restricted(self.seen, below)
+        enum = LPEnumerator(sub, self.oracle.modules, below, time_limit=min(seconds, max(0.0, self.deadline - time.time())),
+                            max_solutions=max_solutions)
+        for P, N in zip(self.clauses.P, self.clauses.N):
+            if P or N:
+                enum._add_clause(P, N)
+        designs, complete = enum.run()
+        self.stat['union_size'], self.stat['union_queries'], self.stat['union_complete'] = self.seen.bit_count(), enum.stat['queries'], complete
+        return list(designs), complete
 
     def _time_up(self):
         return time.time() > self.deadline
@@ -688,6 +716,7 @@ class DiveSearch:
                     misses += 1
                     continue
                 self.pool.append(z)
+                self.seen |= z
             self.pool = [z for z in self.pool if not self._excluded(z)]
             if self.pool:
                 z = min(self.pool, key=lambda z: (self.layer.set_cost(z), self.rng.random()))
@@ -712,7 +741,9 @@ class DiveSearch:
                     self.stat['failed_dives'] += 1
                     continue
                 c0 = self.layer.set_cost(z)
+                self.seen |= z
                 z = self.polish(z)
+                self.seen |= z
                 if self.layer.set_cost(z) > self.max_cost:
                     self.stat['over_budget'] += 1
                     fails += 1
@@ -868,13 +899,16 @@ class OptSearch:
 
 
 def lp_dive_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, has_gene_names, max_cost, solver, time_limit=np.inf,
-                   max_solutions=np.inf, seed=None, exact=False, first_levels=3, first_seconds=20.0, **kwargs):
+                   max_solutions=np.inf, seed=None, exact=False, first_levels=3, first_seconds=20.0, union_seconds=120.0, **kwargs):
     """Entry point for compute_strain_designs with solution_approach='any'.
 
     For SUPPRESS / PROTECT modules the complete search first walks the cost levels up to
     `first_levels` for at most `first_seconds` (and at most a third of the time limit); what it
-    finds are the cheapest designs. Dives deliver the rest. With reaction knock-ins only the
-    complete search runs, over the whole (finite) budget.
+    finds are the cheapest designs. Dives deliver the rest. After the dives the complete search
+    runs once more, for at most `union_seconds`, over the interventions that occur in the designs
+    the dives reached: it returns the cheaper designs that these interventions hold, or shows that
+    they hold none (`stat['union_complete']`). With reaction knock-ins only the complete search
+    runs, over the whole (finite) budget.
 
     Status: OPTIMAL if max_solutions designs were found, or every design within the budget (for an
     optimisation module: when the local search ended at a local optimum before the time limit),
@@ -923,7 +957,17 @@ def lp_dive_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, 
             proven = exhaustive and not cheap
             search.take_over(enum, cheap, time.time() - t0)
         if not (proven or exhaustive or ki_cost or len(search.found) >= max_solutions):
+            n_cheap = len(search.found)
             found, proven = search.run(max_solutions)
+            if search.found and not n_cheap and not getattr(search, 'trivial', False) and union_seconds > 0:
+                cheaper, _ = search.cheaper_among_seen(union_seconds, max_solutions)
+                if cheaper:
+                    logging.info('  LP dive: %d cheaper designs among the %d interventions of the designs found, cheapest of cost %g' %
+                                 (len(cheaper), search.seen.bit_count(), layer.set_cost(cheaper[0])))
+                    for z in cheaper:
+                        search.log.append((time.time() - t0, layer.set_cost(z), layer.set_cost(z), search.stat['queries']))
+                    keep = len(search.found) if not np.isfinite(max_solutions) else int(max_solutions)
+                    search.found = (cheaper + search.found)[:max(keep, 1)]
         found = search.found
         values = None
         done = len(found) >= max_solutions or exhaustive or getattr(search, 'trivial', False)

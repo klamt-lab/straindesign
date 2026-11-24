@@ -1224,6 +1224,7 @@ class BoolLayer:
     def __init__(self, costs, formulas, budget, needs=None):
         self.cost = [float(c) for c in costs]
         self.nI, self.nA = len(costs), len(formulas)
+        self.formulas = list(formulas)
         self.block = [_blocking_sets(f, self.cost, budget) for f in formulas]
         self.needs = [-1] * self.nA if needs is None else [int(i) for i in needs]
         self.ki = mask(i for i in self.needs if i >= 0)  # the knock-in interventions
@@ -1255,6 +1256,12 @@ class BoolLayer:
             if not (z >> i) & 1:
                 X |= atoms
         return X
+
+    def restricted(self, keep, budget):
+        """The same atoms with only the interventions `keep` (bit set) affordable within `budget`.
+        Clauses, being statements about atoms, hold for the restricted layer as they are."""
+        costs = [c if (keep >> i) & 1 else budget + 1.0 for i, c in enumerate(self.cost)]
+        return BoolLayer(costs, self.formulas, budget, self.needs)
 
     def knock_in_sets(self, budget, limit=200000):
         """Every set of knock-ins of cost <= budget as (cost, bit set), cheapest first."""
