@@ -826,7 +826,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
                                        propagate_gpr=True,
                                        no_coupled_compress_reacs=no_coupled_compress_reacs,
                                        targetable_rxns=targetable_rxns)
-        sd_modules = compress_modules(sd_modules, cmp_mapReac_1)
+        sd_modules = compress_modules(sd_modules, cmp_mapReac_1, cmp_model.reactions.list_attr('id'))
         # Compress reaction + regulatory costs only (gene costs not yet added)
         cmp_ko_cost, cmp_ki_cost, cmp_mapReac_1 = compress_ki_ko_cost(uncmp_ko_cost, uncmp_ki_cost, cmp_mapReac_1)
         logging.info('  Compressed to ' + str(len(cmp_model.reactions)) + ' reactions (%.1fs).' % (time.time() - t0))
@@ -914,7 +914,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             targetable_rxns=set(cmp_ko_cost) | set(cmp_ki_cost),
             no_coupled_compress_reacs=_free_coupled_reacs(cmp_ko_cost, cmp_ki_cost),
         )
-        sd_modules = compress_modules(sd_modules, cmp_mapReac_2)
+        sd_modules = compress_modules(sd_modules, cmp_mapReac_2, cmp_model.reactions.list_attr('id'))
         cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2 = compress_ki_ko_cost(cmp_ko_cost, cmp_ki_cost, cmp_mapReac_2)
         cmp_mapReac = cmp_mapReac_1 + cmp_mapReac_2
         logging.info('  Compressed to ' + str(len(cmp_model.reactions)) + ' reactions (%.1fs).' % (time.time() - t0))

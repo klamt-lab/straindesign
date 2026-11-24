@@ -1178,7 +1178,7 @@ def extend_model_regulatory(model, reg_itv):
 # =============================================================================
 
 
-def compress_modules(sd_modules, cmp_mapReac):
+def compress_modules(sd_modules, cmp_mapReac, reaction_ids=None):
     """Compress strain design modules to match with a compressed model
     
     When a strain design task has been specified with modules and the original metabolic model 
@@ -1195,6 +1195,12 @@ def compress_modules(sd_modules, cmp_mapReac):
         
         cmp_mapReac (list of dicts):
             Compression map obtained from cmp_mapReac = compress_model(model)
+
+        reaction_ids (optional (list of str)): (Default: None)
+            The reaction identifiers of the compressed model. The compression removes reactions
+            that cannot carry flux, and the compression map does not list them. If the identifiers
+            are given, the terms of such reactions (they are zero) are taken out of the constraints
+            and objectives of the modules, which otherwise keep naming reactions that are gone.
         
     Returns:
         (list of SDModule):
@@ -1219,6 +1225,19 @@ def compress_modules(sd_modules, cmp_mapReac):
                                 if np.any([k in old_reac_val for k in param.keys()]):
                                     lumped_reacs = [k for k in param.keys() if k in old_reac_val]
                                     m[p][new_reac] = np.sum([param.pop(k) * old_reac_val[k] for k in lumped_reacs if k in old_reac_val])
+    if reaction_ids is not None:
+        kept = set(reaction_ids)
+        removed = set()
+        for m in sd_modules:
+            for p in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+                if p in m and m[p] is not None:
+                    for expr in ([c[0] for c in m[p]] if p == CONSTRAINTS else [m[p]]):
+                        for k in [k for k in expr if k not in kept]:
+                            del expr[k]
+                            removed.add(k)
+        if removed:
+            logging.warning('The strain design modules name reactions that cannot carry flux: ' + ', '.join(sorted(removed)) +
+                            '. Their terms in constraints and objectives are zero.')
     return sd_modules
 
 

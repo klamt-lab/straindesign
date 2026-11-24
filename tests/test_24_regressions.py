@@ -503,3 +503,41 @@ def test_addition_of_a_reversible_reaction_that_has_a_gene_rule(curr_solver, con
                                     solver=curr_solver)
     assert sol.status == OPTIMAL
     assert sol.reaction_sd == [{'r_x': 1.0}]
+
+
+@pytest.mark.parametrize('module', [
+    dict(constraints='r_a + r_dead >= 1'),
+    dict(constraints=['r_a >= 1', 'r_dead <= 5']),
+    dict(constraints='r_a >= 1', inner_objective='r_dead'),
+],
+                         ids=['next to another reaction', 'alone in a constraint', 'as inner objective'])
+def test_module_that_names_a_blocked_reaction(curr_solver, module):
+    """The compression removes the blocked r_dead. Its terms in the module are zero, and the cut
+    sets are those of r_a >= 1."""
+    model = _model_dead_end()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, SUPPRESS, **module)],
+                                    max_cost=2,
+                                    solution_approach=POPULATE,
+                                    solver=curr_solver)
+    assert sol.status == OPTIMAL
+    assert _sets(sol) == [['r_a'], ['r_s']]
+
+
+@pytest.mark.parametrize('blocked_in', [OUTER_OBJECTIVE, INNER_OBJECTIVE, CONSTRAINTS])
+def test_optknock_module_that_names_a_blocked_reaction(curr_solver, model_weak_coupling, blocked_in):
+    """r_dead turns A into a metabolite that nothing consumes. Adding it to an objective or to
+    the constraint of the module does not change the designs."""
+    dead_end = Metabolite('X', compartment='c')
+    r_dead = Reaction('r_dead', lower_bound=0, upper_bound=100)
+    model_weak_coupling.add_reactions([r_dead])
+    r_dead.add_metabolites({model_weak_coupling.metabolites.A: -1, dead_end: 1})
+    module = {INNER_OBJECTIVE: 'r_BM', OUTER_OBJECTIVE: 'r_P', CONSTRAINTS: 'r_BM >= 0.2'}
+    ko_cost = {r.id: 1 for r in model_weak_coupling.reactions if r.id != 'r_dead'}
+    kw = dict(ko_cost=ko_cost, max_cost=2, max_solutions=10, solution_approach=BEST, solver=curr_solver)
+    plain = sd.compute_strain_designs(model_weak_coupling, sd_modules=[sd.SDModule(model_weak_coupling, OPTKNOCK, **module)], **kw)
+    module[blocked_in] = module[blocked_in].replace('r_BM', 'r_BM + r_dead').replace('r_P', 'r_P + r_dead')
+    named = sd.compute_strain_designs(model_weak_coupling, sd_modules=[sd.SDModule(model_weak_coupling, OPTKNOCK, **module)], **kw)
+    assert plain.status == OPTIMAL and named.status == OPTIMAL
+    assert len(plain.reaction_sd) > 0
+    assert _sets(named) == _sets(plain)
