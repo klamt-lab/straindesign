@@ -612,3 +612,47 @@ def test_wild_type_that_fails_verification_is_left_behind(curr_solver, monkeypat
                                     **costs)
     assert sol.status == (OPTIMAL if designs else INFEASIBLE)
     assert sorted(sol.reaction_sd, key=lambda design: sorted(design.items())) == designs
+
+
+def _model_coefficients_of_two():
+    """Twelve reactions with stoichiometric coefficients of 1 and 2; R6 is blocked (nothing consumes M3).
+
+    Without R2 or without UP0 no flux state with an optimal BM has UP0 >= 0.1 and EX_P <= UP0 / 2,
+    and BM >= 0.2 stays within reach."""
+    model = Model('coefficients_of_two')
+    mets = {m: Metabolite(m, compartment='c') for m in ['M0', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6']}
+    # the metabolites go in first: their order is the row order of the MILP, and the rounding
+    # error that the test below is about appears with this order
+    model.add_metabolites(list(mets.values()))
+    for rid, stoich, lb, ub in [('UP0', {'M0': 1}, 0, 10), ('R0', {'M0': -1, 'M4': 2}, -inf, inf), ('R1', {'M0': 1, 'M4': -2, 'M5': 1}, -inf, inf),
+                                ('R2', {'M2': 1, 'M4': -2, 'M5': -1}, 0, inf), ('R3', {'M1': 1, 'M2': -1, 'M6': 2}, 0, 1000),
+                                ('R4', {'M1': -2, 'M5': 2, 'M6': -1}, 0, inf), ('R5', {'M0': -1, 'M1': 2, 'M4': 1}, 0, inf),
+                                ('R6', {'M2': 2, 'M3': 2, 'M5': -2}, 0, 1000), ('R7', {'M2': -1, 'M4': -2, 'M6': 1}, -inf, inf),
+                                ('EX_P', {'M0': -1}, 0, 10), ('EX1', {'M6': -1}, 0, inf), ('BM', {'M2': -2, 'M4': -1, 'M6': -2}, 0, inf)]:
+        reaction = Reaction(rid, lower_bound=lb, upper_bound=ub)
+        model.add_reactions([reaction])
+        reaction.add_metabolites({mets[m]: v for m, v in stoich.items()})
+    return model
+
+
+@pytest.mark.parametrize('compress', [True, False])
+def test_cut_sets_behind_a_binary_that_is_integral_up_to_rounding(curr_solver, compress):
+    """Both minimal cut sets cost 2. In the MILP of that cost level, GLPK meets a binary whose LP
+    value is an integer up to the rounding error of the simplex (about 1e-12). An integrality
+    tolerance below that error makes GLPK branch on it and close the branch that holds the cut
+    sets, so that only supersets of them are returned."""
+    model = _model_coefficients_of_two()
+    modules = [
+        sd.SDModule(model, SUPPRESS, constraints=['EX_P - 0.5 UP0 <= 0', 'UP0 >= 0.1'], inner_objective='BM'),
+        sd.SDModule(model, PROTECT, constraints='BM >= 0.2', inner_objective='BM', inner_opt_tol=0.9)
+    ]
+    ko_cost = {'UP0': 2, 'R0': 1, 'R1': 1, 'R2': 2, 'R3': 1, 'R4': 3, 'R5': 2, 'R6': 1, 'R7': 3, 'EX_P': 2, 'EX1': 3, 'BM': 1}
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=modules,
+                                    ko_cost=ko_cost,
+                                    max_cost=5,
+                                    solution_approach=POPULATE,
+                                    compress=compress,
+                                    solver=curr_solver)
+    assert sol.status == OPTIMAL
+    assert _sets(sol) == [['R2'], ['UP0']]

@@ -208,7 +208,12 @@ class GLPK_MILP_LP():
             self.milp_params = glp_iocp()
             glp_init_iocp(self.milp_params)
             self.milp_params.presolve = 1
-            self.milp_params.tol_int = 1e-12
+            # A binary within 1e-9 of an integer counts as integral, as in the Gurobi interface. The
+            # value of a basic variable carries the rounding error of the simplex (about 1e-12 next
+            # to big-M coefficients of 1000). With a tolerance at that level GLPK takes an integral
+            # binary for fractional, and where nothing in the basis can move it to the integer it
+            # already has, GLPK drops that branch as infeasible together with the solutions in it.
+            self.milp_params.tol_int = 1e-9
             self.milp_params.tol_obj = 1e-9
             self.milp_params.msg_lev = 0
 
