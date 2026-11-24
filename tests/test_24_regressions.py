@@ -6,7 +6,7 @@ from cobra import Model, Metabolite, Reaction
 import pytest
 import straindesign as sd
 from straindesign.names import *
-from straindesign.speedy_fva import fast_reversibility
+from straindesign.speedy_fva import fast_reversibility, speedy_fva
 
 
 def _sets(solution):
@@ -243,3 +243,46 @@ def test_costs_keyed_by_genes_that_start_with_a_digit(curr_solver, by_name):
     limit = 'g' + keys[0] + ' <= 0.5'
     assert sorted(sorted(k for k, v in d.items() if v) for d in limited.gene_sd) == sorted(expected + [sorted([limit, 'g' + keys[1]]),
                                                                                               sorted([limit, 'g' + keys[2]])])
+
+
+def _model_dead_end():
+    """r_s supplies A, r_a and r_b drain it; no two of these are coupled. r_dead turns A into D,
+    which nothing consumes, so it is blocked."""
+    model = Model('dead_end')
+    A, D = Metabolite('A', compartment='c'), Metabolite('D', compartment='c')
+    for rid, stoich, ub in [('r_s', {A: 1}, 10), ('r_a', {A: -1}, inf), ('r_b', {A: -1}, inf), ('r_dead', {A: -1, D: 1}, inf)]:
+        reaction = Reaction(rid, lower_bound=0, upper_bound=ub)
+        model.add_reactions([reaction])
+        reaction.add_metabolites(stoich)
+    return model
+
+
+def test_reversibility_reports_a_blocked_reaction(curr_solver):
+    """The compression inside fast_reversibility removes blocked reactions. They are part of the
+    result also when the compression lumps no reactions."""
+    assert fast_reversibility(_model_dead_end(), solver=curr_solver) == {
+        'r_s': (True, False),
+        'r_a': (True, False),
+        'r_b': (True, False),
+        'r_dead': (False, False)
+    }
+
+
+@pytest.mark.parametrize('constraints', [None, 'r_dead <= 5'])
+def test_compressed_fva_reports_a_blocked_reaction(curr_solver, constraints):
+    """As above for speedy_fva, also with a constraint on the reaction that is removed."""
+    fva = speedy_fva(_model_dead_end(), solver=curr_solver, compress=True, constraints=constraints)
+    assert list(fva.index) == ['r_s', 'r_a', 'r_b', 'r_dead']
+    assert fva['minimum'].tolist() == pytest.approx([0.0] * 4)
+    assert fva['maximum'].tolist() == pytest.approx([10.0, 10.0, 10.0, 0.0])
+
+
+def test_cut_sets_of_a_network_with_a_blocked_reaction(curr_solver):
+    model = _model_dead_end()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, SUPPRESS, constraints='r_a >= 1')],
+                                    max_cost=2,
+                                    solution_approach=POPULATE,
+                                    solver=curr_solver)
+    assert sol.status == OPTIMAL
+    assert _sets(sol) == [['r_a'], ['r_s']]
