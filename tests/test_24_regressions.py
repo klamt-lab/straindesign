@@ -413,3 +413,48 @@ def test_optcouple_without_a_flux_that_makes_no_product(curr_solver, forced, com
                                     solver=curr_solver)
     assert sol.status == INFEASIBLE
     assert sol.reaction_sd == []
+
+
+def _network(name, reactions):
+    """Model from (id, {metabolite: coefficient}, lower bound, upper bound) tuples."""
+    model = Model(name)
+    metabolites = {}
+    for rid, stoich, lb, ub in reactions:
+        reaction = Reaction(rid, lower_bound=lb, upper_bound=ub)
+        model.add_reactions([reaction])
+        reaction.add_metabolites({metabolites.setdefault(m, Metabolite(m, compartment='c')): v for m, v in stoich.items()})
+    return model
+
+
+def _problem_without_candidates(case, min_gcp=0.0):
+    """Optimisation problems in which the wild type qualifies and no intervention variable is left."""
+    if case == 'every reaction essential':
+        # r_s makes A and B, growth drains A and the product reaction B: the three are coupled
+        model = _network(case, [('r_s', {'A': 1, 'B': 1}, 0, 10), ('r_bm', {'A': -1}, 0, inf), ('r_p', {'B': -1}, 0, inf)])
+        modules = [sd.SDModule(model, OPTCOUPLE, inner_objective='r_bm', prod_id='r_p', min_gcp=min_gcp)]
+        return model, modules + [sd.SDModule(model, PROTECT, constraints='r_p >= 0.2')], {}
+    if case == 'the candidate left is blocked':
+        # nothing makes B, which growth needs
+        model = _network(case, [('r_s', {'A': 1}, 0, inf), ('r_p', {'A': -1}, 0, 1000), ('r_bm', {'A': -1, 'B': -1}, 0, 1000)])
+        modules = [sd.SDModule(model, ROBUSTKNOCK, inner_objective='r_bm', outer_objective='r_p')]
+        return model, modules + [sd.SDModule(model, PROTECT, constraints='r_p >= 1')], {}
+    model = _network(case, [('r_s', {'A': 1}, 0, 10), ('r_p', {'A': -1}, 0, inf), ('r_bm', {'A': -1}, 0, inf)])
+    return model, [sd.SDModule(model, OPTKNOCK, inner_objective='r_bm', outer_objective='r_p')], {'ko_cost': {}}
+
+
+@pytest.mark.parametrize('approach', [ANY, BEST, POPULATE])
+@pytest.mark.parametrize('case', ['every reaction essential', 'the candidate left is blocked', 'no candidate given'])
+def test_optimisation_without_candidates_returns_the_wild_type(curr_solver, case, approach):
+    model, modules, kw = _problem_without_candidates(case)
+    sol = sd.compute_strain_designs(model, sd_modules=modules, max_cost=1, solution_approach=approach, compress=False, solver=curr_solver, **kw)
+    assert sol.status == OPTIMAL
+    assert sol.reaction_sd == [{}]
+
+
+@pytest.mark.parametrize('approach', [ANY, BEST, POPULATE])
+def test_optimisation_without_candidates_and_without_a_design(curr_solver, approach):
+    """Growth is 10 with production and 0 without it; a coupling potential of 20 is out of reach."""
+    model, modules, kw = _problem_without_candidates('every reaction essential', min_gcp=20.0)
+    sol = sd.compute_strain_designs(model, sd_modules=modules, max_cost=1, solution_approach=approach, compress=False, solver=curr_solver, **kw)
+    assert sol.status == INFEASIBLE
+    assert sol.reaction_sd == []
