@@ -430,8 +430,9 @@ class DiveSearch:
             lp.set_obj(cols, [1.0] * len(cols))
 
     def _irreducible(self, region, X, C, w):
-        """The atoms of the core C beyond X, thinned out (the most expensive first) while the
-        region with them and X blocked stays empty: blocking fewer of them would leave a point."""
+        """The core C with its atoms beyond X thinned out (the most expensive first) while the
+        region stays empty: blocking fewer of them on top of X would leave a point. Returns the
+        core the last proof rests on, the atoms of X it uses included."""
         need = C & ~X
         for a in sorted(bits(need), key=lambda a: (-w.get(a, 0.0), self.rng.random())):
             if not need >> a & 1:
@@ -442,8 +443,8 @@ class DiveSearch:
             except LPError:
                 continue
             if C2 is not None:
-                need = C2 & ~X
-        return need
+                C, need = C2, C2 & ~X
+        return C
 
     def _block_all(self, z, X, atoms, keep, forbid):
         """z extended by interventions that block every atom of `atoms` without blocking a kept
@@ -544,7 +545,7 @@ class DiveSearch:
                         H |= S & keep
                     z = None
                     break
-                C = self._irreducible(s.region, X, C, w) | (C & X)
+                C = self._irreducible(s.region, X, C, w)
                 s.memo.add(0, C)
                 s.cores.append(C)
                 z, X = self._block_all(z, X, C, keep, forbid)
