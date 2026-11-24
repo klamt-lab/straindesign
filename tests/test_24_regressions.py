@@ -458,3 +458,48 @@ def test_optimisation_without_candidates_and_without_a_design(curr_solver, appro
     sol = sd.compute_strain_designs(model, sd_modules=modules, max_cost=1, solution_approach=approach, compress=False, solver=curr_solver, **kw)
     assert sol.status == INFEASIBLE
     assert sol.reaction_sd == []
+
+
+def _model_reversible_reaction_with_a_rule():
+    """r_sa supplies A and r_sb supplies B (at most 10 each), r_a and r_b drain them. r_x (gene gX)
+    converts A into B and back."""
+    model = _network('reversible_with_rule', [('r_sa', {'A': 1}, 0, 10), ('r_sb', {'B': 1}, 0, 10), ('r_x', {'A': -1, 'B': 1}, -inf, inf),
+                                              ('r_a', {'A': -1}, 0, inf), ('r_b', {'B': -1}, 0, inf)])
+    model.reactions.r_x.gene_reaction_rule = 'gX'
+    return model
+
+
+@pytest.mark.parametrize('constraint', ['r_a - r_sa >= 1', 'r_b - r_sb >= 1'], ids=['backward', 'forward'])
+@pytest.mark.parametrize('compress', [False, True])
+def test_knockout_of_a_reversible_reaction_that_has_a_gene_rule(curr_solver, constraint, compress):
+    """The reaction r_x and its gene are both knockout candidates. More drain of A than supply needs
+    r_x backward, more drain of B than supply needs it forward: either knockout stops both."""
+    model = _model_reversible_reaction_with_a_rule()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, SUPPRESS, constraints=constraint)],
+                                    gene_kos=True,
+                                    ko_cost={'r_x': 1},
+                                    max_cost=1,
+                                    solution_approach=POPULATE,
+                                    compress=compress,
+                                    solver=curr_solver)
+    assert sol.status == OPTIMAL
+    assert _gene_sets(sol) == [['gX'], ['r_x']]
+    assert sol.reaction_sd == [{'r_x': -1.0}] * 2
+
+
+@pytest.mark.parametrize('constraint', ['r_a - r_sa >= 1', 'r_b - r_sb >= 1'], ids=['backward', 'forward'])
+@pytest.mark.parametrize('compress', [False, True])
+def test_addition_of_a_reversible_reaction_that_has_a_gene_rule(curr_solver, constraint, compress):
+    """r_x is an addition candidate. Neither direction is available without the addition."""
+    model = _model_reversible_reaction_with_a_rule()
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, PROTECT, constraints=constraint)],
+                                    gene_kos=True,
+                                    ki_cost={'r_x': 1},
+                                    max_cost=1,
+                                    solution_approach=POPULATE,
+                                    compress=compress,
+                                    solver=curr_solver)
+    assert sol.status == OPTIMAL
+    assert sol.reaction_sd == [{'r_x': 1.0}]

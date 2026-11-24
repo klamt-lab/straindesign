@@ -27,7 +27,7 @@ import json
 import re
 import time
 from copy import deepcopy
-from cobra import Model
+from cobra import Model, Metabolite, Reaction
 from cobra.manipulation import rename_genes
 from straindesign import SDModule, SDSolutions, select_solver, fva, DisableLogger, SDProblem, SDMILP
 from straindesign.names import *
@@ -319,6 +319,27 @@ def _follow_renaming(model, renamed, gko_cost, gki_cost, reg_cost):
     follow = lambda term: term if model.reactions.has_id(term) else renamed.get(term, term)
     return ({renamed.get(k, k): v for k, v in gko_cost.items()}, {renamed.get(k, k): v for k, v in gki_cost.items()},
             {_map_identifiers(k, follow): v for k, v in reg_cost.items()})
+
+
+def _join_split_candidates(model, reac_map, candidates):
+    """Let an intervention candidate that the GPR extension split stand for both of its parts.
+
+    extend_model_gpr turns a reversible reaction with a rule into a forward reaction, which
+    keeps the ID, and a reverse reaction. An intervention on the reaction has to act on both.
+    For each such candidate the forward reaction is renamed and a pseudoreaction takes over the
+    ID: it supplies a metabolite that both parts consume, the way a gene pseudoreaction serves
+    the reactions of its rule. ``reac_map`` is updated, so fluxes keep referring to the parts."""
+    for r_id in [r for r in candidates if len(reac_map.get(r, {})) > 1]:
+        forward = model.reactions.get_by_id(r_id)
+        parts = [model.reactions.get_by_id(p) for p in reac_map[r_id]]
+        forward.id = r_id + '_forward_' + hex(hash(forward))[8:]
+        reac_map[r_id] = {(forward.id if p == r_id else p): v for p, v in reac_map[r_id].items()}
+        present = Metabolite('r_' + forward.id)
+        switch = Reaction(r_id, lower_bound=0.0, upper_bound=np.inf)
+        model.add_reactions([switch])
+        switch.add_metabolites({present: 1.0})
+        for part in parts:
+            part.add_metabolites({present: -1.0})
 
 
 def _gene_references(model, gene_keys, reg_constraints, all_genes):
@@ -849,6 +870,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             logging.info('  Simplified to ' + str(num_genes) + ' genes and ' + str(num_gpr) + ' gpr rules (%.1fs).' % (time.time() - t_gpr))
         logging.info('  Extending metabolic network with gpr associations.')
         reac_map = extend_model_gpr(cmp_model, has_gene_names)
+        _join_split_candidates(cmp_model, reac_map, list(cmp_ko_cost) + list(cmp_ki_cost))
         for i, m in enumerate(sd_modules):
             for p in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
                 if p in m and m[p] is not None:
