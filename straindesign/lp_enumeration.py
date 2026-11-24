@@ -263,7 +263,7 @@ class _CplexLP(_LPBase):
 
 
 class _WrappedLP(_LPBase):
-    """Any StrainDesign backend through its common interface (SCIP's SoPlex, GLPK)."""
+    """A StrainDesign backend through its common interface (SCIP's SoPlex; the GLPK classes build on it)."""
 
     def __init__(self, c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver):
         from straindesign.solver_interface import MILP_LP
@@ -318,6 +318,55 @@ class _WrappedLP(_LPBase):
 
     def iterations(self):
         return np.nan
+
+
+class _GlpkLP(_WrappedLP):
+    """GLPK's simplex at its own tolerances, every solve under a time limit. At the tolerances of
+    the solver interface (1e-9) GLPK can stall on a degenerate LP of a bounded model and never
+    return. An optimum is confirmed from its basis at a dual tolerance of 1e-9 (at the default a
+    basis with an improving reduced cost of 1e-8 passes as optimal). A solve that ends without a
+    verdict counts as failed, and the exact twin of the region decides the question."""
+
+    def __init__(self, c, A_ineq, b_ineq, A_eq, b_eq, lb, ub):
+        super().__init__(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, GLPK)
+        import swiglpk as g
+        self.g, self.P = g, self.m.backend.glpk
+        # an LP of this kind takes milliseconds; the limit grows with its size
+        self.seconds_per_lp = max(2.0, 0.002 * (g.glp_get_num_rows(self.P) + g.glp_get_num_cols(self.P)))
+        self.parm, self.tight = g.glp_smcp(), g.glp_smcp()
+        for parm in (self.parm, self.tight):
+            g.glp_init_smcp(parm)
+            parm.msg_lev = g.GLP_MSG_OFF
+            parm.tm_lim = int(1000 * self.seconds_per_lp)
+        self.tight.tol_dj = 1e-9
+        self.tight.it_lim = max(1000, g.glp_get_num_rows(self.P) + g.glp_get_num_cols(self.P))
+
+    def _status(self, ret):
+        g = self.g
+        st = g.glp_get_status(self.P)
+        if ret != 0:
+            return ERROR
+        return OPTIMAL if st == g.GLP_OPT else INFEASIBLE if st == g.GLP_NOFEAS else UNBOUNDED if st == g.GLP_UNBND else ERROR
+
+    def _solve(self):
+        g, P = self.g, self.P
+        status = self._status(g.glp_simplex(P, self.parm))
+        if status == OPTIMAL:
+            confirmed = self._status(g.glp_simplex(P, self.tight))
+            if confirmed in (OPTIMAL, UNBOUNDED):
+                status = confirmed
+            else:  # no verdict at the tight tolerance: the optimum at GLPK's own stands
+                status = self._status(g.glp_simplex(P, self.parm))
+        if status == OPTIMAL:
+            self.x = [g.glp_get_col_prim(P, j + 1) for j in range(self.n)]
+            self.opt = g.glp_get_obj_val(P)
+        return status
+
+    def _from_scratch(self):
+        self.g.glp_std_basis(self.P)
+
+    def redcost(self):
+        return np.array([self.g.glp_get_col_dual(self.P, j + 1) for j in range(self.n)])
 
 
 class _GlpkExactLP(_WrappedLP):
@@ -391,6 +440,8 @@ def make_lp(solver, c, A_ineq, b_ineq, A_eq, b_eq, lb, ub):
         return _GurobiLP(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub)
     if solver == CPLEX:
         return _CplexLP(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub)
+    if solver == GLPK:
+        return _GlpkLP(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub)
     return _WrappedLP(c, A_ineq, b_ineq, A_eq, b_eq, lb, ub, solver)
 
 

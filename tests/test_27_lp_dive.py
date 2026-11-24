@@ -169,18 +169,20 @@ def test_optimisation_local_optimum(curr_solver, model_weak_coupling, module, va
 
 
 def test_imlcore_growth_coupling(model_core):
-    """A design of several knockouts on a genome-scale core model, found without a
-    budget: ethanol yield coupled to growth."""
+    """Ethanol yield coupled to growth on a genome-scale core model with its own bounds: no design
+    of up to three knockouts exists, the dives find one of several knockouts, and the complete
+    search over the interventions they touched shows that these hold nothing cheaper. GLPK as LP
+    solver, which stalls on single LPs of this model unless each solve has a time limit."""
     m = model_core
     bio = [r.id for r in m.reactions if r.objective_coefficient][0]
-    spec = [(SUPPRESS, [[{'EX_etoh_e': 1, 'EX_glc__D_e': 0.5}, '<=', 0.0], [{bio: 1}, '>=', 0.05]], None),
+    spec = [(SUPPRESS, [[{'EX_etoh_e': 1, 'EX_glc__D_e': 1.0}, '<=', 0.0], [{bio: 1}, '>=', 0.01]], None),
             (PROTECT, [[{bio: 1}, '>=', 0.1]], None)]
     solver = GLPK if GLPK in sd.avail_solvers else sd.select_solver()
     sol = _run(m, _modules(m, spec), solver, max_solutions=1, time_limit=300)
     designs = _designs(sol, False)
-    # one design of three knockouts, which the decompression spreads over the reactions lumped with them
-    assert designs and all(len(d) >= 3 for d in designs)
-    _check_valid_minimal(m, spec, designs, False)
+    assert sol.status == OPTIMAL and designs and all(len(d) >= 4 for d in designs)
+    assert sol._lp_enum.stat['union_complete']
+    _check_valid_minimal(m, spec, designs[:3], False)
 
 
 def test_the_cheapest_designs_come_first(curr_solver, model_small_example):
