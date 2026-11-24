@@ -365,7 +365,10 @@ def test_single_knockout_has_to_leave_an_optimal_flux_in_the_protected_region(cu
     maximal growth, which then runs through r2 alone: {r1} is no design. Without r1 and r2
     nothing grows, every flux is growth-optimal and r3 makes the product."""
     model = _model_product_with_and_without_growth()
-    modules = [sd.SDModule(model, PROTECT, inner_objective='r_bm', constraints='r_px >= 1'), sd.SDModule(model, SUPPRESS, constraints='r1 >= 1')]
+    modules = [
+        sd.SDModule(model, PROTECT, inner_objective='r_bm', constraints='r_px >= 1'),
+        sd.SDModule(model, SUPPRESS, constraints='r1 >= 1')
+    ]
     sol = sd.compute_strain_designs(model,
                                     sd_modules=modules,
                                     ko_cost={
@@ -446,7 +449,13 @@ def _problem_without_candidates(case, min_gcp=0.0):
 @pytest.mark.parametrize('case', ['every reaction essential', 'the candidate left is blocked', 'no candidate given'])
 def test_optimisation_without_candidates_returns_the_wild_type(curr_solver, case, approach):
     model, modules, kw = _problem_without_candidates(case)
-    sol = sd.compute_strain_designs(model, sd_modules=modules, max_cost=1, solution_approach=approach, compress=False, solver=curr_solver, **kw)
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=modules,
+                                    max_cost=1,
+                                    solution_approach=approach,
+                                    compress=False,
+                                    solver=curr_solver,
+                                    **kw)
     assert sol.status == OPTIMAL
     assert sol.reaction_sd == [{}]
 
@@ -455,7 +464,13 @@ def test_optimisation_without_candidates_returns_the_wild_type(curr_solver, case
 def test_optimisation_without_candidates_and_without_a_design(curr_solver, approach):
     """Growth is 10 with production and 0 without it; a coupling potential of 20 is out of reach."""
     model, modules, kw = _problem_without_candidates('every reaction essential', min_gcp=20.0)
-    sol = sd.compute_strain_designs(model, sd_modules=modules, max_cost=1, solution_approach=approach, compress=False, solver=curr_solver, **kw)
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=modules,
+                                    max_cost=1,
+                                    solution_approach=approach,
+                                    compress=False,
+                                    solver=curr_solver,
+                                    **kw)
     assert sol.status == INFEASIBLE
     assert sol.reaction_sd == []
 
