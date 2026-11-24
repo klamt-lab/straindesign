@@ -802,6 +802,12 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         from straindesign.speedy_fva import fast_reversibility
         t0 = time.time()
         _rev = fast_reversibility(cmp_model, solver=kwargs[SOLVER])
+        if not any(can_fwd or can_rev for can_fwd, can_rev in _rev.values()):
+            # The compression removes reactions that cannot carry flux, and here that is all of
+            # them: no network would be left to build the problem from.
+            logging.warning('No reaction of the model can carry flux. The network is not compressed.')
+            kwargs['compress'] = False
+    if kwargs['compress'] is True or kwargs['compress'] is None:
         _n_tight = 0
         for r in cmp_model.reactions:
             can_fwd, can_rev = _rev[r.id]

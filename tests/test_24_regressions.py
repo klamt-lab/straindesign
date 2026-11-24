@@ -678,3 +678,27 @@ def test_reaction_candidate_parallel_to_a_reaction_with_a_gene_rule(curr_solver,
     assert sol.status == INFEASIBLE and _gene_sets(sol) == []
     sol = sd.compute_strain_designs(model, max_cost=5, **kw)
     assert sol.status == OPTIMAL and _gene_sets(sol) == [['EX_P', 'R1', 'g0']]
+
+
+@pytest.mark.parametrize('compress', [True, False])
+def test_network_in_which_no_reaction_can_carry_flux(curr_solver, compress):
+    """Nothing produces M0, so every reaction is blocked and the strain without interventions is
+    the only candidate: it is the best design of an optimisation problem, and it cannot empty a
+    region that holds the zero flux."""
+    reactions = [('EX_P', {'M0': -1}, 0, 1000), ('BM', {'M0': -1}, 0, 1000), ('R1', {'M0': -1, 'M1': 1}, -1000, 1000), ('EX1', {'M1': -1}, 0, 1000)]
+    model = _network('no_flux', reactions)
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, OPTKNOCK, inner_objective='BM', outer_objective='EX_P')],
+                                    max_cost=2,
+                                    solution_approach=BEST,
+                                    compress=compress,
+                                    solver=curr_solver)
+    assert sol.status == OPTIMAL and sol.reaction_sd == [{}]
+    model = _network('no_flux', reactions)
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[sd.SDModule(model, SUPPRESS, constraints='BM <= 1')],
+                                    max_cost=2,
+                                    solution_approach=POPULATE,
+                                    compress=compress,
+                                    solver=curr_solver)
+    assert sol.status == INFEASIBLE and sol.reaction_sd == []
