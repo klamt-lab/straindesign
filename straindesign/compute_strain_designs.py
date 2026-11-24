@@ -819,6 +819,11 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         targetable_rxns = set(uncmp_ko_cost) | set(uncmp_ki_cost)
         if kwargs['gene_kos']:
             targetable_rxns |= {r.id for r in cmp_model.reactions if r.gene_reaction_rule}
+            # A parallel lump is off when every member is. A reaction candidate is switched by
+            # its own binary, a reaction with a rule by its genes: a lump of the two would need
+            # both at once, which neither the cost of a lump nor its rule can express. Reaction
+            # candidates therefore stay out of parallel lumps while genes are candidates.
+            no_par_compress_reacs |= set(uncmp_ko_cost) | set(uncmp_ki_cost)
         no_par_compress_reacs |= _free_par_reacs(uncmp_ko_cost, uncmp_ki_cost)
         no_coupled_compress_reacs |= _free_coupled_reacs(uncmp_ko_cost, uncmp_ki_cost)
         cmp_mapReac_1 = compress_model(cmp_model,

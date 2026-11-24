@@ -656,3 +656,25 @@ def test_cut_sets_behind_a_binary_that_is_integral_up_to_rounding(curr_solver, c
                                     solver=curr_solver)
     assert sol.status == OPTIMAL
     assert _sets(sol) == [['R2'], ['UP0']]
+
+
+@pytest.mark.parametrize('compress', [True, False])
+def test_reaction_candidate_parallel_to_a_reaction_with_a_gene_rule(curr_solver, compress):
+    """R1, EX_P and BM drain the same metabolite. R1 and EX_P are reaction candidates (cost 2 each),
+    BM is switched by its gene (cost 1). The uptake stops only when all three are off: cost 5."""
+    model = _network('parallel_drains', [('UP0', {'M0': 1}, 0, inf), ('R1', {'M0': -1}, 0, inf), ('EX_P', {'M0': -1}, 0, inf),
+                                         ('BM', {'M0': -1}, 0, inf)])
+    model.reactions.BM.gene_reaction_rule = 'g0'
+    kw = dict(sd_modules=[sd.SDModule(model, SUPPRESS, constraints=['EX_P - UP0 <= 0', 'UP0 >= 0.5'])],
+              gene_kos=True,
+              ko_cost={
+                  'R1': 2,
+                  'EX_P': 2
+              },
+              solution_approach=POPULATE,
+              compress=compress,
+              solver=curr_solver)
+    sol = sd.compute_strain_designs(model, max_cost=4, **kw)
+    assert sol.status == INFEASIBLE and _gene_sets(sol) == []
+    sol = sd.compute_strain_designs(model, max_cost=5, **kw)
+    assert sol.status == OPTIMAL and _gene_sets(sol) == [['EX_P', 'R1', 'g0']]
