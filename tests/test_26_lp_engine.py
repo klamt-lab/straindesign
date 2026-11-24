@@ -173,6 +173,22 @@ def test_exact_engine_proves_that_nothing_beats_the_best(model_weak_coupling):
     assert abs(lp.objective_value - 5.0) < 1e-5
 
 
+def test_robustknock_constraint_holds_at_the_guaranteed_value(curr_solver, model_weak_coupling):
+    """A constraint on the product is met only by the designs that guarantee it, as in the MILP
+    formulation: the best guarantee on this network is 5."""
+
+    def run(constraints):
+        modules = [sd.SDModule(model_weak_coupling, ROBUSTKNOCK, outer_objective='r_P', inner_objective='r_BM', constraints=constraints)]
+        return sd.compute_strain_designs(model_weak_coupling, sd_modules=modules, solution_approach=BEST, max_cost=4, solver=curr_solver, engine='lp')
+
+    met = run(['r_P >= 4', 'r_BM >= 0.5'])
+    assert met.status == OPTIMAL and abs(met.objective_value - 5.0) < 1e-5
+    asked_too_much = run(['r_P >= 6'])
+    assert asked_too_much.status == INFEASIBLE and not asked_too_much.reaction_sd
+    # a cap on the product caps the value
+    assert abs(run(['r_P <= 3']).objective_value - 3.0) < 1e-5
+
+
 def _signed(sol):
     return sorted(sorted((k, v) for k, v in d.items() if v != 0) for d in sol.reaction_sd)
 

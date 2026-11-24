@@ -27,8 +27,10 @@ What the brute force takes as the definition of a result:
 - Enumeration: the acceptable sets in order of cost, each one excluding its supersets; the empty
   set alone if it is acceptable.
 - OptKnock: the largest ``max {o.v : v in P(z), constraints, c.v >= tol * max c over P(z)}``.
-  RobustKnock: the largest ``min {o.v : v in P(z), c.v >= max c over P(z)}`` over the z for which
-  some flux of ``P(z)`` meets the constraints. OptCouple: the largest difference between the
+  RobustKnock: the largest guaranteed value ``w = min {o.v : v in P(z), c.v >= max c over P(z)}``
+  over the z for which a flux of ``P(z)`` meets the constraints with ``o.v <= w`` (a constraint on
+  the product thereby holds at the guarantee); the value is capped by the largest ``o.v`` the
+  constraints allow. OptCouple: the largest difference between the
   maximum of ``c`` over ``P(z)`` (which a flux meeting the constraints has to reach) and its
   maximum without production, at least ``min_gcp``. Further SUPPRESS / PROTECT modules restrict
   the sets that count.
@@ -383,11 +385,19 @@ class BruteForce:
         if kind == OPTKNOCK:
             target = tol * g1
             status, val = self._solve(('mod+', i), rows, ('outer', i), o, X, row=c, row_min=self._floor(target, tol))
-        else:  # the worst growth-optimal flux, for sets that keep the constraints attainable
-            if self._solve(('mod', i), rows, 'zero', np.zeros(self.n), X)[0] == 'infeasible':
-                return None
+        else:
+            # the guaranteed value w: the outer value of the worst growth-optimal flux. A flux that
+            # meets the constraints has to exist whose outer value does not exceed w (so a constraint
+            # on the product holds at the guarantee), and the value is capped by the largest outer
+            # value the constraints allow, as in the MILP formulation
             status, val = self._solve(('P+', i), ([], [], [], []), ('-outer', i), -o, X, row=c, row_min=self._floor(g1))
-            val = None if val is None else -val
+            if val is not None:
+                w = -val
+                low, neg_low = self._solve(('mod', i), rows, ('-outer', i), -o, X)
+                top, high = self._solve(('mod', i), rows, ('outer', i), o, X)
+                if low == 'infeasible' or (low == 'optimal' and -neg_low > w + 1e-6 * max(1.0, abs(w))):
+                    return None
+                val = w if top == 'unbounded' else min(w, high)
         if status == 'unbounded':
             raise ProblemError('the outer objective is unbounded')
         return None if val is None else sign * val
@@ -910,6 +920,8 @@ def _random_modules(rng, net, kind, cone, exotic=0.0):
             mod['inner_opt_tol'] = float(rng.choice([0.5, 0.9]))
         return [mod] + extra
     if kind == 'robustknock':
+        if exotic and rng.random() < exotic:  # a constraint on the product: it has to hold at the guaranteed value
+            constraints = constraints + [[dict(prod), '>=', _nice(rng, top_p * 0.4)]]
         return [dict(module_type=ROBUSTKNOCK, inner_objective=objective(bm, ups[0]), outer_objective=objective(prod, others[0] if others else None),
                      constraints=constraints)] + extra
     if kind == 'optcouple':
@@ -954,7 +966,8 @@ def random_problem(seed, kind=None, max_sets=500, trivial=0.1, deep=False, lp='h
             designs or none that costs more than 1; an optimum that the wild type reaches)
         exotic (float): probability, per place, of the less usual: an equality among a module's
             constraints, an objective over two reactions, a SUPPRESS module next to an
-            optimisation module, a reaction written backwards (upper bound 0)
+            optimisation module, a reaction written backwards (upper bound 0), a constraint on
+            the product in a RobustKnock module
         lp (str): LP solver of the brute force that looks at the candidates
     """
     rng = np.random.default_rng(seed)

@@ -990,15 +990,15 @@ class NestedModule:
         return v == (INFEAS if self.kind == SUPPRESS else FEASIBLE)
 
     @staticmethod
-    def _value(R, X, thetas=None):
+    def _value(R, X, thetas=None, k=0):
         try:
-            return R.maximize(0, X, thetas)
+            return R.maximize(k, X, thetas)
         except LPError:
             twin = R._twin()
             if twin is None:
                 raise
             Region.n_arbitrated += 1
-            return twin.maximize(0, X, thetas)
+            return twin.maximize(k, X, thetas)
 
     def _optimum(self, R, facts, X, thetas=None, sharp=False):
         """(value, W, C) of max c over the region R at X, from the facts where they pin it down
@@ -1092,6 +1092,83 @@ class NestedModule:
         if (v == INFEAS) == (self.kind == SUPPRESS):
             return True, None, None
         return False, P, N
+
+
+class ThresholdModule:
+    """PROTECT of a region whose rows carry thresholds that the search raises: the region has to
+    keep a point. A core found at one threshold holds at every higher one; a point does not."""
+    kind = PROTECT
+
+    def __init__(self, region):
+        self.region = region
+        self.thetas = (None,) * region.K
+        self.memo = Memo(len(region.atom_rxn))
+        self.enabled = True
+
+    def set_thresholds(self, thetas):
+        self.thetas = tuple(thetas)
+        self.memo.clear()
+
+    def decided(self, X):
+        return not self.enabled or self.memo.covers(X)
+
+    def check(self, X, avoid=0):
+        verdict, A = self.region.decide(X, 0, self.thetas)
+        if verdict == FEASIBLE:
+            self.memo.add(A, 0)
+            return True, None, None
+        return False, 0, A
+
+
+class WorstCaseModule:
+    """RobustKnock: the module's constraints have to hold where the guarantee is taken.
+
+    w(X) is the smallest outer value among the inner-optimal fluxes of P(X), the value a design
+    guarantees. Some flux of P(X) that meets the constraints must have an outer value of at most
+    w(X); otherwise the constraints ask for more than the design guarantees. A constraint
+    "product >= 6" is thereby met exactly by the designs that guarantee 6, and a constraint on
+    growth by every design whose optimal growth meets it.
+
+    If the smallest outer value under the constraints, l(X), lies above w(X), the set is no
+    design, and neither is any set that spares the worst-case flux (w cannot rise), keeps the
+    blocked atoms that bound the inner optimum from above (the flux stays optimal) and keeps
+    those that bound l from below.
+
+    Args:
+        nested (NestedModule): the SUPPRESS module of the objective (inner optimum, and the
+            inner-optimal fluxes with minus the outer objective as row 1)
+        meets (Region): P with the constraints, minus the outer objective as row `row`
+    """
+    kind = PROTECT
+
+    def __init__(self, nested, meets, row):
+        self.nested, self.meets, self.row = nested, meets, row
+        self.ok = set()
+        self.enabled = True
+
+    def decided(self, X):
+        return X in self.ok
+
+    def worst(self, X):
+        """(w(X), atoms of a worst-case flux, core of the inner optimum's upper bound); w None if
+        P(X) is empty."""
+        g, _, C_g = self.nested.optimum(X)
+        if g is None:
+            return None, None, C_g
+        m, W, _ = NestedModule._value(self.nested.outer, X, (self.nested.bound(g), None), 1)
+        return -m, W, C_g
+
+    def check(self, X, avoid=0):
+        w, W, C_g = self.worst(X)
+        if w is None:
+            return False, 0, C_g
+        m, _, C_l = NestedModule._value(self.meets, X, None, self.row)
+        if m is None:  # no flux meets the constraints at all
+            return False, 0, self.meets.decide(X, 0, None, expect=INFEAS)[1]
+        if -m <= w + _IMPROVE * max(1.0, abs(w)):
+            self.ok.add(X)
+            return True, None, None
+        return False, W, C_g | C_l
 
 
 def _minimal(sets):
@@ -1718,8 +1795,11 @@ class OptKnockObjective(_Objective):
 
 
 class RobustKnockObjective(_Objective):
-    """max over X of  min { o.v : v in P(X), c.v >= max c over P(X) },  with a flux of P(X) that
-    meets the module's constraints."""
+    """max over X of the guaranteed outer value  w(X) = min { o.v : v in P(X), c.v >= max c over P(X) }.
+
+    The module's constraints are read as in the MILP formulation: a flux of P(X) that meets them
+    must exist whose outer value does not exceed w(X) (see WorstCaseModule), and the value of X is
+    w(X), capped by the largest outer value the constraints allow."""
 
     def __init__(self, ctx, mod, V):
         c = _objective(mod, INNER_OBJECTIVE, INNER_OPT_SENSE, ctx['rxn_ids'])
@@ -1733,7 +1813,12 @@ class RobustKnockObjective(_Objective):
         self.best_case = NestedModule(PROTECT, self.inner, self._region(ctx, rows=[c, o]), extra=(None,))
         self.best_case.facts = self.mod.facts  # one inner problem, one set of facts
         self.best_case.first = True
-        self.modules = [self.mod, self.feasible, self.best_case]
+        # the constraints with the outer objective in both directions: a flux that meets them
+        # above t, and their smallest outer value against the guaranteed one
+        self.meets = self._region(ctx, V, rows=[o, -o])
+        self.reach = ThresholdModule(self.meets)
+        self.worst_case = WorstCaseModule(self.mod, self.meets, 1)
+        self.modules = [self.mod, self.feasible, self.best_case, self.reach, self.worst_case]
         self.t = None
 
     def set_threshold(self, t):
@@ -1746,13 +1831,15 @@ class RobustKnockObjective(_Objective):
         self.best_case.enabled = t is not None
         self.best_case.extra = (t,)
         self.best_case.bfacts.clear_lower()
+        self.reach.enabled = t is not None
+        self.reach.set_thresholds((t, None))
 
     def value(self, X):
-        val, _, _ = self.mod.optimum(X)
-        if val is None:
+        w = self.worst_case.worst(X)[0]
+        if w is None:
             return None
-        f, _, _ = self.outer.maximize(1, X, (val - _OPT_TOL * max(1.0, abs(val)), None))
-        return None if f is None else -f
+        top = NestedModule._value(self.meets, X, None, 0)[0]
+        return None if top is None else min(w, top)
 
 
 class OptCoupleObjective(_Objective):
