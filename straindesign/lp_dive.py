@@ -35,7 +35,9 @@ instead of visiting the intervention sets cost level by cost level it
    one atom of P, chosen by a score (clauses repaired per cost, whether the stored flux witness of
    every PROTECT-type module survives), with random tie-breaking. A dead end (empty P, budget
    used up) undoes the last choice; a dive gives up after a bounded number of nodes, and the next
-   one starts with every clause learned so far.
+   one starts with every clause learned so far. The dives come in rounds of guided dives, short
+   clause dives (given up after a few dead ends: a dive that starts badly rarely recovers by
+   backing up) and one full clause dive.
 2. **polishes** the design it reaches to a local optimum (see `DiveSearch.polish`).
 3. looks for **cheaper designs among the interventions the dives touched**: the complete search
    again, over that small set of interventions (`DiveSearch.cheaper_among_seen`).
@@ -258,6 +260,15 @@ def target_regions(ctx, sd_modules, modules):
     return out
 
 
+def _luby(k):
+    """Term k (from 1) of 1, 1, 2, 1, 1, 2, 4, 1, 1, 2, 1, 1, 2, 4, 8, ..."""
+    while True:
+        n = (k + 1).bit_length() - 1
+        if k + 1 == 1 << n:
+            return 1 << (n - 1)
+        k -= (1 << n) - 1
+
+
 class DiveSearch:
     """Designs for SUPPRESS / PROTECT modules (with or without inner objective) by randomised
     dives, each design polished to a local optimum. Guided dives (see `guided_dive`) need classic
@@ -276,12 +287,21 @@ class DiveSearch:
         seed (int): makes the random choices repeatable
         time_limit (float): seconds
         dive_nodes (int): nodes a dive may visit before it gives up
+        short_nodes (int): nodes per round that go to short dives. A dive that starts badly rarely
+            recovers by backing up, and where designs are close a fresh start is the better use
+            of the nodes; where a design takes a long path, only a full dive gets there
+        restart_dead_ends (int): short dive k after the latest design is given up when it has run
+            into restart_dead_ends times 1, 1, 2, 1, 1, 2, 4, ... dead ends
         width (int): alternatives tried per node of a dive before it backs up further
         noise (float): relative random spread of the candidate scores (diversity between dives)
         break_penalty (float): score factor for a choice that blocks an atom of a PROTECT witness
-        stall (int): consecutive dives without a new design after which the search ends
+        stall (int): the search ends after `stall` rounds of dives without a new design (a round:
+            guided dives, short dives, one full dive), or after `stall` designs in a row that are
+            over the budget or known
         swap_trials (float): LP checks the polishing may spend on the swap neighbourhood per design
         guided (bool): try guided dives (classic SUPPRESS / PROTECT modules only) before clause dives
+        guided_tries (int): guided dives of a round that may reach nothing new before the clause
+            dives of the round start
         guide_rounds (int): rounds of one guided dive
         keep_price (float): factor on the blocking cost of an atom a PROTECT witness uses, in the
             proof LP that tells which kept atoms are expensive to keep
@@ -290,12 +310,35 @@ class DiveSearch:
         targets (dict): id of a PROTECT module -> Target (see `target_regions`)
     """
 
-    def __init__(self, layer, modules, max_cost, seed=None, time_limit=np.inf, dive_nodes=400, width=3, noise=0.3, break_penalty=0.2, stall=8,
-                 swap_trials=500, guided=True, guide_rounds=30, keep_price=4.0, probes=8, redives=20, targets=None):
+    def __init__(self,
+                 layer,
+                 modules,
+                 max_cost,
+                 seed=None,
+                 time_limit=np.inf,
+                 dive_nodes=400,
+                 restart_dead_ends=8,
+                 short_nodes=200,
+                 guided_tries=6,
+                 width=3,
+                 noise=0.3,
+                 break_penalty=0.2,
+                 stall=8,
+                 swap_trials=500,
+                 guided=True,
+                 guide_rounds=30,
+                 keep_price=4.0,
+                 probes=8,
+                 redives=20,
+                 targets=None):
         self.layer, self.max_cost = layer, max_cost
         self.rng = random.Random(seed)
         self.deadline = time.time() + time_limit
         self.dive_nodes, self.width, self.noise, self.break_penalty = dive_nodes, width, noise, break_penalty
+        self.restart_dead_ends, self.short_nodes, self.guided_tries = restart_dead_ends, short_nodes, guided_tries
+        # where the rounds of dives stand: 0 guided dives, 1 short dives; the nodes left for the
+        # short dives of the round; short dives and full rounds since the latest design
+        self._stage = self._short_left = self._short_dives = self._rounds = 0
         self.stall, self.swap_trials = stall, swap_trials
         self.guided, self.guide_rounds, self.targets = guided, guide_rounds, targets or {}
         self.probes, self.pool, self.keep_price, self.redives = probes, [], keep_price, redives
@@ -303,8 +346,21 @@ class DiveSearch:
         self.guide_budget = np.inf
         self._open0 = {}  # (forbidden set, knock-ins) -> per atom the (cost, blocked atoms) of its completions from there
         self.starts, self._turn = None, 0  # the knock-in sets the dives start from, in turn
-        self.stat = dict(queries=0, memo=0, from_clauses=0, dives=0, failed_dives=0, nodes=0, backtracks=0, swaps=0, swap_checks=0,
-                         swap_capped=0, guided=0, guide_lps=0, over_budget=0, redives=0, redive_wins=0)
+        self.stat = dict(queries=0,
+                         memo=0,
+                         from_clauses=0,
+                         dives=0,
+                         failed_dives=0,
+                         nodes=0,
+                         backtracks=0,
+                         swaps=0,
+                         swap_checks=0,
+                         swap_capped=0,
+                         guided=0,
+                         guide_lps=0,
+                         over_budget=0,
+                         redives=0,
+                         redive_wins=0)
         self.clauses = ClauseStore(layer.nA)
         self.oracle = _Oracle(modules, self.clauses, self.stat)
         self.protect_mods = [m for m in modules if m.kind != SUPPRESS]
@@ -344,17 +400,25 @@ class DiveSearch:
         if below < 1:
             return [], True
         sub = self.layer.restricted(self.seen, below)
-        enum = LPEnumerator(sub, self.oracle.modules, below, time_limit=min(seconds, max(0.0, self.deadline - time.time())),
+        enum = LPEnumerator(sub,
+                            self.oracle.modules,
+                            below,
+                            time_limit=min(seconds, max(0.0, self.deadline - time.time())),
                             max_solutions=max_solutions)
         for P, N in zip(self.clauses.P, self.clauses.N):
             if P or N:
                 enum._add_clause(P, N)
         designs, complete = enum.run()
-        self.stat['union_size'], self.stat['union_queries'], self.stat['union_complete'] = self.seen.bit_count(), enum.stat['queries'], complete
+        self.stat['union_size'], self.stat['union_queries'], self.stat['union_complete'] = self.seen.bit_count(
+        ), enum.stat['queries'], complete
         return list(designs), complete
 
     def _time_up(self):
         return time.time() > self.deadline
+
+    def _given_up(self):
+        """The dives end after `stall` rounds that brought no new design."""
+        return self._rounds >= self.stall
 
     def _find_starts(self, few=6):
         """The knock-in sets a dive may start from, cheapest first. Up to `few` knock-ins: every
@@ -457,7 +521,8 @@ class DiveSearch:
                 for a in range(layer.nA):
                     if X >> a & 1:
                         continue
-                    o = sorted((layer.set_cost(J), layer.extend(z, X, J)) for J in layer.completions(a, z, self.guide_budget) if not J & forbid)
+                    o = sorted(
+                        (layer.set_cost(J), layer.extend(z, X, J)) for J in layer.completions(a, z, self.guide_budget) if not J & forbid)
                     if o:
                         opts[a] = o
                 if len(self._open0) >= 8:
@@ -615,7 +680,8 @@ class DiveSearch:
                         clean = False
                 C = self._weighted_core(s.region, X | U, w)
                 self.stat['guide_lps'] += 1
-                logging.debug('guided: |H| %d, |keep| %d, |U| %d, core %s' % (H.bit_count(), keep.bit_count(), U.bit_count(), None if C is None else C.bit_count()))
+                logging.debug('guided: |H| %d, |keep| %d, |U| %d, core %s' %
+                              (H.bit_count(), keep.bit_count(), U.bit_count(), None if C is None else C.bit_count()))
                 if C is None:
                     S = s.region.witness(X | U)
                     self.stat['guide_lps'] += 1
@@ -633,14 +699,16 @@ class DiveSearch:
             if z is not None and (best is None or layer.set_cost(z) < layer.set_cost(best)):
                 if self.oracle.check(X)[0]:
                     best = z
-            logging.debug('guided: round cost %s, clean %s, best %s' % (None if z is None else layer.set_cost(z), clean, None if best is None else layer.set_cost(best)))
+            logging.debug('guided: round cost %s, clean %s, best %s' %
+                          (None if z is None else layer.set_cost(z), clean, None if best is None else layer.set_cost(best)))
             if (z is not None and clean) or H == H0:
                 break
         return best
 
     # -- dive ------------------------------------------------------------------------------------
-    def dive(self, z0=0):
-        """One dive from z0 (knock-ins, or nothing); the design it reaches, or None."""
+    def dive(self, z0=0, dead_ends=np.inf):
+        """One dive from z0 (knock-ins, or nothing); the design it reaches, or None. A short
+        dive is given up at `dead_ends` dead ends, any dive after dive_nodes nodes."""
         self.stat['dives'] += 1
         layer = self.layer
         z, X, cost = z0, layer.X(z0), layer.set_cost(z0)
@@ -659,10 +727,11 @@ class DiveSearch:
                 frames.append([cands, 0])
                 _, z, X, cost = cands[0]
                 continue
-            if nodes >= self.dive_nodes:
+            if nodes >= self.dive_nodes or not dead_ends:
                 return None
             # dead end: back up to the latest node with an untried alternative that no clause
             # learned since rules out
+            dead_ends -= 1
             self.stat['backtracks'] += 1
             while frames:
                 f = frames[-1]
@@ -797,22 +866,34 @@ class DiveSearch:
         return z
 
     def _next_dive(self):
-        """A design to polish: the cheapest one in a pool that guided dives fill up to `probes`
-        members (a guided dive costs a few dozen LPs, polishing far more), else one clause dive."""
-        if self.guided:
-            misses = 0
-            while len(self.pool) < self.probes and misses < 2:
-                z = self.guided_dive(self._next_start())
-                if z is None or z in self.pool:
-                    misses += 1
-                    continue
-                self.pool.append(z)
-                self.seen |= z
-            self.pool = [z for z in self.pool if not self._excluded(z)]
-            if self.pool:
-                z = min(self.pool, key=lambda z: (self.layer.set_cost(z), self.rng.random()))
-                self.pool.remove(z)
-                return z
+        """A design to polish, or None. The dives come in rounds: guided dives first, whose
+        designs go to a pool of up to `probes` members and are handed out cheapest first (a
+        guided dive costs a few dozen LPs, polishing far more); then short clause dives for
+        `short_nodes` nodes; then one full clause dive."""
+        if self._stage == 0:
+            if self.guided:
+                misses = 0
+                while len(self.pool) < self.probes and misses < self.guided_tries:
+                    z = self.guided_dive(self._next_start())
+                    if z is None or z in self.pool:
+                        misses += 1
+                        continue
+                    self.pool.append(z)
+                    self.seen |= z
+                self.pool = [z for z in self.pool if not self._excluded(z)]
+                if self.pool:
+                    z = min(self.pool, key=lambda z: (self.layer.set_cost(z), self.rng.random()))
+                    self.pool.remove(z)
+                    return z
+            self._stage, self._short_left = 1, self.short_nodes
+        if self._stage == 1 and self._short_left > 0:
+            n0 = self.stat['nodes']
+            self._short_dives += 1
+            z = self.dive(self._next_start(), self.restart_dead_ends * _luby(self._short_dives))
+            self._short_left -= self.stat['nodes'] - n0
+            return z
+        self._stage = 0
+        self._rounds += 1
         return self.dive(self._next_start())
 
     def run(self, max_solutions=1):
@@ -825,10 +906,9 @@ class DiveSearch:
             if not self.found and self._is_design(0):
                 self.found, self.trivial = [0], True
                 return self.found, False
-            while len(self.found) < max_solutions and fails < self.stall:
+            while len(self.found) < max_solutions and fails < self.stall and not self._given_up():
                 z = self._next_dive()
                 if z is None:
-                    fails += 1
                     self.stat['failed_dives'] += 1
                     continue
                 c0 = self.layer.set_cost(z)
@@ -842,7 +922,7 @@ class DiveSearch:
                 if z in self.found or self._excluded(z):
                     fails += 1
                     continue
-                fails = 0
+                fails = self._short_dives = self._rounds = 0
                 self.found.append(z)
                 self.log.append((time.time() - t0, c0, self.layer.set_cost(z), self.stat['queries']))
                 logging.info('  LP dive: design %d, cost %g after the dive, %g after polishing (%.1f s)' %
@@ -955,10 +1035,9 @@ class OptSearch:
         self._set(self.base)
         optima = {}
         try:
-            z = ds.dive() if not ds._is_design(0) else 0
-            tries = 0
-            while z is None and tries < ds.stall:
-                z, tries = ds.dive(), tries + 1
+            z = ds._next_dive() if not ds._is_design(0) else 0
+            while z is None and not ds._given_up():
+                z = ds._next_dive()
             if z is None:
                 return [], False
             v = self.value(z)
@@ -989,8 +1068,23 @@ class OptSearch:
         return out[:int(max_solutions) if np.isfinite(max_solutions) else None], False
 
 
-def lp_dive_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, has_gene_names, max_cost, solver, time_limit=np.inf,
-                   max_solutions=np.inf, seed=None, exact=False, first_levels=3, first_seconds=20.0, union_seconds=120.0, **kwargs):
+def lp_dive_engine(cmp_model,
+                   sd_modules,
+                   ko_cost,
+                   ki_cost,
+                   gko_cost,
+                   gki_cost,
+                   has_gene_names,
+                   max_cost,
+                   solver,
+                   time_limit=np.inf,
+                   max_solutions=np.inf,
+                   seed=None,
+                   exact=False,
+                   first_levels=3,
+                   first_seconds=20.0,
+                   union_seconds=120.0,
+                   **kwargs):
     """Entry point for compute_strain_designs with solution_approach='any'.
 
     For SUPPRESS / PROTECT modules the complete search first walks the cost levels up to
@@ -1022,8 +1116,16 @@ def lp_dive_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, 
     from straindesign.parse_constr import lineqlist2mat
     t0 = time.time()
     n_lp0 = _LPBase.n_solves
-    names, layer, modules, atom_rxn, ctx = build_problem(cmp_model, sd_modules, ko_cost, gko_cost, max_cost, solver,
-                                                         'name' if has_gene_names else 'id', exact=exact, ki_cost=ki_cost, gki_cost=gki_cost)
+    names, layer, modules, atom_rxn, ctx = build_problem(cmp_model,
+                                                         sd_modules,
+                                                         ko_cost,
+                                                         gko_cost,
+                                                         max_cost,
+                                                         solver,
+                                                         'name' if has_gene_names else 'id',
+                                                         exact=exact,
+                                                         ki_cost=ki_cost,
+                                                         gki_cost=gki_cost)
     objective = None
     if opt_mods:
         mod = opt_mods[0]
@@ -1072,14 +1174,30 @@ def lp_dive_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, 
     stat['lp_solves'] = _LPBase.n_solves - n_lp0
     search.names, search.atom_rxn, search.values = names, atom_rxn, values
     # a knockout made: -1, a knock-in made: 1, a knock-in not made: 0
-    sd = [{**{names[i]: 0.0 for i in bits(layer.ki & ~z)}, **{names[i]: (1.0 if (layer.ki >> i) & 1 else -1.0) for i in bits(z)}} for z in found]
+    sd = [{
+        **{
+            names[i]: 0.0 for i in bits(layer.ki & ~z)
+        },
+        **{
+            names[i]: (1.0 if (layer.ki >> i) & 1 else -1.0) for i in bits(z)
+        }
+    } for z in found]
     if proven:
         status = INFEASIBLE
     elif sd:
         status = OPTIMAL if done else TIME_LIMIT_W_SOL
     else:
         status = TIME_LIMIT
-    setup = {MODEL_ID: cmp_model.id, MAX_COST: max_cost, SOLVER: solver, SOLUTION_APPROACH: ANY, KOCOST: dict(ko_cost), KICOST: dict(ki_cost or {}), MODULES: sd_modules,
-             TIME_LIMIT: time_limit, MAX_SOLUTIONS: max_solutions}
+    setup = {
+        MODEL_ID: cmp_model.id,
+        MAX_COST: max_cost,
+        SOLVER: solver,
+        SOLUTION_APPROACH: ANY,
+        KOCOST: dict(ko_cost),
+        KICOST: dict(ki_cost or {}),
+        MODULES: sd_modules,
+        TIME_LIMIT: time_limit,
+        MAX_SOLUTIONS: max_solutions
+    }
     logging.info('  LP dive: %d designs, status %s; %d LPs; %.1f s.' % (len(sd), status, stat['lp_solves'], stat['seconds']))
     return CompressedDesigns(sd, status, setup), search
