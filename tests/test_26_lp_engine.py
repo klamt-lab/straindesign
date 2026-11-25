@@ -54,7 +54,8 @@ def test_reaction_target_with_rule_is_blocked_either_way():
     from straindesign.lp_enumeration import _atoms_and_layer
     model = cobra.Model('either_way')
     a, b = cobra.Metabolite('A', compartment='c'), cobra.Metabolite('B', compartment='c')
-    up, conv, ex = cobra.Reaction('up', upper_bound=10), cobra.Reaction('conv', lower_bound=2, upper_bound=10), cobra.Reaction('ex', upper_bound=10)
+    up, conv, ex = cobra.Reaction('up', upper_bound=10), cobra.Reaction('conv', lower_bound=2,
+                                                                        upper_bound=10), cobra.Reaction('ex', upper_bound=10)
     up.add_metabolites({a: 1})
     conv.add_metabolites({a: -1, b: 1})
     ex.add_metabolites({b: -1})
@@ -66,8 +67,15 @@ def test_reaction_target_with_rule_is_blocked_either_way():
     # 'up' has no rule and is a target; the compression lumps it with 'conv', whose genes then block it too
     modules = [sd.SDModule(model, SUPPRESS, constraints=['ex >= 1'])]
     for compress in (True, False):
-        sol = sd.compute_strain_designs(model, sd_modules=modules, solution_approach=POPULATE, max_cost=2, solver=GLPK, engine='lp', gene_kos=True,
-                                        ko_cost={'up': 2.0}, compress=compress)
+        sol = sd.compute_strain_designs(model,
+                                        sd_modules=modules,
+                                        solution_approach=POPULATE,
+                                        max_cost=2,
+                                        solver=GLPK,
+                                        engine='lp',
+                                        gene_kos=True,
+                                        ko_cost={'up': 2.0},
+                                        compress=compress)
         assert _sets(sol, True) == [['g1'], ['g2'], ['up']]
 
 
@@ -125,7 +133,12 @@ def test_mcs_suppress_protect(curr_solver, model_small_example):
 
 
 def test_mcs_genes(curr_solver, model_gpr):
-    modules = [sd.SDModule(model_gpr, SUPPRESS, constraints=["1.0 rd_ex >= 1.0 "]), sd.SDModule(model_gpr, PROTECT, constraints=[[{'r_bm': 1.0}, '>=', 1.0]])]
+    modules = [
+        sd.SDModule(model_gpr, SUPPRESS, constraints=["1.0 rd_ex >= 1.0 "]),
+        sd.SDModule(model_gpr, PROTECT, constraints=[[{
+            'r_bm': 1.0
+        }, '>=', 1.0]])
+    ]
     ref, lp = _both(model_gpr, modules, curr_solver, genes=True, max_cost=4)
     assert _sets(lp, True) == _sets(ref, True) and len(_sets(lp, True)) > 1
 
@@ -158,7 +171,12 @@ def test_exact_engine_matches(model_small_example, model_weak_coupling):
 ])
 def test_optimisation_modules(curr_solver, model_weak_coupling, module, value):
     modules = [sd.SDModule(model_weak_coupling, **module)]
-    lp = sd.compute_strain_designs(model_weak_coupling, sd_modules=modules, solution_approach=BEST, max_cost=4, solver=curr_solver, engine='lp')
+    lp = sd.compute_strain_designs(model_weak_coupling,
+                                   sd_modules=modules,
+                                   solution_approach=BEST,
+                                   max_cost=4,
+                                   solver=curr_solver,
+                                   engine='lp')
     assert lp.status == OPTIMAL and len(lp.reaction_sd) == 1
     assert abs(lp.objective_value - value) < 1e-5
 
@@ -168,7 +186,12 @@ def test_exact_engine_proves_that_nothing_beats_the_best(model_weak_coupling):
     by more than a millionth: proofs with large multipliers, on thresholds that are no integers
     and that GLPK's exact simplex therefore rounds. They have to be accepted as the proofs they are."""
     modules = [sd.SDModule(model_weak_coupling, OPTKNOCK, outer_objective='r_P', inner_objective='r_BM', constraints='r_BM >= 1')]
-    lp = sd.compute_strain_designs(model_weak_coupling, sd_modules=modules, solution_approach=BEST, max_cost=4, solver=GLPK, engine='lp_exact')
+    lp = sd.compute_strain_designs(model_weak_coupling,
+                                   sd_modules=modules,
+                                   solution_approach=BEST,
+                                   max_cost=4,
+                                   solver=GLPK,
+                                   engine='lp_exact')
     assert lp.status == OPTIMAL and len(lp.reaction_sd) == 1
     assert abs(lp.objective_value - 5.0) < 1e-5
 
@@ -179,7 +202,12 @@ def test_robustknock_constraint_holds_at_the_guaranteed_value(curr_solver, model
 
     def run(constraints):
         modules = [sd.SDModule(model_weak_coupling, ROBUSTKNOCK, outer_objective='r_P', inner_objective='r_BM', constraints=constraints)]
-        return sd.compute_strain_designs(model_weak_coupling, sd_modules=modules, solution_approach=BEST, max_cost=4, solver=curr_solver, engine='lp')
+        return sd.compute_strain_designs(model_weak_coupling,
+                                         sd_modules=modules,
+                                         solution_approach=BEST,
+                                         max_cost=4,
+                                         solver=curr_solver,
+                                         engine='lp')
 
     met = run(['r_P >= 4', 'r_BM >= 0.5'])
     assert met.status == OPTIMAL and abs(met.objective_value - 5.0) < 1e-5
@@ -260,8 +288,16 @@ def test_gene_knock_ins(curr_solver, model_gpr):
         gko = {g: 1.0 for g in genes if g not in gki}
         ref = _gene_designs_by_definition(model_gpr, spec, gko, gki, 4)
         for compress in (True, False):
-            lp = sd.compute_strain_designs(model_gpr, sd_modules=modules, solution_approach=POPULATE, solver=curr_solver, engine='lp', gene_kos=True,
-                                           max_cost=4, gko_cost=gko, gki_cost=gki, compress=compress)
+            lp = sd.compute_strain_designs(model_gpr,
+                                           sd_modules=modules,
+                                           solution_approach=POPULATE,
+                                           solver=curr_solver,
+                                           engine='lp',
+                                           gene_kos=True,
+                                           max_cost=4,
+                                           gko_cost=gko,
+                                           gki_cost=gki,
+                                           compress=compress)
             assert _gene_signed(lp) == ref
         with_ki += sum(1 for d in ref if any(v > 0 for _, v in d))
     assert with_ki
@@ -275,3 +311,108 @@ def test_blocking_sets_that_depend_on_a_knock_in():
     assert layer.X(mask([0, 2])) == mask([1]) and layer.X(mask([3])) == 0 and layer.X(mask([1, 3])) == mask([1])
     assert layer.completions(0, 0, 4) == [mask([0])] and layer.completions(0, mask([2]), 4) == []
     assert layer.extend(mask([3]), 0, mask([1])) == mask([1]) and layer.extend(mask([2]), mask([1]), mask([0])) == mask([1])
+
+
+class _ClauseModule:
+    """Stands in for an LP oracle: a blocked set is fine unless it violates one of the clauses."""
+    kind = SUPPRESS
+
+    def __init__(self, clauses):
+        self.clauses = clauses
+
+    def decided(self, X):
+        return False
+
+    def check(self, X, avoid=0):
+        for P, N in self.clauses:
+            if not P & X and N & X == N:
+                return False, P, N
+        return True, None, None
+
+
+def _random_walk_problem(rng, knock_ins):
+    """A layer over a few interventions with random rules, and random clauses over its atoms."""
+    nI, nA = int(rng.integers(4, 12)), int(rng.integers(4, 14))
+    cost = [float(rng.choice([1, 1, 1, 2])) for _ in range(nI)]
+    n_ki = int(rng.integers(1, 3)) if knock_ins else 0
+
+    def formula(depth=0):
+        r = rng.random()
+        if depth == 2 or r < 0.5:
+            i = int(rng.integers(nI))
+            return ('ki', i) if i >= nI - n_ki else i
+        return ('or' if r < 0.75 else 'and', [formula(depth + 1) for _ in range(int(rng.integers(2, 4)))])
+
+    formulas = [formula() for _ in range(nA)]
+    clauses = []
+    for _ in range(int(rng.integers(2, 15))):
+        kind = rng.random()
+        P = mask(rng.choice(nA, size=int(rng.integers(1, 4)), replace=False)) if kind < 0.8 else 0
+        N = mask(rng.choice(nA, size=int(rng.integers(1, 5)), replace=False)) if kind > 0.55 else 0
+        clauses.append((P, N & ~P))
+    return cost, formulas, [c for c in clauses if c != (0, 0)]
+
+
+@pytest.mark.parametrize('knock_ins, digits', [(False, 8), (True, 8), (False, 1)])
+def test_walk_finds_the_minimal_sets_that_violate_no_clause(knock_ins, digits, monkeypatch):
+    """The walk against a plain search over all sets of interventions, on random rules and
+    clauses: with clauses to repair, clauses that ask to spare an atom, and both in one. With one
+    binary digit, the count of spared atoms holds no clause of two atoms, and those are tested
+    one by one."""
+    from straindesign import lp_enumeration
+    from straindesign.lp_enumeration import LPEnumerator
+    monkeypatch.setattr(lp_enumeration, '_DIGITS', digits)
+    rng = np.random.default_rng(7 + knock_ins + digits)
+    for _ in range(300):
+        cost, formulas, clauses = _random_walk_problem(rng, knock_ins)
+        max_cost = float(rng.integers(1, 6))
+        layer = BoolLayer(cost, formulas, max_cost)
+        module = _ClauseModule(clauses)
+        fine = [z for z in range(1 << layer.nI) if layer.set_cost(z) <= max_cost and module.check(layer.X(z))[0]]
+        minimal = sorted(z for z in fine if not any(y != z and y & z == y for y in fine))
+        enum = LPEnumerator(layer, [module], max_cost)
+        found, complete = enum.run()
+        assert complete and sorted(found) == minimal, (cost, formulas, clauses, max_cost)
+        # the lower bound never exceeds what the cheapest set costs that repairs the clauses
+        violated = mask(i for i, (P, N) in enumerate(zip(enum.P, enum.Nn)) if not N and not P & layer.X(0))
+        repairs = [
+            layer.set_cost(z) for z in range(1 << layer.nI) if not z & layer.ki and all(P & layer.X(z)
+                                                                                        for P, N in zip(enum.P, enum.Nn) if not N)
+        ]
+        if violated:
+            pack = enum._packing(violated, max_cost, (1 << layer.nI) - 1 & ~layer.ki)
+            if pack is None:
+                assert not [c for c in repairs if c <= max_cost]
+            else:
+                assert pack[0] <= min(repairs) + 1e-9
+
+
+def test_count_of_spared_atoms_follows_the_blocked_set():
+    """Blocking atoms step by step: the count per clause that asks to spare an atom says that a
+    clause has lost its last one exactly when the blocked set contains the clause."""
+    from straindesign.lp_enumeration import LPEnumerator, _DIGITS
+    rng = np.random.default_rng(3)
+    nA = 40
+    layer = BoolLayer([1.0] * nA, list(range(nA)), 3)
+    for _ in range(50):
+        enum = LPEnumerator(layer, [], 3)
+        clauses = [mask(rng.choice(nA, size=int(rng.integers(1, 12)), replace=False)) for _ in range(int(rng.integers(1, 60)))]
+        for C in clauses[:len(clauses) // 2]:
+            enum._add_clause(0, C)
+        X, spared = 0, enum._spared(0, [0] * _DIGITS, 0)
+        for step in range(30):
+            if step == 10:  # clauses that come up during the walk join the count
+                for C in clauses[len(clauses) // 2:]:
+                    enum._add_clause(0, C)
+                spared = enum._spared(X, spared, len(clauses) // 2)
+                assert (spared is None) == any(C & X == C for C in enum.N)
+                if spared is None:
+                    break
+            new = mask(rng.choice(nA, size=int(rng.integers(1, 4)), replace=False)) & ~X
+            res = enum._block(new, X | new, spared)
+            assert (res is None) == any(C & (X | new) == C for C in enum.N)
+            if res is None:
+                continue
+            X, spared = X | new, res[1]
+            for j, C in enumerate(enum.N):
+                assert sum(((spared[k] >> j) & 1) << k for k in range(_DIGITS)) == (C & ~X).bit_count()

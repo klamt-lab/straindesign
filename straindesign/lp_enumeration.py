@@ -46,11 +46,14 @@ Three layers, each kept out of the others:
 
 The search (`LPEnumerator`) walks the intervention sets cost level by cost level, depth-first
 over the violated clauses, once per affordable set of knock-ins, and asks an LP only for a set
-that no stored clause excludes and no stored bound decides. solution_approach='any' is served by
-`lp_dive`.
+that no stored clause excludes and no stored bound decides. At a set it branches over the ways
+to repair the violated clause that has the fewest of them. A branch is left out when the budget
+cannot pay for it: violated clauses of which no two can be repaired by the same intervention
+take one intervention each. solution_approach='any' is served by `lp_dive`.
 """
 
 import logging
+from bisect import bisect_left
 import os
 import time
 import numpy as np
@@ -671,7 +674,9 @@ class Region:
         need_b = np.flatnonzero(lb[self.atom_rxn] < 0)
         k_eq, k_in = V_eq.shape[0], V_ineq.shape[0]
         blocks = [
-            S.T, V_eq.T, V_ineq.T,
+            S.T,
+            V_eq.T,
+            V_ineq.T,
             sparse.csr_matrix((np.ones(len(fin_ub)), (fin_ub, np.arange(len(fin_ub)))), shape=(n, len(fin_ub))),
             sparse.csr_matrix((-np.ones(len(fin_lb)), (fin_lb, np.arange(len(fin_lb)))), shape=(n, len(fin_lb))),
             sparse.csr_matrix((np.ones(len(need_f)), (self.atom_rxn[need_f], np.arange(len(need_f)))), shape=(n, len(need_f))),
@@ -1128,7 +1133,8 @@ class NestedModule:
         if v is not None:
             self.n_from_facts += 1
         elif self.kind == SUPPRESS:
-            steps = (lambda: self._point_high(X, avoid), lambda: self.optimum(X), lambda: self._point(X, avoid), lambda: self.constrained_optimum(X))
+            steps = (lambda: self._point_high(X, avoid), lambda: self.optimum(X), lambda: self._point(X, avoid),
+                     lambda: self.constrained_optimum(X))
         else:
             steps = (lambda: self.optimum(X), lambda: self.constrained_optimum(X))
         if v is None:
@@ -1294,6 +1300,7 @@ class BoolLayer:
 
     def __init__(self, costs, formulas, budget, needs=None, ki=0):
         self.cost = [float(c) for c in costs]
+        self.same_cost = self.cost[0] if self.cost and min(self.cost) == max(self.cost) else None
         self.nI, self.nA = len(costs), len(formulas)
         formulas = list(formulas)
         if needs is not None:
@@ -1320,11 +1327,25 @@ class BoolLayer:
                 for i in bits(B):
                     self.atoms_of[i] |= 1 << a
                     self.sets_with[i].append((a, B, U))
+        self.helpers = [0] * self.nA  # knockouts that occur in a blocking set of the atom
+        self.several0 = [tuple(B for B in sets if B & (B - 1)) for sets in self.block]  # per atom: its sets of several knockouts
+        self.alone = [0] * self.nI  # atoms that the knockout blocks on its own, whatever else is chosen
+        self.joint = [[] for _ in range(self.nI)]  # knockout -> the other sets it is in, as in sets_with
+        for a in range(self.nA):
+            for B, U in zip(self.block[a], self.unless[a]):
+                self.helpers[a] |= B
+                if B and not B & (B - 1) and not U:
+                    self.alone[B.bit_length() - 1] |= 1 << a
+                else:
+                    for i in bits(B):
+                        self.joint[i].append((a, B, U))
         self.cost_mask = {}  # cost -> interventions of that cost
         for i, c in enumerate(self.cost):
             self.cost_mask[c] = self.cost_mask.get(c, 0) | (1 << i)
 
     def set_cost(self, J):
+        if self.same_cost is not None:
+            return self.same_cost * J.bit_count()
         return sum(self.cost[i] for i in bits(J))
 
     def X(self, z):
@@ -1365,7 +1386,8 @@ class BoolLayer:
         """Blocked atoms of z | J, given those of z, for knockouts J."""
         z2 = z | J
         for i in bits(J):
-            for a, B, U in self.sets_with[i]:
+            X |= self.alone[i]
+            for a, B, U in self.joint[i]:
                 if B & z2 == B and not U & z2:
                     X |= 1 << a
         return X
@@ -1388,6 +1410,21 @@ class BoolLayer:
 # ------------------------------------------------------------------------------------------------
 # the search
 # ------------------------------------------------------------------------------------------------
+# The search branches on the violated clause with the fewest ways to repair it. A way that takes
+# several interventions leaves less of the budget to search below it and counts for this much of
+# a way per intervention beyond the first.
+_SEVERAL_WEIGHT = 0.25
+_WAYS_STEPS = tuple(x / 2 for x in range(2, 16)) + tuple(range(8, 33)) + (36, 40, 48, 56, 64, 80, 96, 128)
+# The lower bound counts clauses in the order of the number of interventions that can repair
+# them, up to a clause that more than _PACK_REACH can still repair.
+_REACH_STEPS = (1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64)
+_PACK_REACH = 48
+# clauses remembered for having left a set without a way to repair them all
+_RECENT = 6
+# binary digits of the count, per clause that asks to spare an atom, of the atoms still spared
+_DIGITS = 8
+
+
 class _Stop(Exception):
     pass
 
@@ -1418,13 +1455,29 @@ class LPEnumerator:
         self.P, self.Nn = [], []  # clauses with a positive part (Nn: its negative part, 0 if none)
         self.G = []  # per clause: the interventions that block an atom of P on their own, from scratch
         self.N = []  # clauses without positive part: do not block all of these atoms
-        self.has_mixed = False
+        # Sets of clauses are bit sets over the positions in P.
+        self.hit = [0] * layer.nA  # atom -> the clauses it repairs when blocked
+        self.reach = []  # per clause: the interventions that help to block one of its atoms
+        self.touch = [0] * layer.nI  # intervention -> the clauses whose reach it is in
+        self.price = []  # per clause: the cheapest intervention of its reach
+        self.ways = []  # per clause: the number of ways to repair it from scratch
+        self.by_ways = [0] * (len(_WAYS_STEPS) + 1)  # the clauses in classes of that number, few ways first
+        self.by_reach = [0] * (len(_REACH_STEPS) + 1)  # the clauses by the size of their reach, small first
+        self.mixed = 0  # the clauses with a negative part
+        self.recent = []  # (clause, its bit): the clauses that left a set without a way to repair them all, latest first
+        # Sets of clauses of N are bit sets over the positions in N. A blocked set violates such a
+        # clause when it spares none of its atoms; the walk keeps count of the atoms spared.
+        self.in_N = [0] * layer.nA  # atom -> the clauses of N it is in
+        self.N_long = []  # clauses with more atoms than the count holds, tested one by one
         self.designs = []
-        self.with_member = {}  # intervention -> designs of lower cost levels that contain it
+        # intervention -> the sets with it that no set of the walk may contain: the designs of lower
+        # cost levels and, while the branch after it is walked, a set of several interventions
+        # that an earlier branch has covered
+        self.inside = [[] for _ in range(layer.nI)]
         self.banned0 = 0
         self.min_cost = min(layer.cost) if layer.cost else np.inf
         self._affordable = {}
-        self.stat = dict(nodes=0, queries=0, memo=0, levels=[])
+        self.stat = dict(nodes=0, queries=0, memo=0, bounded=0, levels=[])
         self.roots = layer.knock_in_sets(max_cost)  # the knock-in sets, each the start of a walk over knockouts
 
     # -- oracle with memory ----------------------------------------------------------------------
@@ -1434,16 +1487,42 @@ class LPEnumerator:
                 stop = _Stop('a module cannot be fulfilled by any set of interventions')
                 stop.complete = True  # there is no design, and that is the whole answer
                 raise stop
+            if N.bit_count() >> _DIGITS:
+                self.N_long.append(N)
+            else:
+                bit = 1 << len(self.N)
+                for a in bits(N):
+                    self.in_N[a] |= bit
             self.N.append(N)
             return
+        bit = 1 << len(self.P)
         self.P.append(P)
         self.Nn.append(N)
-        self.has_mixed |= bool(N)
-        g = 0
-        single0 = self.layer.single0
+        if N:
+            self.mixed |= bit
+        g = r = 0
+        single0, helpers, hit = self.layer.single0, self.layer.helpers, self.hit
         for a in bits(P):
             g |= single0[a]
+            r |= helpers[a]
+            hit[a] |= bit
         self.G.append(g)
+        self.reach.append(r)
+        cost, touch, cheapest = self.layer.cost, self.touch, np.inf
+        for i in bits(r):
+            touch[i] |= bit
+            if cost[i] < cheapest:
+                cheapest = cost[i]
+        self.price.append(cheapest)
+        # a single intervention is one way to repair the clause; a set of several takes more of the
+        # budget and leaves less to search below it, so it counts for less
+        several = set()
+        for a in bits(P):
+            several.update(self.layer.several0[a])
+        ways = g.bit_count() + sum(_SEVERAL_WEIGHT**(J.bit_count() - 1) for J in several)
+        self.ways.append(ways)
+        self.by_ways[bisect_left(_WAYS_STEPS, ways)] |= bit
+        self.by_reach[bisect_left(_REACH_STEPS, r.bit_count())] |= bit
 
     def _is_design(self, X, avoid=0):
         """Decide the blocked set X. False comes with a new clause that X violates."""
@@ -1459,10 +1538,14 @@ class LPEnumerator:
         return True
 
     def _ban(self, z2, J, banned):
-        """For z2 = z | J: None if z2 contains a design of a lower level, else the interventions
-        whose addition to z2 would complete one (those of z, `banned`, and the new ones)."""
-        for i in bits(J):
-            for d in self.with_member.get(i, ()):
+        """For z2 = z | J: None if z2 contains a set that the walk may not contain, else the
+        interventions whose addition to z2 would complete one (those of z, `banned`, and the new
+        ones)."""
+        inside = self.inside
+        while J:
+            low = J & -J
+            J ^= low
+            for d in inside[low.bit_length() - 1]:
                 rest = d & ~z2
                 if not rest:
                     return None
@@ -1482,107 +1565,302 @@ class LPEnumerator:
             if not d & (d - 1):
                 self.banned0 |= d  # a design of one intervention bans it everywhere
             for i in bits(d):
-                self.with_member.setdefault(i, []).append(d)
+                self.inside[i].append(d)
 
     # -- depth-first walk of one cost level ------------------------------------------------------
     def _afford(self, left):
         """Interventions that cost at most `left`."""
         m = self._affordable.get(left)
         if m is None:
-            m = self._affordable[left] = mask(i for i, c in enumerate(self.layer.cost) if c <= left)
+            m = self._affordable[left] = mask(i for i, c in enumerate(self.layer.cost) if c <= left + 1e-9)
         return m
 
-    def _descend(self, z, X, cost, unhit, n_seen, barred, forbid, touched=0, banned=0):
-        """z: chosen interventions, X: atoms they block, unhit: clauses among the first n_seen whose
-        positive part X misses, barred: interventions an earlier branch covers, forbid: sets of
-        several interventions an earlier branch covers, touched: atoms that an intervention of z
-        helps to block, banned: interventions that would complete a known design."""
-        self.stat['nodes'] += 1
-        P, Nn, layer = self.P, self.Nn, self.layer
+    def _violated(self, unhit, X):
+        """Of the clauses whose positive part X misses, those whose negative part it contains."""
+        m = unhit & self.mixed
+        if m:
+            Nn = self.Nn
+            for i in bits(m):
+                if Nn[i] & X != Nn[i]:
+                    unhit ^= 1 << i
+        return unhit
+
+    def _spared(self, X, spared, start):
+        """`spared` (per clause of N the number of its atoms that X spares, as binary digits)
+        extended by the clauses from position `start` on; None if X spares no atom of one."""
+        out, N = spared.copy(), self.N
+        for j in range(start, len(N)):
+            n = (N[j] & ~X).bit_count()
+            if not n:
+                return None
+            if not N[j].bit_count() >> _DIGITS:
+                k = 0
+                while n:
+                    if n & 1:
+                        out[k] |= 1 << j
+                    n >>= 1
+                    k += 1
+        return out
+
+    def _block(self, new, X2, spared):
+        """The atoms `new` get blocked, which gives the blocked set X2: None if a clause of N
+        loses its last spared atom, else (the clauses that repairs, the atoms spared per clause
+        of N after it)."""
+        hit, in_N = self.hit, self.in_N
+        hits = lost = 0
+        out = spared
+        while new:
+            low = new & -new
+            new ^= low
+            a = low.bit_length() - 1
+            hits |= hit[a]
+            borrow = in_N[a]
+            if borrow:  # one atom less for these clauses: subtract with borrow, digit by digit
+                if out is spared:
+                    out = spared.copy()
+                lost |= borrow
+                k = 0
+                while borrow:
+                    digit = out[k]
+                    out[k] = digit ^ borrow
+                    borrow &= ~digit
+                    k += 1
+        if lost:
+            for digit in out:
+                lost &= ~digit
+                if not lost:
+                    break
+            else:
+                return None
+        if self.N_long and any(C & X2 == C for C in self.N_long):
+            return None
+        return hits, out
+
+    def _packing(self, violated, left, free):
+        """A lower bound on what it costs to repair the clauses `violated` with the interventions
+        `free`: clauses of which no two can be repaired by the same intervention take one
+        intervention each. Clauses that few interventions can repair are counted first, they
+        stand in the way of the fewest others.
+
+        Returns:
+            None if that costs more than `left` or a clause cannot be repaired at all, else (the
+            cost, the interventions that can repair one of the clauses counted, per clause
+            counted these interventions and its cost)."""
+        reach_of, price, touch, by_reach = self.reach, self.price, self.touch, self.by_reach
+        need, reach, counted, b = 0.0, 0, [], 0
+        while violated:
+            m = by_reach[b] & violated
+            while not m:
+                b += 1
+                m = by_reach[b] & violated
+            i = (m & -m).bit_length() - 1
+            live = reach_of[i] & free
+            if not live:
+                return None
+            if live.bit_count() > _PACK_REACH:
+                break  # what follows would hardly be free of the clauses counted
+            need += price[i]
+            if need > left + 1e-9:
+                return None
+            reach |= live
+            counted.append((live, price[i]))
+            shared = 1 << i
+            while live:
+                low = live & -live
+                live ^= low
+                shared |= touch[low.bit_length() - 1]
+            violated &= ~shared
+        return need, reach, counted
+
+    def _descend(self, z, X, cost, unhit, spared, barred, touched, banned):
+        """z: chosen interventions, X: atoms they block, unhit: the clauses whose positive part X
+        misses, spared: per clause of N the number of its atoms that X spares, barred:
+        interventions an earlier branch covers, touched: atoms that an intervention of z helps to
+        block, banned: interventions that would complete a set the walk may not contain."""
+        stat = self.stat
+        stat['nodes'] += 1
+        P, N, layer = self.P, self.N, self.layer
+        n_pos, n_neg = len(P), len(N)
         while True:
-            if len(P) > n_seen:
-                unhit = unhit + [i for i in range(n_seen, len(P)) if not P[i] & X]
-                n_seen = len(P)
-            violated = [i for i in unhit if Nn[i] & X == Nn[i]] if self.has_mixed else unhit
+            violated = self._violated(unhit, X) if unhit & self.mixed else unhit
             if violated:
                 break
-            n_neg = len(self.N)
             if self._is_design(X):
                 if cost != self.level:
                     raise LPError('a design below the cost level in work was not found at its own level')
                 self._record(z)
                 return
-            if len(self.N) > n_neg:  # X breaks a clause that no set above it can repair
+            if len(N) > n_neg:  # X breaks a clause that no set above it can repair
                 return
+            for i in range(n_pos, len(P)):
+                if not P[i] & X:
+                    unhit |= 1 << i
+            n_pos = len(P)
         left = self.level - cost
-        if left <= 0:
+        min_cost = self.min_cost
+        if left < min_cost:
             return
+        free = self._afford(left) & ~(z | barred | banned)
+        if left < 2 * min_cost:
+            return self._last(z, X, left, unhit, violated, spared, 0, touched, free)
+        pack = self._packing(violated, left, free)
+        if pack is None:
+            stat['bounded'] += 1
+            return
+        need, reach, counted = pack
+        # an intervention that repairs none of the clauses counted has to fit on top of their cost
+        slack = left - need
+        allowed = reach | self._afford(slack) & free if slack >= min_cost else reach
         if time.time() > self.deadline:
             raise _Stop('time limit')
-        if left < 2 * self.min_cost:
-            return self._last(z, X, left, unhit, violated, barred, forbid, touched, banned)
-        # branch over the ways to repair the violated clause with the fewest atoms: single
-        # interventions as one bit set, sets of several (an atom that needs more than one) as a list
-        c = min((P[i] for i in violated), key=int.bit_count)
+        # branch over the ways to repair the violated clause that has the fewest of them: single
+        # interventions first, then sets of several (an atom that needs more than one)
+        for m in self.by_ways:
+            m &= violated
+            if m:
+                break
         singles, several = 0, set()
-        for a in bits(c):
-            for B in layer.live(a, z):
+        c = P[min(bits(m), key=self.ways.__getitem__) if m & (m - 1) else m.bit_length() - 1]
+        while c:
+            low = c & -c
+            c ^= low
+            for B in layer.live(low.bit_length() - 1, z):
                 J = B & ~z
                 if not J & (J - 1):
                     singles |= J
-                else:
+                elif not J & ~free:
                     several.add(J)
-        singles &= self._afford(left)
-        N, cost_of = self.N, layer.cost
-        for g in bits(singles & ~barred & ~banned):
-            J = 1 << g
-            z2 = z | J
-            b2 = self._ban(z2, J, banned)
-            if b2 is not None and not any(F & z2 == F for F in forbid):
-                X2 = layer.extend(z, X, J)
-                if not N or not any(C & X2 == C for C in N):
-                    self._descend(z2, X2, cost + cost_of[g], [i for i in unhit if not P[i] & X2], n_seen, barred, forbid,
-                                  touched | layer.atoms_of[g], b2)
-            barred |= J
-        barred |= singles
+        singles &= free
+        branches = [1 << g for g in bits(singles)]
         if several:
-            for J in _minimal(J for J in several if not J & (barred | banned) and layer.set_cost(J) <= left):
+            branches += _minimal(J for J in several if not J & singles and layer.set_cost(J) <= left + 1e-9)
+        hit, alone, joint, atoms_of, inside, cost_of = self.hit, layer.alone, layer.joint, layer.atoms_of, self.inside, layer.cost
+        covered = []  # the sets of several that this node has covered
+        try:
+            for J in branches:
+                g = J.bit_length() - 1 if not J & (J - 1) else -1
                 z2 = z | J
-                b2 = self._ban(z2, J, banned)
-                if b2 is not None and not any(F & z2 == F for F in forbid):
-                    X2 = layer.extend(z, X, J)
-                    if not N or not any(C & X2 == C for C in N):
-                        t2 = touched
-                        for i in bits(J):
-                            t2 |= layer.atoms_of[i]
-                        self._descend(z2, X2, cost + layer.set_cost(J), [i for i in unhit if not P[i] & X2], n_seen, barred, forbid, t2, b2)
-                forbid = forbid + [J]
+                # the branch has to leave what the clauses counted cost that it cannot repair
+                cost_J = cost_of[g] if g >= 0 else layer.set_cost(J)
+                if allowed & J if g >= 0 else cost_J + sum(pr for live, pr in counted if not live & J) <= left + 1e-9:
+                    b2 = banned if g >= 0 and not inside[g] else self._ban(z2, J, banned)
+                    if b2 is not None:
+                        if g >= 0:
+                            X2 = X | alone[g]
+                            for a, B, U in joint[g]:
+                                if B & z2 == B and not U & z2:
+                                    X2 |= 1 << a
+                            t2 = touched | atoms_of[g]
+                        else:
+                            X2, t2 = layer.extend(z, X, J), touched
+                            for i in bits(J):
+                                t2 |= atoms_of[i]
+                        left2 = left - cost_J
+                        u2, new = unhit, X2 & ~X
+                        while new:
+                            low = new & -new
+                            new ^= low
+                            u2 &= ~hit[low.bit_length() - 1]
+                        v2 = self._violated(u2, X2) if u2 & self.mixed else u2
+                        if v2 and left2 < 2 * min_cost:
+                            # one more intervention at most: most of these branches end at the
+                            # clauses still to repair, which is tested before anything else
+                            if left2 >= min_cost:
+                                stat['nodes'] += 1
+                                self._last(z2, X2, left2, u2, v2, spared, X, t2, self._afford(left2) & ~(z2 | barred | b2))
+                        else:
+                            step = self._block(X2 & ~X, X2, spared)
+                            if step is not None:
+                                self._descend(z2, X2, cost + cost_J, u2, step[1], barred, t2, b2)
+                        if len(P) > n_pos or len(N) > n_neg:
+                            # what the branch has learned may settle the rest of this node
+                            if len(N) > n_neg:
+                                spared = self._spared(X, spared, n_neg)
+                                if spared is None:
+                                    return
+                            for i in range(n_pos, len(P)):
+                                if not P[i] & X:
+                                    unhit |= 1 << i
+                            n_pos, n_neg = len(P), len(N)
+                            pack = self._packing(self._violated(unhit, X), left, free & ~(barred | J) if g >= 0 else free & ~barred)
+                            if pack is None:
+                                stat['bounded'] += 1
+                                return
+                            need, reach, counted = pack
+                            slack = left - need
+                            allowed = reach | self._afford(slack) & free if slack >= min_cost else reach
+                # the branch covers every set with J
+                if g >= 0:
+                    barred |= J
+                else:
+                    covered.append(J)
+                    for i in bits(J):
+                        inside[i].append(J)
+        finally:
+            for J in covered:
+                for i in bits(J):
+                    inside[i].pop()
 
-    def _last(self, z, X, left, unhit, violated, barred, forbid, touched, banned):
-        """One more intervention fits: it has to repair every violated clause on its own."""
+    def _last(self, z, X, left, unhit, violated, spared, X0, touched, free):
+        """One more intervention fits: it has to repair every violated clause on its own. `free`
+        holds the interventions left to choose from; `spared` counts for the blocked set X0, a
+        subset of X (0: for X itself)."""
         P, Nn, G, N, layer = self.P, self.Nn, self.G, self.N, self.layer
-        for F in forbid:
-            rest = F & ~z
-            if not rest & (rest - 1):
-                banned |= rest
-        cand = layer.cost_mask.get(left, 0) & ~z & ~banned & ~barred
+        # the candidates: what repairs every violated clause. Most often nothing does; the clauses
+        # that left no candidate lately are asked first, then those with the fewest ways
+        cand, recent = layer.cost_mask.get(left, 0) & free, self.recent
         open_atoms = touched & ~X  # atoms that z has brought closer to being blocked
-        for i in violated:
-            g = G[i]
-            near = P[i] & open_atoms
-            if near:
-                for a in bits(near):
-                    g |= layer.singles(a, z)
-            cand &= g
-            if not cand:
+        for k, (i, bit) in enumerate(recent):
+            if violated & bit:
+                g = G[i]
+                near = P[i] & open_atoms
+                if near:
+                    for a in bits(near):
+                        g |= layer.singles(a, z)
+                cand &= g
+                if not cand:
+                    if k:
+                        recent.insert(0, recent.pop(k))
+                    return
+        for rest in self.by_ways:
+            rest &= violated
+            while rest:
+                bit = rest & -rest
+                rest ^= bit
+                i = bit.bit_length() - 1
+                g = G[i]
+                near = P[i] & open_atoms
+                if near:
+                    for a in bits(near):
+                        g |= layer.singles(a, z)
+                cand &= g
+                if not cand:
+                    recent.insert(0, (i, bit))
+                    del recent[_RECENT:]
+                    return
+            if not cand & (cand - 1):
+                break  # the one candidate left is put to the test below
+        if X0:
+            step = self._block(X & ~X0, X, spared)
+            if step is None:
                 return
-        pending = [i for i in unhit if Nn[i] & X != Nn[i]] if self.has_mixed else ()
+            spared = step[1]
+        pending = unhit & ~violated
+        alone, joint = layer.alone, layer.joint
         kept = []
-        for g in bits(cand):
-            X2 = layer.extend(z, X, 1 << g)
-            if N and any(C & X2 == C for C in N):
+        while cand:
+            low = cand & -cand
+            cand ^= low
+            g = low.bit_length() - 1
+            z2 = z | low
+            X2 = X | alone[g]
+            for a, B, U in joint[g]:
+                if B & z2 == B and not U & z2:
+                    X2 |= 1 << a
+            step = self._block(X2 & ~X, X2, spared)
+            if step is None or violated & ~step[0]:
                 continue
-            if pending and any(not P[i] & X2 and Nn[i] & X2 == Nn[i] for i in pending):
+            if pending and any(Nn[i] & X2 == Nn[i] for i in bits(pending & ~step[0])):
                 continue  # the intervention completes the negative part of a clause it does not repair
             kept.append((g, X2))
         if not kept:
@@ -1611,9 +1889,9 @@ class LPEnumerator:
                     return  # A contains a design
                 if not rest & (rest - 1):
                     banned |= rest
-        if any(C & X == C for C in self.N):
-            return
-        self._descend(A, X, cost0, [i for i in range(len(self.P)) if not self.P[i] & X], len(self.P), 0, [], 0, banned)
+        spared = self._spared(X, [0] * _DIGITS, 0)
+        if spared is not None:
+            self._descend(A, X, cost0, mask(i for i in range(len(self.P)) if not self.P[i] & X), spared, 0, 0, banned)
 
     def run(self):
         """Returns (designs as bit sets over the interventions, complete). A further call starts
@@ -1621,7 +1899,7 @@ class LPEnumerator:
         (which depend on what the modules ask for at the time) are searched afresh."""
         t0 = time.time()
         complete = True
-        self.designs, self.with_member, self.banned0 = [], {}, 0
+        self.designs, self.inside, self.banned0 = [], [[] for _ in range(self.layer.nI)], 0
         try:
             if self._is_design(self.layer.X(0)):
                 return [0], True
@@ -1680,7 +1958,8 @@ def gpr_blocked_formula(rule, index):
 def _atoms_and_layer(model, ko_cost, gko_cost, max_cost, gene_key, ki_cost=None, gki_cost=None):
     ko_cost, gko_cost, ki_cost, gki_cost = dict(ko_cost or {}), dict(gko_cost or {}), dict(ki_cost or {}), dict(gki_cost or {})
     names = list(gko_cost) + list(ko_cost) + list(ki_cost) + list(gki_cost)
-    costs = [gko_cost[g] for g in gko_cost] + [ko_cost[r] for r in ko_cost] + [ki_cost[r] for r in ki_cost] + [gki_cost[g] for g in gki_cost]
+    costs = [gko_cost[g] for g in gko_cost] + [ko_cost[r] for r in ko_cost] + [ki_cost[r] for r in ki_cost
+                                                                              ] + [gki_cost[g] for g in gki_cost]
     n_ko = len(gko_cost) + len(ko_cost)
     index = {g: i for i, g in enumerate(gko_cost)}
     index.update({g: ('ki', n_ko + len(ki_cost) + i) for i, g in enumerate(gki_cost)})
@@ -2003,12 +2282,25 @@ class CompressedDesigns:
 
 def lp_counts(modules):
     """(flux LPs, proof LPs, value LPs) solved by the regions of the modules so far."""
-    regions = {id(R): R for mod in modules for R in (getattr(mod, 'region', None), getattr(mod, 'inner', None), getattr(mod, 'outer', None)) if R}
+    regions = {
+        id(R): R for mod in modules for R in (getattr(mod, 'region', None), getattr(mod, 'inner', None), getattr(mod, 'outer', None)) if R
+    }
     return tuple(sum(getattr(R, k) for R in regions.values()) for k in ('n_flux', 'n_proof', 'n_value'))
 
 
-def lp_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, has_gene_names, max_cost, solver, time_limit=np.inf,
-              max_solutions=np.inf, exact=False, **kwargs):
+def lp_engine(cmp_model,
+              sd_modules,
+              ko_cost,
+              ki_cost,
+              gko_cost,
+              gki_cost,
+              has_gene_names,
+              max_cost,
+              solver,
+              time_limit=np.inf,
+              max_solutions=np.inf,
+              exact=False,
+              **kwargs):
     """Entry point for compute_strain_designs: enumerate on the compressed model, genes kept out
     of it.
 
@@ -2023,8 +2315,16 @@ def lp_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, has_g
         raise NotImplementedError('the LP engine handles SUPPRESS, PROTECT, OptKnock, RobustKnock and OptCouple modules')
     from straindesign.parse_constr import lineqlist2mat
     t0 = time.time()
-    names, layer, modules, atom_rxn, ctx = build_problem(cmp_model, sd_modules, ko_cost, gko_cost, max_cost, solver,
-                                                         'name' if has_gene_names else 'id', exact=exact, ki_cost=ki_cost, gki_cost=gki_cost)
+    names, layer, modules, atom_rxn, ctx = build_problem(cmp_model,
+                                                         sd_modules,
+                                                         ko_cost,
+                                                         gko_cost,
+                                                         max_cost,
+                                                         solver,
+                                                         'name' if has_gene_names else 'id',
+                                                         exact=exact,
+                                                         ki_cost=ki_cost,
+                                                         gki_cost=gki_cost)
     objective = None
     if opt_mods:
         mod = opt_mods[0]
@@ -2059,15 +2359,32 @@ def lp_engine(cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, has_g
         enum.objective_value, enum.trace = (best[1] if best else None), trace
     enum.names, enum.atom_rxn = names, atom_rxn
     # a knockout made: -1, a knock-in made: 1, a knock-in not made: 0
-    sd = [{**{names[i]: 0.0 for i in bits(layer.ki & ~z)}, **{names[i]: (1.0 if (layer.ki >> i) & 1 else -1.0) for i in bits(z)}} for z in found]
+    sd = [{
+        **{
+            names[i]: 0.0 for i in bits(layer.ki & ~z)
+        },
+        **{
+            names[i]: (1.0 if (layer.ki >> i) & 1 else -1.0) for i in bits(z)
+        }
+    } for z in found]
     if complete:
         status = OPTIMAL if sd else INFEASIBLE
     else:
         status = TIME_LIMIT_W_SOL if sd else TIME_LIMIT
-    setup = {MODEL_ID: cmp_model.id, MAX_COST: max_cost, SOLVER: solver, SOLUTION_APPROACH: POPULATE, KOCOST: dict(ko_cost), KICOST: dict(ki_cost or {}),
-             MODULES: sd_modules, TIME_LIMIT: time_limit, MAX_SOLUTIONS: np.inf}
+    setup = {
+        MODEL_ID: cmp_model.id,
+        MAX_COST: max_cost,
+        SOLVER: solver,
+        SOLUTION_APPROACH: POPULATE,
+        KOCOST: dict(ko_cost),
+        KICOST: dict(ki_cost or {}),
+        MODULES: sd_modules,
+        TIME_LIMIT: time_limit,
+        MAX_SOLUTIONS: np.inf
+    }
     enum.stat['lp_flux'], enum.stat['lp_proof'], enum.stat['lp_value'] = lp_counts(modules)
-    logging.info('  LP engine: %d designs; LPs: %d flux, %d proof, %d value; %d module checks answered from memory; %.1f s (%.1f s in LPs).' %
-                 (len(sd), enum.stat['lp_flux'], enum.stat['lp_proof'], enum.stat['lp_value'], enum.stat['memo'],
-                  enum.stat.get('seconds', np.nan), _LPBase.seconds))
+    logging.info(
+        '  LP engine: %d designs; LPs: %d flux, %d proof, %d value; %d module checks answered from memory; %.1f s (%.1f s in LPs).' %
+        (len(sd), enum.stat['lp_flux'], enum.stat['lp_proof'], enum.stat['lp_value'], enum.stat['memo'], enum.stat.get(
+            'seconds', np.nan), _LPBase.seconds))
     return CompressedDesigns(sd, status, setup), enum
