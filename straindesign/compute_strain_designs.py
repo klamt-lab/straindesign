@@ -30,6 +30,7 @@ from copy import deepcopy
 from cobra import Model, Metabolite, Reaction
 from cobra.manipulation import rename_genes
 from straindesign import SDModule, SDSolutions, select_solver, fva, DisableLogger, SDProblem, SDMILP
+from straindesign.speedy_fva import essential_reactions
 from straindesign.names import *
 from straindesign.networktools import   remove_ext_mets, bound_blocked_or_irrevers_fva, \
                                         extend_model_gpr, extend_model_regulatory, evaluate_gpr_ast, \
@@ -856,8 +857,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     for m in sd_modules:
         if m[MODULE_TYPE] != SUPPRESS and not skip_fvas:
             # Essential reactions can only be determined from desired or opt-/robustknock modules
-            flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS], compress=False)
-            essential_reacs.update(_essentials_from_limits(flux_limits))
+            essential_reacs.update(essential_reactions(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS], tol=_ESSENTIALITY_TOL))
     # remove ko-costs (and thus knockability) of essential reactions
     [cmp_ko_cost.pop(er) for er in essential_reacs if er in cmp_ko_cost]
     # --- LP engine (prototype): genes stay out of the network, the designs are enumerated with LPs ---
