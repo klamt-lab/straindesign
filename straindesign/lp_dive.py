@@ -50,11 +50,15 @@ objective value (see `OptSearch`), without knock-ins.
 
 Neither part proves anything about the designs it does not return: the designs are valid and
 locally optimal, not the cheapest or the best.
+
+``lp_threads=n`` runs n such searches side by side, each in a process of its own and with a seed
+of its own, and returns what the first one that comes to an end has found.
 """
 
 import logging
 import random
 import time
+from types import SimpleNamespace
 import numpy as np
 from straindesign.names import *
 from straindesign.lp_enumeration import (BitRows, ClassicModule, FEASIBLE, LPEnumerator, LPError, Region, _IMPROVE, _OBJECTIVES, _LPBase,
@@ -1068,6 +1072,46 @@ class OptSearch:
         return out[:int(max_solutions) if np.isfinite(max_solutions) else None], False
 
 
+def _search_in_a_process(job):
+    """One search of `lp_dive_engine`, run in a worker process: what it found, without its LPs."""
+    args, kwargs = job
+    designs, search = lp_dive_engine(*args, **kwargs)
+    return dict(sd=designs.sd,
+                status=designs.status,
+                setup=designs.sd_setup,
+                seed=kwargs['seed'],
+                stat=search.stat if hasattr(search, 'stat') else search.ds.stat,
+                log=getattr(search, 'log', []),
+                names=search.names,
+                atom_rxn=search.atom_rxn,
+                values=search.values,
+                objective_value=getattr(search, 'objective_value', None))
+
+
+def _searches_side_by_side(threads, args, kwargs):
+    """`threads` searches with consecutive seeds, each in a process of its own. The first one that
+    ends with the designs asked for, or with a proof that there is none, is returned and the
+    others are stopped; if none ends that way, the one that found the most."""
+    from straindesign.pool import SDPool
+    seed = kwargs.get('seed')
+    seed = random.randrange(1 << 30) if seed is None else int(seed)
+    jobs = [(args, dict(kwargs, seed=seed + k)) for k in range(threads)]
+    rank = {OPTIMAL: 3, INFEASIBLE: 3, TIME_LIMIT_W_SOL: 2, TIME_LIMIT: 1}
+    best, t0 = None, time.time()
+    with SDPool(threads) as pool:
+        for res in pool.imap_unordered(_search_in_a_process, jobs):
+            logging.info('  LP dive: the search with seed %d ended after %.1f s: %d designs, status %s.' %
+                         (res['seed'], time.time() - t0, len(res['sd']), res['status']))
+            if best is None or (rank.get(res['status'], 0), len(res['sd'])) > (rank.get(best['status'], 0), len(best['sd'])):
+                best = res
+            if rank.get(res['status'], 0) == 3:
+                break
+        pool.terminate()
+    best['stat']['seed'] = best['seed']
+    search = SimpleNamespace(**{k: best[k] for k in ('stat', 'log', 'names', 'atom_rxn', 'values', 'objective_value')})
+    return CompressedDesigns(best['sd'], best['status'], best['setup']), search
+
+
 def lp_dive_engine(cmp_model,
                    sd_modules,
                    ko_cost,
@@ -1084,6 +1128,7 @@ def lp_dive_engine(cmp_model,
                    first_levels=3,
                    first_seconds=20.0,
                    union_seconds=120.0,
+                   threads=1,
                    **kwargs):
     """Entry point for compute_strain_designs with solution_approach='any'.
 
@@ -1094,6 +1139,11 @@ def lp_dive_engine(cmp_model,
     the dives reached: it returns the cheaper designs that these interventions hold, or shows that
     they hold none (`stat['union_complete']`). Knock-ins (of reactions or genes) are handled for
     SUPPRESS / PROTECT modules.
+
+    With `threads` above 1 that many searches run side by side, in processes of their own and
+    with the seeds seed, seed + 1, ...; the first that ends with the designs asked for (or with a
+    proof that there is none) is returned. Which one that is depends on the load of the machine,
+    so a seed does not fix the result then.
 
     Status: OPTIMAL if max_solutions designs were found, or every design within the budget (for an
     optimisation module: when the local search ended at a local optimum before the time limit),
@@ -1113,6 +1163,17 @@ def lp_dive_engine(cmp_model,
     integer_costs = all(abs(c - round(c)) <= 1e-9 for c in costs)
     if (ki_cost or gki_cost) and opt_mods:
         raise NotImplementedError("solution_approach 'any' of the LP engine handles knock-ins for SUPPRESS / PROTECT modules only")
+    if threads is not None and int(threads) > 1:
+        return _searches_side_by_side(
+            int(threads), (cmp_model, sd_modules, ko_cost, ki_cost, gko_cost, gki_cost, has_gene_names, max_cost, solver),
+            dict(time_limit=time_limit,
+                 max_solutions=max_solutions,
+                 seed=seed,
+                 exact=exact,
+                 first_levels=first_levels,
+                 first_seconds=first_seconds,
+                 union_seconds=union_seconds,
+                 **kwargs))
     from straindesign.parse_constr import lineqlist2mat
     t0 = time.time()
     n_lp0 = _LPBase.n_solves

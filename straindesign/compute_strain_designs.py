@@ -553,7 +553,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
         SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'dump_preprocessed', 'skip_preprocessing_fvas',
-        'dual_tilt', 'engine'
+        'dual_tilt', 'engine', LP_THREADS
     }
     logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
@@ -882,7 +882,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
             from straindesign.lp_dive import lp_dive_engine
             cmp_sd_solution, _enum = lp_dive_engine(*_lp_args, time_limit=float(kwargs.get(T_LIMIT, np.inf)),
                                                     max_solutions=float(kwargs.get(MAX_SOLUTIONS, np.inf)), seed=kwargs.get(SEED),
-                                                    exact=_engine == 'lp_exact')
+                                                    exact=_engine == 'lp_exact', threads=kwargs.get(LP_THREADS, 1))
         else:
             cmp_sd_solution, _enum = lp_engine(*_lp_args, time_limit=float(kwargs.get(T_LIMIT, np.inf)), exact=_engine == 'lp_exact')
         logging.info('  LP engine done (%.1fs).' % (time.time() - t0))

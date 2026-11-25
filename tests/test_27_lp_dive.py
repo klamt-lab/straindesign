@@ -57,7 +57,14 @@ def _designs(sol, genes):
 
 
 def _run(model, modules, solver, genes=False, **kw):
-    return sd.compute_strain_designs(model, sd_modules=modules, solution_approach=ANY, solver=solver, gene_kos=genes, engine='lp', seed=3, **kw)
+    return sd.compute_strain_designs(model,
+                                     sd_modules=modules,
+                                     solution_approach=ANY,
+                                     solver=solver,
+                                     gene_kos=genes,
+                                     engine='lp',
+                                     seed=3,
+                                     **kw)
 
 
 def _check_valid_minimal(model, spec, designs, genes):
@@ -68,8 +75,17 @@ def _check_valid_minimal(model, spec, designs, genes):
 
 
 SPEC_S = [(SUPPRESS, [[{'R3': 1, 'R1': -0.5}, '<=', 0.0], [{'R2': 1}, '<=', 0], [{'R1': 1}, '>=', 0.1]], None)]
-SPEC_SP = [(SUPPRESS, [[{'R3': 1, 'R1': -0.5, 'R2': -0.5}, '<=', 0.0], [{'R2': 1}, '>=', 0.0], [{'R1': 1}, '>=', 0.1]], None),
-           (PROTECT, [[{'R3': 1}, '>=', 1.0]], None)]
+SPEC_SP = [(SUPPRESS, [[{
+    'R3': 1,
+    'R1': -0.5,
+    'R2': -0.5
+}, '<=', 0.0], [{
+    'R2': 1
+}, '>=', 0.0], [{
+    'R1': 1
+}, '>=', 0.1]], None), (PROTECT, [[{
+    'R3': 1
+}, '>=', 1.0]], None)]
 
 
 def test_suppress(curr_solver, model_small_example):
@@ -113,8 +129,16 @@ def test_genes(curr_solver, model_gpr):
 
 
 def test_inner_objective(curr_solver, model_weak_coupling):
-    spec = [(SUPPRESS, [[{'r_P': 1, 'r_S': -0.4}, '<=', 0], [{'r_S': 1}, '>=', 0.1]], {'r_BM': 1}),
-            (PROTECT, [[{'r_BM': 1}, '>=', 0.2]], None)]
+    spec = [(SUPPRESS, [[{
+        'r_P': 1,
+        'r_S': -0.4
+    }, '<=', 0], [{
+        'r_S': 1
+    }, '>=', 0.1]], {
+        'r_BM': 1
+    }), (PROTECT, [[{
+        'r_BM': 1
+    }, '>=', 0.2]], None)]
     sol = _run(model_weak_coupling, _modules(model_weak_coupling, spec), curr_solver, max_cost=4, max_solutions=3)
     designs = _designs(sol, False)
     assert designs
@@ -175,8 +199,14 @@ def test_imlcore_growth_coupling(model_core):
     solver, which stalls on single LPs of this model unless each solve has a time limit."""
     m = model_core
     bio = [r.id for r in m.reactions if r.objective_coefficient][0]
-    spec = [(SUPPRESS, [[{'EX_etoh_e': 1, 'EX_glc__D_e': 1.0}, '<=', 0.0], [{bio: 1}, '>=', 0.01]], None),
-            (PROTECT, [[{bio: 1}, '>=', 0.1]], None)]
+    spec = [(SUPPRESS, [[{
+        'EX_etoh_e': 1,
+        'EX_glc__D_e': 1.0
+    }, '<=', 0.0], [{
+        bio: 1
+    }, '>=', 0.01]], None), (PROTECT, [[{
+        bio: 1
+    }, '>=', 0.1]], None)]
     solver = GLPK if GLPK in sd.avail_solvers else sd.select_solver()
     sol = _run(m, _modules(m, spec), solver, max_solutions=1, time_limit=300)
     designs = _designs(sol, False)
@@ -188,7 +218,12 @@ def test_imlcore_growth_coupling(model_core):
 def test_the_cheapest_designs_come_first(curr_solver, model_small_example):
     """Designs of the lowest cost levels are found by the complete search before any dive."""
     modules = _modules(model_small_example, SPEC_SP)
-    every = sd.compute_strain_designs(model_small_example, sd_modules=modules, solution_approach=POPULATE, solver=curr_solver, engine='lp', max_cost=4)
+    every = sd.compute_strain_designs(model_small_example,
+                                      sd_modules=modules,
+                                      solution_approach=POPULATE,
+                                      solver=curr_solver,
+                                      engine='lp',
+                                      max_cost=4)
     cheapest = min(len(d) for d in _designs(every, False))
     sol = _run(model_small_example, modules, curr_solver, max_solutions=2)
     found = _designs(sol, False)
@@ -203,7 +238,13 @@ def _signed(sol, genes=False):
 def test_knock_ins_cheapest_first(curr_solver, model_small_example):
     modules = _modules(model_small_example, SPEC_SP)
     kw = dict(ko_cost={r.id: 1.0 for r in model_small_example.reactions if r.id != 'R9'}, ki_cost={'R9': 1.0})
-    every = sd.compute_strain_designs(model_small_example, sd_modules=modules, solution_approach=POPULATE, solver=curr_solver, engine='lp', max_cost=3, **kw)
+    every = sd.compute_strain_designs(model_small_example,
+                                      sd_modules=modules,
+                                      solution_approach=POPULATE,
+                                      solver=curr_solver,
+                                      engine='lp',
+                                      max_cost=3,
+                                      **kw)
     sol = _run(model_small_example, modules, curr_solver, max_solutions=1, max_cost=3, **kw)
     assert sol.status == OPTIMAL and 1 <= len(sol.reaction_sd) < len(every.reaction_sd) and _signed(sol) <= _signed(every)
     # asked for more than there are within the levels that are searched completely: all of them
@@ -219,7 +260,14 @@ def test_dives_with_knock_ins(curr_solver, model_small_example):
     ki = ['R9', 'R4']
     ko_cost = {r.id: 1.0 for r in model.reactions if r.id not in ki}
     absent = lambda d: [k for k in ki if d.get(k, 0) <= 0]
-    res, search = lp_dive_engine(model, modules, ko_cost, {k: 1.0 for k in ki}, {}, {}, False, np.inf, curr_solver, max_solutions=4, seed=3,
+    res, search = lp_dive_engine(model,
+                                 modules,
+                                 ko_cost, {k: 1.0 for k in ki}, {}, {},
+                                 False,
+                                 np.inf,
+                                 curr_solver,
+                                 max_solutions=4,
+                                 seed=3,
                                  first_levels=0)
     assert res.sd and search.stat['starts'] >= 1 and search.stat['guided'] + search.stat['dives'] >= 1
     for d in res.sd:
@@ -238,8 +286,26 @@ def test_gene_knock_ins(curr_solver, model_gpr):
     for k in range(len(genes)):
         gki = {genes[k]: 1.0, genes[(k + 3) % len(genes)]: 2.0}
         kw = dict(gko_cost={g: 1.0 for g in genes if g not in gki}, gki_cost=gki, max_cost=4)
-        every = sd.compute_strain_designs(model_gpr, sd_modules=modules, solution_approach=POPULATE, solver=curr_solver, engine='lp', gene_kos=True, **kw)
+        every = sd.compute_strain_designs(model_gpr,
+                                          sd_modules=modules,
+                                          solution_approach=POPULATE,
+                                          solver=curr_solver,
+                                          engine='lp',
+                                          gene_kos=True,
+                                          **kw)
         sol = _run(model_gpr, modules, curr_solver, genes=True, max_solutions=3, **kw)
         assert _signed(sol, True) <= _signed(every, True) and (len(sol.gene_sd) > 0) == (len(every.gene_sd) > 0)
         n += len(sol.gene_sd)
     assert n
+
+
+def test_searches_side_by_side(model_small_example):
+    """lp_threads=2: two searches in processes of their own; the first that comes to an end hands
+    back its designs, which are checked like those of a single search."""
+    solver = sd.select_solver()
+    modules = _modules(model_small_example, SPEC_SP)
+    sol = _run(model_small_example, modules, solver, max_solutions=1, lp_threads=2)
+    designs = _designs(sol, False)
+    assert sol.status == OPTIMAL and designs
+    _check_valid_minimal(model_small_example, SPEC_SP, designs, False)
+    assert sol._lp_enum.stat['seed'] in (3, 4)  # the seeds of the two searches
