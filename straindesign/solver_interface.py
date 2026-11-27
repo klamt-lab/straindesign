@@ -251,6 +251,13 @@ class MILP_LP(object):
                                         self.indic_constr, self.M)
         if self.sos1:
             self.backend.add_sos1(self.sos1)
+        elif self.solver == CPLEX and not getattr(self, 'sos1_gates', None) and self.indic_constr is not None \
+                and self.indic_constr.A.shape[0]:
+            # An optimisation problem (OptKnock, RobustKnock, OptCouple) in indicator form. With no
+            # big-M row an almost-integral binary cannot open anything, and at an integrality
+            # tolerance of 0 CPLEX can lose the branch that holds the optimum. Cut-set problems keep
+            # 1e-9 with SOS1 gates and 0 in indicator form, big-M rows keep 0.
+            self.backend.parameters.mip.tolerances.integrality.set(1e-7)
         if self.tlim is None:
             self.set_time_limit(inf)
         else:

@@ -707,6 +707,110 @@ def test_network_in_which_no_reaction_can_carry_flux(curr_solver, compress):
     assert sol.status == INFEASIBLE and sol.reaction_sd == []
 
 
+def _model_optcouple_optimum_lost_by_cplex():
+    """The OptCouple problem of a random campaign whose optimum (knockout of g7, potential 0.625)
+    CPLEX lost at an integrality tolerance of 0 and returned the wild type as optimal."""
+    reactions = [('UP0', {
+        'M0': 1
+    }, 0, 20, 'g3 and g2 and g1'), ('R0', {
+        'M0': 2,
+        'M7': -2
+    }, -1000, 0, 'g0 or g5'), ('R1', {
+        'M0': -2,
+        'M2': 1,
+        'M6': 1
+    }, 0, 1000, ''), ('R2', {
+        'M2': 2,
+        'M4': -1,
+        'M7': 2
+    }, -10, 0, 'g7'), ('R3', {
+        'M2': 1,
+        'M3': -2,
+        'M4': 2,
+        'M7': -1
+    }, -100, 0, ''), ('R4', {
+        'M0': -1,
+        'M5': 1
+    }, -50, 50, 'g7'), ('R5', {
+        'M0': -2,
+        'M5': -1,
+        'M7': 2
+    }, 0, 10, 'g7'), ('R6', {
+        'M0': -1,
+        'M2': -2,
+        'M5': 1,
+        'M6': 2
+    }, -100, 100, '(g0 and g1 and g8) or g5'), ('R7', {
+        'M1': 2,
+        'M3': -1,
+        'M7': 1
+    }, 0, 50, 'g2 and g8'), ('R8', {
+        'M2': 1,
+        'M3': -2
+    }, 0, 10, 'g2'), ('R9', {
+        'M4': -1,
+        'M5': 2,
+        'M6': -2
+    }, -1000, 0, 'g5'), ('EX_P', {
+        'M6': -1
+    }, 0, 50, 'g5'), ('EX1', {
+        'M7': -1
+    }, 0, 50, 'g3'), ('BM', {
+        'M3': -2,
+        'M5': -2,
+        'M6': -2
+    }, 0, 50, 'g5')]
+    model = Model('optcouple_optimum_lost_by_cplex')
+    mets = {m: Metabolite(m, compartment='c') for m in ['M0', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7']}
+    for rid, stoich, lb, ub, rule in reactions:
+        reaction = Reaction(rid, lower_bound=lb, upper_bound=ub)
+        model.add_reactions([reaction])
+        reaction.add_metabolites({mets[m]: v for m, v in stoich.items()})
+        reaction.gene_reaction_rule = rule
+    return model
+
+
+@pytest.mark.parametrize('threads', [1, 2])
+def test_optcouple_optimum_behind_an_almost_integral_binary(curr_solver, threads):
+    model = _model_optcouple_optimum_lost_by_cplex()
+    module = sd.SDModule(model, OPTCOUPLE, inner_objective='BM', prod_id='EX_P', constraints='BM >= 0.1')
+    sol = sd.compute_strain_designs(model,
+                                    sd_modules=[module],
+                                    gene_kos=True,
+                                    gko_cost={
+                                        'g0': 2,
+                                        'g1': 3,
+                                        'g2': 3,
+                                        'g3': 2,
+                                        'g5': 2,
+                                        'g7': 1,
+                                        'g8': 3
+                                    },
+                                    max_cost=4,
+                                    solution_approach=BEST,
+                                    max_solutions=1,
+                                    solver=curr_solver,
+                                    seed=1,
+                                    **({} if curr_solver == GLPK else dict(milp_threads=threads)))
+    assert sol.status == OPTIMAL
+    assert [sorted(k for k, v in d.items() if v) for d in sol.gene_sd] == [['g7']]
+
+
+@pytest.mark.skipif(CPLEX not in sd.avail_solvers, reason='CPLEX is not available')
+def test_cplex_integrality_tolerance_follows_the_form_of_the_milp(model_weak_coupling):
+    """1e-7 for an optimisation problem in indicator form, 1e-9 with SOS1 gates, 0 with big-M rows."""
+    from straindesign.strainDesignMILP import SDMILP
+    optknock = [sd.SDModule(model_weak_coupling, OPTKNOCK, inner_objective='r_BM', outer_objective='r_P', constraints=['r_BM >= 0.2'])]
+    suppress = [sd.SDModule(model_weak_coupling, SUPPRESS, constraints=['r_P - 0.4 r_S <= 0', 'r_S >= 0.1'])]
+    for modules, extra, tolerance in [(optknock, {}, 1e-7), (suppress, {}, 1e-9), (optknock, {
+            'M': 1000
+    }, 0.0), (suppress, {
+            'M': 1000
+    }, 0.0)]:
+        milp = SDMILP(model_weak_coupling, modules, max_cost=2, solver=CPLEX, **extra)
+        assert milp.backend.parameters.mip.tolerances.integrality.get() == tolerance, (modules[0][MODULE_TYPE], extra)
+
+
 def test_glpk_milp_whose_bounds_grow_without_limit_in_the_presolver():
     """The first row forces z = 1, and then x >= 5 y + 1 and y >= x have no solution. GLPK's MIP
     presolver raises the lower bounds of x and y in turns; neither has an upper bound, so nothing
