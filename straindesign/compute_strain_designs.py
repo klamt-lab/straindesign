@@ -30,6 +30,7 @@ from copy import deepcopy
 from cobra import Model, Metabolite, Reaction
 from cobra.manipulation import rename_genes
 from straindesign import SDModule, SDSolutions, select_solver, fva, DisableLogger, SDProblem, SDMILP
+from straindesign.speedy_fva import essential_reactions
 from straindesign.names import *
 from straindesign.networktools import   remove_ext_mets, bound_blocked_or_irrevers_fva, \
                                         extend_model_gpr, extend_model_regulatory, evaluate_gpr_ast, \
@@ -553,7 +554,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     allowed_keys = {
         MODULES, SETUP, SOLVER, MAX_COST, MAX_SOLUTIONS, 'M', 'compress', 'gene_kos', KOCOST, KICOST, GKOCOST, GKICOST, REGCOST,
         SOLUTION_APPROACH, 'advanced', 'use_scenario', T_LIMIT, SEED, MILP_THREADS, 'dump_preprocessed', 'skip_preprocessing_fvas',
-        'dual_tilt'
+        'dual_tilt', 'engine', LP_THREADS
     }
     logging.info('Preparing strain design computation.')
     if SETUP in kwargs:
@@ -700,7 +701,7 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     # designs without any of it, so this is a speed/precomputation trade, not a semantic one.
     # It pays to skip when the model is large and the design problem is easy -- gap-filling a
     # universe merge spends 252 s of 273 s in FVA for information the MILP does not need.
-    skip_fvas = bool(kwargs.pop('skip_preprocessing_fvas', False))
+    skip_fvas = bool(kwargs.pop('skip_preprocessing_fvas', False)) or kwargs.get('engine') == 'lp_exact'
     if skip_fvas:
         logging.info('  Skipping preprocessing FVAs (skip_preprocessing_fvas).')
 
@@ -801,7 +802,10 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
         # from the GPR fwd/rev split (which fires on lb<0).
         from straindesign.speedy_fva import fast_reversibility
         t0 = time.time()
-        _rev = fast_reversibility(cmp_model, solver=kwargs[SOLVER])
+        # The exact LP engine takes nothing from floating-point LPs: a direction wrongly found
+        # blocked here would change the network it then enumerates exactly.
+        _rev = fast_reversibility(cmp_model, solver=kwargs[SOLVER]) if kwargs.get('engine') != 'lp_exact' else \
+            {r.id: (True, True) for r in cmp_model.reactions}
         if not any(can_fwd or can_rev for can_fwd, can_rev in _rev.values()):
             # The compression removes reactions that cannot carry flux, and here that is all of
             # them: no network would be left to build the problem from.
@@ -853,10 +857,49 @@ def compute_strain_designs(model: Model, **kwargs: dict) -> SDSolutions:
     for m in sd_modules:
         if m[MODULE_TYPE] != SUPPRESS and not skip_fvas:
             # Essential reactions can only be determined from desired or opt-/robustknock modules
-            flux_limits = fva(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS], compress=False)
-            essential_reacs.update(_essentials_from_limits(flux_limits))
+            essential_reacs.update(essential_reactions(cmp_model, solver=kwargs[SOLVER], constraints=m[CONSTRAINTS], tol=_ESSENTIALITY_TOL))
     # remove ko-costs (and thus knockability) of essential reactions
     [cmp_ko_cost.pop(er) for er in essential_reacs if er in cmp_ko_cost]
+    # --- LP engine (prototype): genes stay out of the network, the designs are enumerated with LPs ---
+    _engine = kwargs.pop('engine', None)
+    if _engine in ('lp', 'lp_exact'):
+        from straindesign.lp_enumeration import lp_engine
+        if _deferred_reg:
+            raise NotImplementedError('the LP engine does not handle gene-based regulatory interventions yet')
+        _reac_ko, _reac_ki = dict(cmp_ko_cost), dict(cmp_ki_cost)  # reaction-level candidates only
+        if kwargs['gene_kos']:
+            if kwargs['compress'] is True or kwargs['compress'] is None:
+                uncmp_gko_cost = reduce_model_gprs(cmp_model, essential_reacs, uncmp_gki_cost, uncmp_gko_cost)
+            simplify_model_gprs(cmp_model)
+            uncmp_ko_cost = {**uncmp_ko_cost, **uncmp_gko_cost}
+            uncmp_ki_cost = {**uncmp_ki_cost, **uncmp_gki_cost}
+        logging.info('  Solving with the LP engine ...')
+        t0 = time.time()
+        _lp_args = (cmp_model, sd_modules, _reac_ko, _reac_ki, uncmp_gko_cost if kwargs['gene_kos'] else {},
+                    uncmp_gki_cost if kwargs['gene_kos'] else {}, has_gene_names, kwargs[MAX_COST], kwargs[SOLVER])
+        if kwargs.get(SOLUTION_APPROACH) == ANY:
+            # single designs found by dives and polished to a local optimum, no enumeration
+            from straindesign.lp_dive import lp_dive_engine
+            cmp_sd_solution, _enum = lp_dive_engine(*_lp_args, time_limit=float(kwargs.get(T_LIMIT, np.inf)),
+                                                    max_solutions=float(kwargs.get(MAX_SOLUTIONS, np.inf)), seed=kwargs.get(SEED),
+                                                    exact=_engine == 'lp_exact', threads=kwargs.get(LP_THREADS, 1))
+        else:
+            cmp_sd_solution, _enum = lp_engine(*_lp_args, time_limit=float(kwargs.get(T_LIMIT, np.inf)), exact=_engine == 'lp_exact')
+        logging.info('  LP engine done (%.1fs).' % (time.time() - t0))
+        setup = deepcopy(cmp_sd_solution.sd_setup)
+        setup.update({MODULES: orig_sd_modules, KOCOST: orig_ko_cost, KICOST: orig_ki_cost, REGCOST: orig_reg_cost})
+        if kwargs['gene_kos']:
+            setup.update({GKOCOST: orig_gko_cost, GKICOST: orig_gki_cost})
+        sd_solutions = _decompress_solutions(cmp_sd_solution, cmp_mapReac_1, [], kwargs[MAX_COST], uncmp_ko_cost, uncmp_ki_cost,
+                                             uncmp_reg_cost, orig_model, setup, kwargs['gene_kos'],
+                                             locals().get('orig_gko_cost'),
+                                             locals().get('orig_gki_cost'))
+        sd_solutions._cmp_model = cmp_model
+        sd_solutions._lp_enum = _enum
+        if getattr(_enum, 'objective_value', None) is not None:
+            sd_solutions.objective_value = _enum.objective_value
+        logging.info(str(sd_solutions.get_num_materialized()) + ' solutions found.')
+        return sd_solutions
     # --- GPR extension on (possibly compressed) model ---
     if kwargs['gene_kos']:
         # GPR reduction has two leaf-minimizing, boolean-equivalent (designs unchanged) steps:

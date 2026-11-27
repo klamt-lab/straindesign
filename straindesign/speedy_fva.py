@@ -1061,3 +1061,104 @@ def fast_reversibility(model, solver=None, compress=True, threads=None):
     if compress:
         df = _expand_fva(df, cmp_maps, orig_rid)
     return {r: (float(df.at[r, 'maximum']) > 0.0, float(df.at[r, 'minimum']) < 0.0) for r in orig_rid}
+
+
+def essential_reactions(model, solver=None, constraints=None, tol=1e-8):
+    """Reactions that carry flux in every flux distribution of the model under the constraints.
+
+    These are the reactions whose flux range excludes zero (both limits beyond ``tol`` on the same
+    side), found without the ranges: a reaction that some flux distribution of the region leaves
+    at zero is not essential. So only the reactions that every flux distribution seen so far
+    uses are asked about, each with one LP that pushes its flux towards zero, and the flux
+    distribution of every LP is looked at for the reactions still open. The first LP asks for
+    little flux through the reactions that run in one direction, which leaves few open.
+
+    A reaction is reported on an optimum that agrees with the flux distributions seen. What an LP
+    leaves undecided counts as not essential, and so does everything in an empty region.
+
+    Parameters
+    ----------
+    model : cobra.Model
+    solver : str, optional
+    constraints : str or list, optional
+        Linear constraints on top of the model, as for ``fva``.
+    tol : float
+        The smallest flux that counts as flux.
+
+    Returns
+    -------
+    set of reaction ids
+    """
+    solver = select_solver(solver, model)
+    reaction_ids = model.reactions.list_attr("id")
+    n = len(reaction_ids)
+    S = sparse.csr_matrix(create_stoichiometric_matrix(model))
+    A_eq, b_eq = S, [0.0] * S.shape[0]
+    A_ineq, b_ineq = sparse.csr_matrix((0, n)), []
+    if constraints:
+        from straindesign.networktools import resolve_gene_constraints
+        parsed = parse_constraints(resolve_gene_constraints(model, constraints), reaction_ids)
+        A_ineq, b_ineq, A_eq_extra, b_eq_extra = lineqlist2mat(parsed, reaction_ids)
+        A_eq, b_eq = sparse.vstack((S, A_eq_extra)), b_eq + b_eq_extra
+    lb = np.array([r.lower_bound for r in model.reactions], dtype=np.float64)
+    ub = np.array([r.upper_bound for r in model.reactions], dtype=np.float64)
+
+    def build():
+        return _single_thread(MILP_LP(A_ineq=A_ineq, b_ineq=b_ineq, A_eq=A_eq, b_eq=b_eq, lb=lb.tolist(), ub=ub.tolist(), solver=solver))
+
+    # smallest and largest flux of every reaction over the flux distributions seen
+    low, high = np.full(n, np.inf), np.full(n, -np.inf)
+
+    def seen(x):
+        np.minimum(low, x, out=low)
+        np.maximum(high, x, out=high)
+
+    lp = build()
+    lp.set_objective(np.where(lb >= 0.0, 1.0, np.where(ub <= 0.0, -1.0, 0.0)).tolist())
+    x, _, status = lp.solve()
+    if status != OPTIMAL:  # without the objective: any flux distribution serves as the first one
+        lp.set_objective([0.0] * n)
+        x, _, status = lp.solve()
+    if status != OPTIMAL:
+        logging.debug('essential_reactions: the region is empty or the LP failed (%s).', status)
+        return set()
+    seen(np.array(x[:n], dtype=np.float64))
+    lp.set_objective([0.0] * n)
+
+    essential = np.zeros(n, dtype=bool)
+    n_lp, prev_col = 1, -1
+
+    def towards_zero(j, sign):
+        """Optimum of the LP that pushes the flux of reaction j, which has sign `sign`, to zero."""
+        nonlocal prev_col, n_lp
+        lp.set_objective_idx([[j, sign]] if prev_col in (-1, j) else [[j, sign], [prev_col, 0.0]])
+        prev_col = j
+        n_lp += 1
+        x, value, status = lp.solve()
+        if status != OPTIMAL:
+            return None
+        seen(np.array(x[:n], dtype=np.float64))
+        return sign * value
+
+    for j in range(n):
+        if low[j] <= tol and high[j] >= -tol:
+            continue  # zero flux lies between two flux distributions seen, or is one of them
+        sign = 1.0 if low[j] > tol else -1.0
+        bound = lb[j] if sign > 0 else ub[j]
+        if sign * bound > tol:
+            essential[j] = True  # the bounds leave no zero flux
+            continue
+        closest = sign * (low[j] if sign > 0 else high[j])  # the flux closest to zero seen so far
+        if n_lp % _REV_REBUILD_EVERY == 0:
+            lp, prev_col = build(), -1
+        value = towards_zero(j, sign)
+        if value is not None and sign * value > closest + _DEGEN_TOL * (1.0 + abs(closest)):
+            # a warm-started optimum above a flux already seen: ask a fresh LP
+            lp, prev_col = build(), -1
+            value = towards_zero(j, sign)
+            if value is not None and sign * value > closest + _DEGEN_TOL * (1.0 + abs(closest)):
+                value = None
+        essential[j] = value is not None and sign * value > tol
+    essential &= ~((low <= tol) & (high >= -tol))  # a later flux distribution can still show a reaction at zero
+    logging.debug('essential_reactions: %d essential of %d reactions, %d LPs.', int(essential.sum()), n, n_lp)
+    return {reaction_ids[j] for j in np.flatnonzero(essential)}

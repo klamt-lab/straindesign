@@ -167,6 +167,7 @@ BEST = 'best'
 POPULATE = 'populate'
 SEED = 'seed'
 MILP_THREADS = 'milp_threads'
+LP_THREADS = 'lp_threads'
 
 # LP method selection
 LP_METHOD_AUTO = 'auto'

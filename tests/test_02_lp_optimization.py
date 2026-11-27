@@ -464,3 +464,31 @@ def test_glpk_unproven_infeasibility_is_resolved(monkeypatch):
     assert status == sd.names.OPTIMAL
     assert opt == pytest.approx(3.0)
     assert lp.get_lp_method() == sd.names.LP_METHOD_DUAL
+
+
+@pytest.mark.parametrize('constraints', [
+    None,
+    ['r_BM >= 1'],
+    ['r_BM >= 1', 'r_P - 0.4 r_S >= 0'],
+    ['r_BM >= 100'],
+])
+def test_essential_reactions_small(curr_solver, model_weak_coupling, constraints):
+    """The essential reactions are those whose flux range excludes zero; an empty region has none."""
+    from straindesign.speedy_fva import essential_reactions
+    kw = dict(solver=curr_solver) if constraints is None else dict(solver=curr_solver, constraints=constraints)
+    ranges = sd.fva(model_weak_coupling, **kw)
+    by_ranges = {r for r, (lo, hi) in ranges.iterrows() if min(abs(lo), abs(hi)) > 1e-8 and lo * hi > 0}
+    assert essential_reactions(model_weak_coupling, **kw) == by_ranges
+
+
+def test_essential_reactions_core(curr_solver, model_core):
+    """On a core model with growth asked for, in both aerobic and anaerobic conditions, and with a
+    reaction that only runs backwards."""
+    from straindesign.speedy_fva import essential_reactions
+    bio = [r.id for r in model_core.reactions if r.objective_coefficient][0]
+    for constraints in ([f'{bio} >= 0.1'], [f'{bio} >= 0.05', 'EX_o2_e = 0'], [f'{bio} >= 0.1', 'EX_glc__D_e <= -5']):
+        ranges = sd.fva(model_core, solver=curr_solver, constraints=constraints)
+        by_ranges = {r for r, (lo, hi) in ranges.iterrows() if min(abs(lo), abs(hi)) > 1e-8 and lo * hi > 0}
+        found = essential_reactions(model_core, solver=curr_solver, constraints=constraints)
+        assert found == by_ranges
+        assert bio in found and 'EX_glc__D_e' in found

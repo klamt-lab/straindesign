@@ -1,0 +1,311 @@
+"""The LP engine's 'any' mode (engine='lp', solution_approach='any'): single designs by dives, each
+polished to a local optimum.
+
+Every returned design is checked with plain LPs on the original model, written without the
+engine: the interventions are knocked out in the cobra model and each module's region is tested.
+"""
+from .test_01_load_models_and_solvers import model_small_example, model_weak_coupling, model_gpr, model_core
+import itertools
+import numpy as np
+import pytest
+import straindesign as sd
+from straindesign.names import *
+
+TOL = 1e-7
+
+
+def _expr(model, d):
+    return sum(c * model.reactions.get_by_id(r).flux_expression for r, c in d.items())
+
+
+def _max(model, obj, cons, ko, genes):
+    """max obj . v over the model with the interventions ko knocked out and the rows cons; None if empty."""
+    with model:
+        names = {g.name: g for g in model.genes}
+        for k in ko:
+            (names[k] if genes else model.reactions.get_by_id(k)).knock_out()
+        for d, sense, rhs in cons:
+            e = _expr(model, d)
+            lo, hi = {'<=': (None, rhs), '>=': (rhs, None), '=': (rhs, rhs)}[sense]
+            model.add_cons_vars(model.problem.Constraint(e, lb=lo, ub=hi))
+        model.objective = model.problem.Objective(_expr(model, obj) if obj else 0, direction='max')
+        val = model.slim_optimize(error_value=np.nan)
+    return None if np.isnan(val) else val
+
+
+def _region_empty(model, cons, ko, genes, inner=None):
+    if inner is None:
+        return _max(model, {}, cons, ko, genes) is None
+    opt = _max(model, inner, [], ko, genes)
+    if opt is None:
+        return True
+    return _max(model, {}, cons + [(inner, '>=', opt - TOL * max(1.0, abs(opt)))], ko, genes) is None
+
+
+def _fulfils(model, spec, ko, genes):
+    """spec: list of (kind, constraints, inner objective or None)."""
+    return all(_region_empty(model, cons, ko, genes, inner) == (kind == SUPPRESS) for kind, cons, inner in spec)
+
+
+def _modules(model, spec):
+    return [sd.SDModule(model, kind, constraints=cons, inner_objective=inner) for kind, cons, inner in spec]
+
+
+def _designs(sol, genes):
+    sds = sol.gene_sd if genes else sol.reaction_sd
+    return [frozenset(k for k, v in d.items() if v != 0) for d in sds]
+
+
+def _run(model, modules, solver, genes=False, **kw):
+    return sd.compute_strain_designs(model,
+                                     sd_modules=modules,
+                                     solution_approach=ANY,
+                                     solver=solver,
+                                     gene_kos=genes,
+                                     engine='lp',
+                                     seed=3,
+                                     **kw)
+
+
+def _check_valid_minimal(model, spec, designs, genes):
+    for d in designs:
+        assert _fulfils(model, spec, d, genes), sorted(d)
+        for k in d:
+            assert not _fulfils(model, spec, d - {k}, genes), (sorted(d), k)
+
+
+SPEC_S = [(SUPPRESS, [[{'R3': 1, 'R1': -0.5}, '<=', 0.0], [{'R2': 1}, '<=', 0], [{'R1': 1}, '>=', 0.1]], None)]
+SPEC_SP = [(SUPPRESS, [[{
+    'R3': 1,
+    'R1': -0.5,
+    'R2': -0.5
+}, '<=', 0.0], [{
+    'R2': 1
+}, '>=', 0.0], [{
+    'R1': 1
+}, '>=', 0.1]], None), (PROTECT, [[{
+    'R3': 1
+}, '>=', 1.0]], None)]
+
+
+def test_suppress(curr_solver, model_small_example):
+    sol = _run(model_small_example, _modules(model_small_example, SPEC_S), curr_solver, max_cost=4, max_solutions=4)
+    designs = _designs(sol, False)
+    assert sol.status == OPTIMAL and len(set(designs)) >= 4
+    _check_valid_minimal(model_small_example, SPEC_S, designs, False)
+    # local optimum: no two knockouts of a design can be replaced by one, unless that leads into
+    # (a superset of) another returned design
+    rxns = [r.id for r in model_small_example.reactions]
+    for d in designs:
+        for pair in itertools.combinations(sorted(d), 2):
+            for r in rxns:
+                nb = (d - set(pair)) | {r}
+                if r in d or any(o <= nb for o in designs if o != d):
+                    continue
+                assert not _fulfils(model_small_example, SPEC_S, nb, False), (sorted(d), pair, r)
+
+
+def test_suppress_protect(curr_solver, model_small_example):
+    sol = _run(model_small_example, _modules(model_small_example, SPEC_SP), curr_solver, max_cost=4, max_solutions=3)
+    designs = _designs(sol, False)
+    assert designs and sol.status in (OPTIMAL, TIME_LIMIT_W_SOL)
+    _check_valid_minimal(model_small_example, SPEC_SP, designs, False)
+
+
+def test_unbounded_budget(curr_solver, model_small_example):
+    """No max_cost: the dive is not bounded by a budget, the polishing still gives minimal designs."""
+    sol = _run(model_small_example, _modules(model_small_example, SPEC_S), curr_solver, max_solutions=2)
+    designs = _designs(sol, False)
+    assert len(designs) >= 2
+    _check_valid_minimal(model_small_example, SPEC_S, designs, False)
+
+
+def test_genes(curr_solver, model_gpr):
+    spec = [(SUPPRESS, [[{'rd_ex': 1}, '>=', 1.0]], None), (PROTECT, [[{'r_bm': 1}, '>=', 1.0]], None)]
+    sol = _run(model_gpr, _modules(model_gpr, spec), curr_solver, genes=True, max_cost=4, max_solutions=3)
+    designs = _designs(sol, True)
+    assert designs
+    _check_valid_minimal(model_gpr, spec, designs, True)
+
+
+def test_inner_objective(curr_solver, model_weak_coupling):
+    spec = [(SUPPRESS, [[{
+        'r_P': 1,
+        'r_S': -0.4
+    }, '<=', 0], [{
+        'r_S': 1
+    }, '>=', 0.1]], {
+        'r_BM': 1
+    }), (PROTECT, [[{
+        'r_BM': 1
+    }, '>=', 0.2]], None)]
+    sol = _run(model_weak_coupling, _modules(model_weak_coupling, spec), curr_solver, max_cost=4, max_solutions=3)
+    designs = _designs(sol, False)
+    assert designs
+    _check_valid_minimal(model_weak_coupling, spec, designs, False)
+
+
+def _optknock(m, ko):
+    opt = _max(m, {'r_BM': 1}, [], ko, False)
+    if opt is None:
+        return None
+    return _max(m, {'r_P': 1}, [[{'r_BM': 1}, '>=', 1.0], [{'r_BM': 1}, '>=', opt - TOL * max(1, opt)]], ko, False)
+
+
+def _robustknock(m, ko):
+    if _max(m, {}, [[{'r_BM': 1}, '>=', 1.0]], ko, False) is None:
+        return None
+    opt = _max(m, {'r_BM': 1}, [], ko, False)
+    v = _max(m, {'r_P': -1}, [[{'r_BM': 1}, '>=', opt - TOL * max(1, opt)]], ko, False)
+    return None if v is None else -v
+
+
+def _optcouple(m, ko):
+    opt = _max(m, {'r_BM': 1}, [], ko, False)
+    if opt is None:
+        return None
+    g0 = _max(m, {'r_BM': 1}, [[{'r_P': 1}, '=', 0.0]], ko, False)
+    if g0 is None:
+        return None
+    return opt - g0 if opt - g0 >= 1.0 - 1e-6 else None  # min_gcp 1
+
+
+@pytest.mark.parametrize('module, value_of', [
+    (dict(module_type=OPTKNOCK, outer_objective='r_P', inner_objective='r_BM', constraints='r_BM >= 1'), _optknock),
+    (dict(module_type=ROBUSTKNOCK, outer_objective='r_P', inner_objective='r_BM', constraints='r_BM >= 1'), _robustknock),
+    (dict(module_type=OPTCOUPLE, prod_id='r_P', inner_objective='r_BM', min_gcp=1.0), _optcouple),
+])
+def test_optimisation_local_optimum(curr_solver, model_weak_coupling, module, value_of):
+    m = model_weak_coupling
+    max_cost = 3
+    sol = _run(m, [sd.SDModule(m, **module)], curr_solver, max_cost=max_cost, max_solutions=1)
+    assert sol.status == OPTIMAL and len(sol.reaction_sd) >= 1
+    d = _designs(sol, False)[0]
+    val = value_of(m, d)
+    assert val is not None and abs(val - sol.objective_value) <= 1e-5 * max(1.0, abs(val))
+    # no neighbour (one knockout more, one less, one exchanged) within the budget does better
+    rxns = [r.id for r in m.reactions]
+    nbs = [d | {r} for r in rxns if r not in d and len(d) < max_cost] + [d - {k} for k in d]
+    nbs += [(d - {k}) | {r} for k in d for r in rxns if r not in d]
+    for nb in nbs:
+        v = value_of(m, nb)
+        assert v is None or v <= val + 1e-6 * max(1.0, abs(val)), (sorted(d), val, sorted(nb), v)
+
+
+def test_imlcore_growth_coupling(model_core):
+    """Ethanol yield coupled to growth on a genome-scale core model with its own bounds: no design
+    of up to three knockouts exists, the dives find one of several knockouts, and the complete
+    search over the interventions they touched shows that these hold nothing cheaper. GLPK as LP
+    solver, which stalls on single LPs of this model unless each solve has a time limit."""
+    m = model_core
+    bio = [r.id for r in m.reactions if r.objective_coefficient][0]
+    spec = [(SUPPRESS, [[{
+        'EX_etoh_e': 1,
+        'EX_glc__D_e': 1.0
+    }, '<=', 0.0], [{
+        bio: 1
+    }, '>=', 0.01]], None), (PROTECT, [[{
+        bio: 1
+    }, '>=', 0.1]], None)]
+    solver = GLPK if GLPK in sd.avail_solvers else sd.select_solver()
+    sol = _run(m, _modules(m, spec), solver, max_solutions=1, time_limit=300)
+    designs = _designs(sol, False)
+    assert sol.status == OPTIMAL and designs and all(len(d) >= 4 for d in designs)
+    assert sol._lp_enum.stat['union_complete']
+    _check_valid_minimal(m, spec, designs[:3], False)
+
+
+def test_the_cheapest_designs_come_first(curr_solver, model_small_example):
+    """Designs of the lowest cost levels are found by the complete search before any dive."""
+    modules = _modules(model_small_example, SPEC_SP)
+    every = sd.compute_strain_designs(model_small_example,
+                                      sd_modules=modules,
+                                      solution_approach=POPULATE,
+                                      solver=curr_solver,
+                                      engine='lp',
+                                      max_cost=4)
+    cheapest = min(len(d) for d in _designs(every, False))
+    sol = _run(model_small_example, modules, curr_solver, max_solutions=2)
+    found = _designs(sol, False)
+    assert sol.status == OPTIMAL and len(found) >= 2  # a design of the compressed network can stand for several
+    assert min(len(d) for d in found) == cheapest and set(found) <= set(_designs(every, False))
+
+
+def _signed(sol, genes=False):
+    return {frozenset((k, v) for k, v in d.items() if v != 0) for d in (sol.gene_sd if genes else sol.reaction_sd)}
+
+
+def test_knock_ins_cheapest_first(curr_solver, model_small_example):
+    modules = _modules(model_small_example, SPEC_SP)
+    kw = dict(ko_cost={r.id: 1.0 for r in model_small_example.reactions if r.id != 'R9'}, ki_cost={'R9': 1.0})
+    every = sd.compute_strain_designs(model_small_example,
+                                      sd_modules=modules,
+                                      solution_approach=POPULATE,
+                                      solver=curr_solver,
+                                      engine='lp',
+                                      max_cost=3,
+                                      **kw)
+    sol = _run(model_small_example, modules, curr_solver, max_solutions=1, max_cost=3, **kw)
+    assert sol.status == OPTIMAL and 1 <= len(sol.reaction_sd) < len(every.reaction_sd) and _signed(sol) <= _signed(every)
+    # asked for more than there are within the levels that are searched completely: all of them
+    sol = _run(model_small_example, modules, curr_solver, max_solutions=100, max_cost=3, **kw)
+    assert sol.status == OPTIMAL and _signed(sol) == _signed(every)
+
+
+def test_dives_with_knock_ins(curr_solver, model_small_example):
+    """Dives start from sets of knock-ins; a design keeps only the knock-ins it needs."""
+    from straindesign.lp_dive import lp_dive_engine
+    model = model_small_example
+    modules = _modules(model, SPEC_SP)
+    ki = ['R9', 'R4']
+    ko_cost = {r.id: 1.0 for r in model.reactions if r.id not in ki}
+    absent = lambda d: [k for k in ki if d.get(k, 0) <= 0]
+    res, search = lp_dive_engine(model,
+                                 modules,
+                                 ko_cost, {k: 1.0 for k in ki}, {}, {},
+                                 False,
+                                 np.inf,
+                                 curr_solver,
+                                 max_solutions=4,
+                                 seed=3,
+                                 first_levels=0)
+    assert res.sd and search.stat['starts'] >= 1 and search.stat['guided'] + search.stat['dives'] >= 1
+    for d in res.sd:
+        made = {k: v for k, v in d.items() if v != 0}
+        assert _fulfils(model, SPEC_SP, [k for k, v in made.items() if v < 0] + absent(d), False)
+        for k in made:  # no single intervention can go
+            rest = {i: v for i, v in made.items() if i != k}
+            assert not _fulfils(model, SPEC_SP, [i for i, v in rest.items() if v < 0] + absent(rest), False)
+
+
+def test_gene_knock_ins(curr_solver, model_gpr):
+    spec = [(SUPPRESS, [({'rd_ex': 1.0}, '>=', 1.0)], None), (PROTECT, [({'r_bm': 1.0}, '>=', 1.0)], None)]
+    modules = _modules(model_gpr, spec)
+    genes = [g.name or g.id for g in model_gpr.genes]
+    n = 0
+    for k in range(len(genes)):
+        gki = {genes[k]: 1.0, genes[(k + 3) % len(genes)]: 2.0}
+        kw = dict(gko_cost={g: 1.0 for g in genes if g not in gki}, gki_cost=gki, max_cost=4)
+        every = sd.compute_strain_designs(model_gpr,
+                                          sd_modules=modules,
+                                          solution_approach=POPULATE,
+                                          solver=curr_solver,
+                                          engine='lp',
+                                          gene_kos=True,
+                                          **kw)
+        sol = _run(model_gpr, modules, curr_solver, genes=True, max_solutions=3, **kw)
+        assert _signed(sol, True) <= _signed(every, True) and (len(sol.gene_sd) > 0) == (len(every.gene_sd) > 0)
+        n += len(sol.gene_sd)
+    assert n
+
+
+def test_searches_side_by_side(model_small_example):
+    """lp_threads=2: two searches in processes of their own; the first that comes to an end hands
+    back its designs, which are checked like those of a single search."""
+    solver = sd.select_solver()
+    modules = _modules(model_small_example, SPEC_SP)
+    sol = _run(model_small_example, modules, solver, max_solutions=1, lp_threads=2)
+    designs = _designs(sol, False)
+    assert sol.status == OPTIMAL and designs
+    _check_valid_minimal(model_small_example, SPEC_SP, designs, False)
+    assert sol._lp_enum.stat['seed'] in (3, 4)  # the seeds of the two searches
