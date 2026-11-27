@@ -32,11 +32,7 @@ _FLOAT = ('lp-glpk', 'lp-cplex', 'lp-gurobi', 'lp-scip')
 
 # Open defects the sample runs into, (kind, seed) -> {backend: what is wrong}. A listed backend has
 # to miss the reference (an entry that passes is to be removed), every other one has to meet it.
-KNOWN = {
-    ('S', 180): {b: "preprocessing of the compression: fast_reversibility raises KeyError: 'R3'" for b in ('milp-cplex',) + _FLOAT},
-    ('SP', 121): {'milp-cplex': 'CPLEX error 3003 (not a mixed-integer problem) once the size-1 shortcut has taken every design: status error, designs right'},
-    ('nP', 205): {'milp-cplex': "the size-1 shortcut returns ['UP0'], which breaks the PROTECT module with inner objective"},
-}
+KNOWN = {}
 
 
 @pytest.fixture(scope='module')
