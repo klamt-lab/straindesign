@@ -307,7 +307,7 @@ def speedy_fva(model, **kwargs):
         # Resolve gene/reaction constraints in the original ID space, then map onto the compressed model
         kwargs[CONSTRAINTS] = resolve_gene_constraints(orig_model, kwargs[CONSTRAINTS])
         kwargs[CONSTRAINTS] = parse_constraints(kwargs[CONSTRAINTS], orig_reaction_ids)
-        if cmp_maps:
+        if compress:
             kwargs[CONSTRAINTS] = _map_constraints(kwargs[CONSTRAINTS], cmp_maps, reaction_ids)
         A_ineq_extra, b_ineq_extra, A_eq_extra, b_eq_extra = lineqlist2mat(kwargs[CONSTRAINTS], reaction_ids)
 
@@ -765,8 +765,9 @@ def speedy_fva(model, **kwargs):
         fva_result.attrs['n_original'] = n_original
         fva_result.attrs['n_compressed'] = n_orig
 
-    # Expand compressed results back to original reaction space
-    if cmp_maps:
+    # Expand compressed results back to original reaction space. The compression also removes
+    # blocked reactions without lumping any, so the expansion does not depend on cmp_maps.
+    if compress:
         expanded = _expand_fva(fva_result, cmp_maps, orig_reaction_ids)
         expanded.attrs = fva_result.attrs
         fva_result = expanded
@@ -1055,6 +1056,8 @@ def fast_reversibility(model, solver=None, compress=True, threads=None):
     incumbent_max[np.abs(incumbent_max) < _ZERO_SNAP] = 0.0
     incumbent_min[np.abs(incumbent_min) < _ZERO_SNAP] = 0.0
     df = DataFrame({"minimum": incumbent_min, "maximum": incumbent_max}, index=cmp_rid)
-    if cmp_maps:
+    # The compression also removes blocked reactions without lumping any (then cmp_maps is empty);
+    # the expansion gives them their row back.
+    if compress:
         df = _expand_fva(df, cmp_maps, orig_rid)
     return {r: (float(df.at[r, 'maximum']) > 0.0, float(df.at[r, 'minimum']) < 0.0) for r in orig_rid}

@@ -855,6 +855,17 @@ def extend_model_gpr(model, use_names=False):
                         "option or refer \nto gene IDs instead of names in your strain design "+\
                         "computation. You may also rename\nthe conflicting genes, e.g., with "+\
                         "model.genes.get_by_id('ADK1').name = 'adk1'")
+    if use_names:
+        # a gene without a name is referenced by its ID
+        gene_reac_ids = [g.name or g.id for g in model.genes]
+        if len(set(gene_reac_ids)) < len(gene_reac_ids):
+            seen = set()
+            shared = sorted({i for i in gene_reac_ids if i in seen or seen.add(i)})
+            raise Exception("GPR rule integration requires a distinct identifier for every gene.\nWith "+\
+                            "use_names=True, the following identifiers stand for several genes:\n"+str(shared)+\
+                            "\nTo prevent this problem, call extend_model_gpr with the use_names=False "+\
+                            "option or refer\nto gene IDs instead of names in your strain design "+\
+                            "computation. You may also give the genes distinct names.")
 
     MAX_NAME_LEN = 230
 
@@ -1167,7 +1178,7 @@ def extend_model_regulatory(model, reg_itv):
 # =============================================================================
 
 
-def compress_modules(sd_modules, cmp_mapReac):
+def compress_modules(sd_modules, cmp_mapReac, reaction_ids=None):
     """Compress strain design modules to match with a compressed model
     
     When a strain design task has been specified with modules and the original metabolic model 
@@ -1184,6 +1195,12 @@ def compress_modules(sd_modules, cmp_mapReac):
         
         cmp_mapReac (list of dicts):
             Compression map obtained from cmp_mapReac = compress_model(model)
+
+        reaction_ids (optional (list of str)): (Default: None)
+            The reaction identifiers of the compressed model. The compression removes reactions
+            that cannot carry flux, and the compression map does not list them. If the identifiers
+            are given, the terms of such reactions (they are zero) are taken out of the constraints
+            and objectives of the modules, which otherwise keep naming reactions that are gone.
         
     Returns:
         (list of SDModule):
@@ -1208,6 +1225,19 @@ def compress_modules(sd_modules, cmp_mapReac):
                                 if np.any([k in old_reac_val for k in param.keys()]):
                                     lumped_reacs = [k for k in param.keys() if k in old_reac_val]
                                     m[p][new_reac] = np.sum([param.pop(k) * old_reac_val[k] for k in lumped_reacs if k in old_reac_val])
+    if reaction_ids is not None:
+        kept = set(reaction_ids)
+        removed = set()
+        for m in sd_modules:
+            for p in [CONSTRAINTS, INNER_OBJECTIVE, OUTER_OBJECTIVE, PROD_ID]:
+                if p in m and m[p] is not None:
+                    for expr in ([c[0] for c in m[p]] if p == CONSTRAINTS else [m[p]]):
+                        for k in [k for k in expr if k not in kept]:
+                            del expr[k]
+                            removed.add(k)
+        if removed:
+            logging.warning('The strain design modules name reactions that cannot carry flux: ' + ', '.join(sorted(removed)) +
+                            '. Their terms in constraints and objectives are zero.')
     return sd_modules
 
 
@@ -1268,7 +1298,10 @@ def compress_ki_ko_cost(kocost, kicost, cmp_mapReac):
                     elif parallel and not np.any([s in kocost_in for s in reac_map_exp[r]]):
                         ki_cost_new[r] = np.min([kicost[s] for s in reac_map_exp[r] if s in kicost])
             kicost = ki_cost_new
-    return kocost, kicost, cmp_mapReac
+    # Without a compression step, or for an empty vector, kocost and kicost are still the dicts
+    # passed in. The caller goes on to remove candidates from the compressed vectors, which must
+    # leave the uncompressed ones complete, so new dicts are returned in every case.
+    return dict(kocost), dict(kicost), cmp_mapReac
 
 
 def estimate_expansion_size(compressed_sds, cmp_mapReac):
