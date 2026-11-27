@@ -599,8 +599,6 @@ def test_wild_type_that_fails_verification_is_left_behind(curr_solver, monkeypat
     that the solver accepts within its tolerances only. The search has to go on to the designs
     with one intervention, or end where there is no candidate, instead of asking for the same
     point until the time limit."""
-    if curr_solver == SCIP and designs:
-        pytest.skip('SCIP drops a row whose variables are all fixed, here the row that takes the wild type out')
     from straindesign.strainDesignMILP import SDMILP
     verify = SDMILP.verify_sd
     monkeypatch.setattr(SDMILP, 'verify_sd', lambda self, sols: [ok and sols[i].nnz > 0 for i, ok in enumerate(verify(self, sols))])
@@ -615,6 +613,21 @@ def test_wild_type_that_fails_verification_is_left_behind(curr_solver, monkeypat
                                     **costs)
     assert sol.status == (OPTIMAL if designs else INFEASIBLE)
     assert sorted(sol.reaction_sd, key=lambda design: sorted(design.items())) == designs
+
+
+def test_row_whose_variables_are_all_fixed_is_enforced(curr_solver):
+    """min w - y with w <= y, 10 f + y <= 10 and z1 + z2 <= -1 (f, z1, z2 binary) is infeasible. SCIP
+    reported it optimal while the rows were modifiable: presolve fixed z1 and z2 at 0 and dropped the
+    last row without checking its side."""
+    A_ineq = sparse.csr_matrix([[-1.0, 1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 10.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0, 1.0]])
+    milp = sd.MILP_LP(c=[-1.0, 1.0, 0.0, 0.0, 0.0],
+                      A_ineq=A_ineq,
+                      b_ineq=[0.0, 10.0, -1.0],
+                      lb=[0.0] * 5,
+                      ub=[10.0, 10.0, 1.0, 1.0, 1.0],
+                      vtype='CCBBB',
+                      solver=curr_solver)
+    assert milp.solve()[2] == INFEASIBLE
 
 
 def _model_coefficients_of_two():

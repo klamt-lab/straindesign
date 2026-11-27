@@ -225,8 +225,9 @@ class SCIP_MILP(pso.Model):
         self.constr = []
         # Each row goes in as a single expression built from the terms cached above. Adding an
         # empty row and then one addConsCoeff per nonzero costs a PySCIPOpt call per matrix
-        # entry, which at genome scale is hundreds of thousands of them. The rows stay
-        # modifiable because set_ineq_constraint() and the exclusion constraints edit them later.
+        # entry, which at genome scale is hundreds of thousands of them. Rows are edited only
+        # between solves, after freeTransform(), where SCIP accepts edits of any row; a modifiable
+        # row (column generation) would let presolve drop it unchecked once its variables are fixed.
         self.constr += self._add_rows(A_ineq, b_ineq, '<=')
         self.constr += self._add_rows(A_eq, b_eq, '==')
 
@@ -317,7 +318,7 @@ class SCIP_MILP(pso.Model):
             e = pso.scip.Expr({self.trms[j]: float(d) for j, d in zip(indices[start:end], data[start:end])})
             rhs = float(b[i])
             f = pso.scip.ExprCons(e, lhs=rhs, rhs=rhs) if sense == '==' else pso.scip.ExprCons(e, lhs=None, rhs=rhs)
-            rows.append(self.addCons(f, modifiable=True))
+            rows.append(self.addCons(f))
         return rows
 
     def solve(self) -> Tuple[List, float, float]:
@@ -632,7 +633,7 @@ class SCIP_MILP(pso.Model):
         # changing old constraints would be better but doesn't work
         self.chgRhs(self.constr[idx], None)
         # add new constraint and replace constraint pointer in list
-        self.constr[idx] = self.addCons(pso.Expr() <= 0, modifiable=True)
+        self.constr[idx] = self.addCons(pso.Expr() <= 0)
         for i, a in enumerate(a_ineq):
             self.addConsCoeff(self.constr[idx], self.vars[i], a)
         if isinf(b_ineq):
