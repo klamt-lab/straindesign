@@ -229,6 +229,105 @@ def test_reversibility_hands_off_to_pool(ecoli_core, monkeypatch):
     assert pooled == sequential
 
 
+def _directions_from_fva(fva, tol=1e-9):
+    return {r: (bool(fva.at[r, 'maximum'] > tol), bool(fva.at[r, 'minimum'] < -tol)) for r in fva.index}
+
+
+def _model_forced_backward_and_a_blocked_loop():
+    """r_rev can only run backward (P is taken up at 1 or more and has no other consumer), r_q only
+    forward; r_w, r_v2 and r_vw are irreversible and blocked by stoichiometry alone (W -> 2 V -> 2 W
+    with no other exit), which no single-producer or dead-end rule sees."""
+    from cobra import Model, Metabolite, Reaction
+    model = Model('forced_backward_and_a_blocked_loop')
+    mets = {m: Metabolite(m, compartment='c') for m in ('S', 'P', 'Q', 'W', 'V')}
+    for rid, stoich, lb, ub in [('ex_p', {
+            'P': 1
+    }, 1, 10), ('r_rev', {
+            'S': -1,
+            'P': 1
+    }, -1000, 1000), ('ex_s', {
+            'S': -1
+    }, 0, 10), ('r_q', {
+            'S': -1,
+            'Q': 1
+    }, -1000, 1000), ('ex_q', {
+            'Q': -1
+    }, 0, 10), ('r_w', {
+            'S': -1,
+            'W': 1
+    }, 0, 1000), ('r_v2', {
+            'W': -1,
+            'V': 2
+    }, 0, 1000), ('r_vw', {
+            'V': -1,
+            'W': 1
+    }, 0, 1000)]:
+        reaction = Reaction(rid, lower_bound=lb, upper_bound=ub)
+        model.add_reactions([reaction])
+        reaction.add_metabolites({mets[m]: v for m, v in stoich.items()})
+    return model
+
+
+def test_witness_lp_stays_feasible_and_cone_lp_blocks(curr_solver):
+    import straindesign.speedy_fva as sf
+    from scipy import sparse
+    from cobra.util.array import create_stoichiometric_matrix
+    model = _model_forced_backward_and_a_blocked_loop()
+    ids = [r.id for r in model.reactions]
+    S = sparse.csr_matrix(create_stoichiometric_matrix(model))
+    lb = np.array([r.lower_bound for r in model.reactions], dtype=float)
+    ub = np.array([r.upper_bound for r in model.reactions], dtype=float)
+    # forward directions of the two reversible reactions: r_rev forward is impossible
+    status, r, z = sf._witness_lp(S, lb, ub, [(ids.index('r_rev'), 1), (ids.index('r_q'), 1)], curr_solver)
+    assert status == sd.names.OPTIMAL
+    assert z[0] == pytest.approx(0.0, abs=1e-6) and z[1] == pytest.approx(1.0, abs=1e-6)
+    assert r[ids.index('r_q')] >= 1.0 - 1e-6
+    # the sign cone admits ex_p and ex_s forward, not the loop
+    dirs = [(ids.index(rid), 1) for rid in ('ex_p', 'ex_s', 'r_w', 'r_v2', 'r_vw')]
+    status, _, z = sf._witness_lp(S, lb, ub, dirs, curr_solver, cone=True)
+    assert status == sd.names.OPTIMAL
+    assert z == pytest.approx([1.0, 1.0, 0.0, 0.0, 0.0], abs=1e-6)
+
+
+@pytest.mark.parametrize('compress', [False, True])
+def test_reversibility_of_the_small_network_is_fva_s(curr_solver, compress):
+    import straindesign.speedy_fva as sf
+    model = _model_forced_backward_and_a_blocked_loop()
+    expected = {
+        'ex_p': (True, False),
+        'r_rev': (False, True),
+        'ex_s': (True, False),
+        'r_q': (True, False),
+        'ex_q': (True, False),
+        'r_w': (False, False),
+        'r_v2': (False, False),
+        'r_vw': (False, False)
+    }
+    assert _directions_from_fva(sf.speedy_fva(model.copy(), solver=curr_solver)) == expected
+    assert sf.fast_reversibility(model.copy(), solver=curr_solver, compress=compress, threads=1) == expected
+
+
+@pytest.mark.parametrize('witnesses', [True, False])
+def test_reversibility_matches_fva_on_the_test_models(curr_solver, model_core, ecoli_core, witnesses, monkeypatch):
+    """With and without the witness LPs before the per-direction LPs, no direction FVA finds is
+    missed, and no direction is reported that a bound forbids. GLPK's vertices overshoot zero by
+    ~1e-10, so with GLPK a reversible reaction can keep a direction only the network blocks."""
+    import straindesign.speedy_fva as sf
+    if not witnesses:
+        monkeypatch.setattr(sf, '_REV_PREPASS_PROBE', 0)
+    for model in (ecoli_core, model_core):
+        fva = _directions_from_fva(sf.speedy_fva(model.copy(), solver=curr_solver))
+        rev = sf.fast_reversibility(model.copy(), solver=curr_solver, threads=1)
+        missed = [r for r in fva if (fva[r][0] and not rev[r][0]) or (fva[r][1] and not rev[r][1])]
+        extra = [r for r in fva if rev[r] != fva[r] and r not in missed]
+        assert not missed
+        if curr_solver == GLPK:
+            bounds = {r.id: (r.lower_bound, r.upper_bound) for r in model.reactions}
+            assert all(bounds[r][0] < 0 < bounds[r][1] for r in extra), extra
+        else:
+            assert not extra
+
+
 def test_indicator_is_one_directional(curr_solver):
     """An indicator gates its row in one direction only.
 

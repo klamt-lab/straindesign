@@ -788,6 +788,9 @@ _ZERO_SNAP = 1e-11  # |flux| below this is solver noise, not a direction; 0 disa
 _MAX_STATUS_RETRIES = 2  # fresh-LP retries before a bound is reported unresolved
 _DEGEN_TOL = 1e-6  # warm-start guard: fresh optimum must not fall below a known-achievable incumbent
 _WITNESS_TOL = 1e-8  # a flux vector lifts an already resolved bound only beyond this (relative to 1 + |bound|)
+_REV_PREPASS_PROBE = 30  # scan LPs timed before the witness LPs, to price one direction; 0 skips the witness LPs
+_REV_PREPASS_SLACK_COST = 1.01  # cost of the elastic slack per unit, above the 1 a direction earns
+_REV_CONE_ZERO = 1e-6  # a direction whose z stays below this in the cone LP is blocked
 
 
 def _rev_structural_sweep(model):
@@ -833,6 +836,40 @@ def _rev_structural_sweep(model):
     return af, ar
 
 
+def _witness_lp(S, lb, ub, dirs, solver, cone=False):
+    """Max-support LP over directions dirs = [(j, sign), ...]: maximise sum z_i, 0 <= z_i <= 1,
+    z_i <= sign_i * r_j (+ t_i), S r = 0. Returns (status, r, z).
+
+    Without cone, every row has an elastic slack t_i >= 0 that costs more than z_i earns, so z_i > 0
+    needs flux in direction sign_i and the LP stays feasible when the network forces r_j the other
+    way (a plain z_i <= r_j would hold every reaction of the group at r_j >= 0). With cone, the
+    bounds are relaxed to their signs, there is no slack, and every direction the cone admits ends at
+    z_i = 1, so z_i ~ 0 proves the direction blocked in the polytope as well."""
+    n, k = S.shape[1], len(dirs)
+    el = 0 if cone else k
+    rows = np.concatenate([np.arange(k)] * (2 if cone else 3))
+    cols = np.concatenate([n + np.arange(k), np.array([j for j, _ in dirs], dtype=int)] + ([] if cone else [n + k + np.arange(k)]))
+    vals = np.concatenate([np.ones(k), -np.array([float(sign) for _, sign in dirs])] + ([] if cone else [-np.ones(k)]))
+    A_ineq = sparse.csr_matrix((vals, (rows, cols)), shape=(k, n + k + el))
+    A_eq = sparse.hstack([S, sparse.csr_matrix((S.shape[0], k + el))], format='csr')
+    lb_r = np.where(lb < 0, -np.inf, 0.0) if cone else lb
+    ub_r = np.where(ub > 0, np.inf, 0.0) if cone else ub
+    lp = _single_thread(
+        MILP_LP(c=[0.0] * n + [-1.0] * k + [_REV_PREPASS_SLACK_COST] * el,
+                A_ineq=A_ineq,
+                b_ineq=[0.0] * k,
+                A_eq=A_eq,
+                b_eq=[0.0] * S.shape[0],
+                lb=lb_r.tolist() + [0.0] * (k + el),
+                ub=ub_r.tolist() + [1.0] * k + [np.inf] * el,
+                solver=solver))
+    x, _, status = lp.solve()
+    if status != OPTIMAL:
+        return status, None, None
+    x = np.array(x, dtype=np.float64)
+    return status, x[:n], x[n:n + k]
+
+
 def fast_reversibility(model, solver=None, compress=True, threads=None):
     """Exact per-reaction reversibility on the ORIGINAL flux polytope, faster than full FVA.
 
@@ -848,6 +885,14 @@ def fast_reversibility(model, solver=None, compress=True, threads=None):
     compressed model (objective-only change) with a co-option scan that certifies other
     reactions carrying flux; (4) map compressed min/max back to the original reactions.
     Sign of the achieved min/max gives reversibility.
+
+    Before the per-direction LPs, max-support witness LPs (``_witness_lp``) certify many directions
+    at once: one for the open directions of irreversible reactions, one each for the forward and the
+    backward directions of reversible ones, repeated while an LP certifies more directions than the
+    per-direction LPs it replaces would cost (priced by ``_REV_PREPASS_PROBE`` of them). One LP over
+    the sign cone then proves the remaining irreversible directions blocked that the network blocks.
+    The per-direction LPs decide what is left; the witnesses only ever certify, the cone LP only
+    ever blocks a direction no flux vector can take.
 
     The scan starts sequentially. When the remaining directions project to more sequential time
     than a worker pool takes to start, ``threads`` workers (default ``Configuration().processes``
@@ -906,6 +951,8 @@ def fast_reversibility(model, solver=None, compress=True, threads=None):
     incumbent_min[fixed] = lb[fixed]
 
     def scan(x):
+        # a value beyond a bound is solver noise (GLPK overshoots zero bounds by ~1e-10), not a direction
+        x = np.clip(x, lb, ub)
         nm = (~res_max) & (x > _REV_SCAN_TOL)
         res_max[nm] = True
         np.maximum(incumbent_max, x, out=incumbent_max)
@@ -957,6 +1004,7 @@ def fast_reversibility(model, solver=None, compress=True, threads=None):
         return res_max[j] if direction == 1 else res_min[j]
 
     def accept(j, direction, x_arr, val):
+        val = min(max(val, lb[j]), ub[j])
         if direction == 1:
             res_max[j] = True
             incumbent_max[j] = max(incumbent_max[j], val)
@@ -980,6 +1028,57 @@ def fast_reversibility(model, solver=None, compress=True, threads=None):
             unknown(j, direction)
             return
         accept(j, direction, np.array(x_list[:n], dtype=np.float64), -obj_val if direction == 1 else obj_val)
+
+    def open_directions(keep=lambda j, direction: True):
+        return [(j, direction) for j in range(n) for direction in (1, -1) if not resolved(j, direction) and keep(j, direction)]
+
+    n_witness = 0
+    probe_dirs = open_directions()[:_REV_PREPASS_PROBE]
+    if probe_dirs:
+        t_probe0 = _time.perf_counter()
+        for j, direction in probe_dirs:
+            if resolved(j, direction):
+                continue
+            x_list, obj_val, status = solve_dir(j, direction)
+            if status != OPTIMAL:
+                unknown(j, direction)
+                continue
+            val = -obj_val if direction == 1 else obj_val
+            if degenerate(j, direction, val):
+                fresh_resolve(j, direction)
+                continue
+            accept(j, direction, np.array(x_list[:n], dtype=np.float64), val)
+        t_direction = (_time.perf_counter() - t_probe0) / len(probe_dirs)
+        reversible = (lb < 0) & (ub > 0)
+        groups = [
+            lambda j, direction: not reversible[j], lambda j, direction: reversible[j] and direction == 1,
+            lambda j, direction: reversible[j] and direction == -1
+        ]
+        while groups:
+            for group in list(groups):
+                dirs = open_directions(group)
+                t0 = _time.perf_counter()
+                status, x, _ = _witness_lp(S, lb, ub, dirs, solver) if dirs else (None, None, None)
+                n_witness += bool(dirs)
+                if status == OPTIMAL:
+                    scan(x)
+                certified = sum(1 for j, direction in dirs if resolved(j, direction))
+                # the group stays while its LP certifies more directions than they would cost one by one
+                if certified < 2 or certified * t_direction < _time.perf_counter() - t0:
+                    groups.remove(group)
+        irreversible = open_directions(lambda j, direction: not reversible[j])
+        if irreversible:
+            status, _, z = _witness_lp(S, lb, ub, irreversible, solver, cone=True)
+            n_witness += 1
+            if status == OPTIMAL:
+                for (j, direction), zi in zip(irreversible, z):
+                    if zi < _REV_CONE_ZERO:
+                        if direction == 1:
+                            res_max[j] = True
+                            incumbent_max[j] = max(incumbent_max[j], 0.0)
+                        else:
+                            res_min[j] = True
+                            incumbent_min[j] = min(incumbent_min[j], 0.0)
 
     if threads is None:
         threads = Configuration().processes if n >= _REV_PARALLEL_MIN else 1
@@ -1048,7 +1147,8 @@ def fast_reversibility(model, solver=None, compress=True, threads=None):
                     # A witness for a direction certified meanwhile is still an exact feasible
                     # point: its value and flux vector are used like any other.
                     accept(j, direction, np.frombuffer(x_bytes, dtype=np.float64)[:n], val)
-    logging.debug('fast_reversibility: %d LPs on %d reactions, %d workers.', n_lp, n, threads if handoff else 1)
+    logging.debug('fast_reversibility: %d LPs and %d witness LPs on %d reactions, %d workers.', n_lp, n_witness, n,
+                  threads if handoff else 1)
 
     # (4) expand compressed min/max back to original reactions
     # Snapping only removes flux the solver cannot distinguish from zero; the direction decision
