@@ -348,7 +348,7 @@ class SDProblem:
         elif sd_module[MODULE_TYPE] in [PROTECT, SUPPRESS, OPTKNOCK, OPTCOUPLE]:
             c_in = linexprdict2mat(sd_module[INNER_OBJECTIVE], self.model.reactions.list_attr('id'))
             # by default, assume maximization of the inner objective
-            if not hasattr(sd_module,INNER_OPT_SENSE) or sd_module[INNER_OPT_SENSE] is None or \
+            if INNER_OPT_SENSE not in sd_module or sd_module[INNER_OPT_SENSE] is None or \
                 sd_module[INNER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE] or sd_module[INNER_OPT_SENSE] == MAXIMIZE:
                 c_in = -c_in
             c_in = c_in.toarray()[0].tolist()
@@ -398,7 +398,7 @@ class SDProblem:
             # RobustKnock has three layers, inner maximization and an outer min-max problem
             c_in = linexprdict2mat(sd_module[INNER_OBJECTIVE], self.model.reactions.list_attr('id'))
             # by default, assume maximization of the inner objective
-            if not hasattr(sd_module,INNER_OPT_SENSE) or sd_module[INNER_OPT_SENSE] is None or \
+            if INNER_OPT_SENSE not in sd_module or sd_module[INNER_OPT_SENSE] is None or \
                 sd_module[INNER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE] or sd_module[INNER_OPT_SENSE] == MAXIMIZE:
                 c_in = -c_in
             c_in = c_in.toarray()[0].tolist()
@@ -410,7 +410,7 @@ class SDProblem:
                 = build_primal_from_cbm(self.model,V_ineq=None, v_ineq=None, V_eq=None, v_eq=None, c=c_in)
             # 3. build primal of outer problem (outer outer problem) (build_primal_from_cbm) - store c_inner
             c_out = linexprdict2mat(sd_module[OUTER_OBJECTIVE], self.model.reactions.list_attr('id'))  # get outer objective
-            if not hasattr(sd_module,OUTER_OPT_SENSE) or sd_module[OUTER_OPT_SENSE] is None or \
+            if OUTER_OPT_SENSE not in sd_module or sd_module[OUTER_OPT_SENSE] is None or \
                 sd_module[OUTER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE] or sd_module[OUTER_OPT_SENSE] == MAXIMIZE:
                 c_out = -c_out
             c_out = c_out.toarray()[0].tolist()
@@ -461,12 +461,12 @@ class SDProblem:
             # Both inner_objective (c_in1) and outer_objective (c_in2) are enforced
             # simultaneously via independent KKT/strong-duality links.
             c_in = linexprdict2mat(sd_module[INNER_OBJECTIVE], self.model.reactions.list_attr('id'))
-            if not hasattr(sd_module,INNER_OPT_SENSE) or sd_module[INNER_OPT_SENSE] is None or \
+            if INNER_OPT_SENSE not in sd_module or sd_module[INNER_OPT_SENSE] is None or \
                 sd_module[INNER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE] or sd_module[INNER_OPT_SENSE] == MAXIMIZE:
                 c_in = -c_in
             c_in = c_in.toarray()[0].tolist()
             c_in2 = linexprdict2mat(sd_module[OUTER_OBJECTIVE], self.model.reactions.list_attr('id'))
-            if not hasattr(sd_module,OUTER_OPT_SENSE) or sd_module[OUTER_OPT_SENSE] is None or \
+            if OUTER_OPT_SENSE not in sd_module or sd_module[OUTER_OPT_SENSE] is None or \
                 sd_module[OUTER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE] or sd_module[OUTER_OPT_SENSE] == MAXIMIZE:
                 c_in2 = -c_in2
             c_in2 = c_in2.toarray()[0].tolist()
@@ -681,7 +681,7 @@ class SDProblem:
         # 2b. Extend bilevel _p with outer objective for PROTECT/SUPPRESS
         if sd_module[MODULE_TYPE] in [PROTECT, SUPPRESS] and sd_module[OUTER_OBJECTIVE] is not None:
             c_out = linexprdict2mat(sd_module[OUTER_OBJECTIVE], self.model.reactions.list_attr('id'))
-            if not hasattr(sd_module,OUTER_OPT_SENSE) or sd_module[OUTER_OPT_SENSE] is None or \
+            if OUTER_OPT_SENSE not in sd_module or sd_module[OUTER_OPT_SENSE] is None or \
                 sd_module[OUTER_OPT_SENSE] not in [MINIMIZE, MAXIMIZE] or sd_module[OUTER_OPT_SENSE] == MAXIMIZE:
                 c_out = -c_out
             c_out = c_out.toarray()[0].tolist()
