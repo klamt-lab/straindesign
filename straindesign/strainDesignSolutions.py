@@ -143,9 +143,14 @@ class SDSolutions(object):
         working_sd = [s.copy() for s in sd_list]
         interventions = set()
         [[interventions.add(k) for k in s.keys()] for s in working_sd]
-        # replace gene names with identifiers if necessary
+        # replace gene names with identifiers if necessary; an intervention that is a gene ID stands
+        # for that gene, also if another gene carries it as its name
         gene_name_id_dict = {}
-        [gene_name_id_dict.update({g.name: g.id}) for g in model.genes if interventions.intersection([g.name])]
+        [
+            gene_name_id_dict.update({g.name: g.id})
+            for g in model.genes
+            if interventions.intersection([g.name]) and not model.genes.has_id(g.name)
+        ]
         for g_name, g_id in gene_name_id_dict.items():
             for s in working_sd:
                 if g_name in s:
